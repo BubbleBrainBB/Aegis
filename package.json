@@ -70,7 +70,7 @@
     "verify:composer-link-chip": "node scripts/verify-composer-link-chip.mjs",
     "verify:fork-session": "node scripts/verify-fork-session.mjs",
     "verify:markdown-editor": "node scripts/verify-markdown-editor.mjs",
-    "verify:markdown-live-preview": "npm run transpile:electron && npx tsx scripts/tests/markdown-obsidian-syntax.test.ts && npx tsx scripts/tests/site-root-path.test.ts && npx tsx scripts/tests/project-file-index.test.ts && node scripts/verify-markdown-editor.mjs && node scripts/tests/markdown-obsidian-live-preview-electron.test.mjs",
+    "verify:markdown-live-preview": "npm run transpile:electron && npx tsx scripts/tests/markdown-obsidian-syntax.test.ts && npx tsx scripts/tests/markdown-outline.test.ts && npx tsx scripts/tests/site-root-path.test.ts && npx tsx scripts/tests/project-file-index.test.ts && node scripts/verify-markdown-editor.mjs && node scripts/tests/markdown-obsidian-live-preview-electron.test.mjs",
     "verify:markdown-frontmatter": "npx tsx scripts/tests/markdown-frontmatter-preview.test.ts && node scripts/tests/markdown-frontmatter-preview-electron.test.mjs",
     "verify:project-file-navigation": "npx tsx scripts/tests/project-file-navigation.test.ts",
     "verify:html-preview": "npm run transpile:electron && npx tsx scripts/tests/html-preview.test.ts && node node_modules/electron/cli.js scripts/tests/html-preview-electron.test.cjs",

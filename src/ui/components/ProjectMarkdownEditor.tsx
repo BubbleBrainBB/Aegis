@@ -57,13 +57,9 @@ import {
   type TableCellSource,
 } from './markdown-obsidian-syntax';
 import './markdown-live-preview.css';
+import { collectOutlineItemsFromDoc, type MarkdownOutlineItem } from './markdown-outline';
 
-export type MarkdownOutlineItem = {
-  id: string;
-  level: number;
-  text: string;
-  pos: number;
-};
+export type { MarkdownOutlineItem } from './markdown-outline';
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 
@@ -769,37 +765,6 @@ function frontmatterBlockIsActive(state: EditorState, block: MarkdownFrontmatter
     || (range.to > block.from && range.to < block.to)
     || (!range.empty && range.from <= block.from && range.to >= block.to)
   ));
-}
-
-function collectOutlineItemsFromDoc(state: EditorState): MarkdownOutlineItem[] {
-  const items: MarkdownOutlineItem[] = [];
-  let inFrontmatter = false;
-  for (let lineNumber = 1; lineNumber <= state.doc.lines; lineNumber += 1) {
-    const line = state.doc.line(lineNumber);
-    const text = line.text;
-    if (lineNumber === 1 && text.trim() === '---') {
-      inFrontmatter = true;
-      continue;
-    }
-    if (inFrontmatter) {
-      if (text.trim() === '---') inFrontmatter = false;
-      continue;
-    }
-    const match = /^(#{1,6})\s+(.+?)\s*$/.exec(text);
-    if (!match) continue;
-    const rawText = match[2]
-      .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
-      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-      .replace(/[`*_~]/g, '')
-      .trim();
-    items.push({
-      id: `heading-${line.from}`,
-      level: match[1].length,
-      text: rawText || 'Untitled',
-      pos: line.from,
-    });
-  }
-  return items;
 }
 
 function scanCodeBlocks(state: EditorState): MarkdownCodeBlock[] {
