@@ -143,11 +143,7 @@ app.whenReady().then(async()=>{
   assert.equal(await js('qa.store.getState().usageSettingsProvider'),'deepseek','full usage preserves last selection');
   await js('qa.store.getState().setShowSettings(false)');await delay(150);
   await click(trigger);await js('[...document.querySelectorAll("[role=menuitem]")].find(e=>e.textContent.startsWith("Settings")).click()');await delay(150);assert.equal(await js('qa.store.getState().showSettings'),true,'Settings still opens');
-  await js('qa.store.getState().setShowSettings(false);qa.store.getState().setSidebarCollapsed(true);qa.store.getState().setSidebarPeek(true)');await delay(350);await open();
-  const c=await rect(row('codex'));win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(c.x+20),y:Math.round(c.y+15)});await delay(400);
-  assert.equal(await js('qa.store.getState().sidebarPeek'),true,'portal submenu retains sidebar peek');
-  await outside();assert.equal(await js('qa.store.getState().sidebarPeek'),false,'outside dismissal releases peek');
-  await js('qa.store.getState().setSidebarCollapsed(false)');await delay(250);
+  await js('qa.store.getState().setShowSettings(false)');await delay(150);
   await js('document.querySelector('+JSON.stringify(trigger)+').focus()');await key('Return');await key('Right');await until('document.querySelectorAll("[data-usage-provider]").length===9');
   await key('Escape');assert.equal(await js('document.querySelectorAll("[data-usage-provider]").length'),0);assert.equal(await js('document.querySelectorAll("[role=menu]").length'),1);
   await key('Escape');assert.equal(await js('document.querySelectorAll("[role=menu]").length'),0);
@@ -168,7 +164,8 @@ try{
  await mkdir(path.join(root,'output/sidebar-profile-usage'),{recursive:true});
  await writeFile(path.join(dir,'index.html'),'<html><body style="margin:0"><div id="root"></div><script>window.qaTimeOffset=0;const realNow=Date.now;Date.now=()=>realNow()+window.qaTimeOffset;window.qaRefreshers=new Map();const realInterval=window.setInterval,realClear=window.clearInterval;window.setInterval=(fn,ms,...args)=>{const id=realInterval(fn,ms,...args);if(ms===60000)window.qaRefreshers.set(id,()=>fn(...args));return id};window.clearInterval=id=>{window.qaRefreshers.delete(id);realClear(id)};</script><script type="module" src="./probe.tsx"></script></body></html>');
  await writeFile(path.join(dir,'probe.tsx'),harness);await writeFile(path.join(dir,'main.cjs'),main);
- server=await createServer({root,configFile:path.join(root,'vite.config.ts'),server:{host:'127.0.0.1',port:0}});await server.listen();
+ // Own dep cache: sharing node_modules/.vite breaks a running dev server.
+ server=await createServer({root,configFile:path.join(root,'vite.config.ts'),cacheDir:path.join(dir,'vite-cache'),server:{host:'127.0.0.1',port:0}});await server.listen();
  const env={...process.env,QA_URL:new URL(path.relative(root,dir)+'/index.html',server.resolvedUrls.local[0]).href,QA_CAPTURE:path.join(root,'output/sidebar-profile-usage')};delete env.ELECTRON_RUN_AS_NODE;
  await new Promise((resolve,reject)=>{const child=spawn(path.join(root,'node_modules/.bin/electron'),[path.join(dir,'main.cjs')],{env,stdio:'inherit'});const timer=setTimeout(()=>{child.kill();reject(Error('timeout'))},60000);child.on('error',reject);child.on('exit',code=>{clearTimeout(timer);code===0?resolve():reject(Error('exit '+code))})});
 }finally{await server?.close();await rm(dir,{recursive:true,force:true})}

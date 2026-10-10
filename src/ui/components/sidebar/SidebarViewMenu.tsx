@@ -85,7 +85,7 @@ function entries<T extends string>(labels: Record<T, string>): { value: T; label
  * Sidebar view options: which sessions to show and how to group them. Group
  * by State is the triage view (what needs you, what runs, what to review).
  */
-export function SidebarViewMenu({ onOpenChange }: { onOpenChange?: (open: boolean) => void }) {
+export function SidebarViewMenu() {
   const view = useSidebarViewStore();
   const sessions = useAppStore((state) => state.sessions);
   const shortcuts = useAppPreferences((state) => state.keyboardShortcuts);
@@ -114,7 +114,7 @@ export function SidebarViewMenu({ onOpenChange }: { onOpenChange?: (open: boolea
   const stateShortcut = shortcutLabel('activity', shortcuts);
 
   return (
-    <DropdownMenu onOpenChange={onOpenChange}>
+    <DropdownMenu>
       <DropdownMenuTrigger
         render={
           <button

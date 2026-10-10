@@ -834,7 +834,6 @@ export const useAppStore = create<Store>()(
       showNewSession: initialUiResumeState?.showNewSession ?? true,
       newSessionKey: 0,
       sidebarCollapsed: false,
-      sidebarPeek: false,
       sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
       sidebarWidthVersion: SIDEBAR_WIDTH_VERSION,
       globalError: null,
@@ -1822,9 +1821,8 @@ export const useAppStore = create<Store>()(
     persistUiResumeStateSnapshot(get());
   },
 
-  setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed, sidebarPeek: false }),
+  setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
 
-  setSidebarPeek: (open) => set({ sidebarPeek: open }),
 
   setSidebarWidth: (width) => set((state) => ({
     sidebarWidth: sanitizeSidebarWidth(width, state.sidebarWidth),

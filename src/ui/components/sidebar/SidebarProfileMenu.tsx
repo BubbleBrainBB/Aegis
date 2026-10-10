@@ -14,13 +14,7 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 
-export function SidebarProfileMenu({
-  onOpenSettings,
-  onOpenChange,
-}: {
-  onOpenSettings: () => void;
-  onOpenChange: (open: boolean) => void;
-}) {
+export function SidebarProfileMenu({ onOpenSettings }: { onOpenSettings: () => void }) {
   const profile = useUserProfile();
   const displayName = profile?.displayName || 'Profile';
   const shortcuts = useAppPreferences((state) => state.keyboardShortcuts);
@@ -35,7 +29,7 @@ export function SidebarProfileMenu({
   );
 
   return (
-    <DropdownMenu onOpenChange={onOpenChange}>
+    <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
