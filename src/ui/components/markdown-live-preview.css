@@ -1,5 +1,5 @@
 /* Markdown live preview keeps prose and editable source in one EditorView. */
-.bubble-md-live { --aegis-md-page-width: 100%; --aegis-md-page-padding-x: 16px; --aegis-md-prose-font-size: calc(14px * var(--ui-font-scale, 1)); }
+.bubble-md-live { --aegis-md-page-width: 100%; --aegis-md-page-padding-x: 16px; --aegis-md-prose-font-size: calc(16px * var(--ui-font-scale, 1)); }
 .bubble-md-live .aegis-md-codemirror-root .cm-activeLine { background: transparent; }
 .bubble-md-live .cm-cursor { border-left-width: 2px; }
 .bubble-md-live .bubble-md-list-line { padding-left: 12px; }
@@ -17,7 +17,7 @@
 .bubble-md-media-edit:hover { color: var(--text-primary); background: var(--bg-secondary); }
 .bubble-md-video-status { font-size: 12px; color: var(--text-muted); }
 .bubble-md-live .aegis-md-codemirror-root { padding-top: 12px; padding-bottom: 64px; }
-.bubble-md-live .bubble-md-code-line { padding: 0 12px; background: var(--bg-secondary); font-family: var(--font-mono); font-size: 13px; }
+.bubble-md-live .bubble-md-code-line { padding: 0 12px; background: var(--bg-secondary); font-family: var(--font-mono); font-size: calc(14px * var(--ui-font-scale, 1)); }
 .bubble-md-code-line.is-first { position: relative; border-radius: 8px 8px 0 0; padding-right: 90px; }
 .bubble-md-code-line.is-first::after { content: attr(data-language); position: absolute; top: 4px; right: 12px; font-family: var(--font-sans); font-size: 11px; color: var(--text-muted); }
 .bubble-md-code-line.is-last { border-radius: 0 0 8px 8px; }
@@ -31,7 +31,7 @@
 .bubble-md-rendered { cursor: text; }
 .bubble-md-math { overflow-x: auto; }
 .bubble-md-live.is-source-mode .aegis-md-codemirror-root { padding: 12px 8px 64px; }
-.bubble-md-live.is-source-mode :is(.cm-editor, .cm-scroller) { font-family: var(--font-mono); font-size: 13px; line-height: 1.65; }
+.bubble-md-live.is-source-mode :is(.cm-editor, .cm-scroller) { font-family: var(--font-mono); font-size: calc(14px * var(--ui-font-scale, 1)); line-height: 1.65; }
 .bubble-md-live.is-source-mode .cm-gutters { display: flex; background: transparent; color: var(--text-muted); border: 0; }
 .bubble-md-live.is-source-mode .cm-line { padding: 0 12px; }
 
@@ -40,7 +40,7 @@
 .bubble-md-bullet::before { content: ''; display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: currentColor; vertical-align: middle; transform: translateY(-1px); opacity: 0.75; }
 .bubble-md-live .bubble-md-highlight { background: color-mix(in srgb, var(--warning) 28%, transparent); border-radius: 3px; padding: 0 1px; color: inherit; }
 .bubble-md-live .bubble-md-wikilink { text-decoration-style: dotted; }
-.bubble-md-live .bubble-md-table-source { font-family: var(--font-mono); font-size: 13px; }
+.bubble-md-live .bubble-md-table-source { font-family: var(--font-mono); font-size: calc(14px * var(--ui-font-scale, 1)); }
 .aegis-cm-table-widget td, .aegis-cm-table-widget th { cursor: text; }
 
 /* Nested quotes draw one bar per level inside the line's own padding. */

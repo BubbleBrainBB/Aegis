@@ -44,11 +44,11 @@ html .highlighted-code-block,
 html .aegis-project-panel .highlighted-code-block,
 html .markdown-content .highlighted-code-content,
 html .markdown-content .highlighted-code-lines,
-html .markdown-content .md-inline-code,
-html .aegis-md-editor .cm-content,
-html .aegis-md-editor .cm-gutters {
+html .markdown-content .md-inline-code {
   font-size: var(--code-font-size, 12px) !important;
 }
+/* The Markdown editor is prose, not code: it sizes from
+   --aegis-md-prose-font-size (which follows the UI font size). */
 html .aegis-project-panel .highlighted-code-block :is(div, span, pre, code),
 html .aegis-text-codemirror-host .cm-content,
 html .aegis-text-codemirror-host .cm-gutters,

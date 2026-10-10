@@ -2442,7 +2442,9 @@ button.aegis-mdx-metadata-key:hover {
   --aegis-md-page-padding-x: 20px;
   --aegis-md-body-width: calc(var(--aegis-md-page-width) - (var(--aegis-md-page-padding-x) * 2));
   --aegis-md-prose-font: var(--font-content, var(--font-sans)), -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
-  --aegis-md-prose-font-size: 14px;
+  /* Body text for long-form editing (Obsidian/Typora use 16px); headings and
+     code are sized from it. */
+  --aegis-md-prose-font-size: calc(16px * var(--ui-font-scale, 1));
   --aegis-md-prose-line-height: 1.62;
   --aegis-md-paragraph-gap: 0.62em;
   display: flex;
@@ -2735,14 +2737,14 @@ button.aegis-mdx-metadata-key:hover {
 
 .aegis-cm-heading-line.level-1 {
   padding: 0 0 0.9rem;
-  font-size: calc(22px * var(--ui-font-scale, 1));
+  font-size: calc(var(--aegis-md-prose-font-size) * 1.5);
   line-height: 1.3;
   font-weight: 650;
 }
 
 .aegis-cm-heading-line.level-2 {
   padding: 1.5rem 0 0.7rem;
-  font-size: calc(18px * var(--ui-font-scale, 1));
+  font-size: calc(var(--aegis-md-prose-font-size) * 1.25);
   line-height: 1.4;
 }
 
@@ -2751,7 +2753,7 @@ button.aegis-mdx-metadata-key:hover {
 .aegis-cm-heading-line.level-5,
 .aegis-cm-heading-line.level-6 {
   padding: 1.25rem 0 0.45rem;
-  font-size: calc(15px * var(--ui-font-scale, 1));
+  font-size: calc(var(--aegis-md-prose-font-size) * 1.125);
   line-height: 1.45;
   font-weight: 600;
 }
@@ -2891,7 +2893,7 @@ button.aegis-mdx-metadata-key:hover {
   color: var(--code-block-text);
   padding: 0.78rem 1rem 0.86rem;
   font-family: var(--font-mono);
-  font-size: calc(13px * var(--ui-font-scale, 1));
+  font-size: calc(14px * var(--ui-font-scale, 1));
   line-height: 1.65;
   white-space: pre-wrap;
   font-variant-ligatures: none;
@@ -2909,7 +2911,7 @@ button.aegis-mdx-metadata-key:hover {
   color: var(--code-block-text);
   padding: 0 1rem;
   font-family: var(--font-mono);
-  font-size: calc(13px * var(--ui-font-scale, 1));
+  font-size: calc(14px * var(--ui-font-scale, 1));
   line-height: 1.65;
   font-variant-ligatures: none;
   font-feature-settings: "liga" 0, "calt" 0;
