@@ -299,7 +299,7 @@ try{
  w.setContentSize(390,800);await delay(200);await shot('narrow-dark');assert.equal(await js('document.documentElement.scrollWidth>innerWidth'),false);
  await js('qa.update("grok",{readOnly:true})');await delay(100);assert.equal(await js('document.querySelector("[aria-label=Comment]").disabled'),true);assert.equal(await js('document.querySelector("[aria-label=\\"Send image edit\\"]")===null'),true);
  assert.equal(await js('qa.open("claude","/tmp/images/a.png")'),false);
- await js('qa.store.getState().setActiveRightUtilityTab("files")');assert.equal(await js('qa.store.getState().rightPanelFullscreen'),null);
+ await js('qa.store.getState().setActiveRightUtilityTab("files")');assert.equal(await js('qa.store.getState().rightPanelFullscreen'),'files','fullscreen stays with the panel and follows the active tab');
  w.setContentSize(1200,900);await js('qa.switch("codex");qa.integrate();qa.store.getState().setTheme("light")');await until('!!document.querySelector("[role=textbox]")','actual composer');
  await js('qa.store.getState().requestChatInjection({sessionId:"codex",text:"Keep my draft",mode:"append"})');await until('document.querySelector("[role=textbox]").textContent.includes("Keep my draft")','draft');
  await click('button[title="a.png"]');await until('!!document.querySelector(".image-studio")','integrated image tab');
@@ -419,7 +419,8 @@ try{
 try{
  await writeFile(path.join(dir,'index.html'),'<html><body style="margin:0"><div id="root"></div><script type="module" src="./probe.tsx"></script></body></html>');
  await writeFile(path.join(dir,'probe.tsx'),harness);await writeFile(path.join(dir,'main.cjs'),main);
- server=await createServer({root,configFile:path.join(root,'vite.config.ts'),plugins:[{name:'image-studio-qa',enforce:'pre',transform(source,id){if(id.endsWith('/src/ui/App.tsx'))return source+'\nexport { RightUtilityWorkspace };'}}],cacheDir:path.join(dir,'vite-cache'),server:{host:'127.0.0.1',port:0,strictPort:false}});await server.listen();
+ // Own dep cache: sharing node_modules/.vite breaks a running dev server.
+ server=await createServer({root,configFile:path.join(root,'vite.config.ts'),cacheDir:path.join(dir,'vite-cache'),plugins:[{name:'image-studio-qa',enforce:'pre',transform(source,id){if(id.endsWith('/src/ui/App.tsx'))return source+'\nexport { RightUtilityWorkspace };'}}],cacheDir:path.join(dir,'vite-cache'),server:{host:'127.0.0.1',port:0,strictPort:false}});await server.listen();
  const env={...process.env,QA_URL:new URL(path.relative(root,dir)+'/index.html',server.resolvedUrls.local[0]).href,QA_CAPTURE:path.join(root,'output/playwright/image-studio')};delete env.ELECTRON_RUN_AS_NODE;
  await new Promise((resolve,reject)=>{const child=spawn(path.join(root,'node_modules/.bin/electron'),[path.join(dir,'main.cjs')],{env,stdio:'inherit'});const timeout=setTimeout(()=>{child.kill();reject(Error('Electron test timed out'))},60000);child.on('error',reject);child.on('exit',code=>{clearTimeout(timeout);code===0?resolve():reject(Error('Electron test failed: '+code))})});
 }finally{await server?.close();await rm(dir,{recursive:true,force:true})}

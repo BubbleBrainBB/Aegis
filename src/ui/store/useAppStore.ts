@@ -141,6 +141,24 @@ type SetState = (
 const runtimeNoticeClearTimers = new Map<string, number>();
 let projectFileOpenRequestCounter = 0;
 
+type RightPanelFullscreen = Store['rightPanelFullscreen'];
+const FULLSCREEN_TAB_KINDS = new Set<string>(['browser', 'files', 'review', 'images']);
+
+/**
+ * Fullscreen belongs to the right panel, not to one tab: opening or switching
+ * tabs keeps it. It follows the active tab when that kind has its own
+ * fullscreen view; other kinds (terminal, sources…) keep the current value so
+ * the panel stays full-width.
+ */
+function fullscreenFollowingTab(
+  current: RightPanelFullscreen,
+  target: ProjectUtilityPanelTarget | null | undefined
+): RightPanelFullscreen {
+  if (!current || !target) return current;
+  const kind = getRightUtilityTabKind(target);
+  return FULLSCREEN_TAB_KINDS.has(kind) ? (kind as RightPanelFullscreen) : current;
+}
+
 function pickLiveRightPanel(state: Pick<
   Store,
   | 'rightUtilityTabs'
@@ -1821,15 +1839,8 @@ export const useAppStore = create<Store>()(
 
   setProjectTreeCollapsed: (collapsed) => {
     set((state) => {
-      if (collapsed) {
-        return {
-          projectTreeCollapsed: true,
-          rightPanelFullscreen:
-            state.rightPanelFullscreen === 'files' || state.rightPanelFullscreen === 'review'
-              ? null
-              : state.rightPanelFullscreen,
-        };
-      }
+      // Another tab kind became active; fullscreen stays with the panel.
+      if (collapsed) return { projectTreeCollapsed: true };
 
       const target = state.projectPanelView === 'changes' ? 'review' : 'files';
       const opened = resolveRightUtilityTabOpenPreservingActive(
@@ -1871,7 +1882,7 @@ export const useAppStore = create<Store>()(
   setActiveRightUtilityTab: (target) => {
     set((state) => ({
       activeRightUtilityTab: target,
-      rightPanelFullscreen: state.rightPanelFullscreen === 'images' && !target?.startsWith('images:') ? null : state.rightPanelFullscreen,
+      rightPanelFullscreen: fullscreenFollowingTab(state.rightPanelFullscreen, target),
       rightUtilityTabs: target ? addRightUtilityTab(state.rightUtilityTabs, target) : state.rightUtilityTabs,
       rightUtilityPanelHidden: target ? false : state.rightUtilityPanelHidden,
     }));
@@ -1885,6 +1896,7 @@ export const useAppStore = create<Store>()(
         rightUtilityTabs: opened.tabs,
         activeRightUtilityTab: opened.activeTab,
         rightUtilityPanelHidden: false,
+        rightPanelFullscreen: fullscreenFollowingTab(state.rightPanelFullscreen, opened.activeTab),
       };
 
       // Only a reveal has a width tween to skip: the panel is currently
@@ -1901,21 +1913,12 @@ export const useAppStore = create<Store>()(
         patch.projectPanelView = activeKind === 'review' ? 'changes' : 'files';
         patch.projectTreeCollapsed = false;
         patch.browserPanelOpen = false;
-        patch.rightPanelFullscreen =
-          (state.rightPanelFullscreen === 'browser' || state.rightPanelFullscreen === 'images')
-            ? null
-            : state.rightPanelFullscreen === 'files' && activeKind === 'review'
-              ? 'review'
-              : state.rightPanelFullscreen === 'review' && activeKind === 'files'
-                ? 'files'
-                : state.rightPanelFullscreen;
       } else if (activeKind === 'browser') {
         patch.browserPanelOpen = true;
         patch.projectTreeCollapsed = true;
       } else {
         patch.browserPanelOpen = false;
         patch.projectTreeCollapsed = true;
-        patch.rightPanelFullscreen = null;
       }
 
       return patch;
@@ -1939,12 +1942,7 @@ export const useAppStore = create<Store>()(
         projectPanelView: 'files',
         projectTreeCollapsed: false,
         browserPanelOpen: false,
-        rightPanelFullscreen:
-          (state.rightPanelFullscreen === 'browser' || state.rightPanelFullscreen === 'images')
-            ? null
-            : state.rightPanelFullscreen === 'review'
-              ? 'files'
-              : state.rightPanelFullscreen,
+        rightPanelFullscreen: fullscreenFollowingTab(state.rightPanelFullscreen, opened.activeTab),
         pendingProjectFileOpen: {
           ...request,
           id: projectFileOpenRequestCounter,
@@ -1987,12 +1985,7 @@ export const useAppStore = create<Store>()(
         projectPanelView: 'changes',
         projectTreeCollapsed: false,
         browserPanelOpen: false,
-        rightPanelFullscreen:
-          (state.rightPanelFullscreen === 'browser' || state.rightPanelFullscreen === 'images')
-            ? null
-            : state.rightPanelFullscreen === 'files'
-              ? 'review'
-              : state.rightPanelFullscreen,
+        rightPanelFullscreen: fullscreenFollowingTab(state.rightPanelFullscreen, opened.activeTab),
       };
     });
   },
@@ -2063,7 +2056,6 @@ export const useAppStore = create<Store>()(
         } else {
           patch.projectTreeCollapsed = true;
           patch.browserPanelOpen = false;
-          patch.rightPanelFullscreen = null;
         }
       } else if (!nextActiveTab) {
         patch.projectTreeCollapsed = true;
@@ -2071,16 +2063,12 @@ export const useAppStore = create<Store>()(
         patch.rightPanelFullscreen = null;
         patch.rightUtilityPanelHidden = false;
       }
-      const targetKind = getRightUtilityTabKind(target);
-      if (targetKind === 'images' && state.rightPanelFullscreen === 'images') patch.rightPanelFullscreen = null;
-      if (targetKind === 'browser' && state.rightPanelFullscreen === 'browser') {
-        patch.rightPanelFullscreen = null;
-      }
-      if (targetKind === 'files' && state.rightPanelFullscreen === 'files') {
-        patch.rightPanelFullscreen = null;
-      }
-      if (targetKind === 'review' && state.rightPanelFullscreen === 'review') {
-        patch.rightPanelFullscreen = null;
+      if (nextActiveTab) {
+        // The panel stays fullscreen on the tab that takes over, as long as a
+        // tab that can be fullscreen is left.
+        const next = fullscreenFollowingTab(state.rightPanelFullscreen, nextActiveTab);
+        patch.rightPanelFullscreen =
+          next && nextTabs.some((tab) => getRightUtilityTabKind(tab) === next) ? next : null;
       }
 
       return patch;
@@ -2270,10 +2258,9 @@ export const useAppStore = create<Store>()(
           : state.rightUtilityTabs,
         activeRightUtilityTab: browserPanelOpen ? browserTab : state.activeRightUtilityTab,
         rightUtilityPanelHidden: browserPanelOpen ? false : state.rightUtilityPanelHidden,
-        rightPanelFullscreen:
-          (!browserPanelOpen && state.rightPanelFullscreen === 'browser') || (browserPanelOpen && state.rightPanelFullscreen === 'images')
-            ? null
-            : state.rightPanelFullscreen,
+        rightPanelFullscreen: browserPanelOpen
+          ? fullscreenFollowingTab(state.rightPanelFullscreen, browserTab)
+          : state.rightPanelFullscreen === 'browser' ? null : state.rightPanelFullscreen,
       };
     });
   },

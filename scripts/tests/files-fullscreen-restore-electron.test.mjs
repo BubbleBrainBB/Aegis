@@ -1,6 +1,7 @@
 // Coming back to a session remounts its Files panel with no file open until
 // the saved tabs are restored (a file read away). A fullscreen preview must
-// survive that, while fullscreen with nothing to restore still exits.
+// survive that, and so must a Files tab that starts empty in a fullscreen
+// panel (a new tab opened while fullscreen).
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -120,8 +121,8 @@ try {
   assert.equal(result.restored.toggles, 0, 'restoring the saved file must not exit fullscreen');
   assert.equal(result.restored.fullscreen, true);
   assert.equal(result.restored.text, true, 'the saved file is open again');
-  assert.equal(result.empty.toggles, 1, 'fullscreen with nothing to restore still exits');
-  assert.equal(result.empty.fullscreen, false);
+  assert.equal(result.empty.toggles, 0, 'a Files tab that starts empty keeps the panel fullscreen');
+  assert.equal(result.empty.fullscreen, true);
   console.log('files fullscreen restore Electron regression passed');
 } finally {
   if (server) await server.close();

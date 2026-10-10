@@ -124,7 +124,8 @@ try {
   await writeFile(path.join(dir, 'index.html'), '<html><body style="margin:0;background:var(--bg-primary)"><div id="root"></div><script type="module" src="./probe.tsx"></script></body></html>');
   await writeFile(path.join(dir, 'probe.tsx'), harness);
   await writeFile(path.join(dir, 'main.cjs'), main);
-  server = await createServer({ root, configFile:path.join(root,'vite.config.ts'), plugins:[{name:'sources-canvas-qa',enforce:'pre',transform(source,id){if(id.endsWith('/src/ui/App.tsx'))return source+'\nexport { RightUtilityWorkspace };'}}], cacheDir:path.join(dataDir,'vite-cache'), server:{host:'127.0.0.1',port:0,strictPort:false} });
+  // Own dep cache: sharing node_modules/.vite breaks a running dev server.
+  server = await createServer({ root, configFile:path.join(root,'vite.config.ts'), cacheDir:path.join(dir,'vite-cache'), plugins:[{name:'sources-canvas-qa',enforce:'pre',transform(source,id){if(id.endsWith('/src/ui/App.tsx'))return source+'\nexport { RightUtilityWorkspace };'}}], cacheDir:path.join(dataDir,'vite-cache'), server:{host:'127.0.0.1',port:0,strictPort:false} });
   await server.listen();
   const env={...process.env,QA_DATA_DIR:dataDir,BUBBLE_HOME:path.join(dataDir,'agent-home'),BUBBLE_DESKTOP_PROFILE:'qa',BUBBLE_DESKTOP_USER_DATA:path.join(dataDir,'profile'),QA_URL:new URL(path.relative(root,dir)+'/index.html',server.resolvedUrls.local[0]).href,QA_CAPTURE:path.join(root,'output/session-sources-qa')};
   delete env.ELECTRON_RUN_AS_NODE;

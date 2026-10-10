@@ -1204,6 +1204,8 @@ export function App() {
             if (kind === 'files') return toggleFilesPanelFullscreen;
             if (kind === 'review') return toggleReviewPanelFullscreen;
             if (kind === 'browser') return toggleBrowserPanelFullscreen;
+            // Kinds without a fullscreen view of their own can still leave it.
+            if (rightPanelFullscreen) return () => setRightPanelFullscreen(null);
             return null;
           })()}
         >
