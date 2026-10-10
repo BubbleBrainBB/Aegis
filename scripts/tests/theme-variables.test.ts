@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { contrastRatio, hexToOklch, oklchToHex } from '../../src/ui/theme/color';
+import { contrastRatio, hexToOklch, oklchToHex, shade } from '../../src/ui/theme/color';
 import { THEME_PRESETS } from '../../src/ui/theme/theme-presets';
 import {
   DEFAULT_APPEARANCE,
@@ -108,5 +108,20 @@ for (const text of [`codex-theme-v1:${JSON.stringify(foreign)}`, `codex-theme-v1
 assert.throws(() => importTheme(DEFAULT_APPEARANCE, 'dark', `codex-theme-v1:${JSON.stringify(foreign)}`), /light theme/);
 assert.throws(() => parseTheme('something else'), /aegis-theme-v1/);
 assert.throws(() => parseTheme('aegis-theme-v1:{not json'), /valid JSON/);
+
+// Mixing a near-grey surface toward paper or ink keeps its own hue: white and
+// black report hue 0 (red), which used to tint popovers and panels pink.
+for (const surface of ['#f0f1f5', '#f4f1ea', '#eef3ee']) {
+  const source = hexToOklch(surface);
+  for (const mixed of [shade(surface, '#ffffff', 0.7), shade(surface, '#000000', 0.1)]) {
+    const result = hexToOklch(mixed);
+    if (result.c < 1e-3) continue;
+    // Hex rounding moves a faint hue by up to ~30°; the pink drift was 70°-150°.
+    const drift = Math.abs(((result.h - source.h + 540) % 360) - 180);
+    assert.ok(drift < 45, `${surface} -> ${mixed} keeps its hue (drift ${drift.toFixed(1)}°)`);
+  }
+}
+// A grey surface still takes a colored target's hue.
+assert.ok(hexToOklch(shade('#f5f5f5', '#3b82f6', 0.3)).c > 0.02);
 
 console.log('theme variables: checks passed');

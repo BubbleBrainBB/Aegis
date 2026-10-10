@@ -73,7 +73,8 @@ export function oklchToHex(color: Oklch): string {
 
 /**
  * Moves `hex` toward `target` in OKLCH: lightness by `amount` of the gap,
- * chroma likewise, hue kept from the source unless it is grey.
+ * chroma likewise, hue kept from the source unless it is grey and the
+ * target is not.
  */
 export function shade(hex: string, target: string, amount: number): string {
   const t = Math.min(1, Math.max(0, amount));
@@ -82,7 +83,10 @@ export function shade(hex: string, target: string, amount: number): string {
   return oklchToHex({
     l: from.l + (to.l - from.l) * t,
     c: from.c + (to.c - from.c) * t,
-    h: from.c < 0.02 ? to.h : from.h,
+    // Keep the source's hue. Borrow the target's only when the source is grey
+    // and the target has a color: white and black report hue 0 (red), and
+    // taking that would tint every step toward paper or ink pink.
+    h: from.c < 0.02 && to.c >= 0.02 ? to.h : from.h,
   });
 }
 
