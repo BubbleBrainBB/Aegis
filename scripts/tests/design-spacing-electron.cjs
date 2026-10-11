@@ -1,0 +1,125 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+// N7 spacing handles on an auto layout container; N8 free moves with constraints.
+exports.run = async ({ w, js, repo, sessionId, documentId, screenshotDir }) => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const until = async (fn, label) => {
+    for (let i = 0; i < 120; i++) {
+      if (await fn()) return;
+      await wait(50);
+    }
+    throw Error("Spacing timeout: " + label);
+  };
+  const board = () => repo.read(sessionId, documentId).boards[0];
+  const history = () => repo.history(sessionId, documentId);
+  const frame = async () => {
+    for (const f of w.webContents.mainFrame.framesInSubtree.filter((f) => f.url === "about:srcdoc"))
+      if (await f.executeJavaScript('!!document.querySelector("[data-aegis-node-id=hero]")').catch(() => false)) return f;
+  };
+  const styleOf = (selector) =>
+    frame().then((f) => f.executeJavaScript(`document.querySelector(${JSON.stringify(selector)}).getAttribute("style")||""`));
+  const center = (selector) =>
+    js(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`);
+  const mouse = (type, p, modifiers = []) =>
+    w.webContents.sendInputEvent({ type, button: "left", clickCount: 1, x: Math.round(p.x), y: Math.round(p.y), modifiers });
+  const drag = async (from, delta, modifiers = []) => {
+    w.focus();
+    mouse("mouseMove", from, modifiers);
+    mouse("mouseDown", from, modifiers);
+    for (let i = 1; i <= 8; i++) {
+      mouse("mouseMove", { x: from.x + (delta.x * i) / 8, y: from.y + (delta.y * i) / 8 }, modifiers);
+      await wait(45);
+    }
+    await wait(150);
+    mouse("mouseUp", { x: from.x + delta.x, y: from.y + delta.y }, modifiers);
+  };
+  const select = async (selector) => {
+    await (await frame()).executeJavaScript(`document.querySelector(${JSON.stringify(selector)}).click()`);
+    await until(() => js('!!document.querySelector(".design-selection [data-element-resize]")'), "selected " + selector);
+    await wait(60);
+  };
+  await js('document.querySelector(".design-viewport").focus()');
+
+  // N7: the nav is a flex row; padding bands and a gap handle appear.
+  await select("nav");
+  await until(() => js('document.querySelectorAll(\'[data-spacing^="pad:"]\').length===4'), "padding handles");
+  assert(await js('document.querySelectorAll(\'[data-spacing^="gap:"]\').length>=1'), "gap handle between children");
+  assert(await js('document.querySelectorAll(".design-spacing-band").length>=4'), "padding bands shown");
+  const padBefore = parseFloat(await (await frame()).executeJavaScript('getComputedStyle(document.querySelector("nav")).paddingLeft'));
+  let revision = board().contentRevision;
+  await drag(await center('[data-spacing="pad:left"]'), { x: 24, y: 0 });
+  await until(() => board().contentRevision > revision, "padding saved");
+  const padAfter = parseFloat(/padding-left:\s*([\d.]+)px/.exec(await styleOf("nav"))?.[1] ?? "0");
+  assert(padAfter > padBefore + 10, `padding-left grew: ${padBefore} -> ${padAfter}`);
+  assert(history()[0].summary.startsWith("Changed padding"), history()[0].summary);
+  await select("nav");
+  await until(() => js('!!document.querySelector(\'[data-spacing^="gap:"]\')'), "gap handle again");
+  revision = board().contentRevision;
+  await drag(await center('[data-spacing^="gap:"]'), { x: 16, y: 0 });
+  await until(() => board().contentRevision > revision, "gap saved");
+  assert(/column-gap:\s*\d+px/.test(await styleOf("nav")), "column-gap written");
+  assert(history()[0].summary.startsWith("Changed gap"), history()[0].summary);
+
+  // Inspector v2 controls on the container: direction, border style, effects.
+  const pick = async (selector) => {
+    revision = board().contentRevision;
+    await js(`document.querySelector(${JSON.stringify(selector)}).click()`);
+    await until(() => board().contentRevision > revision, "saved " + selector);
+  };
+  await select("nav");
+  await until(() => js('!!document.querySelector(".design-inspector [aria-label=Direction]")'), "Layout section for a flex container");
+  await pick('.design-inspector [aria-label=Direction] button[aria-label=Column]');
+  await until(async () => /flex-direction:\s*column/.test(await styleOf("nav")), "direction written");
+  await select("nav");
+  await pick('.design-inspector [aria-label="Border style"] button[aria-label=Dashed]');
+  await until(async () => /border-style:\s*dashed/.test(await styleOf("nav")), "border style written");
+  await select("nav");
+  await pick('.design-inspector [aria-label="Add shadow"]');
+  await until(async () => /box-shadow:/.test(await styleOf("nav")), "shadow added");
+  await until(() => js('!!document.querySelector(".design-inspector [aria-label=\'Remove shadow\']")'), "shadow row");
+  fs.writeFileSync(path.join(screenshotDir, "design-inspector.png"), (await w.webContents.capturePage()).toPNG());
+  // Per-dimension sizing: the headline hugs its content.
+  await select("[data-aegis-node-id=hero]");
+  await js('document.querySelector(".design-inspector button[aria-label=\'Width sizing\']").click()');
+  await until(() => js('!!document.querySelector(".iv-menu")'), "sizing menu");
+  assert((await js('document.querySelector(".iv-menu").textContent')).includes("Fit content"), "menu explains each mode");
+  await pick('.iv-menu button:nth-child(1)');
+  await until(async () => /width:\s*\d+px/.test(await styleOf("[data-aegis-node-id=hero]")), "Fixed writes a length");
+  await select("[data-aegis-node-id=hero]");
+  await js('document.querySelector(".design-inspector button[aria-label=\'Width sizing\']").click()');
+  await pick('.iv-menu button:nth-child(2)');
+  await until(async () => /width:\s*fit-content/.test(await styleOf("[data-aegis-node-id=hero]")), "Hug writes fit-content");
+
+  // N8: ⌘-drag pulls the button out of flow, then it moves freely with constraints.
+  await select("main .land");
+  revision = board().contentRevision;
+  await drag(await center(".design-selection"), { x: 30, y: 24 }, ["meta"]);
+  await until(() => board().contentRevision > revision, "absolute saved");
+  let style = await styleOf("main .land");
+  assert(/position:\s*absolute/.test(style), "⌘ drag makes it absolute: " + style);
+  assert(/(left|right):\s*-?\d+px/.test(style) && /(top|bottom):\s*-?\d+px/.test(style), "constraints written: " + style);
+  assert(history()[0].summary.startsWith("Made "), history()[0].summary);
+  // Without a positioned ancestor the board itself is the containing block.
+  const placed = await (await frame()).executeJavaScript('(()=>{const r=document.querySelector("main .land").getBoundingClientRect();return {top:r.top,bottom:r.bottom,h:innerHeight}})()');
+  assert(placed.top >= 0 && placed.top < placed.h, "absolute layer stays on the board: " + JSON.stringify(placed));
+  await select("main .land");
+  await until(() => js('document.querySelector(".design-inspector button[aria-label=Position]")?.textContent==="Absolute"'), "inspector shows Absolute");
+  revision = board().contentRevision;
+  const from = await center(".design-selection");
+  w.focus();
+  mouse("mouseMove", from);
+  mouse("mouseDown", from);
+  for (let i = 1; i <= 6; i++) {
+    mouse("mouseMove", { x: from.x - 6 * i, y: from.y + 4 * i });
+    await wait(45);
+  }
+  await until(() => js('!!document.querySelector(".design-distance")'), "distance labels while moving");
+  fs.writeFileSync(path.join(screenshotDir, "design-absolute.png"), (await w.webContents.capturePage()).toPNG());
+  mouse("mouseUp", { x: from.x - 36, y: from.y + 24 });
+  await until(() => board().contentRevision > revision, "move saved");
+  assert(history()[0].summary.startsWith("Moved "), history()[0].summary);
+  style = await styleOf("main .land");
+  assert(/position:\s*absolute/.test(style));
+  console.log("PASS: inspector direction/border/effects/sizing menu, padding and gap handles, ⌘ drag to absolute, free move with constraints and distances");
+};

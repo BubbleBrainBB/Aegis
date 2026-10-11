@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { stripContentReferences } from '../utils/content-references';
 import { stripLeakedContextTags } from '../utils/leaked-context-tags';
+import { DesignCommentPromptRow } from './design/DesignCommentPromptRow';
 import { ChevronRight, Copy, Check, History, Pencil, RotateCcw, TargetArrow, Workflow } from './icons';
 import { parseGoalInput, supportsGoalUI, isClaudeGoalClearObjective } from '../../shared/session-goal';
 import type { ThreadGoal } from '../../shared/session-goal';
@@ -71,6 +72,17 @@ export function MessageCard({
       // Prompts the workflow engine sent are not the user's words.
       if (message.workflowPrompt === 'event') return <WorkflowEventRow text={message.prompt} />;
       if (message.workflowPrompt === 'task') return <WorkflowTaskRow text={message.prompt} />;
+      // A comment sent from a design thread links back to it on the canvas.
+      if (message.design && sessionId) {
+        return (
+          <DesignCommentPromptRow
+            prompt={message.prompt}
+            design={message.design}
+            sessionId={sessionId}
+            attachments={message.attachments}
+          />
+        );
+      }
       return (
         <UserPromptCard
           prompt={message.prompt}

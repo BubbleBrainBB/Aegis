@@ -103,6 +103,7 @@ export function getRightUtilityTabKind(
   if (target.startsWith('images:')) return 'images';
   if (target.startsWith('goal:')) return 'goal';
   if (target.startsWith('workflow-member:')) return 'workflow-member';
+  if (target.startsWith('design:')) return 'design';
   if (isRightUtilityLauncherTab(target)) return 'launcher';
   if (isRightUtilityFileTab(target)) return 'files';
   if (isRightUtilityBrowserTab(target)) return 'browser';

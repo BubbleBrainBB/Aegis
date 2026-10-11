@@ -199,10 +199,10 @@ export interface SessionStreamingState {
   retry?: Extract<import('../shared/types').StreamMessage, { subtype: 'api_retry' }>;
 }
 
-export type ActiveWorkspace = 'chat' | 'skills' | 'automations' | 'prs';
+export type ActiveWorkspace = 'chat' | 'design' | 'skills' | 'automations' | 'prs';
 export type ChatSidebarView = 'threads' | 'skills';
 export type ProjectPanelView = 'files' | 'changes';
-export type ProjectUtilityPanelKind = 'files' | 'side-chat' | 'browser' | 'review' | 'terminal' | 'subagent' | 'goal' | 'images' | 'sources' | 'workflow-member' | 'launcher';
+export type ProjectUtilityPanelKind = 'files' | 'side-chat' | 'browser' | 'review' | 'terminal' | 'subagent' | 'goal' | 'images' | 'sources' | 'workflow-member' | 'launcher' | 'design';
 export type ProjectUtilityPanelTarget =
   | ProjectUtilityPanelKind
   | `files:${string}`
@@ -222,7 +222,10 @@ export type ProjectUtilityPanelTarget =
   // Codex-style "New tab": the pane's tool launcher as a tab of its own (a
   // fresh id after the colon, so several can be open). Picking a tool in it
   // replaces the tab in place. Never persisted.
-  | `launcher:${string}`;
+  | `launcher:${string}`
+  // A design canvas of this chat (its document id after the colon); plain
+  // `design` is the chat's design library.
+  | `design:${string}`;
 export interface ProjectFileOpenInput {
   cwd: string;
   path: string;
@@ -317,7 +320,7 @@ export type SessionRightPanelSnapshot = {
   tabs: ProjectUtilityPanelTarget[];
   activeTab: ProjectUtilityPanelTarget | null;
   hidden: boolean;
-  fullscreen: 'browser' | 'files' | 'review' | 'images' | null;
+  fullscreen: 'browser' | 'files' | 'review' | 'images' | 'design' | null;
   fileTabsByUtilityTab: Record<string, SessionRightPanelFileState>;
   reviewDiffSelection: ReviewDiffSelection | null;
 };
@@ -326,7 +329,7 @@ export type SessionRightPanelLiveFields = {
   rightUtilityTabs: ProjectUtilityPanelTarget[];
   activeRightUtilityTab: ProjectUtilityPanelTarget | null;
   rightUtilityPanelHidden: boolean;
-  rightPanelFullscreen: 'browser' | 'files' | 'review' | 'images' | null;
+  rightPanelFullscreen: 'browser' | 'files' | 'review' | 'images' | 'design' | null;
   projectTreeCollapsed: boolean;
   projectPanelView: ProjectPanelView;
   browserPanelOpen: boolean;
@@ -468,7 +471,7 @@ export interface AppState {
   terminalDrawerOpen: boolean;
   terminalDrawerHeight: number;
   browserPanelOpen: boolean;
-  rightPanelFullscreen: 'browser' | 'files' | 'review' | 'images' | null;
+  rightPanelFullscreen: 'browser' | 'files' | 'review' | 'images' | 'design' | null;
   sessionsLoaded: boolean;
   // 搜索状态
   sidebarSearchQuery: string;
@@ -643,7 +646,7 @@ export interface AppActions {
   setTerminalDrawerOpen: (open: boolean) => void;
   setTerminalDrawerHeight: (height: number) => void;
   setBrowserPanelOpen: (open: boolean) => void;
-  setRightPanelFullscreen: (target: 'browser' | 'files' | 'review' | 'images' | null) => void;
+  setRightPanelFullscreen: (target: 'browser' | 'files' | 'review' | 'images' | 'design' | null) => void;
   applyUiResumeState: (state: import('../shared/types').UiResumeState | null) => void;
   clearGlobalError: () => void;
   setPendingStart: (pending: boolean) => void;
@@ -718,6 +721,10 @@ export interface ChatInjectionRequest {
   /** Send `text` as the session's next message instead of filling the
    * composer (the user's draft stays as it is). Used by chat widgets. */
   submit?: boolean;
+  /** With submit: what the agent receives instead of `text` (the chat shows `text`). */
+  effectivePrompt?: string;
+  /** With submit: the design comment thread this message was sent from. */
+  design?: import('../shared/types').DesignPromptRef;
   nonce: number;
   source?: string;
 }

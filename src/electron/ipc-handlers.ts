@@ -27,7 +27,8 @@ import { broadcastSessionEvent } from './ipc/session-windows';
 import { getGitPullRequestInfo, parseGitHubRepoFromRemote } from './libs/git-pull-requests';
 import { setupSessionPullRequestsIPC } from './ipc/session-pull-requests';
 import { registerDesignIpc } from './design/ipc';
-import { deleteSessionDesigns, moveSessionDesigns, settleDesignTurn } from './design/service';
+import { deleteSessionDesigns, markDesignCommentSent, moveSessionDesigns, settleDesignTurn } from './design/service';
+import { sanitizeDesignPromptRef } from '../shared/design-comment';
 import { designContextText } from './design/focus';
 import { setDesignAgentNamer } from './design/tools';
 import { initializeToolCallerAttribution } from './libs/tool-caller-attribution';
@@ -9986,6 +9987,8 @@ async function handleSessionContinueImpl(
   // 广播用户 prompt（在运行时检查之前，让用户消息立即显示）
   if (!hideGoalPrompt) {
     const createdAt = Date.now();
+    // A design comment's row links back to its thread on the canvas.
+    const design = sanitizeDesignPromptRef(payload.design);
     broadcast(mainWindow, {
       type: 'stream.user_prompt',
       payload: {
@@ -9994,6 +9997,7 @@ async function handleSessionContinueImpl(
         attachments: outgoingAttachments,
         createdAt,
         ...(workflowPrompt ? { workflowPrompt } : {}),
+        ...(design ? { design } : {}),
       },
     });
 
@@ -10004,7 +10008,10 @@ async function handleSessionContinueImpl(
       attachments: outgoingAttachments,
       createdAt,
       ...(workflowPrompt ? { workflowPrompt } : {}),
+      ...(design ? { design } : {}),
     });
+    // The thread is now in progress from the design's current version.
+    if (design) markDesignCommentSent(sessionId, design, createdAt);
   }
 
   // 检查运行时状态（在会话状态已设为 running 之后，以便前端立即显示 spinning 效果）

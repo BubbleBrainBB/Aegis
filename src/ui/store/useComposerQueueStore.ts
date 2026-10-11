@@ -20,6 +20,8 @@ export interface QueuedComposerMessage {
   references: CodexReferencePayload;
   /** Preserve attachment numbering for a dedicated image edit turn. */
   exclusive?: boolean;
+  /** A design comment: the thread its message links back to. */
+  design?: import('../../shared/types').DesignPromptRef;
   /** An exclusive action keeps its captured session configuration. */
   dispatch?: () => void;
   onRemove?: () => void;

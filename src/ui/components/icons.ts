@@ -151,6 +151,13 @@ import {
   IconUsers,
   IconWorld,
   IconX,
+  IconFrame,
+  IconHandStop,
+  IconLetterT,
+  IconLock,
+  IconLockOpen,
+  IconPointer,
+  IconStack2,
 } from '@tabler/icons-react';
 
 export type IconComponent = ComponentType<
@@ -163,6 +170,13 @@ export type IconComponent = ComponentType<
 export type LucideIcon = IconComponent;
 
 export {
+  IconFrame as Frame,
+  IconHandStop as Hand,
+  IconLetterT as Type,
+  IconLock as Lock,
+  IconLockOpen as Unlock,
+  IconPointer as MousePointer,
+  IconStack2 as Layers,
   IconAlertTriangle as AlertTriangle,
   IconArrowLeft as ArrowLeft,
   IconArrowsRightLeft as ArrowLeftRight,

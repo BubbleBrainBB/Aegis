@@ -2594,6 +2594,8 @@ export const useAppStore = create<Store>()(
       // consumed the first) must MERGE, not silently overwrite the first.
       if (
         pending &&
+        !request.submit &&
+        !pending.submit &&
         mode === 'append' &&
         pending.mode === 'append' &&
         (pending.sessionId ?? null) === (request.sessionId ?? null)
@@ -2614,6 +2616,8 @@ export const useAppStore = create<Store>()(
           attachments: request.attachments,
           mode,
           ...(request.submit ? { submit: true } : {}),
+          ...(request.submit && request.effectivePrompt ? { effectivePrompt: request.effectivePrompt } : {}),
+          ...(request.submit && request.design ? { design: request.design } : {}),
           source: request.source,
           nonce: Date.now(),
         },
@@ -3532,10 +3536,10 @@ function handleSessionDeleted(
 
 // 处理用户 prompt
 function handleUserPrompt(
-  payload: { sessionId: string; prompt: string; attachments?: Attachment[]; createdAt?: number; workflowPrompt?: WorkflowPromptKind },
+  payload: { sessionId: string; prompt: string; attachments?: Attachment[]; createdAt?: number; workflowPrompt?: WorkflowPromptKind; design?: import('../../shared/types').DesignPromptRef },
   set: SetState
 ) {
-  const { sessionId, prompt, attachments, createdAt, workflowPrompt } = payload;
+  const { sessionId, prompt, attachments, createdAt, workflowPrompt, design } = payload;
 
   set((state) => {
     const session = state.sessions[sessionId];
@@ -3547,6 +3551,7 @@ function handleUserPrompt(
       attachments,
       createdAt: typeof createdAt === 'number' ? createdAt : Date.now(),
       ...(workflowPrompt ? { workflowPrompt } : {}),
+      ...(design ? { design } : {}),
     };
 
     return {

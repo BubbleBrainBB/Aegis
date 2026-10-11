@@ -1,3 +1,4 @@
+import type { DesignPromptRef } from '../../shared/types';
 import { useImageStudioAttachments } from '../hooks/useImageStudioAttachments';
 import { useImageStudioStore, EMPTY_IMAGE_STUDIO } from '../store/useImageStudioStore';
 import { resolveImageStudioReferences } from '../lib/image-studio';
@@ -35,6 +36,8 @@ import { useShallow } from 'zustand/react/shallow';
 import { sendEvent } from '../hooks/useIPC';
 import type { Attachment } from '../types';
 import { AttachmentChips } from './AttachmentChips';
+import { DesignSelectionChip } from './design/DesignSelectionChip';
+import { useDesignStore } from '../store/useDesignStore';
 import { useAttachmentImport } from '../hooks/useAttachmentImport';
 import { ClaudeSkillMenu } from './ClaudeSkillMenu';
 import { ProjectFileMentionMenu } from './ProjectFileMentionMenu';
@@ -106,6 +109,13 @@ function isImeComposingEvent(
   );
 }
 
+/** What a submitted injection carries beyond its visible text. */
+interface InjectedPromptExtras {
+  effectivePrompt?: string;
+  attachments?: Attachment[];
+  design?: DesignPromptRef;
+}
+
 export function PromptInput({
   sessionId,
   approvalPending = false,
@@ -174,10 +184,12 @@ export function PromptInput({
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [cursorIndex, setCursorIndex] = useState(0);
   const editorRef = useRef<ComposerPromptEditorHandle | null>(null);
-  const submitInjectedPromptRef = useRef<(text: string) => void>(() => {});
+  const submitInjectedPromptRef = useRef<(text: string, extras?: InjectedPromptExtras) => void>(() => {});
   const isComposingRef = useRef(false);
   const targetSessionId = sessionId ?? activeSessionId;
   const imageStudio = useImageStudioStore(state => targetSessionId ? state.sessions[targetSessionId] || EMPTY_IMAGE_STUDIO : EMPTY_IMAGE_STUDIO);
+  // What is selected on this chat's open design canvas; the next message is about it.
+  const designSelection = useDesignStore(state => targetSessionId ? state.selections[targetSessionId] : undefined);
   const imageAttachmentsLoading = useImageStudioAttachments(targetSessionId, imageStudio.selected, setAttachments);
   const goalTargetRef = useRef(targetSessionId);
   goalTargetRef.current = targetSessionId;
@@ -690,7 +702,13 @@ export function PromptInput({
     }
     const injection = pendingChatInjection;
     if (injection.submit) {
-      if (injection.text?.trim()) submitInjectedPromptRef.current(injection.text);
+      if (injection.text?.trim()) {
+        submitInjectedPromptRef.current(injection.text, {
+          effectivePrompt: injection.effectivePrompt,
+          attachments: injection.attachments,
+          design: injection.design,
+        });
+      }
       consumeChatInjection(injection.nonce);
       return;
     }
@@ -1041,6 +1059,7 @@ export function PromptInput({
       effectivePrompt: string;
       attachments: Attachment[];
       references: CodexReferencePayload;
+      design?: DesignPromptRef;
     }
   ) => {
     sendEvent({
@@ -1049,6 +1068,7 @@ export function PromptInput({
         sessionId,
         prompt: outgoing.displayPrompt,
         effectivePrompt: outgoing.effectivePrompt,
+        ...(outgoing.design ? { design: outgoing.design } : {}),
         attachments: outgoing.attachments.length > 0 ? outgoing.attachments : undefined,
         provider: runtimeProvider,
         model: selectedModel || undefined,
@@ -1144,26 +1164,38 @@ export function PromptInput({
     });
   };
 
-  // A message a chat widget sends (aegis.sendPrompt): the same send path and
+  // A message a chat widget or a design comment sends: the same send path and
   // settings as typing it, queued while the agent works, and the user's draft
   // left alone.
-  submitInjectedPromptRef.current = (text: string) => {
+  submitInjectedPromptRef.current = (text: string, extras?: InjectedPromptExtras) => {
     if (!activeSession || activeSession.isDraft || activeSession.readOnly) return;
     if (agentSelection.modelSetup) {
       toast.error(agentSelection.modelSetup.title);
       openModelSetup();
       return;
     }
-    const outgoing = { displayPrompt: text, effectivePrompt: text, attachments: [] as Attachment[], references: {} };
+    const outgoing = {
+      displayPrompt: text,
+      effectivePrompt: extras?.effectivePrompt || text,
+      attachments: extras?.attachments ?? [],
+      references: {},
+      ...(extras?.design ? { design: extras.design } : {}),
+    };
+    const sessionId = activeSession.id;
     if (isRunning) {
       if (!canQueueWhileRunning) {
         toast.error('The agent is waiting for you. Answer it first, then try again.');
         return;
       }
-      useComposerQueueStore.getState().enqueue(activeSession.id, { id: crypto.randomUUID(), ...outgoing });
+      // A design comment keeps its thread link: it goes as its own turn.
+      useComposerQueueStore.getState().enqueue(sessionId, {
+        id: crypto.randomUUID(),
+        ...outgoing,
+        ...(outgoing.design ? { exclusive: true, dispatch: () => sendContinueEvent(sessionId, outgoing) } : {}),
+      });
       return;
     }
-    sendContinueEvent(activeSession.id, outgoing);
+    sendContinueEvent(sessionId, outgoing);
   };
 
   // Chip action: inject a queued message into the still-running turn.
@@ -1561,6 +1593,15 @@ export function PromptInput({
                     });
                   }
                 }}
+              />
+            </div>
+          )}
+
+          {designSelection && targetSessionId && (
+            <div className="px-5 pt-3.5">
+              <DesignSelectionChip
+                label={designSelection.label}
+                onRemove={() => useDesignStore.getState().requestClearSelection(targetSessionId)}
               />
             </div>
           )}

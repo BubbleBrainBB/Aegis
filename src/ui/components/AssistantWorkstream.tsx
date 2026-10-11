@@ -70,6 +70,8 @@ import { ProviderIcon } from './AgentModelPicker';
 import { WorkflowBoard } from './workflow/WorkflowBoard';
 import { isStartWorkflowToolName } from '../../shared/workflow';
 import { isShowWidgetToolName, widgetFromToolInput } from '../../shared/widget';
+import { designDocumentIdsOf } from '../utils/design-entries';
+import { DesignChatCard } from './design/DesignChatCard';
 import { InlineWidget } from './widget/InlineWidget';
 import { ImageStudioSessionContext } from '../lib/image-studio';
 import { useWidgetDraftStore, type WidgetDraft } from '../store/useWidgetDraftStore';
@@ -140,6 +142,7 @@ export function AssistantWorkstream({
         const groupKey = group.kind === 'compact' ? group.entries[0].id
           : group.kind === 'draft' ? `widget:${group.draft.toolUseId}`
           : group.kind === 'widget' ? `widget:${group.entry.block.id}`
+          : group.kind === 'design' ? 'design-cards'
           : group.entry.id;
         const body = group.kind === 'text' ? (
           <TextSegment key={groupKey} entry={group.entry} />
@@ -147,6 +150,8 @@ export function AssistantWorkstream({
           <TraceWidget key={groupKey} entry={group.entry} />
         ) : group.kind === 'draft' ? (
           <TraceWidget key={groupKey} draft={group.draft} />
+        ) : group.kind === 'design' ? (
+          <TurnDesignCards key={groupKey} documentIds={group.documentIds} />
         ) : group.kind === 'compaction' ? (
           <CompactionActivity key={group.entry.id} entry={group.entry} />
         ) : group.kind === 'thinking' ? (
@@ -191,6 +196,7 @@ type EntryGroup =
   | { kind: 'thinking'; entry: Extract<WorkstreamEntry, { type: 'thinking' }> }
   | { kind: 'widget'; entry: WidgetEntry }
   | { kind: 'draft'; draft: WidgetDraft }
+  | { kind: 'design'; documentIds: string[] }
   | { kind: 'compact'; entries: WorkstreamEntry[] };
 
 /** The session's show_widget calls still being written that no entry has taken over yet. */
@@ -249,6 +255,9 @@ function groupEntries(entries: WorkstreamEntry[]): EntryGroup[] {
     }
   }
   flush();
+  // The designs this turn wrote, after its trace: what the user opens next.
+  const designs = designDocumentIdsOf(entries);
+  if (designs.length) groups.push({ kind: 'design', documentIds: designs });
   return groups;
 }
 
@@ -817,6 +826,18 @@ function WidgetFromEntry({ entry }: { entry: WidgetEntry }) {
  * rendered as the same element either way, so a draft's frame carries over
  * to its call. Collapsed turns draw their widgets outside instead.
  */
+function TurnDesignCards({ documentIds }: { documentIds: string[] }) {
+  const sessionId = useContext(ImageStudioSessionContext);
+  if (!sessionId) return null;
+  return (
+    <>
+      {documentIds.map((documentId) => (
+        <DesignChatCard key={documentId} sessionId={sessionId} documentId={documentId} />
+      ))}
+    </>
+  );
+}
+
 function TraceWidget({ entry, draft }: { entry?: WidgetEntry; draft?: WidgetDraft }) {
   const outside = useContext(WorkflowBoardsOutside);
   const props = draft

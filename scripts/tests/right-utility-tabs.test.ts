@@ -55,6 +55,9 @@ async function main() {
   const launcherB = createLauncherTabId();
   assert.notEqual(launcherA, launcherB, 'several New tabs can be open at once');
   assert.equal(getRightUtilityTabKind(launcherA), 'launcher');
+  // A chat's design library and each of its designs are design tabs.
+  assert.equal(getRightUtilityTabKind('design'), 'design');
+  assert.equal(getRightUtilityTabKind('design:des_1'), 'design');
   const withLaunchers = ['review', launcherA, 'terminal', launcherB] as const;
   const pickedFiles = resolveRightUtilityTabOpen([...withLaunchers], 'files', { newTab: true });
   assert.deepEqual(

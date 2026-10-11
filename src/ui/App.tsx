@@ -1,6 +1,9 @@
 import { EnvironmentPanelProvider } from './components/environment/EnvironmentPanelLayout';
 import { Image as ImageStudioIcon } from './components/icons';
 import { ImageStudioPanel, ImageStudioFileActions } from './components/ImageStudioPanel';
+import { Palette as DesignIcon } from './components/icons';
+import { DesignPanel } from './components/design/DesignPanel';
+import { useDesignStore, subscribeDesignChanges } from './store/useDesignStore';
 import { subscribeAppPreferences } from './store/useAppPreferences';
 import { TextInputDialogHost } from './components/ui/text-input-dialog';
 import { GoalEditorPanel } from './components/SessionGoal';
@@ -734,12 +737,15 @@ export function App() {
         .filter((id): id is string => Boolean(id) && s.sessions[id!]?.status === 'running')
     )
   );
+  useEffect(subscribeDesignChanges, []);
+  const designTitles = useDesignStore((s) => s.titles);
   const rightUtilityTabDescriptors = useMemo<ProjectUtilityTabDescriptor[]>(() => {
     const workspaceLeaf = getPathLeaf(activeSession?.cwd || projectCwd || '');
     return rightUtilityTabs.map((tab) => {
       const kind = getProjectUtilityTabKind(tab);
       if (kind === 'images') return { id: tab, kind, label: tab === `images:${environmentContext.sessionId}` && sourceImageLabel || 'Images' };
       if (kind === 'goal') return { id: tab, kind, label: 'Edit goal' };
+      if (kind === 'design') return { id: tab, kind, label: tab.startsWith('design:') ? designTitles[tab.slice(7)] || 'Design' : 'Designs' };
       if (kind === 'launcher') return { id: tab, kind, label: 'New tab' };
       if (kind === 'workflow-member') {
         const memberSessionId = getWorkflowMemberSessionId(tab);
@@ -797,6 +803,7 @@ export function App() {
     activeSession?.cwd,
     activeSessionId,
     browserSessionStates,
+    designTitles,
     projectCwd,
     rightUtilityTabs,
     environmentContext.sessionId,
@@ -1217,6 +1224,7 @@ export function App() {
               (activeUtilityPanel !== 'launcher' ? activeUtilityPanel : null);
             const kind = rightUtilityTabDescriptors.find((tab) => tab.id === target)?.kind;
             if (kind === 'images') return () => setRightPanelFullscreen(rightPanelFullscreen === 'images' ? null : 'images');
+            if (kind === 'design') return () => setRightPanelFullscreen(rightPanelFullscreen === 'design' ? null : 'design');
             if (kind === 'files') return toggleFilesPanelFullscreen;
             if (kind === 'review') return toggleReviewPanelFullscreen;
             if (kind === 'browser') return toggleBrowserPanelFullscreen;
@@ -1240,6 +1248,7 @@ export function App() {
             onOpenBrowser={() => openRightUtilityTab('browser', { newTab: true, replace: activeLauncherTab })}
             onOpenReview={() => openRightUtilityTab('review', { replace: activeLauncherTab })}
             onOpenTerminal={() => openRightUtilityTab('terminal', { replace: activeLauncherTab })}
+            onOpenDesign={() => openRightUtilityTab('design', { replace: activeLauncherTab })}
             onOpenUrl={(typed) => {
               openRightUtilityTab('browser', { newTab: true, replace: activeLauncherTab });
               const browserTab = useAppStore.getState().activeRightUtilityTab ?? 'browser';
@@ -1282,6 +1291,14 @@ export function App() {
               onSelect={openSources}
             />
           ) : null}
+          {rightUtilityTabs.filter(tab => tab === 'design' || tab.startsWith('design:')).map(tab => (
+            <DesignPanel
+              key={`${activeSessionId}:${tab}`}
+              sessionId={activeSessionId}
+              documentId={tab.startsWith('design:') ? tab.slice(7) : undefined}
+              hidden={activeUtilityPanel !== 'design' || activeRightUtilityTab !== tab}
+            />
+          ))}
           {rightUtilityTabs.filter(tab => tab.startsWith('images:')).map(tab => (
             <ImageStudioPanel key={tab} sessionId={tab.slice(7)} hidden={activeUtilityPanel === null || activeRightUtilityTab !== tab} fullscreen={rightPanelFullscreen === 'images'} />
           ))}
@@ -1475,6 +1492,7 @@ function TabFavicon({ src, fallback: Fallback }: { src: string; fallback: Return
 function getUtilityTabIcon(target: ProjectUtilityPanelKind) {
   if (target === 'sources') return Paperclip;
   if (target === 'images') return ImageStudioIcon;
+  if (target === 'design') return DesignIcon;
   if (target === 'goal') return Target;
   if (target === 'terminal') return SquareTerminal;
   if (target === 'browser' || target === 'launcher') return Globe;
@@ -1852,6 +1870,7 @@ function getPanelLauncherItems({
   onOpenBrowser,
   onOpenReview,
   onOpenTerminal,
+  onOpenDesign,
 }: {
   browserAvailable: boolean;
   onOpenFiles: () => void;
@@ -1859,6 +1878,7 @@ function getPanelLauncherItems({
   onOpenBrowser: () => void;
   onOpenReview: () => void;
   onOpenTerminal: () => void;
+  onOpenDesign: () => void;
 }): PanelLauncherItem[] {
   return [
     {
@@ -1893,6 +1913,12 @@ function getPanelLauncherItems({
       icon: SquareTerminal,
       onSelect: onOpenTerminal,
     },
+    {
+      id: 'design' as const,
+      label: 'Design',
+      icon: DesignIcon,
+      onSelect: onOpenDesign,
+    },
   ];
 }
 
@@ -1908,6 +1934,7 @@ function RightPanelLauncherContent({
   onOpenBrowser,
   onOpenReview,
   onOpenTerminal,
+  onOpenDesign,
   onOpenUrl,
 }: {
   hidden: boolean;
@@ -1917,6 +1944,7 @@ function RightPanelLauncherContent({
   onOpenBrowser: () => void;
   onOpenReview: () => void;
   onOpenTerminal: () => void;
+  onOpenDesign: () => void;
   onOpenUrl: (typed: string) => void;
 }) {
   const items = getPanelLauncherItems({
@@ -1926,6 +1954,7 @@ function RightPanelLauncherContent({
     onOpenBrowser,
     onOpenReview,
     onOpenTerminal,
+    onOpenDesign,
   });
   const [address, setAddress] = useState('');
 

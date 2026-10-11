@@ -1,0 +1,359 @@
+import {
+  forwardRef,
+  memo,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+} from "react";
+import type { DesignAnchor, DesignBoard } from "../../../shared/design-types";
+import type {
+  DesignNodeRect,
+  DesignNodeSnapshot,
+} from "../../../shared/design-diff";
+import { designFrameHtml } from "../../../shared/design-frame";
+import type { LayerLayout } from "./design-spacing";
+import { toLayerCss, type LayerCss } from "./design-css";
+
+export interface BoardInspector {
+  inspect(x: number, y: number, hover?: boolean): void;
+  selectNode(nodeId: string): void;
+  /** Current rendered rects of layers (null when missing or not rendered). */
+  measure(
+    ids: string[],
+  ): Promise<{ rects: Record<string, DesignNodeRect | null>; height: number }>;
+  snapshot(): Promise<DesignNodeSnapshot[]>;
+  /** Visually hide one layer (or none) while an editor covers it. */
+  mask(nodeId: string | null): void;
+  /** Live drag preview: the layer moves inside the frame until dragEnd. */
+  dragStart(nodeId: string): Promise<boolean>;
+  dragOver(x: number, y: number): Promise<DragState | null>;
+  dragEnd(commit: boolean): Promise<void>;
+  /** Live size preview; resetPreview restores the saved inline styles. */
+  previewSize(
+    nodeId: string,
+    size: { width?: string; height?: string },
+  ): Promise<DesignNodeRect | null>;
+  resetPreview(): void;
+  /** Box, auto layout, padding and containing block of one layer. */
+  layout(nodeId: string): Promise<LayerLayout | null>;
+  /** Live style preview (gap, padding, offsets…); resetPreview restores. */
+  previewStyle(nodeId: string, styles: Record<string, string>): Promise<LayerLayout | null>;
+  /** Authored CSS of a layer (the page body without one) and what it inherits. */
+  styles(nodeId?: string): Promise<LayerCss | null>;
+  /** Where a new layer would go for a point (Text and Frame tools); null when locked. */
+  dropTarget(x: number, y: number): Promise<DropTarget | null>;
+  /** Live preview of a new layer at a drop target; resetPreview removes it. */
+  previewInsert(
+    target: Pick<DropTarget, "containerId" | "index">,
+    tag: string,
+    text: string,
+  ): Promise<{ rect: DesignNodeRect; styles: Record<string, string> } | null>;
+  /** Outermost layers fully inside a board-space rect (area comments). */
+  nodesIn(rect: DesignNodeRect): Promise<{ id: string; rect: DesignNodeRect }[]>;
+}
+export interface DropTarget {
+  /** The containing layer, or null for the page body. */
+  containerId: string | null;
+  /** Index among the container's layer children, as insertDesignLayer counts them. */
+  index: number;
+  /** Visible position, for the "n of m" label. */
+  position: number;
+  count: number;
+  direction: "row" | "column" | "grid" | "stack";
+  name: string | null;
+  /** Insertion line in board space: zero width (vertical) or zero height. */
+  line: DesignNodeRect;
+  containerTag: string;
+  nearTag: string | null;
+}
+export interface DragState {
+  containerId: string;
+  index: number;
+  /** Visible position, for the "Position n of m" label. */
+  position: number;
+  count: number;
+  direction: "row" | "column" | "grid" | "stack";
+  name: string;
+  containerRect: DesignNodeRect;
+  rect: DesignNodeRect;
+  moved: boolean;
+}
+const finite = (r: unknown): r is DesignNodeRect =>
+  !!r &&
+  typeof r === "object" &&
+  ["x", "y", "width", "height"].every((k) =>
+    Number.isFinite((r as Record<string, unknown>)[k]),
+  );
+
+function toLayout(l: any): LayerLayout | null {
+  if (!l || !finite(l.rect) || !finite(l.cb)) return null;
+  const num = (v: unknown) => (Number.isFinite(v) ? (v as number) : 0);
+  return {
+    rect: l.rect,
+    display: typeof l.display === "string" ? l.display.slice(0, 40) : "block",
+    direction: ["row", "column", "grid", "stack"].includes(l.direction) ? l.direction : "stack",
+    rowGap: num(l.rowGap),
+    columnGap: num(l.columnGap),
+    padding: [0, 1, 2, 3].map((i) => num(l.padding?.[i])) as LayerLayout["padding"],
+    position: typeof l.position === "string" ? l.position.slice(0, 20) : "static",
+    cb: l.cb,
+    children: (Array.isArray(l.children) ? l.children : [])
+      .filter((c: any) => typeof c?.id === "string" && finite(c.rect))
+      .slice(0, 200),
+    siblings: (Array.isArray(l.siblings) ? l.siblings : []).filter(finite).slice(0, 100),
+  };
+}
+
+// The iframe paints only. The canvas owns all pointer/keyboard/wheel input,
+// including input above board content. Hit testing crosses a nonce-bound bridge.
+export const BoardFrame = memo(
+  forwardRef<
+    BoardInspector,
+    {
+      board: DesignBoard;
+      preview?: boolean;
+      onInspect?: (anchor: DesignAnchor, hover: boolean) => void;
+      onLoad?: () => void;
+    }
+  >(function BoardFrame({ board, preview = false, onInspect, onLoad }, ref) {
+    const frame = useRef<HTMLIFrameElement>(null);
+    const pending = useRef(new Map<string, (data: any) => void>());
+    const token = useMemo(
+      () => crypto.randomUUID(),
+      [board.id, board.contentRevision, preview],
+    );
+    const source = useMemo(
+      () => designFrameHtml(board.html, token, !preview),
+      [board.html, token, preview],
+    );
+    const request = <T,>(type: string, body: object, fallback: T) =>
+      new Promise<any>((resolve) => {
+        const id = crypto.randomUUID();
+        const timer = setTimeout(() => {
+          pending.current.delete(id);
+          resolve(fallback);
+        }, 1500);
+        pending.current.set(id, (data) => {
+          clearTimeout(timer);
+          resolve(data);
+        });
+        frame.current?.contentWindow?.postMessage(
+          { type, nonce: token, request: id, ...body },
+          "*",
+        );
+      });
+    useImperativeHandle(
+      ref,
+      () => ({
+        async dragStart(nodeId) {
+          const r = await request("aegis-design-drag-start", { nodeId }, { ok: false });
+          return r?.ok === true;
+        },
+        async dragOver(x, y) {
+          const r = await request("aegis-design-drag-over", { x, y }, null);
+          if (
+            !r?.ok ||
+            typeof r.containerId !== "string" ||
+            !Number.isInteger(r.index) ||
+            !finite(r.containerRect) ||
+            !finite(r.rect)
+          )
+            return null;
+          return {
+            containerId: r.containerId.slice(0, 200),
+            index: r.index,
+            position: Number.isInteger(r.position) ? r.position : r.index,
+            count: Number.isInteger(r.count) ? r.count : r.index + 1,
+            direction: ["row", "column", "grid", "stack"].includes(r.direction) ? r.direction : "stack",
+            name: typeof r.name === "string" ? r.name.slice(0, 80) : "",
+            containerRect: r.containerRect,
+            rect: r.rect,
+            moved: r.moved === true,
+          };
+        },
+        async dragEnd(commit) {
+          await request("aegis-design-drag-end", { commit }, null);
+        },
+        async previewSize(nodeId, size) {
+          const r = await request("aegis-design-preview-size", { nodeId, ...size }, null);
+          const rect = r?.rects?.[nodeId];
+          return finite(rect) ? rect : null;
+        },
+        async layout(nodeId) {
+          return toLayout((await request("aegis-design-layout", { nodeId }, null))?.layout);
+        },
+        async previewStyle(nodeId, styles) {
+          return toLayout((await request("aegis-design-preview-style", { nodeId, styles }, null))?.layout);
+        },
+        async styles(nodeId) {
+          return toLayerCss((await request("aegis-design-styles", { nodeId }, null))?.css);
+        },
+        async dropTarget(x, y) {
+          const t = (await request("aegis-design-drop-target", { x, y }, null))?.target;
+          if (!t || typeof t !== "object" || !finite(t.line) || !Number.isInteger(t.index)) return null;
+          const tag = (v: unknown) => (typeof v === "string" && /^[a-z][a-z0-9-]*$/.test(v) ? v : null);
+          return {
+            containerId: typeof t.containerId === "string" ? t.containerId.slice(0, 200) : null,
+            index: Math.max(0, t.index),
+            position: Number.isInteger(t.position) ? t.position : t.index + 1,
+            count: Number.isInteger(t.count) ? t.count : t.index + 1,
+            direction: ["row", "column", "grid", "stack"].includes(t.direction) ? t.direction : "stack",
+            name: typeof t.name === "string" ? t.name.slice(0, 80) : null,
+            line: t.line,
+            containerTag: tag(t.containerTag) ?? "div",
+            nearTag: tag(t.nearTag),
+          };
+        },
+        async previewInsert(target, tag, text) {
+          const r = await request("aegis-design-preview-insert", { ...target, tag, text }, null);
+          if (!finite(r?.rect)) return null;
+          const styles = Object.fromEntries(
+            Object.entries((r.styles ?? {}) as Record<string, unknown>).filter(
+              (e): e is [string, string] => typeof e[1] === "string" && e[0].length < 40 && e[1].length < 500,
+            ),
+          );
+          return { rect: r.rect, styles };
+        },
+        async nodesIn(rect) {
+          const r = await request("aegis-design-nodes-in", { rect }, { rects: {} });
+          return Object.entries((r?.rects ?? {}) as Record<string, unknown>)
+            .filter((e): e is [string, DesignNodeRect] => finite(e[1]))
+            .slice(0, 50)
+            .map(([id, rect]) => ({ id: id.slice(0, 200), rect }));
+        },
+        resetPreview() {
+          frame.current?.contentWindow?.postMessage(
+            { type: "aegis-design-preview-reset", nonce: token },
+            "*",
+          );
+        },
+        mask(nodeId) {
+          frame.current?.contentWindow?.postMessage(
+            { type: "aegis-design-mask", nonce: token, nodeId },
+            "*",
+          );
+        },
+        async measure(ids) {
+          const data = await request(
+            "aegis-design-measure",
+            { ids },
+            { rects: {}, height: 0 },
+          );
+          const rects: Record<string, DesignNodeRect | null> = {};
+          for (const id of ids)
+            rects[id] = finite(data?.rects?.[id]) ? data.rects[id] : null;
+          return {
+            rects,
+            height: Number.isFinite(data?.height) ? data.height : 0,
+          };
+        },
+        async snapshot() {
+          const data = await request("aegis-design-snapshot", {}, { nodes: [] });
+          return (Array.isArray(data?.nodes) ? data.nodes : [])
+            .filter(
+              (n: any) =>
+                typeof n?.id === "string" &&
+                finite(n.rect) &&
+                n.styles &&
+                typeof n.styles === "object",
+            )
+            .map(
+              (n: any): DesignNodeSnapshot => ({
+                id: n.id.slice(0, 200),
+                ...(typeof n.parent === "string" ? { parent: n.parent } : {}),
+                ...(typeof n.name === "string" ? { name: n.name.slice(0, 160) } : {}),
+                rect: n.rect,
+                text: typeof n.text === "string" ? n.text.slice(0, 200) : "",
+                styles: Object.fromEntries(
+                  Object.entries(n.styles).filter(
+                    ([k, v]) => k.length < 50 && typeof v === "string" && v.length < 1000,
+                  ),
+                ) as Record<string, string>,
+              }),
+            );
+        },
+        selectNode(nodeId: string) {
+          frame.current?.contentWindow?.postMessage(
+            { type: "aegis-design-select-node", nonce: token, nodeId },
+            "*",
+          );
+        },
+        inspect(x, y, hover = false) {
+          frame.current?.contentWindow?.postMessage(
+            { type: "aegis-design-hit-test", nonce: token, x, y, hover },
+            "*",
+          );
+        },
+      }),
+      [token],
+    );
+    useEffect(() => {
+      const receive = (e: MessageEvent) => {
+        if (
+          e.source !== frame.current?.contentWindow ||
+          e.data?.nonce !== token
+        )
+          return;
+        if (
+          (e.data.type === "aegis-design-rects" ||
+            e.data.type === "aegis-design-snapshot" ||
+            e.data.type === "aegis-design-drag-state" ||
+            e.data.type === "aegis-design-layout" ||
+            e.data.type === "aegis-design-styles" ||
+            e.data.type === "aegis-design-insert") &&
+          typeof e.data.request === "string"
+        ) {
+          pending.current.get(e.data.request)?.(e.data);
+          pending.current.delete(e.data.request);
+          return;
+        }
+        if (e.data.type !== "aegis-design-select") return;
+        const a = e.data.anchor,
+          r = a?.rect;
+        if (
+          !a ||
+          typeof a.text !== "string" ||
+          !r ||
+          ![r.x, r.y, r.width, r.height].every(Number.isFinite)
+        )
+          return;
+        onInspect?.(
+          {
+            text: a.text.slice(0, 180),
+            computedStyles:
+              a.computedStyles && typeof a.computedStyles === "object"
+                ? (Object.fromEntries(
+                    Object.entries(a.computedStyles).filter(
+                      ([k, v]) =>
+                        k.length < 50 &&
+                        typeof v === "string" &&
+                        v.length < 1000,
+                    ),
+                  ) as Record<string, string>)
+                : {},
+            ...(typeof a.nodeId === "string"
+              ? { nodeId: a.nodeId.slice(0, 200) }
+              : {}),
+            rect: { x: r.x, y: r.y, width: r.width, height: r.height },
+          },
+          e.data.hover === true,
+        );
+      };
+      window.addEventListener("message", receive);
+      return () => window.removeEventListener("message", receive);
+    }, [token, onInspect]);
+    return (
+      <iframe
+        ref={frame}
+        title={board.name}
+        srcDoc={source}
+        sandbox="allow-scripts"
+        tabIndex={-1}
+        referrerPolicy="no-referrer"
+        onLoad={onLoad}
+        style={{ width: board.width, height: board.height }}
+      />
+    );
+  }),
+);
