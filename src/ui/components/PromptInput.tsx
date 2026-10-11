@@ -123,6 +123,8 @@ export function PromptInput({
   menuSide = 'top',
   composerSurface = 'chat',
   footer,
+  leadingControls,
+  idlePlaceholder = 'message to agent',
 }: {
   sessionId?: string | null;
   approvalPending?: boolean;
@@ -137,6 +139,10 @@ export function PromptInput({
   /** Content rendered inside the inset tray, above the input (landing only) —
    * e.g. the project / branch context pills. */
   footer?: ReactNode;
+  /** Extra controls after the attach button (the design dock's style and variations). */
+  leadingControls?: ReactNode;
+  /** The empty composer's prompt when nothing else is going on. */
+  idlePlaceholder?: string;
 } = {}) {
   // P2: shallow-picked subscription (the composer must not re-render for
   // unrelated store changes); the session itself is a narrow selector below.
@@ -1640,7 +1646,7 @@ export function PromptInput({
                 ? 'Press Enter to stop...'
                 : pendingStart
                 ? 'Starting session...'
-                : 'message to agent'
+                : idlePlaceholder
             }
             disabled={pendingStart || approvalPending}
             placeholderClassName={isLandingSurface ? 'inset-x-4 top-3 text-[14px] leading-[21px]' : undefined}
@@ -1662,6 +1668,7 @@ export function PromptInput({
               >
                 <Plus className="h-4 w-4" />
               </button>
+              {leadingControls}
               {(sessionGoal.drafting || (sessionGoal.goal && sessionGoal.goal.status !== 'complete')) && <GoalModePill onExit={() => {
                 if (sessionGoal.snapshot?.goal) void sessionGoal.change({ type: 'clear' }).then(() => sessionGoal.setDraft(false)).catch(error => toast.error(String(error)));
                 else sessionGoal.setDraft(false);

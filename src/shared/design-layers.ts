@@ -21,6 +21,8 @@ export interface DesignLayer {
   id: string;
   tag: string;
   name: string;
+  /** The name was given (data-aegis-layer-name), not derived from the tag and text. */
+  named: boolean;
   text: string;
   textEditable: boolean;
   hidden: boolean;
@@ -41,6 +43,7 @@ export const editableLayerStyles = [
   "flex-direction",
   "justify-content",
   "align-items",
+  "align-self",
   "font-family",
   "font-size",
   "font-weight",
@@ -126,6 +129,7 @@ export function readDesignLayers(html: string): DesignLayer[] {
         attr(e, "data-aegis-layer-name") ||
         attr(e, "aria-label") ||
         e.tagName + (text ? " · " + text.slice(0, 42) : ""),
+      named: !!attr(e, "data-aegis-layer-name"),
       text,
       textEditable:
         !e.childNodes.some((n) => "tagName" in n && n.tagName !== "br") &&

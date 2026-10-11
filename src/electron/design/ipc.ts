@@ -1,10 +1,12 @@
 import { dialog } from "electron";
 import { writeFile } from "fs/promises";
+import { isAbsolute } from "path";
 import { randomUUID } from "crypto";
 import { strToU8, zipSync } from "fflate";
 import { ipcMainHandle } from "../util";
 import { getDesignRepository, previewDesign } from "./service";
 import { setDesignComposerPrefs, setDesignFocus } from "./focus";
+import { listDesignStyles } from "./styles";
 import { designFrameHtml } from "./html";
 import { getUserProfile } from "../libs/user-profile";
 import type { DesignAPI, DesignAuthor } from "../../shared/design-types";
@@ -43,6 +45,8 @@ export function registerDesignIpc() {
       ),
     update: async (x) =>
       getDesignRepository().update(x.sessionId, x, undefined, await user()),
+    prompts: (x) =>
+      Promise.resolve(getDesignRepository().boardPrompts(x.sessionId, x.documentId)),
     history: (x) =>
       Promise.resolve(getDesignRepository().history(x.sessionId, x.documentId)),
     restore: async (x) =>
@@ -96,6 +100,12 @@ export function registerDesignIpc() {
       if (typeof x?.sessionId === "string") setDesignFocus(x.sessionId, x);
       return Promise.resolve();
     },
+    styles: (x) =>
+      Promise.resolve(
+        typeof x?.sessionId === "string"
+          ? listDesignStyles(x.sessionId, typeof x.cwd === "string" && isAbsolute(x.cwd) ? x.cwd : undefined)
+          : [],
+      ),
     composer: (x) => {
       if (typeof x?.sessionId === "string") setDesignComposerPrefs(x.sessionId, x);
       return Promise.resolve();

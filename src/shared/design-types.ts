@@ -128,6 +128,18 @@ export interface DesignPreview {
   height: number;
   warnings: string[];
 }
+/** A style guide the user can pick for a design (see src/electron/design/styles.ts). */
+export interface DesignStyleSummary {
+  id: string;
+  name: string;
+  description: string;
+  source: "builtin" | "project";
+  featured: boolean;
+  /** Background, text, accent, line; empty for the project's own guide. */
+  palette: string[];
+  serif: boolean;
+}
+
 export interface DesignAPI {
   list(sessionId: string): Promise<DesignSummary[]>;
   /** Designs across every conversation, newest first. */
@@ -144,6 +156,8 @@ export interface DesignAPI {
     revision?: number;
   }): Promise<DesignDocument>;
   update(input: DesignUpdate & { sessionId: string }): Promise<DesignDocument>;
+  /** Each board's latest agent version and the message that asked for it. */
+  prompts(input: { sessionId: string; documentId: string }): Promise<Record<string, { prompt: string; revision: number; author: DesignAuthor | null }>>;
   history(input: {
     sessionId: string;
     documentId: string;
@@ -215,6 +229,8 @@ export interface DesignAPI {
     /** PNG pixel ratio; defaults to 1. */
     scale?: number;
   }): Promise<{ saved: boolean; path?: string }>;
+  /** Style guides to offer in a conversation: built in, then the project's DESIGN.md. */
+  styles(input: { sessionId: string; cwd?: string | null }): Promise<DesignStyleSummary[]>;
   /** The design composer's picks for a conversation: style guide and variations (1 = none). */
   composer(input: { sessionId: string; styleId?: string; variants?: number }): Promise<void>;
   onChanged(callback: (event: DesignEvent) => void): () => void;

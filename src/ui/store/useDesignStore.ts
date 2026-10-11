@@ -28,8 +28,20 @@ export interface DesignCanvasSelection {
   label: string;
 }
 
+/** What the design composer asks for: a style guide and how many directions. */
+export interface DesignComposerChoice {
+  styleId?: string;
+  styleName?: string;
+  /** 1 = no variations. */
+  variants: number;
+}
+export const DEFAULT_COMPOSER_CHOICE: DesignComposerChoice = { variants: 1 };
+
 export const useDesignStore = create<{
   titles: Record<string, string>;
+  composer: Record<string, DesignComposerChoice | undefined>;
+  /** Set a session's composer choice; the next message carries it to the agent. */
+  setComposerChoice: (sessionId: string, choice: DesignComposerChoice) => void;
   /** Every design, newest first (the Design section's library); null until loaded. */
   library: DesignSummary[] | null;
   refreshLibrary: () => Promise<void>;
@@ -47,6 +59,13 @@ export const useDesignStore = create<{
   consumeFocus: (nonce: number) => void;
 }>((set) => ({
   titles: {},
+  composer: {},
+  setComposerChoice: (sessionId, choice) => {
+    set((s) => ({ composer: { ...s.composer, [sessionId]: choice } }));
+    void window.electron.design
+      ?.composer({ sessionId, styleId: choice.styleId, variants: choice.variants })
+      .catch(() => {});
+  },
   library: null,
   refreshLibrary: async () => {
     const rows = await window.electron.design?.listAll().catch(() => null);
@@ -135,6 +154,8 @@ export function subscribeDesignChanges() {
     if (!promotion || promotion === previous.draftPromotion) return;
     const design = useDesignStore.getState();
     if (design.section?.sessionId === promotion.from) design.setSection({ ...design.section, sessionId: promotion.to });
+    const choice = design.composer[promotion.from];
+    if (choice) useDesignStore.setState((s) => ({ composer: { ...s.composer, [promotion.to]: choice, [promotion.from]: undefined } }));
   });
   const offChanges = window.electron.design?.onChanged((event) => {
     const design = useDesignStore.getState();

@@ -197,19 +197,35 @@ export function ElementDesignTab({
         <p className="design-empty-note">Locked{inheritedLock ? " by its parent" : ""}</p>
       )}
 
-      <Section title="Size">
-        {(["width", "height"] as const).map((axis) => (
-          <Row key={axis} label={axis === "width" ? "Width" : "Height"}>
-            {field(axis, { unit: "px", format: px, live: live?.[axis] })}
-            <Dropdown
-              label={`${axis === "width" ? "Width" : "Height"} sizing`}
-              value={sizing(axis)}
-              options={sizingOptions(axis)}
+      {(parentLayout === "row" || parentLayout === "column") && !absolute && (
+        <Section title="Alignment">
+          <Row label="Align self">
+            <Icons
+              label="Align in parent"
+              value={(computed("align-self") || "auto") as "auto" | "flex-start" | "center" | "flex-end" | "stretch"}
               disabled={!canEdit}
-              onChange={(m) => setSizing(axis, m)}
+              options={
+                parentLayout === "row"
+                  ? [
+                      { value: "flex-start", icon: icon.vStart, title: "Top" },
+                      { value: "center", icon: icon.vCenter, title: "Middle" },
+                      { value: "flex-end", icon: icon.vEnd, title: "Bottom" },
+                      { value: "stretch", icon: icon.sides, title: "Stretch" },
+                    ]
+                  : [
+                      { value: "flex-start", icon: icon.hStart, title: "Left" },
+                      { value: "center", icon: icon.hCenter, title: "Center" },
+                      { value: "flex-end", icon: icon.hEnd, title: "Right" },
+                      { value: "stretch", icon: icon.sides, title: "Stretch" },
+                    ]
+              }
+              onChange={(v) => styles({ "align-self": v })}
             />
           </Row>
-        ))}
+        </Section>
+      )}
+
+      <Section title="Position">
         <Row label="Position">
           <Dropdown
             wide
@@ -247,8 +263,23 @@ export function ElementDesignTab({
         )}
       </Section>
 
+      <Section title="Size">
+        {(["width", "height"] as const).map((axis) => (
+          <Row key={axis} label={axis === "width" ? "Width" : "Height"}>
+            {field(axis, { unit: "px", format: px, live: live?.[axis] })}
+            <Dropdown
+              label={`${axis === "width" ? "Width" : "Height"} sizing`}
+              value={sizing(axis)}
+              options={sizingOptions(axis)}
+              disabled={!canEdit}
+              onChange={(m) => setSizing(axis, m)}
+            />
+          </Row>
+        ))}
+      </Section>
+
       {autoLayout && (
-        <Section title="Layout">
+        <Section title={display.includes("grid") ? "Grid layout" : "Flex layout"}>
           <Row label="Layout">
             <Dropdown
               wide

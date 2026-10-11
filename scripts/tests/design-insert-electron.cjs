@@ -93,7 +93,7 @@ exports.run = async ({ w, js, repo, sessionId, documentId, screenshotDir }) => {
   const style = /data-aegis-layer-name="Frame" style="([^"]+)"/.exec(home().html)[1];
   assert(/display: flex; flex-direction: column; gap: 12px; padding: 16px; width: 1[34]\dpx; height: [89]\dpx/.test(style), style);
   await until(() => js('document.querySelector(".design-float-name")?.textContent==="Frame"'), "frame selected");
-  await until(() => js('[...document.querySelectorAll(".iv-sec h4")].some(h=>h.textContent==="Layout")'), "the new frame shows its auto layout");
+  await until(() => js('[...document.querySelectorAll(".iv-sec h4")].some(h=>h.textContent==="Flex layout")'), "the new frame shows its auto layout");
   assert(await selectMode(), "back to Select after the frame tool");
   fs.writeFileSync(path.join(screenshotDir, "design-insert.png"), (await w.webContents.capturePage()).toPNG());
 

@@ -30,7 +30,8 @@ import { registerDesignIpc } from './design/ipc';
 import { deleteSessionDesigns, markDesignCommentSent, moveSessionDesigns, settleDesignTurn } from './design/service';
 import { sanitizeDesignPromptRef } from '../shared/design-comment';
 import { designContextText } from './design/focus';
-import { setDesignAgentNamer } from './design/tools';
+import { setDesignProjectRoot } from './design/styles';
+import { setDesignAgentNamer, setDesignPromptSource } from './design/tools';
 import { initializeToolCallerAttribution } from './libs/tool-caller-attribution';
 import { PROVIDER_LABELS } from './feishu/agent-settings';
 import { disposeSessionHttpServer, primeSessionToken, releaseKimiWidgetEntrySync, writeKimiWidgetEntry } from './libs/session-http-server';
@@ -4930,6 +4931,20 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
   initializeToolCallerAttribution({
     getSessionHistory: (sessionId) => sessions.getSessionHistory(sessionId),
     listRunningSessionIds: () => [...runnerHandles.keys()],
+  });
+  // A design's style can be the project's own DESIGN.md.
+  setDesignProjectRoot((sessionId) => {
+    const row = sessions.getSession(sessionId);
+    return row?.project_cwd || row?.cwd || null;
+  });
+  // A design version remembers the message that asked for it.
+  setDesignPromptSource((sessionId) => {
+    const history = sessions.getSessionHistory(sessionId);
+    for (let i = history.length - 1; i >= 0; i -= 1) {
+      const message = history[i];
+      if (message.type === 'user_prompt' && !message.workflowPrompt && message.prompt.trim()) return message.prompt;
+    }
+    return undefined;
   });
   // Design history names the agent that made a version.
   setDesignAgentNamer((sessionId) => {

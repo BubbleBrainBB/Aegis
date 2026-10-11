@@ -45,8 +45,11 @@ app.whenReady().then(async()=>{
  ipcMain.handle('get-agent-runtime-directory',()=>({entries:[],readyCount:1,checkedAt:Date.now()}));
  ipcMain.handle('get-user-profile',()=>({displayName:'Chengsheng',handle:'chengsheng'}));
  const {registerDesignIpc}=require(path.join(root,'dist-electron/electron/design/ipc.js'));
- const {createNativeDesignTools}=require(path.join(root,'dist-electron/electron/design/tools.js'));
+ const {createNativeDesignTools,setDesignPromptSource}=require(path.join(root,'dist-electron/electron/design/tools.js'));
+ const {getDesignComposerPrefs}=require(path.join(root,'dist-electron/electron/design/focus.js'));
  registerDesignIpc();
+ const sent=[];ipcMain.on('client-event',(_e,event)=>sent.push(typeof event==='string'?JSON.parse(event):event));
+ setDesignPromptSource((sessionId)=>sessionId==='s1'?'Design a landing page for Atlas':undefined);
  const call=async(sessionId,name,args)=>{const r=await createNativeDesignTools(sessionId).find(t=>t.name===name).execute(args,{});assert(!r.isError,r.content);return JSON.parse(r.content)};
  const page=(title,bg)=>'<main style="padding:48px;background:'+bg+';font-family:Georgia;min-height:100%"><p style="font:11px system-ui;letter-spacing:2px">NOTES · REIMAGINED</p><h1 style="font-size:56px;font-weight:400;margin:20px 0">'+title+'</h1><p style="font:15px system-ui;color:#555">Write freely. Atlas links what you write to what you already know.</p></main>';
  const atlas=await call('s1','design_create',{title:'Atlas website',operationId:'c1'});
@@ -77,6 +80,35 @@ app.whenReady().then(async()=>{
   assert.equal(await js('document.querySelector("[data-design-dock]").dataset.designDockCorner'),'br');
   await js('[...document.querySelectorAll(".design-toolbar button")].find(b=>b.textContent.trim()==="Fit")?.click()');await delay(300);
   await shot('design-section');
+
+  // Prompt cards: the message behind each board, under it, with Re-run.
+  await until('document.querySelectorAll(".design-prompt-card").length===2','a prompt card under each board');
+  assert.match(await js('document.querySelector(".design-prompt-card").textContent'),/Design a landing page for Atlas[\s\S]*Re-run/);
+  await js('document.querySelector(".design-prompt-card button").click()');
+  for(let i=0;i<60&&!sent.some(e=>e.type==='session.continue');i++)await delay(75);
+  const rerun=sent.find(e=>e.type==='session.continue');
+  assert(rerun&&rerun.payload.sessionId==='s1'&&rerun.payload.prompt==='Design a landing page for Atlas','Re-run sends the message again: '+JSON.stringify(sent.map(e=>e.type)));
+
+  // Styles: pick a style guide for the agent; the main process has it for the next turn.
+  await click('[data-design-style-button]');
+  await until('!!document.querySelector("[data-design-styles] [data-style-id=quiet-slate]")','style picker');
+  await shot('design-styles');
+  await click('[data-design-styles] [data-style-id=quiet-slate]');
+  await js('[...document.querySelectorAll("[data-design-styles] button")].find(b=>b.textContent.trim()==="Use Quiet Slate").click()');
+  await until('!document.querySelector("[data-design-styles]")&&document.querySelector("[data-design-style-button]").textContent.includes("Quiet Slate")','style picked');
+  await click('[data-design-variants]');
+  await until('document.querySelector("[data-design-variants]").textContent.includes("2×")','two variations');
+  for(let i=0;i<40&&getDesignComposerPrefs('s1').variants!==2;i++)await delay(50);
+  assert.deepEqual(getDesignComposerPrefs('s1'),{styleId:'quiet-slate',variants:2},'the next turn carries the picks');
+
+  // Layers panel: Layers, Components and History tabs.
+  await js('document.querySelector(".design-viewport").dispatchEvent(new KeyboardEvent("keydown",{key:"l",code:"KeyL",altKey:true,bubbles:true}))');
+  await until('!!document.querySelector(".design-layers-popover [role=tab][aria-selected=true]")','layers panel');
+  await js('[...document.querySelectorAll(".design-layers-popover [role=tab]")].find(b=>b.textContent==="Components").click()');
+  await until('document.querySelector(".design-layers-popover")?.textContent.includes("show up here as components")','components tab');
+  await js('[...document.querySelectorAll(".design-layers-popover [role=tab]")].find(b=>b.textContent==="History").click()');
+  await until('!!document.querySelector(".design-history")&&!document.querySelector(".design-layers-popover")','history opens from its tab');
+  await click('[aria-label="Close history"]');
 
   // Show chat → the conversation; minimize → a pill; expand back.
   await js('[...document.querySelectorAll("[data-design-dock] button")].find(b=>b.textContent.includes("Show chat")).click()');

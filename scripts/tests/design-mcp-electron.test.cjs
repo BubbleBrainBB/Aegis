@@ -116,6 +116,24 @@ app.whenReady().then(async () => {
     const piGuide = await pi.find((t) => t.name === 'design_guide').execute('call-2', {});
     assert.match(piGuide.content[0].text, /Designing on the Aegis canvas/);
 
+    // The composer's style and variations reach the agent: context and guide.
+    const { setDesignComposerPrefs, designContextText } = require('../../dist-electron/electron/design/focus.js');
+    const { setDesignPromptSource } = require('../../dist-electron/electron/design/tools.js');
+    setDesignComposerPrefs('session-a', { styleId: 'quiet-slate', variants: 3 });
+    const context = designContextText('session-a');
+    assert.match(context, /Style guide: "Quiet Slate"/);
+    assert.match(context, /make 3 distinct directions/);
+    assert.match(designContextText('fresh-draft') || '', /^$/, 'nothing picked, no designs: no context');
+    setDesignComposerPrefs('fresh-draft', { variants: 2 });
+    assert.match(designContextText('fresh-draft'), /make 2 distinct directions/, 'a new design carries its picks before any board');
+    const styled = await call(info.url, a, 'design_guide', { topics: ['color'] });
+    assert.match(styled.result.content[0].text, /Style guide: Quiet Slate[\s\S]*--accent: #4f5bd5/);
+    // Agent versions keep the message that asked for them.
+    setDesignPromptSource((sessionId) => (sessionId === 'session-a' ? 'Make the hero calmer' : undefined));
+    const current = json(await call(info.url, a, 'design_read', { documentId: created.id }));
+    await call(info.url, a, 'design_update', { documentId: created.id, operationId: 'op-3', operations: [{ type: 'content', boardId: current.boards[0].id, expectedRevision: current.boards[0].contentRevision, html: '<main><h1>Calmer</h1></main>' }] });
+    assert.equal(getDesignRepository().boardPrompts('session-a', created.id)[current.boards[0].id].prompt, 'Make the hero calmer');
+
     console.log('PASS design MCP: listed, session-bound writes and previews, isolation, forged headers refused, meta and history attribution, Bubble and Pi tools');
   } catch (error) {
     console.error(error);

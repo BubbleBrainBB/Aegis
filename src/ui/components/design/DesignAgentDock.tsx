@@ -6,6 +6,7 @@ import { useAppStore } from "../../store/useAppStore";
 import { openDesign } from "../../store/useDesignStore";
 import { PROVIDERS } from "../../utils/provider";
 import { useDesignDraftStatus } from "./design-draft-status";
+import { DesignComposerControls } from "./DesignComposerControls";
 import type { CodexModelConfig } from "../../types";
 
 type DockMode = "composer" | "chat" | "pill";
@@ -184,7 +185,11 @@ export function DesignAgentDock({
               </div>
             ) : (
               <div className="design-dock-composer" data-design-dock-composer>
-                <PromptInput sessionId={sessionId} />
+                <PromptInput
+                  sessionId={sessionId}
+                  leadingControls={<DesignComposerControls sessionId={sessionId} />}
+                  idlePlaceholder={documentId ? "Describe a change, or ask for a new board…" : "Design anything…"}
+                />
               </div>
             )}
           </>

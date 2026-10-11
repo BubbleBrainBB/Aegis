@@ -38,6 +38,11 @@ let agentNamer: (sessionId: string) => string | undefined = () => undefined;
 export function setDesignAgentNamer(namer: (sessionId: string) => string | undefined) {
   agentNamer = namer;
 }
+/** The user's latest message in a session; versions keep it for the canvas's prompt cards. */
+let promptSource: (sessionId: string) => string | undefined = () => undefined;
+export function setDesignPromptSource(source: (sessionId: string) => string | undefined) {
+  promptSource = source;
+}
 function agentAuthor(sessionId: string): DesignAuthor {
   return { kind: 'agent', name: agentNamer(sessionId) || 'Agent' };
 }
@@ -142,7 +147,7 @@ const specs: DesignToolSpec[] = [
       },
     }, ['documentId', 'operationId', 'operations']),
     run(sessionId, a, { signal }) {
-      const d = getDesignRepository().update(sessionId, a as DesignUpdate, signal, agentAuthor(sessionId));
+      const d = getDesignRepository().update(sessionId, a as DesignUpdate, signal, agentAuthor(sessionId), promptSource(sessionId));
       return {
         ...d,
         boards: d.boards.map(({ html, ...b }) => b),

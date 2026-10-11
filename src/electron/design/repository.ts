@@ -118,6 +118,8 @@ export interface DesignWriteMeta {
   author: DesignAuthor;
   summary?: string;
   commentId?: string;
+  /** The user's message that asked for this version (agent writes). */
+  prompt?: string;
 }
 type CommentRow = {
   id: string;
@@ -189,6 +191,18 @@ export class DesignRepository {
       CREATE TABLE IF NOT EXISTS design_receipts(session_id TEXT NOT NULL, operation_id TEXT NOT NULL, digest TEXT NOT NULL, document_id TEXT NOT NULL, revision INTEGER NOT NULL, PRIMARY KEY(session_id,operation_id));
       CREATE INDEX IF NOT EXISTS design_by_session ON design_documents(session_id);`);
     this.migrate();
+    this.migratePrompts();
+  }
+  /** v2: versions remember the message that asked for them (prompt cards). */
+  private migratePrompts() {
+    if ((this.db.pragma("user_version", { simple: true }) as number) >= 2) return;
+    const columns = new Set(
+      (this.db.prepare("PRAGMA table_info(design_revisions)").all() as { name: string }[]).map((c) => c.name),
+    );
+    this.db.transaction(() => {
+      if (!columns.has("prompt")) this.db.exec("ALTER TABLE design_revisions ADD COLUMN prompt TEXT");
+      this.db.pragma("user_version = 2");
+    })();
   }
   /**
    * v1: comment threads leave revision snapshots, and versions record their
@@ -536,7 +550,7 @@ export class DesignRepository {
       const summary = meta.summary?.trim().slice(0, 160) || null;
       this.db
         .prepare(
-          "INSERT INTO design_revisions(document_id,revision,snapshot,created_at,author,summary,comment_id,board_ids,hidden) VALUES(?,?,?,?,?,?,?,?,0)",
+          "INSERT INTO design_revisions(document_id,revision,snapshot,created_at,author,summary,comment_id,board_ids,hidden,prompt) VALUES(?,?,?,?,?,?,?,?,0,?)",
         )
         .run(
           next.id,
@@ -547,6 +561,7 @@ export class DesignRepository {
           summary,
           meta.commentId ?? null,
           JSON.stringify(before ? changedBoards(before.boards, next.boards) : []),
+          meta.prompt?.trim().slice(0, 2000) || null,
         );
       this.db
         .prepare("INSERT INTO design_receipts VALUES(?,?,?,?,?)")
@@ -607,12 +622,14 @@ export class DesignRepository {
     input: DesignUpdate,
     signal?: AbortSignal,
     author: DesignAuthor = DEFAULT_AGENT_AUTHOR,
+    prompt?: string,
   ) {
     const ops = operations.parse(input.operations);
     const meta: DesignWriteMeta = {
       author,
       summary: z.string().max(500).optional().parse(input.summary),
       commentId: id.optional().parse(input.commentId),
+      prompt,
     };
     return this.mutate(
       sessionId,
@@ -679,6 +696,25 @@ export class DesignRepository {
       },
       signal,
     );
+  }
+  /**
+   * The message behind each board's latest agent version, for the canvas's
+   * prompt cards: boardId → prompt, the version and who made it.
+   */
+  boardPrompts(sessionId: string, documentId: string): Record<string, { prompt: string; revision: number; author: DesignAuthor | null }> {
+    this.owner(sessionId, documentId);
+    const rows = this.db
+      .prepare(
+        "SELECT revision, prompt, author, board_ids FROM design_revisions WHERE document_id=? AND prompt IS NOT NULL AND hidden=0 ORDER BY revision DESC LIMIT 200",
+      )
+      .all(documentId) as { revision: number; prompt: string; author: string | null; board_ids: string | null }[];
+    const out: Record<string, { prompt: string; revision: number; author: DesignAuthor | null }> = {};
+    for (const row of rows) {
+      for (const boardId of row.board_ids ? (JSON.parse(row.board_ids) as string[]) : []) {
+        out[boardId] ??= { prompt: row.prompt, revision: row.revision, author: row.author ? JSON.parse(row.author) : null };
+      }
+    }
+    return out;
   }
   history(sessionId: string, documentId: string): DesignRevisionInfo[] {
     this.owner(sessionId, documentId);

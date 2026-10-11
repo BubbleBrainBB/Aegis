@@ -87,6 +87,10 @@ const type=async(selector,value)=>js('(()=>{const el=document.querySelector('+JS
 const buttonText=async(scope,prefix)=>{await js('(()=>{const b=[...document.querySelectorAll('+JSON.stringify(scope+' button')+')].find(b=>b.textContent.trim().startsWith('+JSON.stringify(prefix)+'));if(!b)throw Error("Missing '+prefix+'");b.click()})()');await delay(180)};
 await until('!!document.querySelector(".design-float-bar")','selection toolbar');
 assert((await js('document.querySelector(".design-float-bar").textContent')).includes('Comment'));
+// Pencil-style element bar: edit text and duplicate, with the size under the selection.
+const barText=await js('document.querySelector(".design-float-bar").textContent');
+assert(barText.includes('Edit text')&&barText.includes('Duplicate'),barText);
+assert.match(await js('document.querySelector(".design-size-badge")?.textContent??""'),/^\d+ × \d+$/);
 // One Comment action: mentioning the agent is on by default and hands the comment to it.
 await buttonText('.design-float-bar','Comment');await until('!!document.querySelector(".design-composer .design-mention")','composer with the agent mention');
 await type('.design-composer textarea','Make this headline more compact');await click('.design-composer .design-primary');

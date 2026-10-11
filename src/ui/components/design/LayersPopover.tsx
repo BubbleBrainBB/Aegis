@@ -8,7 +8,41 @@ import {
   type DesignLayer,
 } from "../../../shared/design-layers";
 
-/** The full layer tree, floating over the canvas (⌥L). */
+/**
+ * Layers named like components ("Card/Plus", "Button/Primary") grouped by
+ * their family, plus any layer name used more than once: the design's
+ * reusable pieces, as a design tool lists them.
+ */
+export function designComponents(boards: DesignBoard[]) {
+  const groups = new Map<string, { name: string; uses: { board: DesignBoard; node: DesignLayer }[] }[]>();
+  const all: { board: DesignBoard; node: DesignLayer }[] = [];
+  const walk = (board: DesignBoard, nodes: DesignLayer[]) => {
+    for (const node of nodes) {
+      all.push({ board, node });
+      walk(board, node.children);
+    }
+  };
+  for (const board of boards) walk(board, readDesignLayers(board.html));
+  const byName = new Map<string, { board: DesignBoard; node: DesignLayer }[]>();
+  for (const use of all) {
+    if (!use.node.named) continue;
+    const name = use.node.name.split(" · ")[0];
+    byName.set(name, [...(byName.get(name) ?? []), use]);
+  }
+  for (const [name, uses] of byName) {
+    const slash = name.indexOf("/");
+    if (slash <= 0 && uses.length < 2) continue;
+    const family = slash > 0 ? name.slice(0, slash).trim() : name;
+    const variants = groups.get(family) ?? [];
+    variants.push({ name: slash > 0 ? name.slice(slash + 1).trim() || name : name, uses });
+    groups.set(family, variants);
+  }
+  return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
+}
+
+type LayersTab = "layers" | "components";
+
+/** The full layer tree, floating over the canvas (⌥L), and the design's components. */
 export function LayersPopover({
   boards,
   selectedBoardId,
@@ -18,6 +52,7 @@ export function LayersPopover({
   onSelect,
   onChange,
   onClose,
+  onOpenHistory,
 }: {
   boards: DesignBoard[];
   selectedBoardId?: string;
@@ -27,7 +62,11 @@ export function LayersPopover({
   onSelect(board: DesignBoard, node: DesignLayer): void;
   onChange(board: DesignBoard, html: string): Promise<unknown>;
   onClose(): void;
+  /** History lives in its own column; its tab opens it. */
+  onOpenHistory?(): void;
 }) {
+  const [tab, setTab] = useState<LayersTab>("layers");
+  const components = useMemo(() => (tab === "components" ? designComponents(boards) : []), [boards, tab]);
   const trees = useMemo(
     () => new Map(boards.map((b) => [b.id, readDesignLayers(b.html)])),
     [boards],
@@ -149,15 +188,49 @@ export function LayersPopover({
       }}
     >
       <header>
-        <strong>Layers</strong>
-        <span>
-          {boards.length} board{boards.length === 1 ? "" : "s"}
-        </span>
-        <kbd>⌥L</kbd>
-        <button className="design-icon-button" aria-label="Close layers" onClick={onClose}>
+        <div className="design-layers-tabs" role="tablist" aria-label="Layers panel">
+          {(["layers", "components"] as const).map((t) => (
+            <button key={t} role="tab" aria-selected={tab === t} onClick={() => setTab(t)}>
+              {t === "layers" ? "Layers" : "Components"}
+            </button>
+          ))}
+          {onOpenHistory && (
+            <button role="tab" aria-selected={false} onClick={onOpenHistory}>
+              History
+            </button>
+          )}
+        </div>
+        <span />
+        <button className="design-icon-button" aria-label="Close layers" title="Close (⌥L)" onClick={onClose}>
           <X size={12} />
         </button>
       </header>
+      {tab === "components" ? (
+        <div className="design-layer-tree" aria-label="Design components">
+          {components.length === 0 && (
+            <p className="design-empty-note">
+              Name layers like “Card/Plus” or reuse a layer name, and they show up here as components.
+            </p>
+          )}
+          {components.map(([family, variants]) => (
+            <section key={family} className="design-component-family">
+              <h4>{family}</h4>
+              {variants.map((v) => (
+                <button
+                  key={v.name}
+                  className="design-layer-row design-component-row"
+                  title={`${v.uses.length} use${v.uses.length === 1 ? "" : "s"}`}
+                  onClick={() => onSelect(v.uses[0].board, v.uses[0].node)}
+                >
+                  <span className="design-component-mark" aria-hidden="true" />
+                  <span className="design-component-name">{v.name}</span>
+                  <span className="design-component-count">{v.uses.length}×</span>
+                </button>
+              ))}
+            </section>
+          ))}
+        </div>
+      ) : (
       <div className="design-layer-tree" role="tree" aria-label="Design layers">
         {boards.map((b) => (
           <div key={b.id} role="none">
@@ -185,6 +258,7 @@ export function LayersPopover({
           </div>
         ))}
       </div>
+      )}
       {error && (
         <div className="design-error" role="alert">
           {error}

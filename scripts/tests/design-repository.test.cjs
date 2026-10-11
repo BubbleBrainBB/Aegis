@@ -357,6 +357,24 @@ try {
   assert(clean.includes("data-aegis-node-id"));
   assert(designFrameHtml(clean, "test-nonce").includes("default-src 'none'"));
 
+  // Prompt cards: an agent version keeps the message that asked for it, per board.
+  {
+    const pr = new DesignRepository(join(root, "prompts.db"));
+    const d1 = pr.create("p", "Atlas", "", "pc");
+    const added = pr.update("p", { documentId: d1.id, operationId: "p1", operations: [{ type: "add", name: "Home", html: "<p>a</p>" }, { type: "add", name: "Pricing", html: "<p>b</p>" }] }, undefined, undefined, "Design a calm landing page");
+    const [home, pricing] = added.boards;
+    pr.update("p", { documentId: d1.id, operationId: "p2", operations: [{ type: "content", boardId: pricing.id, expectedRevision: pricing.contentRevision, html: "<p>c</p>" }] }, undefined, undefined, "Make pricing calmer");
+    pr.update("p", { documentId: d1.id, operationId: "p3", operations: [{ type: "placement", boardId: home.id, expectedRevision: home.placementRevision, x: 40 }] }, undefined, { kind: "user", name: "Me" });
+    const cards = pr.boardPrompts("p", d1.id);
+    assert.equal(cards[home.id].prompt, "Design a calm landing page", "a hand edit keeps the board's prompt");
+    assert.equal(cards[pricing.id].prompt, "Make pricing calmer", "the latest asking version wins");
+    assert.throws(() => pr.boardPrompts("other", d1.id), /not found/i);
+    pr.close();
+    const raw = new (require("better-sqlite3"))(join(root, "prompts.db"));
+    assert.equal(raw.pragma("user_version", { simple: true }), 2);
+    raw.close();
+  }
+
   // Session lifecycle: a draft's designs follow it, a delete takes them along.
   {
     const lifeFile = join(root, "life.db");

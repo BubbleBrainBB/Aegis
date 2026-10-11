@@ -60,6 +60,7 @@ import type { Attachment } from "../../types";
 import { DesignUndo, blockedBy, touchedBoards, undoKey } from "./design-undo";
 import { summarizeOperations } from "../../../shared/design-history";
 import { DesignAgentName, useDesignAgentName } from "./design-ui";
+import { DesignStylesDialog } from "./DesignStylesDialog";
 import { PROVIDERS } from "../../utils/provider";
 import "./design.css";
 
@@ -192,6 +193,21 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
     setSelectedIds([]);
   }, [clearRequest, sessionId]);
   const [head, setHead] = useState(0);
+  const [stylesOpen, setStylesOpen] = useState(false);
+  const composerChoice = useDesignStore((s) => (sessionId ? s.composer[sessionId] : undefined));
+  // The message behind each board's latest agent version (prompt cards).
+  const [prompts, setPrompts] = useState<Record<string, { prompt: string; revision: number }>>({});
+  useEffect(() => {
+    if (chrome !== "section" || !sessionId || !doc?.id) return;
+    let alive = true;
+    void window.electron.design
+      .prompts?.({ sessionId, documentId: doc.id })
+      .then((rows) => alive && setPrompts(rows ?? {}))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [chrome, sessionId, doc?.id, doc?.revision]);
   const [compare, setCompare] = useState<{
     boardId: string;
     from: number;
@@ -1003,6 +1019,11 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
         >
           History
         </button>
+        {chrome === "pane" && sessionId && (
+          <button aria-haspopup="dialog" onClick={() => setStylesOpen(true)} title="Choose a style guide for the agent">
+            {composerChoice?.styleName ? `Style · ${composerChoice.styleName}` : "Style"}
+          </button>
+        )}
         <button
           disabled={!doc || busy}
           onClick={() =>
@@ -1355,10 +1376,44 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
                       <Layers size={14} />
                     </button>
                     <span className="design-float-name">{selectionName}</span>
+                    {editableText(selection) && (
+                      <button disabled={!editable} onClick={() => startTextEdit()}>
+                        Edit text
+                      </button>
+                    )}
+                    {selection.anchor.nodeId && !selection.anchor.area && (
+                      <button
+                        disabled={!editable || busy}
+                        onClick={() => {
+                          const board = doc?.boards.find((b) => b.id === selection.boardId);
+                          if (!board || !selection.anchor.nodeId) return;
+                          void changeLayer(
+                            board,
+                            editDesignLayer(board.html, selection.anchor.nodeId, { type: "duplicate" }),
+                            `Duplicated ${selectionName} on ${board.name}`,
+                          ).catch((e) => setFailure(errorText(e)));
+                        }}
+                      >
+                        Duplicate
+                      </button>
+                    )}
                     <button disabled={!editable} onClick={() => startComment()}>
                       Comment <kbd>C</kbd>
                     </button>
                   </div>,
+                );
+              // The selection's size under it, like a design tool's dimension badge.
+              const box = liveRect ?? selection.anchor.rect;
+              if (r && box)
+                nodes.push(
+                  <span
+                    key="selection-size"
+                    className="design-size-badge"
+                    data-canvas-ui
+                    style={{ left: r.x + r.width / 2, top: r.y + r.height + 6 }}
+                  >
+                    {Math.round(box.width)} × {Math.round(box.height)}
+                  </span>,
                 );
             }
             // Board toolbar under a selected board.
@@ -1523,6 +1578,44 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
                 );
               }
             }
+            // Prompt cards: the message behind each board, under it, to run again.
+            if (chrome === "section" && !commentsHidden && !historical && !previewing && !ctx.gesturing && doc) {
+              for (const board of doc.boards) {
+                const asked = prompts[board.id];
+                const r = asked && ctx.toScreen(board.id);
+                if (!asked || !r || r.width < 140) continue;
+                nodes.push(
+                  <div
+                    key={`prompt:${board.id}`}
+                    className="design-prompt-card"
+                    data-canvas-ui
+                    data-prompt-board={board.id}
+                    style={{ left: r.x, top: r.y + r.height + 10, maxWidth: Math.min(r.width, 380) }}
+                    onPointerDown={(e) => e.stopPropagation()}
+                  >
+                    <span className="design-prompt-text" title={asked.prompt}>
+                      “{asked.prompt}”
+                    </span>
+                    <button
+                      disabled={!sessionId || !!session?.readOnly}
+                      title="Send this message again"
+                      onClick={() =>
+                        sessionId &&
+                        useAppStore.getState().requestChatInjection({
+                          sessionId,
+                          text: asked.prompt,
+                          mode: "append",
+                          submit: true,
+                          source: "design-rerun",
+                        })
+                      }
+                    >
+                      Re-run
+                    </button>
+                  </div>,
+                );
+              }
+            }
             return nodes;
           }}
         >
@@ -1563,6 +1656,10 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
               onClose={() => {
                 setLayersOpen(false);
                 canvas.current?.focus();
+              }}
+              onOpenHistory={() => {
+                setLayersOpen(false);
+                setHistoryOpen(true);
               }}
             />
           )}
@@ -1723,6 +1820,22 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
         )}
       </div>
     </section>
+    {stylesOpen && sessionId && (
+      <DesignStylesDialog
+        sessionId={sessionId}
+        cwd={session?.projectCwd ?? session?.cwd}
+        value={composerChoice?.styleId}
+        onClose={() => setStylesOpen(false)}
+        onPick={(style) => {
+          useDesignStore.getState().setComposerChoice(sessionId, {
+            variants: composerChoice?.variants ?? 1,
+            styleId: style?.id,
+            styleName: style?.name,
+          });
+          setStylesOpen(false);
+        }}
+      />
+    )}
     {/* Outside the panel, so the canvas's own control styles stay off it. */}
       {canvasOverlay && (
         <div

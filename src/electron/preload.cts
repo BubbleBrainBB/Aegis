@@ -1050,6 +1050,7 @@ contextBridge.exposeInMainWorld('electron', {
     read: (input?: unknown) => ipcRenderer.invoke('design:read', input),
     update: (input?: unknown) => ipcRenderer.invoke('design:update', input),
     history: (input?: unknown) => ipcRenderer.invoke('design:history', input),
+    prompts: (input?: unknown) => ipcRenderer.invoke('design:prompts', input),
     restore: (input?: unknown) => ipcRenderer.invoke('design:restore', input),
     comment: (input?: unknown) => ipcRenderer.invoke('design:comment', input),
     reply: (input?: unknown) => ipcRenderer.invoke('design:reply', input),
@@ -1057,6 +1058,7 @@ contextBridge.exposeInMainWorld('electron', {
     resolve: (input?: unknown) => ipcRenderer.invoke('design:resolve', input),
     focus: (input?: unknown) => ipcRenderer.invoke('design:focus', input),
     composer: (input?: unknown) => ipcRenderer.invoke('design:composer', input),
+    styles: (input?: unknown) => ipcRenderer.invoke('design:styles', input),
     preview: (input?: unknown) => ipcRenderer.invoke('design:preview', input),
     export: (input?: unknown) => ipcRenderer.invoke('design:export', input),
     onChanged: (callback: (event: unknown) => void) => {
