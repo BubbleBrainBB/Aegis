@@ -121,6 +121,14 @@ for (const surface of ['#f0f1f5', '#f4f1ea', '#eef3ee']) {
     assert.ok(drift < 45, `${surface} -> ${mixed} keeps its hue (drift ${drift.toFixed(1)}°)`);
   }
 }
+// Light popovers follow a tinted theme: close to its sheet, not plain white.
+{
+  const light = tokens('aegis', 'light');
+  const sheet = hexToOklch(light['--bg-primary']);
+  const popover = hexToOklch(light['--popover-bg']);
+  assert.notEqual(light['--popover-bg'], '#ffffff');
+  assert.ok(popover.l >= sheet.l && popover.l - sheet.l < 0.03, 'popover sits just above the sheet');
+}
 // A grey surface still takes a colored target's hue.
 assert.ok(hexToOklch(shade('#f5f5f5', '#3b82f6', 0.3)).c > 0.02);
 

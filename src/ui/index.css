@@ -134,7 +134,7 @@
   --tooltip-fg: #FFFFFF;
   --tooltip-fg-muted: rgba(255, 255, 255, 0.62);
   /* Right-click context menus use a warm off-white, one step below --popover-bg */
-  --context-menu-bg: #F7F7F5;
+  --context-menu-bg: var(--popover-bg);
   --popover-border: rgba(17, 24, 39, 0.08);
   --popover-ring: rgba(255, 255, 255, 0.72);
   --popover-radius: 10px;
@@ -244,7 +244,7 @@
   --tooltip-bg: #F4F4F5;
   --tooltip-fg: #111214;
   --tooltip-fg-muted: rgba(17, 18, 20, 0.6);
-  --context-menu-bg: #1E2025;
+  --context-menu-bg: var(--popover-bg);
   --popover-border: rgba(255, 255, 255, 0.08);
   --popover-ring: rgba(255, 255, 255, 0.04);
   --popover-shadow:
@@ -286,7 +286,7 @@
   box-shadow: var(--popover-shadow-lg);
 }
 
-/* Context-menu variant: warm off-white surface (see --context-menu-bg) */
+/* Context-menu variant (see --context-menu-bg; follows the theme's popover tone) */
 .popover-surface--menu {
   background-color: var(--context-menu-bg);
 }

@@ -74,7 +74,10 @@ export function deriveThemeTokens(recipe: ThemeRecipe, variant: ThemeVariant, ov
   const panel = dark ? towardInk(0.03) : shade(surface, paper, 0.5);
   const raised = towardInk(dark ? 0.07 : 0.045);
   const raisedStrong = towardInk(dark ? 0.1 : 0.07);
-  const popover = dark ? towardInk(0.06) : shade(panel, paper, 0.4);
+  // Light popovers stay in the theme's own tone (a step above the sheet), so
+  // menus and cards read as part of a tinted theme instead of plain white;
+  // the border and shadow carry the elevation.
+  const popover = dark ? towardInk(0.06) : shade(surface, paper, 0.25);
   const bubble = towardInk(dark ? 0.12 : 0.06);
 
   const border = inkAt((dark ? 0.09 : 0.08) + 0.08 * depth);
