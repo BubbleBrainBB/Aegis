@@ -33,7 +33,7 @@ createRoot(document.getElementById('root')).render(<AppearancePreferences><App/>
 `;
 
 const main = String.raw`
-const {app,BrowserWindow,ipcMain}=require('electron');
+const {app,BrowserWindow,ipcMain,nativeTheme}=require('electron');
 const fs=require('node:fs');const path=require('node:path');const assert=require('node:assert/strict');
 app.setPath('userData',path.join(__dirname,'profile'));fs.mkdirSync(app.getPath('userData'),{recursive:true});
 const root=process.env.QA_ROOT;const delay=ms=>new Promise(r=>setTimeout(r,ms));
@@ -163,6 +163,17 @@ app.whenReady().then(async()=>{
   await until('document.querySelectorAll("[data-design-section] .design-board").length===2&&!document.querySelector("[data-board-writing]")&&![...document.querySelectorAll("[data-board-id]")].some(b=>b.dataset.boardId.startsWith("draft:"))','saved board replaces the draft');
   await js('qa.app.setState(s=>({sessions:{...s.sessions,s9:{...s.sessions.s9,status:"idle"}}}))');
   await until('!!document.querySelector("[data-design-row='+created.id+'][aria-current=true]")','listed and current');
+
+  // Dark theme: the canvas, dock and library follow the theme's tokens.
+  nativeTheme.themeSource='dark';
+  await until('document.documentElement.classList.contains("dark")','dark theme');
+  await delay(300);
+  const lum=(sel)=>js('(()=>{const c=getComputedStyle(document.querySelector('+JSON.stringify(sel)+')).backgroundColor.match(/[\\d.]+/g).map(Number);return (0.2126*c[0]+0.7152*c[1]+0.0722*c[2])/255})()');
+  assert((await lum('[data-design-dock]'))<0.3,'the dock is dark');
+  assert((await lum('[data-design-section] .design-viewport'))<0.3,'the canvas is dark');
+  await shot('design-section-dark');
+  nativeTheme.themeSource='light';
+  await until('!document.documentElement.classList.contains("dark")','back to light');
 
   // Open as a chat: Home with the design beside its chat.
   await js('qa.app.getState().setRightPanelFullscreen(null)');
