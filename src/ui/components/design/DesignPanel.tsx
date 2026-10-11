@@ -40,6 +40,9 @@ import {
 import { Eye, EyeOff, Layers, MoreHorizontal } from "../icons";
 import { useAppStore } from "../../store/useAppStore";
 import { useDesignStore } from "../../store/useDesignStore";
+import { selectDesignDrafts, useDesignDraftStore } from "../../store/useDesignDraftStore";
+import { useShallow } from "zustand/react/shallow";
+import { boardsWithDrafts, isDraftBoardId } from "./design-drafts";
 import { useComposerQueueStore } from "../../store/useComposerQueueStore";
 import {
   canSendDesignComment,
@@ -201,8 +204,25 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
   const stepRef = useRef<(direction: "undo" | "redo") => void>(() => {});
   const mounted = useRef(true);
   const readEpoch = useRef(0);
+  // Boards the agent is writing right now, drawn until the real version lands.
+  const drafts = useDesignDraftStore(useShallow((s) => selectDesignDrafts(s, sessionId, doc?.id ?? "")));
+  const writing = !historical && drafts.length > 0;
+  const canvasBoards = useMemo(
+    () => (doc ? (historical ? doc.boards : boardsWithDrafts(doc.boards, drafts)) : []),
+    [doc, drafts, historical],
+  );
+  // A board the agent starts writing comes into view.
+  const seenDraftBoards = useRef(new Set<string>());
+  useEffect(() => {
+    if (hidden) return;
+    const added = canvasBoards.filter((b) => isDraftBoardId(b.id) && !seenDraftBoards.current.has(b.id));
+    for (const b of added) seenDraftBoards.current.add(b.id);
+    const latest = added.at(-1);
+    if (latest) setFocusTarget({ boardId: latest.id, nonce: Date.now() });
+  }, [canvasBoards, hidden]);
+  // Hand edits wait while the agent writes, so neither overwrites the other.
   const editable =
-    !!session && !session.readOnly && !session.isDraft && !historical;
+    !!session && !session.readOnly && !session.isDraft && !historical && !writing;
   const canMention = canSendDesignComment(sessionId);
   const activeBoard = doc?.boards.find((b) => b.id === selected);
   const queue = useComposerQueueStore((s) =>
@@ -1055,7 +1075,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
               ? { open: inspectorOpen, toggle: () => setInspectorOpen(!inspectorOpen) }
               : undefined
           }
-          boards={doc?.boards ?? []}
+          boards={canvasBoards}
           storageKey={"aegis.design.view:" + sessionId + ":" + documentId}
           selectedIds={selectedIds}
           layerTarget={layerTarget}

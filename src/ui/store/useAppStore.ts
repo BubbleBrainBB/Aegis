@@ -83,6 +83,7 @@ import { resolvesStreamRetry } from '../../shared/stream-retry';
 import { applySessionAgentSelection } from '../utils/session-model';
 import { useBrowserStateStore } from './useBrowserStateStore';
 import { useWidgetDraftStore } from './useWidgetDraftStore';
+import { useDesignDraftStore } from './useDesignDraftStore';
 import {
   SIDE_CHAT_PENDING_TAB,
   addRightUtilityTab,
@@ -1088,6 +1089,7 @@ export const useAppStore = create<Store>()(
         } else {
           streamDeltaCoalescer.discardSession(event.payload.sessionId);
           useWidgetDraftStore.getState().clear(event.payload.sessionId);
+          useDesignDraftStore.getState().clear(event.payload.sessionId);
           // Live tool output only makes sense while the run is in flight.
           set((state) => {
             const session = state.sessions[event.payload.sessionId];
@@ -1116,6 +1118,7 @@ export const useAppStore = create<Store>()(
       case 'session.deleted':
         streamDeltaCoalescer.discardSession(event.payload.sessionId);
         useWidgetDraftStore.getState().clear(event.payload.sessionId);
+        useDesignDraftStore.getState().clear(event.payload.sessionId);
         handleSessionDeleted(event.payload.sessionId, set, get);
         break;
 
@@ -1132,6 +1135,11 @@ export const useAppStore = create<Store>()(
         if (event.payload.message.type === 'widget_draft') {
           // A show_widget call still being written: drawn live, never kept.
           useWidgetDraftStore.getState().put(event.payload.sessionId, event.payload.message);
+          break;
+        }
+        if (event.payload.message.type === 'design_draft') {
+          // Boards still being written: drawn on the canvas, never kept.
+          useDesignDraftStore.getState().put(event.payload.sessionId, event.payload.message);
           break;
         }
         if (!streamDeltaCoalescer.push(event.payload)) {

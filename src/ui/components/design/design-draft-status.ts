@@ -1,4 +1,6 @@
 import { useAppStore } from "../../store/useAppStore";
+import { selectDesignDrafts, useDesignDraftStore } from "../../store/useDesignDraftStore";
+import { draftStatus } from "./design-drafts";
 import { designToolDisplay } from "../../utils/design-tool-display";
 import { designToolNameOf } from "../../../shared/design-tools";
 import type { StreamMessage } from "../../../shared/types";
@@ -35,5 +37,7 @@ export function designRunStatus(messages: StreamMessage[]): string | null {
 }
 
 export function useDesignDraftStatus(sessionId: string, running: boolean): string | null {
-  return useAppStore((s) => (running ? designRunStatus(s.sessions[sessionId]?.messages ?? []) : null));
+  const writing = useDesignDraftStore((s) => (running ? draftStatus(selectDesignDrafts(s, sessionId)) : null));
+  const calling = useAppStore((s) => (running ? designRunStatus(s.sessions[sessionId]?.messages ?? []) : null));
+  return writing ?? calling;
 }

@@ -1813,7 +1813,7 @@ function buildLocalAssistantMessage(text: string): StreamMessage {
 }
 
 function shouldPersistProviderMessage(message: StreamMessage): boolean {
-  if (message.type === 'stream_event' || message.type === 'widget_draft') {
+  if (message.type === 'stream_event' || message.type === 'widget_draft' || message.type === 'design_draft') {
     return false;
   }
   // Turn-scope marker for the renderer's active plan card; meaningless in a
@@ -4857,7 +4857,7 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
         sessions.addMessage(sessionId, message);
       }
       // Widget drafts go to the app's windows only (see below).
-      (message.type === 'widget_draft' ? broadcastSessionEvent : broadcast)(mainWindow, {
+      (message.type === 'widget_draft' || message.type === 'design_draft' ? broadcastSessionEvent : broadcast)(mainWindow, {
         type: 'stream.message',
         payload: { sessionId, message },
       });
@@ -10863,7 +10863,7 @@ function startRunner(
           // 广播消息. Widget drafts (a show_widget call's HTML while it is
           // written, several per second) go to the app's windows only: the
           // remote and Feishu mirrors would treat each as a history change.
-          (attributedMessage.type === 'widget_draft' ? broadcastSessionEvent : broadcast)(mainWindow, {
+          (attributedMessage.type === 'widget_draft' || attributedMessage.type === 'design_draft' ? broadcastSessionEvent : broadcast)(mainWindow, {
             type: 'stream.message',
             payload: { sessionId: session.id, message: attributedMessage },
           });

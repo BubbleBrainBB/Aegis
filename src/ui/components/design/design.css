@@ -2420,3 +2420,11 @@ details.design-section > .design-grid {
 .design-canvas-overlay > .design-dock-snap {
   pointer-events: none;
 }
+
+/* A board the agent is writing: a soft accent outline while it streams in. */
+.design-board.is-writing {
+  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.design-board.is-writing .design-board-heading > span {
+  color: var(--accent);
+}

@@ -1194,6 +1194,21 @@ export interface BubbleRewindInput {
   dryRun?: boolean;
 }
 
+/** One board of a design call still being written (see `design_draft`). */
+export interface DesignDraftBoard {
+  /** The operation index in the call. */
+  index: number;
+  /** add: a new board; content: new HTML for an existing one. */
+  op: 'add' | 'content';
+  boardId?: string;
+  name?: string;
+  width?: number;
+  height?: number;
+  html: string;
+  /** The model finished writing this board's HTML. */
+  complete: boolean;
+}
+
 /** Links a chat message to the design comment thread it was sent from. */
 export interface DesignPromptRef {
   kind: 'design-comment';
@@ -1898,6 +1913,10 @@ export type StreamMessage =
   // A show_widget call's HTML while the model is still writing it. Transient:
   // never persisted; the chat draws it until the real tool call arrives.
   | (StreamMessageBase & { type: 'widget_draft'; toolUseId: string; html: string; title?: string })
+  // A design_create / design_update call's boards while the model is still
+  // writing them. Transient like widget drafts: the canvas draws them until
+  // the call's real version lands.
+  | (StreamMessageBase & { type: 'design_draft'; toolUseId: string; documentId?: string; title?: string; boards: DesignDraftBoard[] })
   | (StreamMessageBase & { type: 'mcp_status'; servers: McpServerStatus[] });
 
 // 简化的 Anthropic API 类型

@@ -8,9 +8,10 @@ export const ASSISTANT_STREAM_METHOD = 'aegis.assistant.stream';
 
 const PATCH_MARKER = Symbol.for('aegis.deepseek-sdk-jsonrpc-server.stream-shim');
 const FORWARDED_CHUNKS = new Set(['text-delta', 'reasoning-delta']);
-/** Aegis draws show_widget calls while they are written; other tool calls'
- * arguments (whole files for an edit) stay off the wire. Keyed session:call. */
-const WIDGET_TOOL = /(^|[_./:-])show_widget$/i;
+/** Aegis draws show_widget calls and design boards while they are written;
+ * other tool calls' arguments (whole files for an edit) stay off the wire.
+ * Keyed session:call. */
+const WIDGET_TOOL = /(^|[_./:-])(show_widget|design_create|design_update)$/i;
 const widgetCalls = new Set();
 
 /**

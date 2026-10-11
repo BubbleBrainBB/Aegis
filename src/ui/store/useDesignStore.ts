@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { create } from "zustand";
 import { useAppStore } from "./useAppStore";
+import { useDesignDraftStore } from "./useDesignDraftStore";
 import type { DesignSummary } from "../../shared/design-types";
 
 /** A request from outside the canvas (e.g. chat "View thread") to focus a target. */
@@ -138,7 +139,11 @@ export function subscribeDesignChanges() {
   const offChanges = window.electron.design?.onChanged((event) => {
     const design = useDesignStore.getState();
     design.remember({ id: event.documentId, title: event.title });
-    if (event.scope !== "comments") void design.refreshLibrary();
+    if (event.scope !== "comments") {
+      void design.refreshLibrary();
+      // The saved version replaces the boards drawn while it was written.
+      useDesignDraftStore.getState().settle(event.documentId);
+    }
     const store = useAppStore.getState();
     // The Design section's new design shows the canvas its first message made.
     if (event.created && store.activeWorkspace === "design" && design.section?.sessionId === event.sessionId && !design.section.documentId) {

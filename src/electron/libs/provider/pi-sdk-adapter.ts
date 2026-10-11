@@ -677,7 +677,7 @@ export class PiSdkAdapter implements ProviderAdapter {
     });
   }
 
-  /** pi-ai parses a tool call's arguments as they stream; show_widget is drawn from them. */
+  /** pi-ai parses a tool call's arguments as they stream; widgets and design boards are drawn from them. */
   private trackWidgetDraft(session: ActivePiSession, streamEvent: Record<string, unknown>): void {
     const tracker = (session.widgetDrafts ??= new WidgetDraftTracker((draft) => {
       this.emit({ type: 'message', threadId: session.threadId, message: draft });
@@ -694,7 +694,7 @@ export class PiSdkAdapter implements ProviderAdapter {
       | undefined;
     if (!block || block.type !== 'toolCall') return;
     const args = block.arguments && typeof block.arguments === 'object' ? block.arguments as Record<string, unknown> : {};
-    tracker.replaceFields(getString(block.id), { html: args.html, title: args.title }, getString(block.name));
+    tracker.replaceFields(getString(block.id), args, getString(block.name));
   }
 
   private handleMessageEnd(session: ActivePiSession, message: PiAgentMessage): void {

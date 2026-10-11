@@ -116,6 +116,20 @@ app.whenReady().then(async()=>{
   await call('s9','design_update',{documentId:created.id,operationId:'u9',operations:[{type:'add',name:'Pricing',width:1440,height:900,html:page('Simple, calm pricing','#eef1f6')}]});
   await until('qa.design.getState().section.documentId==='+JSON.stringify(created.id),'section opens the created design');
   await until('document.querySelectorAll("[data-design-section] .design-board").length===1','its canvas');
+  // While the agent writes a board, the canvas draws it and the dock says so.
+  await js('qa.app.setState(s=>({sessions:{...s.sessions,s9:{...s.sessions.s9,status:"running"}}}))');
+  const draftHtml='<main style="padding:48px;background:#f6f2ea;font-family:Georgia"><h1 style="font-size:56px;font-weight:400">What people write in Atlas</h1></main>';
+  const pushDraft=(html,complete)=>js('qa.app.getState().handleServerEvent({type:"stream.message",payload:{sessionId:"s9",message:{type:"design_draft",toolUseId:"call-stories",documentId:'+JSON.stringify(created.id)+',boards:[{index:0,op:"add",name:"Stories",width:1440,height:900,html:'+JSON.stringify(html)+',complete:'+complete+'}]}}})');
+  await pushDraft(draftHtml.slice(0,90),false);
+  await until('document.querySelectorAll("[data-design-section] .design-board").length===2&&!!document.querySelector("[data-board-writing=true]")','draft board on the canvas');
+  await until('document.querySelector("[data-design-dock-status]")?.textContent.includes("Writing Stories")','dock says what is being written');
+  await pushDraft(draftHtml,true);
+  await delay(400);
+  await shot('design-writing');
+  // The real version lands: the draft gives way to the saved board.
+  await call('s9','design_update',{documentId:created.id,operationId:'u10',operations:[{type:'add',name:'Stories',width:1440,height:900,html:draftHtml}]});
+  await until('document.querySelectorAll("[data-design-section] .design-board").length===2&&!document.querySelector("[data-board-writing]")&&![...document.querySelectorAll("[data-board-id]")].some(b=>b.dataset.boardId.startsWith("draft:"))','saved board replaces the draft');
+  await js('qa.app.setState(s=>({sessions:{...s.sessions,s9:{...s.sessions.s9,status:"idle"}}}))');
   await until('!!document.querySelector("[data-design-row='+created.id+'][aria-current=true]")','listed and current');
 
   // Open as a chat: Home with the design beside its chat.

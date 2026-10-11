@@ -1,11 +1,14 @@
-// Live drafts of show_widget calls: providers stream a tool call's arguments
-// while the model writes them, and the chat draws the widget's markup as it
-// arrives (scripts run once the call is complete and accepted). Each adapter
-// feeds its argument deltas to a WidgetDraftTracker, which pulls the HTML out
-// of the partial JSON and emits throttled `widget_draft` messages.
+// Live drafts of show_widget and design_update calls: providers stream a tool
+// call's arguments while the model writes them, and the chat draws the
+// widget's markup, or the canvas the boards, as they arrive (scripts run once
+// the call is complete and accepted). Each adapter feeds its argument deltas
+// to a WidgetDraftTracker, which pulls the HTML out of the partial JSON and
+// emits throttled `widget_draft` / `design_draft` messages.
 
 import { isShowWidgetToolName } from '../../shared/widget';
+import { DESIGN_UPDATE_TOOL, designToolNameOf } from '../../shared/design-tools';
 import type { StreamMessage } from '../types';
+import type { DesignDraftBoard } from '../../shared/types';
 
 const THROTTLE_MS = 120;
 
@@ -48,13 +51,148 @@ export function readPartialJsonString(json: string, field: string): string | und
   return out;
 }
 
-type DraftMessage = Extract<StreamMessage, { type: 'widget_draft' }>;
+/**
+ * JSON that may stop anywhere, parsed as far as it goes: open strings keep
+ * what was written, open objects and arrays keep their finished members, and
+ * a value cut off mid-number or mid-literal is left out. `closed` holds the
+ * objects and arrays whose closing bracket arrived.
+ */
+export function parsePartialJson(text: string): { value: unknown; closed: WeakSet<object> } {
+  const closed = new WeakSet<object>();
+  let at = 0;
+  const ws = () => {
+    while (at < text.length && /\s/.test(text[at])) at += 1;
+  };
+  const string = (): string => {
+    at += 1;
+    let out = '';
+    while (at < text.length) {
+      const char = text[at];
+      if (char === '"') {
+        at += 1;
+        return out;
+      }
+      if (char !== '\\') {
+        out += char;
+        at += 1;
+        continue;
+      }
+      const next = text[at + 1];
+      if (next === undefined) {
+        at = text.length;
+        return out;
+      }
+      at += 2;
+      if (next === 'u') {
+        const hex = text.slice(at, at + 4);
+        if (!/^[0-9a-fA-F]{4}$/.test(hex)) {
+          at = text.length;
+          return out;
+        }
+        out += String.fromCharCode(Number.parseInt(hex, 16));
+        at += 4;
+      } else {
+        out += ({ n: '\n', t: '\t', r: '\r', b: '\b', f: '\f' } as Record<string, string>)[next] ?? next;
+      }
+    }
+    return out;
+  };
+  const value = (): unknown => {
+    ws();
+    const char = text[at];
+    if (char === undefined) return undefined;
+    if (char === '"') return string();
+    if (char === '{') {
+      at += 1;
+      const object: Record<string, unknown> = {};
+      for (;;) {
+        ws();
+        if (at >= text.length) return object;
+        if (text[at] === '}') {
+          at += 1;
+          closed.add(object);
+          return object;
+        }
+        if (text[at] === ',') {
+          at += 1;
+          continue;
+        }
+        if (text[at] !== '"') return object;
+        const key = string();
+        ws();
+        if (text[at] !== ':') return object;
+        at += 1;
+        const member = value();
+        if (member !== undefined) object[key] = member;
+        if (at >= text.length) return object;
+      }
+    }
+    if (char === '[') {
+      at += 1;
+      const array: unknown[] = [];
+      for (;;) {
+        ws();
+        if (at >= text.length) return array;
+        if (text[at] === ']') {
+          at += 1;
+          closed.add(array);
+          return array;
+        }
+        if (text[at] === ',') {
+          at += 1;
+          continue;
+        }
+        const item = value();
+        if (item !== undefined) array.push(item);
+        if (at >= text.length) return array;
+      }
+    }
+    const token = /^[-+0-9.eE]+|^true|^false|^null/.exec(text.slice(at))?.[0];
+    if (!token) {
+      at = text.length;
+      return undefined;
+    }
+    at += token.length;
+    // A number running into the end may still be growing.
+    if (at >= text.length && /^[-+0-9.eE]/.test(token)) return undefined;
+    return token === 'true' ? true : token === 'false' ? false : token === 'null' ? null : Number(token);
+  };
+  return { value: value(), closed };
+}
+
+/** The boards a design_update call is writing, from its partial arguments. */
+export function designDraftFromArgs(args: unknown, closed: WeakSet<object> | null, final: boolean) {
+  const record = args && typeof args === 'object' && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
+  const operations = Array.isArray(record.operations) ? record.operations : [];
+  const boards: DesignDraftBoard[] = [];
+  operations.forEach((raw, index) => {
+    if (!raw || typeof raw !== 'object') return;
+    const op = raw as Record<string, unknown>;
+    if ((op.type !== 'add' && op.type !== 'content') || typeof op.html !== 'string' || !op.html) return;
+    boards.push({
+      index,
+      op: op.type,
+      ...(typeof op.boardId === 'string' ? { boardId: op.boardId } : {}),
+      ...(typeof op.name === 'string' ? { name: op.name } : {}),
+      ...(typeof op.width === 'number' ? { width: op.width } : {}),
+      ...(typeof op.height === 'number' ? { height: op.height } : {}),
+      html: op.html,
+      complete: final || Boolean(closed?.has(op)),
+    });
+  });
+  return {
+    ...(typeof record.documentId === 'string' ? { documentId: record.documentId } : {}),
+    boards,
+  };
+}
+
+type DraftMessage = Extract<StreamMessage, { type: 'widget_draft' | 'design_draft' }>;
 
 interface Draft {
+  kind: 'widget' | 'design';
   json: string;
   /** Pi hands over already-parsed partial arguments instead of JSON text. */
-  html?: string;
-  title?: string;
+  fields?: Record<string, unknown>;
   sent: string;
   timer: ReturnType<typeof setTimeout> | null;
 }
@@ -68,15 +206,16 @@ export class WidgetDraftTracker {
     private readonly throttleMs = THROTTLE_MS
   ) {}
 
-  /** A tool call started; tracked only when it is show_widget. */
+  /** A tool call started; tracked only when it is show_widget or design_update. */
   begin(callId: string, toolName: string | undefined): void {
     if (!callId || this.drafts.has(callId) || this.ignored.has(callId)) return;
     if (!toolName) return;
-    if (!isShowWidgetToolName(toolName)) {
+    const kind = isShowWidgetToolName(toolName) ? 'widget' : designToolNameOf(toolName) === DESIGN_UPDATE_TOOL ? 'design' : null;
+    if (!kind) {
       this.ignored.add(callId);
       return;
     }
-    this.drafts.set(callId, { json: '', sent: '', timer: null });
+    this.drafts.set(callId, { kind, json: '', sent: '', timer: null });
   }
 
   isTracking(callId: string): boolean {
@@ -102,12 +241,11 @@ export class WidgetDraftTracker {
   }
 
   /** Partially parsed arguments (providers that parse as they stream). */
-  replaceFields(callId: string, fields: { html?: unknown; title?: unknown }, toolName?: string): void {
+  replaceFields(callId: string, fields: Record<string, unknown>, toolName?: string): void {
     if (toolName) this.begin(callId, toolName);
     const draft = this.drafts.get(callId);
-    if (!draft) return;
-    if (typeof fields.html === 'string') draft.html = fields.html;
-    if (typeof fields.title === 'string') draft.title = fields.title;
+    if (!draft || !fields || typeof fields !== 'object') return;
+    draft.fields = fields;
     this.schedule(callId, draft);
   }
 
@@ -115,7 +253,7 @@ export class WidgetDraftTracker {
   end(callId: string): void {
     const draft = this.drafts.get(callId);
     if (!draft) return;
-    this.flush(callId, draft);
+    this.flush(callId, draft, true);
     if (draft.timer) clearTimeout(draft.timer);
     this.drafts.delete(callId);
   }
@@ -140,11 +278,23 @@ export class WidgetDraftTracker {
     }, this.throttleMs);
   }
 
-  private flush(callId: string, draft: Draft): void {
-    const html = draft.html ?? readPartialJsonString(draft.json, 'html');
+  private flush(callId: string, draft: Draft, final = false): void {
+    if (draft.kind === 'design') {
+      const parsed = draft.fields ? { value: draft.fields, closed: null } : parsePartialJson(draft.json);
+      const design = designDraftFromArgs(parsed.value, parsed.closed, final);
+      if (!design.boards.length) return;
+      const key = JSON.stringify([design.documentId, design.boards.map((b) => [b.index, b.html.length, b.complete, b.name])]);
+      if (key === draft.sent) return;
+      draft.sent = key;
+      this.emit({ type: 'design_draft', toolUseId: callId, ...design });
+      return;
+    }
+    const fieldHtml = typeof draft.fields?.html === 'string' ? draft.fields.html : undefined;
+    const html = fieldHtml ?? readPartialJsonString(draft.json, 'html');
     if (!html || html === draft.sent) return;
     draft.sent = html;
-    const title = draft.title ?? readPartialJsonString(draft.json, 'title');
+    const fieldTitle = typeof draft.fields?.title === 'string' ? draft.fields.title : undefined;
+    const title = fieldTitle ?? readPartialJsonString(draft.json, 'title');
     this.emit({ type: 'widget_draft', toolUseId: callId, html, ...(title ? { title } : {}) });
   }
 }

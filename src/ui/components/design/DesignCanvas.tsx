@@ -216,6 +216,12 @@ const rectBetween = (a: Point, b: Point): Rect => ({
   height: Math.abs(a.y - b.y),
 });
 
+/** A board the agent is still writing (a draft from design-drafts.ts). */
+const writingBoard = (b: DesignBoard) => {
+  const draft = (b as { draft?: { complete: boolean } }).draft;
+  return !!draft && !draft.complete;
+};
+
 export function DesignCanvas(props: Props) {
   const {
     boards,
@@ -1586,8 +1592,11 @@ export function DesignCanvas(props: Props) {
                 "design-board" +
                 (isSelected ? " is-selected" : "") +
                 // A layer inside is selected: the board is context, not the target.
-                (selection?.boardId === b.id ? " has-layer-selection" : "")
+                (selection?.boardId === b.id ? " has-layer-selection" : "") +
+                // The agent is writing this board right now.
+                (writingBoard(b) ? " is-writing" : "")
               }
+              data-board-writing={writingBoard(b) ? "true" : undefined}
               style={{ left: p.x, top: p.y, width: p.width, height: p.height }}
             >
               <div className="design-board-heading">
@@ -1601,7 +1610,7 @@ export function DesignCanvas(props: Props) {
                   {b.name}
                 </button>
                 <span>
-                  {p.width} × {p.height}
+                  {writingBoard(b) ? "Writing…" : `${p.width} × ${p.height}`}
                 </span>
                 <button
                   data-canvas-ui
