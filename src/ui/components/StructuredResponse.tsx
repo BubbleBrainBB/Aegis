@@ -1,3 +1,6 @@
+import { stripLeakedContextTags } from '../utils/leaked-context-tags';
+import { splitContentReferences } from '../utils/content-references';
+import { InlineWidget } from './widget/InlineWidget';
 import {
   useDeferredValue,
   useEffect,
@@ -232,7 +235,31 @@ export function StructuredResponse({
   className = '',
 }: StructuredResponseProps) {
   const deferredContent = useDeferredValue(content);
-  const renderedContent = streaming ? content : deferredContent;
+  const visibleContent = stripLeakedContextTags(streaming ? content : deferredContent, streaming);
+  // Codex `visualize` references render in place as inline visualizations.
+  const parts = useMemo(() => splitContentReferences(visibleContent), [visibleContent]);
+  if (parts.length !== 1 || parts[0].type !== 'text') {
+    return (
+      <div className={`structured-response ${className}`.trim()}>
+        {parts.map((part, index) =>
+          part.type === 'visualize' ? (
+            <InlineWidget
+              key={part.key}
+              toolUseId={`codex:${part.reference.path}`}
+              title={part.reference.title}
+              codexPath={part.reference.path}
+            />
+          ) : part.text.trim() ? (
+            <StructuredText key={`text-${index}`} content={part.text} streaming={streaming} />
+          ) : null
+        )}
+      </div>
+    );
+  }
+  return <StructuredText content={visibleContent} streaming={streaming} className={className} />;
+}
+
+function StructuredText({ content: renderedContent, streaming = false, className = '' }: StructuredResponseProps) {
   const segments = useMemo(() => parseStructuredSegments(renderedContent), [renderedContent]);
 
   if (segments.length === 0) {

@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { stripContentReferences } from '../utils/content-references';
+import { stripLeakedContextTags } from '../utils/leaked-context-tags';
 import { ChevronRight, Copy, Check, History, Pencil, RotateCcw, TargetArrow, Workflow } from './icons';
 import { parseGoalInput, supportsGoalUI, isClaudeGoalClearObjective } from '../../shared/session-goal';
 import type { ThreadGoal } from '../../shared/session-goal';
@@ -538,7 +540,8 @@ export function AssistantCopyAction({
   const handleCopy = async () => {
     if (!text) return;
     try {
-      await navigator.clipboard.writeText(text);
+      // Copy what the user sees: no hidden references or echoed context tags.
+      await navigator.clipboard.writeText(stripLeakedContextTags(stripContentReferences(text)));
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {

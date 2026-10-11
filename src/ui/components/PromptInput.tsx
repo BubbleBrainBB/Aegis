@@ -174,6 +174,7 @@ export function PromptInput({
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [cursorIndex, setCursorIndex] = useState(0);
   const editorRef = useRef<ComposerPromptEditorHandle | null>(null);
+  const submitInjectedPromptRef = useRef<(text: string) => void>(() => {});
   const isComposingRef = useRef(false);
   const targetSessionId = sessionId ?? activeSessionId;
   const imageStudio = useImageStudioStore(state => targetSessionId ? state.sessions[targetSessionId] || EMPTY_IMAGE_STUDIO : EMPTY_IMAGE_STUDIO);
@@ -688,6 +689,11 @@ export function PromptInput({
       return;
     }
     const injection = pendingChatInjection;
+    if (injection.submit) {
+      if (injection.text?.trim()) submitInjectedPromptRef.current(injection.text);
+      consumeChatInjection(injection.nonce);
+      return;
+    }
     if (injection.text) {
       setPrompt((current) => {
         if (injection.mode === 'replace' || !current.trim()) {
@@ -1136,6 +1142,28 @@ export function PromptInput({
         teamId: null,
       },
     });
+  };
+
+  // A message a chat widget sends (aegis.sendPrompt): the same send path and
+  // settings as typing it, queued while the agent works, and the user's draft
+  // left alone.
+  submitInjectedPromptRef.current = (text: string) => {
+    if (!activeSession || activeSession.isDraft || activeSession.readOnly) return;
+    if (agentSelection.modelSetup) {
+      toast.error(agentSelection.modelSetup.title);
+      openModelSetup();
+      return;
+    }
+    const outgoing = { displayPrompt: text, effectivePrompt: text, attachments: [] as Attachment[], references: {} };
+    if (isRunning) {
+      if (!canQueueWhileRunning) {
+        toast.error('The agent is waiting for you. Answer it first, then try again.');
+        return;
+      }
+      useComposerQueueStore.getState().enqueue(activeSession.id, { id: crypto.randomUUID(), ...outgoing });
+      return;
+    }
+    sendContinueEvent(activeSession.id, outgoing);
   };
 
   // Chip action: inject a queued message into the still-running turn.

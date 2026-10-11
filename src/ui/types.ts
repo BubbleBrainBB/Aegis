@@ -715,6 +715,9 @@ export interface ChatInjectionRequest {
   text?: string;
   attachments?: import('../shared/types').Attachment[];
   mode: 'append' | 'replace';
+  /** Send `text` as the session's next message instead of filling the
+   * composer (the user's draft stays as it is). Used by chat widgets. */
+  submit?: boolean;
   nonce: number;
   source?: string;
 }

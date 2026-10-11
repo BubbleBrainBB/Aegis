@@ -2,6 +2,7 @@ import { CompactionTracker } from './compaction-tracker';
 import { addAgentCost, costFields, emptyCostDetails } from '../agent-cost';
 import { assertBubbleSessionReader, bubbleHostTools } from '../bubble-session-reader';
 import { isProjectFileApproval } from './project-access';
+import { WidgetDraftTracker } from '../widget-draft';
 import { EventEmitter } from 'events';
 import { readFile } from 'fs/promises';
 import { v4 as uuidv4 } from 'uuid';
@@ -75,6 +76,8 @@ type BubbleAssistantAccumulator = {
 };
 
 type ActiveBubbleSession = {
+  /** show_widget calls drawn while their arguments stream. */
+  widgetDrafts?: WidgetDraftTracker;
   threadId: string;
   providerSessionId: string;
   status: ProviderSessionStatus;
@@ -898,8 +901,15 @@ export class BubbleSdkAdapter implements ProviderAdapter {
         });
         return;
       }
+      case 'tool_call_delta': {
+        const toolEvent = event as Extract<BubbleAgentEvent, { type: 'tool_call_delta' }>;
+        session.widgetDrafts ??= new WidgetDraftTracker((draft) => this.emitMessage(session, draft));
+        session.widgetDrafts.replace(toolEvent.id, toolEvent.arguments, toolEvent.name);
+        return;
+      }
       case 'tool_call_end': {
         const toolEvent = event as Extract<BubbleAgentEvent, { type: 'tool_call_end' }>;
+        session.widgetDrafts?.end(toolEvent.id);
         this.handleToolUse(
           session,
           toolEvent.id,
@@ -1198,6 +1208,7 @@ export class BubbleSdkAdapter implements ProviderAdapter {
 
   private finishTurn(session: ActiveBubbleSession, error: Error | null): void {
     this.flushAssistant(session);
+    session.widgetDrafts?.reset();
     // Safety net: commit any subagent lane that never saw its terminal frame
     // (interrupt, transport error) so its buffered narration isn't lost — and
     // release any spawn results still held (their child never reported a

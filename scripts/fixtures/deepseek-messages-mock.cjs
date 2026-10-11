@@ -7,7 +7,8 @@
  * Write one streamed assistant turn: optional thinking, text and tool_use
  * blocks. `thinking` and `text` may be arrays of pieces sent as separate
  * deltas, `pieceDelayMs` spaces them out, and `dropAfterTextPieces` cuts the
- * connection mid-answer to exercise a failed attempt.
+ * connection mid-answer to exercise a failed attempt. A tool call's input is
+ * one delta unless `inputPieces` splits its JSON text.
  */
 async function writeMessagesStream(res, {
   model,
@@ -59,7 +60,13 @@ async function writeMessagesStream(res, {
   }
   for (const call of toolCalls) {
     send('content_block_start', { index, content_block: { type: 'tool_use', id: call.id, name: call.name, input: {} } });
-    send('content_block_delta', { index, delta: { type: 'input_json_delta', partial_json: JSON.stringify(call.input ?? {}) } });
+    const json = JSON.stringify(call.input ?? {});
+    const inputPieces = call.inputPieces ?? 1;
+    const size = Math.ceil(json.length / inputPieces);
+    for (let start = 0; start < json.length; start += size) {
+      send('content_block_delta', { index, delta: { type: 'input_json_delta', partial_json: json.slice(start, start + size) } });
+      if (start + size < json.length) await pause();
+    }
     send('content_block_stop', { index });
     index += 1;
   }

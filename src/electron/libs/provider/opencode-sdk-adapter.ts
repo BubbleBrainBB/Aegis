@@ -1,6 +1,7 @@
 import { CompactionTracker } from './compaction-tracker';
 import { validUsd } from '../agent-cost';
 import { isProjectDirectoryApproval } from './project-access';
+import { WidgetDraftTracker } from '../widget-draft';
 import { EventEmitter } from 'events';
 import { readFile } from 'fs/promises';
 import { v4 as uuidv4 } from 'uuid';
@@ -108,6 +109,8 @@ type OpenCodeFormFieldDescriptor = {
 };
 
 type ActiveOpenCodeSession = {
+  /** show_widget calls drawn while their arguments stream. */
+  widgetDrafts?: WidgetDraftTracker;
   threadId: string;
   providerSessionId: string;
   status: ProviderSessionStatus;
@@ -749,8 +752,16 @@ export class OpenCodeSdkAdapter implements ProviderAdapter {
       case 'session.tool.input.started':
         this.flushStep(session, getString(data.assistantMessageID));
         if (getString(data.id)) session.toolNames.set(getString(data.id), getString(data.name));
+        this.widgetDrafts(session).begin(getString(data.id), getString(data.name));
+        break;
+      case 'session.tool.input.delta':
+        session.widgetDrafts?.append(getString(data.id), getString(data.delta));
+        break;
+      case 'session.tool.input.ended':
+        session.widgetDrafts?.end(getString(data.id));
         break;
       case 'session.tool.called':
+        session.widgetDrafts?.end(getString(data.id));
         this.flushStep(session, getString(data.assistantMessageID));
         this.emitToolUse(session, getString(data.id), getRecord(data.input) || {});
         break;
@@ -931,7 +942,14 @@ export class OpenCodeSdkAdapter implements ProviderAdapter {
     });
   }
 
+  private widgetDrafts(session: ActiveOpenCodeSession): WidgetDraftTracker {
+    return (session.widgetDrafts ??= new WidgetDraftTracker((draft) => {
+      this.emit({ type: 'message', threadId: session.threadId, message: draft });
+    }));
+  }
+
   private finishTurn(session: ActiveOpenCodeSession, errorMessage: string | null): void {
+    session.widgetDrafts?.reset();
     for (const messageId of session.steps.keys()) this.flushStep(session, messageId);
     session.steps.clear();
     const turn = session.turn;

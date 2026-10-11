@@ -3,6 +3,8 @@ import { createClaudeGoalController, releaseClaudeGoalController, rejectClaudeGo
 import { isWithinProjectPath } from './project-paths';
 import { createSessionSdkMcpServer, SESSION_MCP_SERVER_NAME } from './session-mcp';
 import { isStartWorkflowToolName } from '../../shared/workflow';
+import { isShowWidgetToolName, isWidgetGuideToolName } from '../../shared/widget';
+import { WidgetDraftTracker, trackMessagesStreamEvent } from './widget-draft';
 import type {
   McpServerConfig as SDKMcpServerConfig,
   PermissionMode as ClaudeSdkPermissionMode,
@@ -1038,6 +1040,10 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
             if (isStartWorkflowToolName(toolName)) {
               return { behavior: 'allow' as const, updatedInput: input };
             }
+            // A widget only draws in the chat: nothing to approve, plan mode included.
+            if (isShowWidgetToolName(toolName) || isWidgetGuideToolName(toolName)) {
+              return { behavior: 'allow' as const, updatedInput: input };
+            }
 
             if (toolName === 'Bash') {
               const command = input.command as string | undefined;
@@ -1226,6 +1232,10 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
       // Keyed by the stream-event `index`, which matches the array position
       // of the block inside the `assistant` message's content[].
       const thinkingStartByIndex = new Map<number, number>();
+      // show_widget calls drawn while Claude writes them: tool_use block
+      // index → call id, fed with the input_json_delta pieces.
+      const widgetDrafts = new WidgetDraftTracker((draft) => onMessage(draft));
+      const widgetDraftBlocks = new Map<number, string>();
       const thinkingDurationByIndex = new Map<number, number>();
 
       // Turn-boundary git snapshots: chained end-to-end (each turn's "before"
@@ -1239,6 +1249,8 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
           break;
         }
         if (await goalController.receive(message as unknown as Parameters<typeof goalController.receive>[0])) continue;
+
+        trackClaudeWidgetDraft(message as SDKMessage, widgetDrafts, widgetDraftBlocks);
 
         // 转换 SDK 消息为内部格式并发送
         const streamMessage = convertSDKMessage(message as SDKMessage);
@@ -1569,6 +1581,12 @@ function convertSDKMessage(message: SDKMessage): StreamMessage | null {
 // Subagent messages (emitted while a Task tool call runs) carry the parent
 // Task's tool_use id. The UI uses this to nest them under the Task row and to
 // keep subagent deltas out of the top-level streaming buffer.
+/** Feed a top-level stream event's tool-input pieces to the widget drafts. */
+function trackClaudeWidgetDraft(message: SDKMessage, drafts: WidgetDraftTracker, blocks: Map<number, string>): void {
+  if (message.type !== 'stream_event' || getParentToolUseId(message)) return;
+  trackMessagesStreamEvent((message as { event?: Record<string, unknown> }).event, drafts, blocks);
+}
+
 function getParentToolUseId(message: SDKMessage): string | null {
   const raw = (message as { parent_tool_use_id?: unknown }).parent_tool_use_id;
   return typeof raw === 'string' && raw.length > 0 ? raw : null;

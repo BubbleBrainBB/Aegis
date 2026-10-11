@@ -69,6 +69,12 @@ import { getSubagentPersona } from '../utils/subagent-persona';
 import { ProviderIcon } from './AgentModelPicker';
 import { WorkflowBoard } from './workflow/WorkflowBoard';
 import { isStartWorkflowToolName } from '../../shared/workflow';
+import { isShowWidgetToolName, widgetFromToolInput } from '../../shared/widget';
+import { InlineWidget } from './widget/InlineWidget';
+import { ImageStudioSessionContext } from '../lib/image-studio';
+import { useWidgetDraftStore, type WidgetDraft } from '../store/useWidgetDraftStore';
+import { isRejectedWidget, isWidgetEntry, isWorkflowEntry, pinnedTurnEntries, type WidgetEntry } from '../utils/turn-pins';
+import { stripLeakedContextTags } from '../utils/leaked-context-tags';
 import type { AgentProvider } from '../../shared/types';
 import { GeneratedMediaGallery } from './GeneratedMediaGallery';
 import { isMediaGenerationTool, type GeneratedMediaItem } from '../utils/generated-media';
@@ -78,6 +84,8 @@ interface AssistantWorkstreamProps {
   className?: string;
   generatedMedia?: GeneratedMediaItem[];
   mediaCwd?: string | null;
+  /** The running turn's trace: also draws show_widget calls still being written. */
+  live?: boolean;
 }
 
 const MAX_TRACE_TEXT_CHARS = 20_000;
@@ -88,10 +96,18 @@ export function AssistantWorkstream({
   className = '',
   generatedMedia,
   mediaCwd,
+  live = false,
 }: AssistantWorkstreamProps) {
   // Hooks must run in the same order every render — keep useMemo above any
   // conditional early return.
-  const groups = useMemo(() => groupEntries(model.entries), [model.entries]);
+  const drafts = useLiveWidgetDrafts(live, model.entries);
+  const entryGroups = useMemo(() => groupEntries(model.entries), [model.entries]);
+  // A draft sits where its call will land (the end of the trace), under the
+  // same key, so the call takes over its frame instead of drawing a new one.
+  const groups = useMemo<EntryGroup[]>(
+    () => (drafts.length ? [...entryGroups, ...drafts.map((draft) => ({ kind: 'draft' as const, draft }))] : entryGroups),
+    [drafts, entryGroups]
+  );
   const lastMediaGroupIndex = useMemo(() => {
     if (!generatedMedia?.length) return -1;
     const mediaToolIds = new Set(
@@ -114,16 +130,23 @@ export function AssistantWorkstream({
     return lastMedia >= 0 ? lastMedia : lastCompact >= 0 ? lastCompact : groups.length - 1;
   }, [generatedMedia, groups]);
 
-  if (model.entries.length === 0 && !model.todoProgress) {
+  if (model.entries.length === 0 && !model.todoProgress && drafts.length === 0) {
     return null;
   }
 
   return (
     <div className={`my-2 ${className}`.trim()}>
       {groups.map((group, idx) => {
-        const groupKey = group.kind === 'compact' ? group.entries[0].id : group.entry.id;
+        const groupKey = group.kind === 'compact' ? group.entries[0].id
+          : group.kind === 'draft' ? `widget:${group.draft.toolUseId}`
+          : group.kind === 'widget' ? `widget:${group.entry.block.id}`
+          : group.entry.id;
         const body = group.kind === 'text' ? (
           <TextSegment key={groupKey} entry={group.entry} />
+        ) : group.kind === 'widget' ? (
+          <TraceWidget key={groupKey} entry={group.entry} />
+        ) : group.kind === 'draft' ? (
+          <TraceWidget key={groupKey} draft={group.draft} />
         ) : group.kind === 'compaction' ? (
           <CompactionActivity key={group.entry.id} entry={group.entry} />
         ) : group.kind === 'thinking' ? (
@@ -145,7 +168,7 @@ export function AssistantWorkstream({
           </div>
         );
       })}
-      {model.state === 'running' && !model.retrying && groups.at(-1)?.kind !== 'compact' && !model.entries.some((entry) =>
+      {model.state === 'running' && !model.retrying && groups.at(-1)?.kind !== 'compact' && drafts.length === 0 && !model.entries.some((entry) =>
         entry.type === 'compaction' ? entry.state === 'inProgress'
           : entry.type === 'thinking' ? entry.state === 'active'
           : entry.type === 'approval' ? entry.state === 'waiting'
@@ -166,7 +189,35 @@ type EntryGroup =
   | { kind: 'compaction'; entry: Extract<WorkstreamEntry, { type: 'compaction' }> }
   | { kind: 'text'; entry: Extract<WorkstreamEntry, { type: 'note' }> }
   | { kind: 'thinking'; entry: Extract<WorkstreamEntry, { type: 'thinking' }> }
+  | { kind: 'widget'; entry: WidgetEntry }
+  | { kind: 'draft'; draft: WidgetDraft }
   | { kind: 'compact'; entries: WorkstreamEntry[] };
+
+/** The session's show_widget calls still being written that no entry has taken over yet. */
+export function useLiveWidgetDrafts(live: boolean, entries: WorkstreamEntry[]): WidgetDraft[] {
+  const sessionId = useContext(ImageStudioSessionContext);
+  const sessionDrafts = useWidgetDraftStore((state) => (live && sessionId ? state.drafts[sessionId] : undefined));
+  return useMemo(() => {
+    if (!sessionDrafts) return [];
+    const called = new Set(entries.flatMap((entry) => ('block' in entry && entry.block ? [entry.block.id] : [])));
+    return Object.values(sessionDrafts)
+      .filter((draft) => !called.has(draft.toolUseId))
+      .sort((a, b) => a.order - b.order);
+  }, [entries, sessionDrafts]);
+}
+
+/** Drafts of a running turn that has no trace to draw them in yet. */
+export function LiveWidgetDrafts() {
+  const drafts = useLiveWidgetDrafts(true, []);
+  if (drafts.length === 0) return null;
+  return (
+    <>
+      {drafts.map((draft) => (
+        <InlineWidget key={draft.toolUseId} toolUseId={draft.toolUseId} html={draft.html} title={draft.title} draft />
+      ))}
+    </>
+  );
+}
 
 function groupEntries(entries: WorkstreamEntry[]): EntryGroup[] {
   const groups: EntryGroup[] = [];
@@ -189,6 +240,10 @@ function groupEntries(entries: WorkstreamEntry[]): EntryGroup[] {
     } else if (entry.type === 'thinking') {
       flush();
       groups.push({ kind: 'thinking', entry });
+    } else if (isWidgetEntry(entry)) {
+      // A widget is part of the answer, drawn where the agent placed it.
+      flush();
+      groups.push({ kind: 'widget', entry });
     } else {
       buffer.push(entry);
     }
@@ -204,8 +259,12 @@ function TextSegment({
 }: {
   entry: Extract<WorkstreamEntry, { type: 'note' }>;
 }) {
+  const pinned = useContext(PinnedNoteIds);
   const text = entry.detail || entry.summary;
-  if (!text.trim()) return null;
+  // Shown with the turn's widgets instead (see TurnWorkflowBoards).
+  if (pinned.has(entry.id)) return null;
+  // A segment that was only an echoed context tag leaves no empty gap.
+  if (!stripLeakedContextTags(text, entry.state === 'streaming').trim()) return null;
   const displayText = truncateWithNotice(text, MAX_TRACE_TEXT_CHARS);
   return (
     <div className="my-2 min-w-0 overflow-x-auto">
@@ -706,28 +765,64 @@ function isTaskEntry(entry: WorkstreamEntry): entry is TaskEntry {
   return entry.type === 'task';
 }
 
-function isWorkflowEntry(entry: WorkstreamEntry): entry is TaskEntry {
-  return entry.type === 'task' && isStartWorkflowToolName(entry.toolName);
-}
 
 /**
- * A workflow outlives the turn that started it, so its board must stay
- * visible when the finished turn's trace collapses: the turn then renders the
- * boards outside the collapsible body and the trace leaves them out.
+ * Workflow boards, chat widgets and the reply text around the widgets belong
+ * to the answer, not to the work trace: when a finished turn's trace
+ * collapses, the turn renders them outside the collapsible body (in order,
+ * see pinnedTurnEntries) and the trace leaves them out.
  */
 const WorkflowBoardsOutside = createContext(false);
 export const WorkflowBoardsOutsideProvider = WorkflowBoardsOutside.Provider;
+const PinnedNoteIds = createContext<ReadonlySet<string>>(new Set());
+export const PinnedNoteIdsProvider = PinnedNoteIds.Provider;
 
 export function TurnWorkflowBoards({ entries }: { entries: WorkstreamEntry[] }) {
-  const workflows = entries.filter(isWorkflowEntry);
-  if (workflows.length === 0) return null;
+  const pinned = useMemo(() => pinnedTurnEntries(entries), [entries]);
+  if (pinned.length === 0) return null;
   return (
     <>
-      {workflows.map((entry) => (
-        <WorkflowEntryBoard key={entry.id} entry={entry} />
-      ))}
+      {pinned.map((entry) =>
+        isWidgetEntry(entry) ? (
+          <WidgetFromEntry key={entry.id} entry={entry} />
+        ) : entry.type === 'note' ? (
+          <div key={entry.id} className="my-2 min-w-0 overflow-x-auto">
+            <StructuredResponse content={entry.detail || entry.summary} />
+          </div>
+        ) : (
+          <WorkflowEntryBoard key={entry.id} entry={entry as TaskEntry} />
+        )
+      )}
     </>
   );
+}
+
+/**
+ * A call the tool hasn't answered yet draws its markup without running its
+ * scripts (a refused one then disappears); once accepted it comes alive.
+ */
+function widgetProps(entry: WidgetEntry) {
+  const widget = widgetFromToolInput(entry.block.input);
+  if (!widget || isRejectedWidget(entry)) return null;
+  return { toolUseId: entry.block.id, html: widget.html, title: widget.title, draft: entry.status !== 'success' };
+}
+
+function WidgetFromEntry({ entry }: { entry: WidgetEntry }) {
+  const props = widgetProps(entry);
+  return props ? <InlineWidget {...props} /> : null;
+}
+
+/**
+ * A widget inside a running trace — a call, or a draft still being written —
+ * rendered as the same element either way, so a draft's frame carries over
+ * to its call. Collapsed turns draw their widgets outside instead.
+ */
+function TraceWidget({ entry, draft }: { entry?: WidgetEntry; draft?: WidgetDraft }) {
+  const outside = useContext(WorkflowBoardsOutside);
+  const props = draft
+    ? { toolUseId: draft.toolUseId, html: draft.html, title: draft.title, draft: true }
+    : entry ? widgetProps(entry) : null;
+  return outside || !props ? null : <InlineWidget {...props} />;
 }
 
 /** A start_workflow call: the workflow it started, live, in place of a subagent lane. */

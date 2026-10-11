@@ -1879,6 +1879,9 @@ export type StreamMessage =
       turnId?: string;
     })
   | (StreamMessageBase & { type: 'stream_event'; event: StreamEvent })
+  // A show_widget call's HTML while the model is still writing it. Transient:
+  // never persisted; the chat draws it until the real tool call arrives.
+  | (StreamMessageBase & { type: 'widget_draft'; toolUseId: string; html: string; title?: string })
   | (StreamMessageBase & { type: 'mcp_status'; servers: McpServerStatus[] });
 
 // 简化的 Anthropic API 类型

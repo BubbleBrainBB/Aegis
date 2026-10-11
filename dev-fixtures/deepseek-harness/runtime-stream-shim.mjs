@@ -8,20 +8,34 @@ export const ASSISTANT_STREAM_METHOD = 'aegis.assistant.stream';
 
 const PATCH_MARKER = Symbol.for('aegis.deepseek-sdk-jsonrpc-server.stream-shim');
 const FORWARDED_CHUNKS = new Set(['text-delta', 'reasoning-delta']);
+/** Aegis draws show_widget calls while they are written; other tool calls'
+ * arguments (whole files for an edit) stay off the wire. Keyed session:call. */
+const WIDGET_TOOL = /(^|[_./:-])show_widget$/i;
+const widgetCalls = new Set();
 
 /**
  * Map one live frame to its wire payload, or undefined when nothing visible
- * changed. Usage and tool-call chunks stay off the wire: the committed
- * assistant/message and tool/call events carry them exactly once.
+ * changed. Usage chunks and other tools' argument chunks stay off the wire:
+ * the committed assistant/message and tool/call events carry them exactly once.
  */
 export function assistantStreamNotification(agent, frame) {
-  const base = { sessionId: String(agent.session.id), attemptId: String(frame.attemptId) };
+  const sessionId = String(agent.session.id);
+  const base = { sessionId, attemptId: String(frame.attemptId) };
   if (frame.type === 'chunk') {
     const { chunk } = frame;
+    if (chunk.type === 'tool-call-delta') {
+      const key = `${sessionId}:${chunk.id}`;
+      if (typeof chunk.name === 'string' && WIDGET_TOOL.test(chunk.name)) widgetCalls.add(key);
+      if (!widgetCalls.has(key)) return undefined;
+      return { ...base, type: 'chunk', chunk: { type: 'tool-call-delta', id: String(chunk.id), name: chunk.name, argumentsDelta: String(chunk.argumentsDelta ?? '') } };
+    }
     if (!FORWARDED_CHUNKS.has(chunk.type) || typeof chunk.text !== 'string' || chunk.text === '') return undefined;
     return { ...base, type: 'chunk', chunk: { type: chunk.type, text: chunk.text } };
   }
-  if (frame.type === 'end') return { ...base, type: 'end', outcome: frame.outcome.kind };
+  if (frame.type === 'end') {
+    for (const key of widgetCalls) if (key.startsWith(`${sessionId}:`)) widgetCalls.delete(key);
+    return { ...base, type: 'end', outcome: frame.outcome.kind };
+  }
   return { ...base, type: 'start' };
 }
 

@@ -66,6 +66,7 @@ import type {
   ProviderListSkillsResult,
   StreamMessage,
 } from '../../../shared/types';
+import { WidgetDraftTracker } from '../widget-draft';
 
 /**
  * DeepSeek Harness SDK adapter.
@@ -132,6 +133,8 @@ interface ActiveDeepseekSession {
   disposeRuntimeConfig: () => void;
   contextWindow?: number;
   turn?: TurnState;
+  /** show_widget calls drawn while their arguments stream (top level only). */
+  widgetDrafts?: WidgetDraftTracker;
   /** Child-session → spawning tool_use attribution for nested traces. */
   subagent: DeepseekSubagentRuntime;
   /** Child session.event frames held until a unique parent tool_use exists. */
@@ -887,11 +890,17 @@ export class DeepseekSdkAdapter implements ProviderAdapter {
       case 'start':
         // A retry after a failed attempt starts over; drop its partial.
         this.discardStreamedPartial(active);
+        active.widgetDrafts?.reset();
         break;
       case 'end':
         // A committed attempt is replaced by its assistant/message; an
         // abandoned one (cancelled or failed) leaves nothing to keep.
-        if (params.outcome === 'abandoned') this.discardStreamedPartial(active);
+        if (params.outcome === 'abandoned') {
+          this.discardStreamedPartial(active);
+          active.widgetDrafts?.reset();
+        } else {
+          active.widgetDrafts?.endAll();
+        }
         break;
       default:
         break;
@@ -949,9 +958,24 @@ export class DeepseekSdkAdapter implements ProviderAdapter {
       case 'usage':
         this.setUsageSample(active, data, getRecord(chunk.usage) || chunk);
         break;
+      case 'tool-call-delta': {
+        // The shim forwards only show_widget calls; the widget is drawn as
+        // its markup arrives, and the tool/call event carries the real call.
+        const callId = getString(chunk.id);
+        if (!callId) return;
+        active.widgetDrafts ??= new WidgetDraftTracker((draft) => {
+          this.emit({ type: 'message', threadId: active.threadId, message: draft });
+        });
+        active.widgetDrafts.append(
+          namespaceDeepseekToolId(active.providerSessionId, callId),
+          getString(chunk.argumentsDelta),
+          getString(chunk.name) || undefined
+        );
+        break;
+      }
       default:
-        // block-start/block-end/tool-call-delta/finish: the committed
-        // assistant/message and tool/call events carry the durable content.
+        // block-start/block-end/finish: the committed assistant/message and
+        // tool/call events carry the durable content.
         break;
     }
   }
@@ -1028,6 +1052,7 @@ export class DeepseekSdkAdapter implements ProviderAdapter {
     const name = getString(data.name) || 'Tool';
     const parsedInput = parseToolCallInput(getString(data.arguments));
     const displayId = namespaceDeepseekToolId(sessionId, rawCallId);
+    active.widgetDrafts?.end(displayId);
 
     if (isDeepseekSubagentToolName(name)) {
       const boundId = registerDeepseekSpawn(

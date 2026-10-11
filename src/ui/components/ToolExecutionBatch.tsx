@@ -2,7 +2,8 @@ import { getWorkstreamDeniedActionIds } from '../utils/workstream-stages';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronRight } from './icons';
 import type { ContentBlock, PermissionRequestPayload, ToolStatus, StreamMessage } from '../types';
-import { AssistantWorkstream, TurnWorkflowBoards, WorkflowBoardsOutsideProvider } from './AssistantWorkstream';
+import { AssistantWorkstream, PinnedNoteIdsProvider, TurnWorkflowBoards, WorkflowBoardsOutsideProvider } from './AssistantWorkstream';
+import { pinnedTurnEntries } from '../utils/turn-pins';
 import {
   createBatchWorkstreamModel,
   type ToolResultBlock,
@@ -147,6 +148,11 @@ function WorkstreamDisclosureBody({
     setChoice(nextExpanded);
     onExpandedChange?.(nextExpanded);
   };
+  // Reply text between a finished turn's widgets shows with them, outside the trace.
+  const pinnedNoteIds = useMemo(
+    () => new Set(canCollapse ? pinnedTurnEntries(model.entries).filter(entry => entry.type === 'note').map(entry => entry.id) : []),
+    [canCollapse, model.entries]
+  );
   const deniedEntries = model.entries.filter(entry => getWorkstreamDeniedActionIds(entry).length > 0);
   const deniedCount = new Set(deniedEntries.flatMap(getWorkstreamDeniedActionIds)).size;
   const revealDenied = () => {
@@ -214,11 +220,14 @@ function WorkstreamDisclosureBody({
           Collapsible traces keep any remaining media outside the hidden body. */}
       <WorkstreamCollapse open={resolvedExpanded}>
         <WorkflowBoardsOutsideProvider value={canCollapse}>
-          <AssistantWorkstream
-            model={model}
-            generatedMedia={canCollapse ? undefined : generatedMedia}
-            mediaCwd={mediaCwd}
-          />
+          <PinnedNoteIdsProvider value={pinnedNoteIds}>
+            <AssistantWorkstream
+              model={model}
+              live={isRunning}
+              generatedMedia={canCollapse ? undefined : generatedMedia}
+              mediaCwd={mediaCwd}
+            />
+          </PinnedNoteIdsProvider>
         </WorkflowBoardsOutsideProvider>
       </WorkstreamCollapse>
       {canCollapse ? <TurnWorkflowBoards entries={model.entries} /> : null}

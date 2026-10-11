@@ -82,6 +82,7 @@ import { archiveRetryStream, restoreRetryHistory } from '../utils/stream-retry';
 import { resolvesStreamRetry } from '../../shared/stream-retry';
 import { applySessionAgentSelection } from '../utils/session-model';
 import { useBrowserStateStore } from './useBrowserStateStore';
+import { useWidgetDraftStore } from './useWidgetDraftStore';
 import {
   SIDE_CHAT_PENDING_TAB,
   addRightUtilityTab,
@@ -1085,6 +1086,7 @@ export const useAppStore = create<Store>()(
           streamDeltaCoalescer.flushSession(event.payload.sessionId);
         } else {
           streamDeltaCoalescer.discardSession(event.payload.sessionId);
+          useWidgetDraftStore.getState().clear(event.payload.sessionId);
           // Live tool output only makes sense while the run is in flight.
           set((state) => {
             const session = state.sessions[event.payload.sessionId];
@@ -1112,6 +1114,7 @@ export const useAppStore = create<Store>()(
 
       case 'session.deleted':
         streamDeltaCoalescer.discardSession(event.payload.sessionId);
+        useWidgetDraftStore.getState().clear(event.payload.sessionId);
         handleSessionDeleted(event.payload.sessionId, set, get);
         break;
 
@@ -1125,6 +1128,11 @@ export const useAppStore = create<Store>()(
         break;
 
       case 'stream.message':
+        if (event.payload.message.type === 'widget_draft') {
+          // A show_widget call still being written: drawn live, never kept.
+          useWidgetDraftStore.getState().put(event.payload.sessionId, event.payload.message);
+          break;
+        }
         if (!streamDeltaCoalescer.push(event.payload)) {
           handleStreamMessage(event.payload, set, get);
         }
@@ -2605,6 +2613,7 @@ export const useAppStore = create<Store>()(
           text: request.text,
           attachments: request.attachments,
           mode,
+          ...(request.submit ? { submit: true } : {}),
           source: request.source,
           nonce: Date.now(),
         },

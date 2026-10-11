@@ -1042,6 +1042,11 @@ contextBridge.exposeInMainWorld('electron', {
   },
 
   // 预览 artifact 文件
+  copyWidgetText: (text: string): Promise<boolean> => ipcRenderer.invoke('widget:copy-text', text),
+  prepareCodexVisualization: (input: {
+    path: string; roots: string[]; styleVariables: Record<string, string>; dark: boolean; state: unknown; title?: string;
+  }): Promise<{ ok: true; url: string } | { ok: false; message: string }> =>
+    ipcRenderer.invoke('widget:prepare-codex-visualization', input),
   previewArtifactPath: (cwd: string, filePath: string, options?: { openInBrowser?: boolean }) => {
     return ipcRenderer.invoke('preview-artifact-path', cwd, filePath, options);
   },

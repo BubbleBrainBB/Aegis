@@ -1,4 +1,5 @@
 import { isStartWorkflowToolName } from '../../shared/workflow';
+import { isShowWidgetToolName, isWidgetGuideToolName, widgetFromToolInput } from '../../shared/widget';
 import type { CanonicalToolKind, ToolStatus } from '../types';
 import {
   classifyComputerUseAction,
@@ -45,6 +46,9 @@ export function getToolSummary(name: string, input: unknown): string {
   if (providerTitle) {
     return providerTitle;
   }
+  // The widget's HTML is no summary; its title is.
+  if (isShowWidgetToolName(name)) return widgetFromToolInput(input)?.title || 'Widget';
+  if (isWidgetGuideToolName(name)) return 'Widget design guide';
 
   switch (name.trim().toLowerCase()) {
     case 'Bash':
@@ -335,6 +339,13 @@ export function deriveReadableToolDisplay(
   const providerTitle = getProviderDisplayTitle(input);
   if (providerTitle) {
     return { verb: '', target: providerTitle };
+  }
+
+  if (isShowWidgetToolName(name)) {
+    return { verb: status === 'pending' ? 'Drawing' : 'Drew', target: widgetFromToolInput(input)?.title || 'a widget' };
+  }
+  if (isWidgetGuideToolName(name)) {
+    return { verb: status === 'pending' ? 'Reading' : 'Read', target: 'the widget design guide' };
   }
 
   if (name === 'Bash' || name === 'bash') {

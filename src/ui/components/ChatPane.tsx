@@ -35,7 +35,7 @@ import { ToolExecutionBatch, WorkstreamDisclosure } from './ToolExecutionBatch';
 import { GeneratedMediaGallery } from './GeneratedMediaGallery';
 import { extractGeneratedMediaFromMessages } from '../utils/generated-media';
 import { StructuredResponse } from './StructuredResponse';
-import { WorkingFooter } from './AssistantWorkstream';
+import { LiveWidgetDrafts, WorkingFooter } from './AssistantWorkstream';
 import { PromptInput } from './PromptInput';
 import { NewThreadLanding } from './NewThreadLanding';
 import { NewThreadProjectHeading } from './NewThreadProjectHeading';
@@ -2165,7 +2165,6 @@ export function ChatPane({
                   );
                 })}
               </TurnDiffContext.Provider>
-              </ImageStudioSessionContext.Provider>
 
               {(streamingWorkstreamModel || shouldRenderStandalonePartial) && (
                 <div className="my-2 min-w-0 overflow-x-auto streaming-content">
@@ -2193,6 +2192,10 @@ export function ChatPane({
                   ) : null}
                 </div>
               )}
+              {/* A widget being written before anything else in the turn. */}
+              {session.status === 'running' && !hasActiveTimelineWork && !streamingWorkstreamModel ? <LiveWidgetDrafts /> : null}
+              {/* The live turn too: its widgets need the session they belong to. */}
+              </ImageStudioSessionContext.Provider>
 
               </WorkstreamDisclosureRegistry>
               {session.status === 'error' && <div role="status" data-turn-failure className="my-3 text-[13px] text-[var(--text-secondary)]">

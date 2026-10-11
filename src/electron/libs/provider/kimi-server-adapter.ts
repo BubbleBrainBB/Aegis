@@ -1,4 +1,5 @@
 import { CompactionTracker } from './compaction-tracker';
+import { WidgetDraftTracker } from '../widget-draft';
 import { kimiQuestionAnswers, kimiQuestionInput, kimiQuestionItems, type KimiQuestionItem } from './kimi-questions';
 import { EventEmitter } from 'events';
 import { readFileSync, statSync } from 'fs';
@@ -211,6 +212,8 @@ interface PendingInteraction {
 }
 
 interface ActiveServerSession {
+  /** show_widget calls drawn while their arguments stream (main agent only). */
+  widgetDrafts?: WidgetDraftTracker;
   threadId: string;
   providerSessionId: string;
   generation: number;
@@ -897,8 +900,20 @@ export class KimiServerAdapter implements ProviderAdapter {
           this.appendThinking(session, getString(payload.delta) || getString(payload.thinking));
         }
         break;
+      case 'tool.call.delta':
+        if (subagentParent) break;
+        session.widgetDrafts ??= new WidgetDraftTracker((draft) => {
+          this.emit({ type: 'message', threadId: session.threadId, message: draft });
+        });
+        session.widgetDrafts.append(
+          getString(payload.toolCallId),
+          getString(payload.argumentsPart),
+          getString(payload.name) || undefined
+        );
+        break;
       case 'tool.call.started':
         if (subagentParent && frameAgentId) this.flushSubagentStream(session, frameAgentId);
+        if (!subagentParent) session.widgetDrafts?.end(getString(payload.toolCallId));
         this.emitToolCall(session, payload, subagentParent);
         break;
       case 'tool.result':
@@ -1270,6 +1285,7 @@ export class KimiServerAdapter implements ProviderAdapter {
   private handleTurnEnded(session: ActiveServerSession, payload: Record<string, unknown>): void {
     const reason = getString(payload.reason);
     session.activeTurn = false;
+    session.widgetDrafts?.reset();
     // Steered prompts merged into this turn; anything still queued
     // auto-advances into its own turn.started, which re-tracks it.
     session.pendingPromptIds.clear();

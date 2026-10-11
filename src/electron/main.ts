@@ -22,6 +22,12 @@ import { ensureShellEnvironment } from './libs/shell-environment';
 import { preloadClaudeAgentSdk } from './libs/runner';
 import { listRunningSessions } from './libs/session-store';
 import type { AppUpdateStatus } from '../shared/types';
+import { guardWidgetFrameNavigation, installWidgetProtocol, registerWidgetIpc, registerWidgetSchemePrivileged } from './widget-protocol';
+
+// Generative-UI widgets load from aegis-widget:// (see widget-protocol.ts);
+// a privileged scheme has to be declared before the app is ready.
+registerWidgetSchemePrivileged();
+app.on('web-contents-created', (_event, contents) => guardWidgetFrameNavigation(contents));
 
 // close 确认用：数据库未初始化等异常一律按 0 处理，绝不阻塞关窗
 function countRunningSessionsSafe(): number {
@@ -268,6 +274,7 @@ function getMainWindowBackgroundColor(): string {
   const variant = nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
   return themedBackgrounds[variant] ?? (variant === 'dark' ? '#111214' : '#ffffff');
 }
+
 
 function getWindowShellState(win: BrowserWindow): { rounded: boolean } {
   return {
@@ -1041,8 +1048,15 @@ function setupMenu(): void {
 // 应用启动
 app.whenReady().then(() => {
   // 生产环境设置 CSP；开发环境不限制（Vite HMR 需要 WebSocket 和 eval）
+  installWidgetProtocol();
+  registerWidgetIpc();
   if (!isDev()) {
     session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+      // The widget shell carries its own, stricter policy.
+      if (details.url.startsWith('aegis-widget:')) {
+        callback({ responseHeaders: details.responseHeaders });
+        return;
+      }
       callback({
         responseHeaders: {
           ...details.responseHeaders,
@@ -1050,7 +1064,7 @@ app.whenReady().then(() => {
             // http://127.0.0.1:* covers the per-project local preview servers
             // (markdown images, PDF preview iframes); requests are still gated
             // by each server's per-instance random token.
-            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data: blob: http://127.0.0.1:*; font-src 'self' data:; frame-src 'self' blob: data: http://127.0.0.1:*; object-src 'self' blob: data:; connect-src 'self'",
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data: blob: http://127.0.0.1:*; font-src 'self' data:; frame-src 'self' blob: data: http://127.0.0.1:* aegis-widget:; object-src 'self' blob: data:; connect-src 'self'",
           ],
         },
       });

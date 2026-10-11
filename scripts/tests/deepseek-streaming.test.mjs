@@ -1,7 +1,8 @@
 // Live text/reasoning deltas through the real Aegis DeepSeek adapter and the
 // bundled Harness runtime (runtime-stream-shim), against a local Messages API
 // mock. Verifies the deltas arrive in order before each step commits, restart
-// after a tool step, and a failed attempt's partial answer is discarded.
+// after a tool step, a failed attempt's partial answer is discarded, and a
+// show_widget call is drawn as its arguments stream (other tools' are not).
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
@@ -68,6 +69,8 @@ function makeAdapter() {
         if (block.type === 'thinking') adapter.timeline.push({ kind: 'committed-thinking', text: block.thinking });
         if (block.type === 'tool_use') adapter.timeline.push({ kind: 'tool', name: block.name });
       }
+    } else if (message.type === 'widget_draft') {
+      adapter.timeline.push({ kind: 'widget-draft', id: message.toolUseId, html: message.html, title: message.title });
     } else if (message.type === 'result') {
       adapter.timeline.push({ kind: 'result', subtype: message.subtype });
     }
@@ -123,7 +126,36 @@ try {
   }
   await retry.stopSession('retry'); adapters.delete(retry);
 
-  console.log(`DeepSeek streaming: ordered reasoning/text deltas, per-step restart and failed-attempt cleanup passed (${retried ? 'retried' : 'turn failed'} after the dropped stream)`);
+  // 4. A show_widget call is drawn while its arguments stream, under the id
+  // its committed tool_use gets; a read call's arguments stay off the wire.
+  const widgetHtml = `<div class="card"><h2>Draft</h2>${'<p>row</p>'.repeat(40)}</div>`;
+  responses = [
+    { toolCalls: [
+      { id: 'read-1', name: 'read', input: { file_path: join(cwd, 'notes.txt') }, inputPieces: 4 },
+      { id: 'widget-1', name: 'show_widget', input: { title: 'Draft board', html: widgetHtml }, inputPieces: 8 },
+    ], pieceDelayMs: 150 },
+    { text: ['Done.'] },
+  ];
+  const widget = makeAdapter();
+  const toolIds = [];
+  widget.events.on('event', (event) => {
+    for (const block of event.message?.message?.content ?? []) if (block.type === 'tool_use') toolIds.push({ name: block.name, id: block.id });
+  });
+  await widget.startSession({ threadId: 'widget', cwd, model: 'deepseek-flash', prompt: 'Draw it.' });
+  const t4 = widget.timeline;
+  const drafts = t4.filter((entry) => entry.kind === 'widget-draft');
+  assert(drafts.length >= 2, `widget drafts stream in steps: ${JSON.stringify(drafts.map((d) => d.html.length))}`);
+  assert(drafts.every((draft, i) => i === 0 || draft.html.length > drafts[i - 1].html.length), 'each draft grows');
+  assert.equal(drafts.at(-1).html, widgetHtml, 'the last draft is the whole markup');
+  assert.equal(drafts.at(-1).title, 'Draft board');
+  const widgetCall = toolIds.find((call) => call.name.endsWith('show_widget'));
+  assert(widgetCall, `show_widget tool_use committed: ${JSON.stringify(toolIds)}`);
+  assert(drafts.every((draft) => draft.id === widgetCall.id), `drafts carry the tool_use id ${widgetCall.id}: ${drafts[0].id}`);
+  const firstTool = indexOf(t4, (entry) => entry.kind === 'tool' && entry.name.endsWith('show_widget'));
+  assert(indexOf(t4, (entry) => entry.kind === 'widget-draft') < firstTool, 'drafts precede the committed call');
+  await widget.stopSession('widget'); adapters.delete(widget);
+
+  console.log(`DeepSeek streaming: ordered reasoning/text deltas, per-step restart, failed-attempt cleanup and widget drafts passed (${retried ? 'retried' : 'turn failed'} after the dropped stream)`);
 } finally {
   for (const adapter of adapters) for (const id of adapter.sessions.keys()) await adapter.stopSession(id);
   server.closeAllConnections(); await new Promise((done) => server.close(done));

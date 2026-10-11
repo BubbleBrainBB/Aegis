@@ -26,7 +26,7 @@ import { setupSessionProjectIPC } from './ipc/session-project';
 import { broadcastSessionEvent } from './ipc/session-windows';
 import { getGitPullRequestInfo, parseGitHubRepoFromRemote } from './libs/git-pull-requests';
 import { setupSessionPullRequestsIPC } from './ipc/session-pull-requests';
-import { disposeSessionHttpServer } from './libs/session-http-server';
+import { disposeSessionHttpServer, primeSessionToken, releaseKimiWidgetEntrySync, writeKimiWidgetEntry } from './libs/session-http-server';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, shell } from 'electron';
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from 'http';
 import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, watch, writeFileSync, type FSWatcher, promises as fsPromises } from 'fs';
@@ -1806,7 +1806,7 @@ function buildLocalAssistantMessage(text: string): StreamMessage {
 }
 
 function shouldPersistProviderMessage(message: StreamMessage): boolean {
-  if (message.type === 'stream_event') {
+  if (message.type === 'stream_event' || message.type === 'widget_draft') {
     return false;
   }
   // Turn-scope marker for the renderer's active plan card; meaningless in a
@@ -4849,7 +4849,8 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
       if (shouldPersistProviderMessage(message)) {
         sessions.addMessage(sessionId, message);
       }
-      broadcast(mainWindow, {
+      // Widget drafts go to the app's windows only (see below).
+      (message.type === 'widget_draft' ? broadcastSessionEvent : broadcast)(mainWindow, {
         type: 'stream.message',
         payload: { sessionId, message },
       });
@@ -5010,6 +5011,11 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
   // Before any provider process starts: a Kimi daemon inherits the token
   // variable its mcp.json entry names.
   primeBrowserUseToken();
+  primeSessionToken();
+  // Kimi's show_widget lives in its global mcp.json (see writeKimiWidgetEntry).
+  if (process.env.AEGIS_BROWSER_USE_TEST_MODE !== '1') {
+    void writeKimiWidgetEntry().catch((error) => console.warn('Failed to write the kimi widget MCP entry:', error));
+  }
   void ensureBrowserUseHttpServer()
     .then(() => {
       // Close the startup race where a DeepSeek runtime could capture the
@@ -10828,8 +10834,10 @@ function startRunner(
         const isCodexStoppingDelta =
           codexStopping && attributedMessage.type === 'stream_event';
         if (!isSubagentStreamEvent && !isCodexStoppingDelta) {
-          // 广播消息
-          broadcast(mainWindow, {
+          // 广播消息. Widget drafts (a show_widget call's HTML while it is
+          // written, several per second) go to the app's windows only: the
+          // remote and Feishu mirrors would treat each as a history change.
+          (attributedMessage.type === 'widget_draft' ? broadcastSessionEvent : broadcast)(mainWindow, {
             type: 'stream.message',
             payload: { sessionId: session.id, message: attributedMessage },
           });
@@ -12453,6 +12461,7 @@ function broadcastFolderChanged(mainWindow: BrowserWindow): void {
 export function cleanup(): void {
   // Our Kimi browser-use entry would point at a dead port after quit.
   releaseBrowserUseKimiEntrySync();
+  releaseKimiWidgetEntrySync();
   closeRemoteGateway();
   void closeFeishu();
   ipcMain.removeAllListeners('client-event');

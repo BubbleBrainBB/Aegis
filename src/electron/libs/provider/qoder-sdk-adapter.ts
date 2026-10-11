@@ -1,4 +1,5 @@
 import { CompactionTracker } from './compaction-tracker';
+import { WidgetDraftTracker, trackMessagesStreamEvent } from '../widget-draft';
 import { validUsd } from '../agent-cost';
 import { getSessionProjectSources } from '../session-store';
 import { getSessionReaderHttpConfig, SESSION_MCP_SERVER_NAME } from '../session-http-server';
@@ -154,6 +155,8 @@ type PendingPermission = {
 
 type ActiveQoderSession = {
   threadId: string;
+  /** show_widget calls drawn while being written: tool_use block index → call id. */
+  widgetDrafts?: { tracker: WidgetDraftTracker; blocks: Map<number, string> };
   providerSessionId: string | null;
   status: ProviderSessionStatus;
   cwd: string;
@@ -1192,6 +1195,14 @@ export class QoderSdkAdapter implements ProviderAdapter {
     }
   }
 
+  private trackWidgetDraft(session: ActiveQoderSession, event: Record<string, unknown>): void {
+    const drafts = (session.widgetDrafts ??= {
+      tracker: new WidgetDraftTracker((draft) => this.emit({ type: 'message', threadId: session.threadId, message: draft })),
+      blocks: new Map(),
+    });
+    trackMessagesStreamEvent(event, drafts.tracker, drafts.blocks);
+  }
+
   private handleAssistantMessage(session: ActiveQoderSession, message: QoderAssistantMessage): void {
     // SDKAssistantMessage.error never terminates a turn (turn-terminal
     // invariant): the CLI retries (api_retry) or the result carries it.
@@ -1240,6 +1251,7 @@ export class QoderSdkAdapter implements ProviderAdapter {
   private handleStreamEvent(session: ActiveQoderSession, message: QoderStreamEventMessage): void {
     const event = message.event || {};
     const type = getString(event.type);
+    if (!message.parent_tool_use_id) this.trackWidgetDraft(session, event);
     if (type !== 'content_block_start' && type !== 'content_block_delta' && type !== 'content_block_stop') {
       // message_start/message_delta/message_stop: the assistant/result
       // messages carry the durable data.

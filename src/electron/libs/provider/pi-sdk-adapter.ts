@@ -1,8 +1,10 @@
 import { CompactionTracker } from './compaction-tracker';
 import { addAgentCost, costFields, emptyCostDetails } from '../agent-cost';
-import { createPiSessionReader, createPiStartWorkflow } from '../session-native-tool';
+import { createPiSessionReader, createPiShowWidget, createPiStartWorkflow, createPiWidgetGuide } from '../session-native-tool';
 import { getWorkflowSessionPolicy } from '../workflow/session-hooks';
+import { WidgetDraftTracker } from '../widget-draft';
 import { START_WORKFLOW_TOOL } from '../../../shared/workflow';
+import { SHOW_WIDGET_TOOL, WIDGET_GUIDE_TOOL } from '../../../shared/widget';
 import { EventEmitter } from 'events';
 import { readFile } from 'fs/promises';
 import { v4 as uuidv4 } from 'uuid';
@@ -50,6 +52,8 @@ const CAPABILITIES: ProviderAdapterCapabilities = {
 };
 
 type ActivePiSession = {
+  /** show_widget calls drawn while their arguments stream. */
+  widgetDrafts?: WidgetDraftTracker;
   threadId: string;
   providerSessionId: string;
   status: ProviderSessionStatus;
@@ -346,8 +350,8 @@ export class PiSdkAdapter implements ProviderAdapter {
       modelRuntime,
       sessionManager,
       // Workflow members do not get the workflow entry (no nested workflows).
-      tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls', 'read_session', ...(offersWorkflows ? [START_WORKFLOW_TOOL] : [])],
-      customTools: [createPiSessionReader(), ...(offersWorkflows ? [createPiStartWorkflow(input.threadId)] : [])],
+      tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls', 'read_session', SHOW_WIDGET_TOOL, WIDGET_GUIDE_TOOL, ...(offersWorkflows ? [START_WORKFLOW_TOOL] : [])],
+      customTools: [createPiSessionReader(), createPiShowWidget(), createPiWidgetGuide(), ...(offersWorkflows ? [createPiStartWorkflow(input.threadId)] : [])],
       ...(selectedModel ? { model: selectedModel } : {}),
     });
 
@@ -577,6 +581,7 @@ export class PiSdkAdapter implements ProviderAdapter {
         break;
       }
       case 'agent_settled': {
+        session.widgetDrafts?.reset();
         const messages = this.pendingEnds.get(session);
         this.pendingEnds.delete(session);
         if (messages) this.handleAgentEnd(session, messages, false);
@@ -636,6 +641,10 @@ export class PiSdkAdapter implements ProviderAdapter {
   ): void {
     const streamEvent = event.assistantMessageEvent || {};
     const streamType = getString(streamEvent.type);
+    if (streamType.startsWith('toolcall_')) {
+      this.trackWidgetDraft(session, streamEvent as Record<string, unknown>);
+      return;
+    }
     if (streamType !== 'text_delta' && streamType !== 'thinking_delta') {
       return;
     }
@@ -664,6 +673,26 @@ export class PiSdkAdapter implements ProviderAdapter {
         },
       },
     });
+  }
+
+  /** pi-ai parses a tool call's arguments as they stream; show_widget is drawn from them. */
+  private trackWidgetDraft(session: ActivePiSession, streamEvent: Record<string, unknown>): void {
+    const tracker = (session.widgetDrafts ??= new WidgetDraftTracker((draft) => {
+      this.emit({ type: 'message', threadId: session.threadId, message: draft });
+    }));
+    if (streamEvent.type === 'toolcall_end') {
+      const toolCall = streamEvent.toolCall as { id?: unknown } | undefined;
+      tracker.end(getString(toolCall?.id));
+      return;
+    }
+    const partial = streamEvent.partial as { content?: unknown } | undefined;
+    const content = Array.isArray(partial?.content) ? partial.content : [];
+    const block = content[getNumber(streamEvent.contentIndex) ?? -1] as
+      | { type?: unknown; id?: unknown; name?: unknown; arguments?: unknown }
+      | undefined;
+    if (!block || block.type !== 'toolCall') return;
+    const args = block.arguments && typeof block.arguments === 'object' ? block.arguments as Record<string, unknown> : {};
+    tracker.replaceFields(getString(block.id), { html: args.html, title: args.title }, getString(block.name));
   }
 
   private handleMessageEnd(session: ActivePiSession, message: PiAgentMessage): void {

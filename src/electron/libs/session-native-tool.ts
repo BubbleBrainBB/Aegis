@@ -1,6 +1,11 @@
 import { READ_SESSION_DESCRIPTION, readSessionTool } from './session-reference';
 import { START_WORKFLOW_DESCRIPTION, startWorkflowTool, type StartWorkflowArgs } from './workflow/chat-entry';
 import { START_WORKFLOW_TOOL } from '../../shared/workflow';
+import {
+  SHOW_WIDGET_DESCRIPTION, SHOW_WIDGET_JSON_SCHEMA, SHOW_WIDGET_TOOL, showWidgetTool,
+  WIDGET_GUIDE_DESCRIPTION, WIDGET_GUIDE_JSON_SCHEMA, WIDGET_GUIDE_TOOL, widgetGuideTool,
+} from './widget-tool';
+import type { ShowWidgetInput } from '../../shared/widget';
 
 export const SESSION_READER_JSON_SCHEMA = {
   type: 'object', additionalProperties: false, required: ['sessionId'],
@@ -70,6 +75,55 @@ export function createPiStartWorkflow(callerSessionId: string) {
     async execute(_callId: string, args: StartWorkflowArgs) {
       const result = await startWorkflowTool(callerSessionId, args);
       if (result.isError) throw new Error(result.content[0].text);
+      return { content: result.content, details: {} };
+    },
+  };
+}
+
+/** Bubble host tool: draws in the chat only, so it runs without approval. */
+export function createNativeShowWidget() {
+  return {
+    name: SHOW_WIDGET_TOOL, description: SHOW_WIDGET_DESCRIPTION,
+    parameters: SHOW_WIDGET_JSON_SCHEMA, readOnly: true, effect: 'read' as const,
+    async execute(args: ShowWidgetInput) {
+      const result = await showWidgetTool(args);
+      return { content: result.content.map(item => item.text).join('\n'), isError: result.isError === true };
+    },
+  };
+}
+
+export function createPiShowWidget() {
+  return {
+    name: SHOW_WIDGET_TOOL, label: 'Show widget',
+    description: SHOW_WIDGET_DESCRIPTION, promptSnippet: 'Show an interactive chart, diagram or small tool inline in the chat.',
+    parameters: SHOW_WIDGET_JSON_SCHEMA,
+    async execute(_callId: string, args: ShowWidgetInput) {
+      const result = await showWidgetTool(args);
+      if (result.isError) throw new Error(result.content[0].text);
+      return { content: result.content, details: {} };
+    },
+  };
+}
+
+/** Bubble host tool: read-only guide text. */
+export function createNativeWidgetGuide() {
+  return {
+    name: WIDGET_GUIDE_TOOL, description: WIDGET_GUIDE_DESCRIPTION,
+    parameters: WIDGET_GUIDE_JSON_SCHEMA, readOnly: true, effect: 'read' as const,
+    async execute(args: { topics?: string[] }) {
+      const result = await widgetGuideTool(args);
+      return { content: result.content.map(item => item.text).join('\n'), isError: false };
+    },
+  };
+}
+
+export function createPiWidgetGuide() {
+  return {
+    name: WIDGET_GUIDE_TOOL, label: 'Widget guide',
+    description: WIDGET_GUIDE_DESCRIPTION, promptSnippet: 'Read the design guide before drawing a widget.',
+    parameters: WIDGET_GUIDE_JSON_SCHEMA,
+    async execute(_callId: string, args: { topics?: string[] }) {
+      const result = await widgetGuideTool(args);
       return { content: result.content, details: {} };
     },
   };

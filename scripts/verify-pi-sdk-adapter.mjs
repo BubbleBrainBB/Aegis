@@ -27,8 +27,8 @@ assert.ok(
 const adapter = read('src/electron/libs/provider/pi-sdk-adapter.ts');
 assert.ok(
   adapter.includes("readonly provider: ProviderKind = 'pi'") &&
-    adapter.includes("tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls', 'read_session', ...(offersWorkflows ? [START_WORKFLOW_TOOL] : [])]") &&
-    adapter.includes('customTools: [createPiSessionReader(), ...(offersWorkflows ? [createPiStartWorkflow(input.threadId)] : [])]') &&
+    adapter.includes("tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls', 'read_session', SHOW_WIDGET_TOOL, WIDGET_GUIDE_TOOL, ...(offersWorkflows ? [START_WORKFLOW_TOOL] : [])]") &&
+    adapter.includes('customTools: [createPiSessionReader(), createPiShowWidget(), createPiWidgetGuide(), ...(offersWorkflows ? [createPiStartWorkflow(input.threadId)] : [])]') &&
     adapter.includes('const offersWorkflows = !getWorkflowSessionPolicy(input.threadId);') &&
     adapter.includes('modelRuntime') &&
     adapter.includes('agentDir: resolvePiAgentDir()'),
