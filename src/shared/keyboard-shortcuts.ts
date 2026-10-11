@@ -9,11 +9,6 @@ export const SHORTCUT_COMMANDS = [
   { id: 'newTask', title: 'New task', group: 'Conversation', defaults: ['Mod+KeyN'] },
   { id: 'find', title: 'Find in conversation', group: 'Conversation', defaults: ['Mod+KeyF'] },
   { id: 'screenshot', title: 'Capture screenshot', group: 'Conversation', defaults: ['Mod+Shift+Digit2'] },
-  { id: 'newTab', title: 'New tab', group: 'Tabs', defaults: ['Mod+KeyT'] },
-  { id: 'closeTab', title: 'Close tab', group: 'Tabs', defaults: ['Mod+KeyW'] },
-  { id: 'nextTab', title: 'Next tab', group: 'Tabs', defaults: ['Ctrl+Tab'] },
-  { id: 'previousTab', title: 'Previous tab', group: 'Tabs', defaults: ['Ctrl+Shift+Tab'] },
-  ...Array.from({ length: 9 }, (_, i) => ({ id: `tab${i + 1}`, title: i === 8 ? 'Switch to last tab' : `Switch to tab ${i + 1}`, group: 'Tabs', defaults: [`Mod+Digit${i + 1}`] })),
 ] as const;
 export type ShortcutOverrides = Record<string, string[]>;
 export type ShortcutKeyEvent = Pick<KeyboardEvent, 'key' | 'code' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey' | 'isComposing'>;

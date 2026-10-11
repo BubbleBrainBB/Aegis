@@ -496,7 +496,8 @@ export function FolderTreeView({
       : !isSessionActive && session.status === 'running'
         ? 'running'
         : null;
-  // 平铺列表只放会话本身；所属项目在悬停卡片里
+  // 平铺列表只放会话本身；所属项目在悬停卡片里。按日期分组时（Codex 式）
+  // 项目放在标题下的第二行，因为分组本身不再说明项目。
   const renderFlatSession = (session: SessionView, keyPrefix: string) => {
     const isSessionActive = isChatWorkspaceActive && openSessionIds.has(session.id);
     return (
@@ -507,6 +508,7 @@ export function FolderTreeView({
         runtimeBadge={runtimeBadgeFor(session, isSessionActive)}
         depth={0}
         pullRequest={view.showPullRequests ? prsBySession[session.id] : null}
+        showProject={view.groupBy === 'date'}
         onClick={() => onSessionClick(session.id)}
         onTogglePin={() => sendEvent({ type: 'session.togglePin', payload: { sessionId: session.id } })}
       />
@@ -825,6 +827,7 @@ function SessionItem({
   runtimeBadge,
   depth,
   pullRequest,
+  showProject = false,
   onClick,
   onTogglePin,
 }: {
@@ -833,6 +836,8 @@ function SessionItem({
   runtimeBadge: 'running' | 'completed' | 'error' | null;
   depth: number;
   pullRequest?: GitPullRequestSummary | null;
+  /** Second line with the session's project (date-grouped lists). */
+  showProject?: boolean;
   onClick: () => void;
   onTogglePin: () => void;
 }) {
@@ -1014,6 +1019,12 @@ function SessionItem({
                 />
               ) : null}
             </div>
+            {showProject ? (
+              <div className="flex min-w-0 items-center gap-1.5 pb-0.5 pl-[22px] text-[12px] leading-4 text-[var(--text-muted)]">
+                <FolderClosed className="h-3 w-3 flex-shrink-0" aria-hidden="true" />
+                <span className="min-w-0 truncate">{projectLabel}</span>
+              </div>
+            ) : null}
           </div>
         }
       />

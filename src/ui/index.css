@@ -463,7 +463,13 @@ body {
   background-color: var(--app-chrome-bg);
 }
 
-/* Shared raised workspace surface for chat and Settings. */
+/* The sidebar panel is a hair off the main sheet, so the two read as one
+   light surface below the title-bar row (see .aegis-sheet). */
+:root {
+  --app-sidebar-panel: color-mix(in srgb, var(--bg-primary) 88%, var(--app-sidebar-surface));
+}
+
+/* Settings' raised workspace card. */
 .aegis-content-card {
   margin: 0 6px 6px;
   border-radius: 10px;
@@ -471,7 +477,65 @@ body {
   box-shadow: 0 1px 4px rgba(15, 18, 25, 0.06);
 }
 
-.aegis-window-shell--rounded .aegis-sidebar,
+/* Codex-style two tones: the title-bar row and icon rail sit on the window
+   chrome; everything below is one light sheet (sidebar panel + view + right
+   pane, divided by hairlines). Pieces joined to a neighbour drop that side's
+   edge and corners so they read as a single surface. */
+.aegis-main-host {
+  padding: 0 4px 4px 0;
+}
+
+.aegis-sheet {
+  border: 1px solid var(--panel-soft-divider);
+  border-radius: 12px;
+  background-color: var(--bg-primary);
+}
+
+.aegis-sheet--join-left {
+  border-left-width: 0;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.aegis-sheet--join-right {
+  border-right-width: 0;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+/* The right pane's sheet keeps its left edge as the divider with the view. */
+.aegis-sheet--pane {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  background-color: var(--utility-pane-surface);
+  backdrop-filter: var(--utility-pane-backdrop);
+  -webkit-backdrop-filter: var(--utility-pane-backdrop);
+}
+
+.aegis-sheet--pane-fullscreen {
+  border-top-left-radius: 12px;
+  border-bottom-left-radius: 12px;
+}
+
+.aegis-sheet--pane-fullscreen.aegis-sheet--join-left {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+/* A skin paints only the sheet area, not the title-bar row. */
+.aegis-main-host > .aegis-skin-layer {
+  inset: 40px 4px 4px 0;
+  border-radius: 0 12px 12px 0;
+}
+
+.aegis-sidebar-panel {
+  border: 1px solid var(--panel-soft-divider);
+  border-radius: 12px 0 0 12px;
+  background-color: var(--app-sidebar-panel);
+  backdrop-filter: var(--app-sidebar-backdrop-filter);
+  -webkit-backdrop-filter: var(--app-sidebar-backdrop-filter);
+}
+
 .aegis-window-shell--rounded .aegis-window-left-surface {
   background-color: var(--app-sidebar-surface);
 }
@@ -553,7 +617,7 @@ body {
 }
 
 .aegis-sidebar .aegis-sidebar-brand {
-  font-size: calc(18px * var(--ui-font-scale, 1)) !important;
+  font-size: calc(16px * var(--ui-font-scale, 1)) !important;
 }
 
 /* Keep the profile footer compact despite the sidebar's uniform text sizing. */
@@ -3288,14 +3352,14 @@ button.aegis-mdx-metadata-key:hover {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 24px;
+  gap: 18px;
   width: 100%;
   max-width: calc(var(--new-thread-content-width) - 48px);
 }
 
 .aegis-new-thread-logo {
-  width: 56px;
-  height: 56px;
+  width: 40px;
+  height: 40px;
   flex-shrink: 0;
   color: var(--text-primary);
   opacity: 0.3;
@@ -3313,11 +3377,12 @@ button.aegis-mdx-metadata-key:hover {
   width: 100%;
   max-width: calc(var(--new-thread-content-width) - 48px);
   margin: 0;
-  font-size: calc(28px * var(--ui-font-scale, 1));
+  font-size: calc(24px * var(--ui-font-scale, 1));
   font-weight: 400;
   line-height: 1.2;
+  letter-spacing: -0.01em;
   text-align: center;
-  color: var(--text-primary);
+  color: var(--text-secondary);
   overflow-wrap: anywhere;
   user-select: none;
 }
@@ -3419,7 +3484,7 @@ button.aegis-mdx-metadata-key:hover {
 @container new-thread (max-width: 640px) {
   .aegis-new-thread-hero { padding-inline: 16px; padding-bottom: 64px; }
   .aegis-new-thread-composer-zone { padding-inline: 16px; }
-  .aegis-new-thread-heading { font-size: calc(24px * var(--ui-font-scale, 1)); }
+  .aegis-new-thread-heading { font-size: calc(21px * var(--ui-font-scale, 1)); }
   .aegis-new-thread-composer-tray { --new-thread-composer-radius: 20px; }
 }
 

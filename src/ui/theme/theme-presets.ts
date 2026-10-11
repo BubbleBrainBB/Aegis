@@ -60,7 +60,9 @@ export const THEME_PRESETS: readonly ThemePreset[] = [
     'Aegis',
     'aegis',
     { surface: '#121214', ink: '#f4f4f6', accent: '#3b82f6' },
-    { surface: '#ffffff', ink: '#111113', accent: '#2563eb' }
+    // Cool slate light look: tinted grey sheets on a slightly deeper chrome,
+    // slate ink instead of near-black.
+    { surface: '#eff1f4', ink: '#2f3244', accent: '#2563eb' }
   ),
   // Brand looks
   preset(

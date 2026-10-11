@@ -84,8 +84,8 @@ const win=new BrowserWindow({width:1124,height:879,show:true,webPreferences:{bac
   assert(initial.composer.top-initial.heading.bottom>100,'hero is separate from composer');
   await checkContextTray();
   const logo=await rect('.aegis-new-thread-logo');
-  assert.equal(logo.width,56);assert.equal(logo.height,56);
-  assert(Math.abs(initial.heading.top-logo.bottom-24)<1,'logo has 24px title gap');
+  assert.equal(logo.width,40);assert.equal(logo.height,40);
+  assert(Math.abs(initial.heading.top-logo.bottom-18)<1,'logo has 18px title gap');
   assert(Math.abs((logo.left+logo.width/2)-(initial.heading.left+initial.heading.width/2))<1,'logo is centered over title');
   assert.equal(await js('getComputedStyle(document.querySelector(".aegis-new-thread-logo")).opacity'),'0.3');
   await js('document.querySelector(".aegis-new-thread-logo").dispatchEvent(new PointerEvent("pointerup",{bubbles:true,button:0,pointerType:"mouse"}))');
@@ -140,7 +140,7 @@ const win=new BrowserWindow({width:1124,height:879,show:true,webPreferences:{bac
   await js('document.activeElement.blur();document.querySelector(".aegis-new-thread-composer-surface").dispatchEvent(new MouseEvent("mousedown",{bubbles:true,button:0,cancelable:true}))');
   assert.equal(await js('document.activeElement.getAttribute("role")'),'textbox');
   await js('qa.store.getState().setTheme("dark")');await shot('new-task-dark');
-  assert.equal(await js('getComputedStyle(document.querySelector(".aegis-new-thread-logo")).color'),await js('getComputedStyle(document.querySelector("h1")).color'),'logo follows theme text color');
+  assert.equal(await js('getComputedStyle(document.querySelector(".aegis-new-thread-logo")).color'),await js('(()=>{const probe=document.createElement("span");probe.style.color="var(--text-primary)";document.body.append(probe);const color=getComputedStyle(probe).color;probe.remove();return color})()'),'logo follows theme text color');
   assert((await js('getComputedStyle(document.querySelector(".aegis-new-thread-composer-surface")).boxShadow')).includes('inset'));
   // Short windows scroll the independent regions without overlap or clipping.
   win.setContentSize(600,420);await delay(180);

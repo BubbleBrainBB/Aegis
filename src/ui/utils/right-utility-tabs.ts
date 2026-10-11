@@ -5,6 +5,7 @@ import type {
 
 let fileTabCounter = 0;
 let browserTabCounter = 0;
+let launcherTabCounter = 0;
 
 export function sessionSourceTab(path: string): ProjectUtilityPanelTarget {
   return `sources:${encodeURIComponent(path)}`;
@@ -32,6 +33,35 @@ export function isRightUtilitySubagentTab(
   target: ProjectUtilityPanelTarget | null | undefined
 ): target is ProjectUtilityPanelTarget {
   return target === 'subagent' || Boolean(target?.startsWith('subagent:'));
+}
+
+export function isRightUtilityLauncherTab(
+  target: ProjectUtilityPanelTarget | null | undefined
+): target is `launcher:${string}` {
+  return Boolean(target?.startsWith('launcher:'));
+}
+
+export function createLauncherTabId(): ProjectUtilityPanelTarget {
+  launcherTabCounter += 1;
+  return `launcher:${Date.now().toString(36)}-${launcherTabCounter}`;
+}
+
+/**
+ * A "New tab" that picked a tool: the opened tab takes the launcher's place
+ * in the strip when it is new, and the launcher tab goes away.
+ */
+export function replaceLauncherTab(
+  previous: ProjectUtilityPanelTarget[],
+  opened: ProjectUtilityPanelTarget[],
+  activeTab: ProjectUtilityPanelTarget,
+  launcher: ProjectUtilityPanelTarget
+): ProjectUtilityPanelTarget[] {
+  const index = previous.indexOf(launcher);
+  const tabs = opened.filter((tab) => tab !== launcher);
+  if (index === -1 || previous.includes(activeTab)) return tabs;
+  const withoutActive = tabs.filter((tab) => tab !== activeTab);
+  withoutActive.splice(Math.min(index, withoutActive.length), 0, activeTab);
+  return withoutActive;
 }
 
 export function isRightUtilitySideChatTab(
@@ -73,6 +103,7 @@ export function getRightUtilityTabKind(
   if (target.startsWith('images:')) return 'images';
   if (target.startsWith('goal:')) return 'goal';
   if (target.startsWith('workflow-member:')) return 'workflow-member';
+  if (isRightUtilityLauncherTab(target)) return 'launcher';
   if (isRightUtilityFileTab(target)) return 'files';
   if (isRightUtilityBrowserTab(target)) return 'browser';
   if (isRightUtilitySubagentTab(target)) return 'subagent';

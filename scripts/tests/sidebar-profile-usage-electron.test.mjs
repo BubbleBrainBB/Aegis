@@ -11,7 +11,7 @@ import React from 'react';
 import {createRoot} from 'react-dom/client';
 import {Tooltip} from '@base-ui-components/react/tooltip';
 import {Toaster} from 'sonner';
-import {Sidebar,SidebarHeaderTrigger} from '/src/ui/components/Sidebar';
+import {Sidebar,AppTitlebar} from '/src/ui/components/Sidebar';
 import {Settings} from '/src/ui/components/settings/Settings';
 import {useAppStore} from '/src/ui/store/useAppStore';
 import '/src/ui/index.css';
@@ -33,7 +33,7 @@ window.electron={
 useAppStore.setState({sessions:{},sidebarCollapsed:false,sidebarWidth:280,showSettings:false,activeSettingsTab:'profile'});
 useAppStore.getState().setTheme('light');
 window.qa={store:useAppStore,calls,holdHistory:()=>historyHold=true,settleHistory:value=>{fail=value;historyHold=false;pendingHistory.splice(0).forEach(resolve=>resolve())},resolveClaude:()=>resolveClaude(),expire:()=>window.qaTimeOffset+=61000,fail:()=>fail=true,hold:()=>hold=true,settle:value=>{fail=value;hold=false;pending.splice(0).forEach(run=>run())},refresh:()=>{window.qaTimeOffset+=61000;window.qaRefreshers.forEach(run=>run())}};
-function Harness(){const settings=useAppStore(s=>s.showSettings);return <Tooltip.Provider><div style={{height:'100vh',display:'flex',background:'var(--bg-primary)',color:'var(--text-primary)'}}>{settings?<Settings/>:<><Sidebar/><main style={{padding:24,flex:1}}><SidebarHeaderTrigger/><h1>Workspace</h1></main></>}</div><Toaster/></Tooltip.Provider>}
+function Harness(){const settings=useAppStore(s=>s.showSettings);return <Tooltip.Provider><div style={{height:'100vh',display:'flex',background:'var(--bg-primary)',color:'var(--text-primary)'}}>{settings?<Settings/>:<><Sidebar/><main style={{padding:24,flex:1}}><AppTitlebar/><h1>Workspace</h1></main></>}</div><Toaster/></Tooltip.Provider>}
 createRoot(document.getElementById('root')).render(<Harness/>);
 `;
 const main=String.raw`
@@ -58,7 +58,7 @@ app.whenReady().then(async()=>{
  const open=async()=>{await click(trigger);const u=await js('[...document.querySelectorAll("[role=menuitem]")].find(e=>e.textContent.trim()==="Usage").getBoundingClientRect().toJSON()');win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(u.x+30),y:Math.round(u.y+15)});await textClick('Usage');await until('document.querySelectorAll("[data-usage-provider]").length===9')};
  const outside=async()=>{win.webContents.sendInputEvent({type:'mouseMove',x:900,y:100});win.webContents.sendInputEvent({type:'mouseDown',x:900,y:100,button:'left',clickCount:1});win.webContents.sendInputEvent({type:'mouseUp',x:900,y:100,button:'left',clickCount:1});await delay(400)};
  try{
-  await win.loadURL(process.env.QA_URL);await until('document.querySelector('+JSON.stringify(trigger)+')?.textContent.includes("BubbleBrain")');
+  await win.loadURL(process.env.QA_URL);await until('document.querySelector('+JSON.stringify(trigger)+')?.getAttribute("aria-label").includes("BubbleBrain")');
   assert.equal(await js('qa.calls.length'),0,'no usage requests before menu opens');
   await click(trigger);assert.equal(await js('qa.calls.length'),0,'profile menu alone does not fetch usage');
   // Exercise a real hover into the submenu, including the gap between menus.

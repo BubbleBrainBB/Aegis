@@ -66,15 +66,15 @@ app.whenReady().then(async()=>{
   assert.equal(await js('!!document.querySelector("[role=dialog]")'),true,'the palette is a dialog, which pauses global shortcuts');
 
   // Empty query: every action, then the most recent threads; no projects.
-  assert.deepEqual(await headings(),['Suggested','Recent']);
-  assert.deepEqual(await values(),['action:new-thread','action:open-project','action:settings','thread:c','thread:b','thread:a']);
-  assert.equal(await selected(),'action:new-thread','the first row starts highlighted');
+  assert.deepEqual(await headings(),['Recent sessions','Actions']);
+  assert.deepEqual(await values(),['thread:c','thread:b','thread:a','action:new-thread','action:open-project','action:settings']);
+  assert.equal(await selected(),'thread:c','the most recent session starts highlighted');
   assert.equal(await js('document.body.textContent.includes("⌘N")'),true,'action shortcuts show');
   await screenshot('1-empty');
 
   // A query ranks threads by evidence and shows a windowed excerpt.
   await type('retry helper');
-  assert.deepEqual(await headings(),['Threads','Projects']);
+  assert.deepEqual(await headings(),['Sessions','Projects']);
   const found=await values();
   assert.deepEqual(found.slice(0,2),['thread:a','thread:b'],'an exact title outranks the newer message hit');
   assert.deepEqual(found.slice(2),['project:/projects/retry helper kit'],'matching projects follow the threads');

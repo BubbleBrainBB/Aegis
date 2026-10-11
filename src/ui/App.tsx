@@ -45,10 +45,10 @@ import { useShallow } from 'zustand/react/shallow';
 import { useIPC, sendEvent } from './hooks/useIPC';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { Sidebar } from './components/Sidebar';
+import { MainSheet } from './components/MainSheet';
 import { AutomationsView } from './components/AutomationsView';
 import { PullRequestsView } from './components/PullRequestsView';
 import { useTabsStore, type TabView } from './store/useTabsStore';
-import { AppTabBar } from './components/AppTabBar';
 import { NewSessionView } from './components/NewSessionView';
 import { SessionTitleActions } from './components/SessionTitleActions';
 import { LogoShimmer } from './components/LogoShimmer';
@@ -79,7 +79,7 @@ import { useBrowserStateStore, type RememberedPage } from './store/useBrowserSta
 import { EnvironmentEditorPicker, EnvironmentHub } from './components/environment/EnvironmentHub';
 import { SessionSourcesPanel } from './components/SessionSourcesPanel';
 import { useSessionSources } from './hooks/useSessionSources';
-import { sessionSourceTabPath } from './utils/right-utility-tabs';
+import { getRightUtilityTabKind, sessionSourceTabPath } from './utils/right-utility-tabs';
 import { openSessionSource } from './lib/image-studio';
 import { useImageStudioStore } from './store/useImageStudioStore';
 import { Paperclip } from './components/icons';
@@ -93,6 +93,8 @@ import { extractGeneratedMediaFromMessages } from './utils/generated-media';
 import { openGeneratedMediaInFilesPanel } from './components/GeneratedMediaGallery';
 import { openHtmlFileInBrowserTab } from './utils/html-preview';
 import { getBrowserUtilitySessionId } from './utils/browser-utility';
+import { openUrlInBrowserSession } from './utils/html-preview';
+import { resolveAddress } from '../shared/browser-address';
 import { StructuredResponse } from './components/StructuredResponse';
 import { AgentOnboardingView, useAgentOnboardingGate } from './components/onboarding/AgentOnboardingView';
 import {
@@ -158,14 +160,7 @@ function getProjectUtilitySubagentId(target: ProjectUtilityPanelTarget): string 
 }
 
 function getProjectUtilityTabKind(target: ProjectUtilityPanelTarget): ProjectUtilityPanelKind {
-  if (target.startsWith('sources:')) return 'sources';
-  if (target.startsWith('images:')) return 'images';
-  if (target.startsWith('goal:')) return 'goal';
-  if (target.startsWith('workflow-member:')) return 'workflow-member';
-  if (isProjectUtilityFileTab(target)) return 'files';
-  if (isProjectUtilityBrowserTab(target)) return 'browser';
-  if (isProjectUtilitySubagentTab(target)) return 'subagent';
-  return target as ProjectUtilityPanelKind;
+  return getRightUtilityTabKind(target);
 }
 
 function getBrowserUtilityLabel(page: RememberedPage | null | undefined): string {
@@ -220,7 +215,6 @@ export function App() {
   const codexModelConfig = useCodexModelConfig();
   const [windowShellRounded, setWindowShellRounded] = useState(getDefaultWindowShellRounded);
   const [terminalFullscreen, setTerminalFullscreen] = useState(false);
-  const [rightPanelLauncherOpen, setRightPanelLauncherOpen] = useState(false);
   // Session id of a side chat pending destructive-close confirmation.
   const [sideChatCloseRequest, setSideChatCloseRequest] = useState<string | null>(null);
   const [rightUtilityPanelWidth, setRightUtilityPanelWidthState] = useState(getDefaultRightUtilityPanelWidth);
@@ -246,6 +240,7 @@ export function App() {
     connected,
     activeSessionId,
     activeWorkspace,
+    sidebarCollapsed,
     chatLayoutMode,
     savedSplitVisible,
     activePaneId,
@@ -294,6 +289,7 @@ export function App() {
       connected: s.connected,
       activeSessionId: s.activeSessionId,
       activeWorkspace: s.activeWorkspace,
+      sidebarCollapsed: s.sidebarCollapsed,
       chatLayoutMode: s.chatLayoutMode,
       savedSplitVisible: s.savedSplitVisible,
       activePaneId: s.activePaneId,
@@ -524,10 +520,6 @@ export function App() {
   }, [connected]);
 
   useEffect(() => {
-    setRightPanelLauncherOpen(false);
-  }, [activeSessionId]);
-
-  useEffect(() => {
     void gitEnvironment.refresh();
   }, [
     environmentContext.contextKey,
@@ -575,7 +567,6 @@ export function App() {
 
   const activateRightUtilityContent = useCallback((target: ProjectUtilityPanelTarget) => {
     const targetKind = getProjectUtilityTabKind(target);
-    setRightPanelLauncherOpen(false);
 
     if (targetKind === 'files' || targetKind === 'review') {
       setBrowserPanelOpen(false);
@@ -649,14 +640,26 @@ export function App() {
     : resolveDockedRightPanelWidth(rightUtilityPanelWidth, skinHostWidth);
 
   const activeUtilityPanel = useMemo(() => {
-    if (rightPanelLauncherOpen) return 'launcher' as const;
     if (rightUtilityPanelHidden) return null;
     if (activeRightUtilityTab) return getProjectUtilityTabKind(activeRightUtilityTab);
     return null;
-  }, [activeRightUtilityTab, rightPanelLauncherOpen, rightUtilityPanelHidden]);
+  }, [activeRightUtilityTab, rightUtilityPanelHidden]);
+
+  const activeLauncherTab =
+    activeUtilityPanel === 'launcher' && activeRightUtilityTab ? activeRightUtilityTab : undefined;
+
+  // A session view carries its header (with the pane toggle) on the sheet.
+  const sessionViewShown =
+    !showSettings &&
+    activeWorkspace === 'chat' &&
+    sessionsLoaded &&
+    (chatLayoutMode === 'split' || Boolean(activeSession && !showNewSession));
+
+  // A docked right pane continues the main view's sheet on its right edge.
+  const rightPaneDocked =
+    !showSettings && activeWorkspace === 'chat' && activeUtilityPanel !== null && rightPanelFullscreen === null;
 
   const closeRightUtilityPanels = useCallback(() => {
-    setRightPanelLauncherOpen(false);
     closeRightUtilityPanelsInStore();
   }, [closeRightUtilityPanelsInStore]);
 
@@ -736,6 +739,7 @@ export function App() {
       const kind = getProjectUtilityTabKind(tab);
       if (kind === 'images') return { id: tab, kind, label: tab === `images:${environmentContext.sessionId}` && sourceImageLabel || 'Images' };
       if (kind === 'goal') return { id: tab, kind, label: 'Edit goal' };
+      if (kind === 'launcher') return { id: tab, kind, label: 'New tab' };
       if (kind === 'workflow-member') {
         const memberSessionId = getWorkflowMemberSessionId(tab);
         return {
@@ -852,10 +856,10 @@ export function App() {
     )
   );
 
+  // "+" and an empty pane's toggle add a Codex-style "New tab".
   const openRightUtilityLauncher = useCallback(() => {
-    setRightPanelLauncherOpen(true);
-    closeRightUtilityPanelsInStore();
-  }, [closeRightUtilityPanelsInStore]);
+    useAppStore.getState().openRightUtilityLauncherTab();
+  }, []);
 
   const toggleRightUtilityPanel = useCallback(() => {
     if (activeUtilityPanel) {
@@ -950,7 +954,6 @@ export function App() {
             if (current.activeSessionId === sessionId && current.activeWorkspace === 'chat'
               && !current.showSettings && currentSession?.status === 'completed'
               && extractLatestSuccessfulHtmlArtifactFromLatestTurn(currentSession.messages)?.toolUseId === artifact.toolUseId) {
-              setRightPanelLauncherOpen(false);
               openRightUtilityTab('browser');
             }
           })
@@ -988,7 +991,6 @@ export function App() {
       }
       autoPreviewedArtifactsRef.current.add(mediaKey);
       if (session.id === activeSessionId) {
-        setRightPanelLauncherOpen(false);
         openGeneratedMediaInFilesPanel(
           latestMedia,
           session.cwd,
@@ -1035,22 +1037,22 @@ export function App() {
   return (
     <BrowserNativeOverlayContext.Provider value={browserNativeOverlayContextValue}>
     <div
-      className={`aegis-window-shell flex h-full min-h-0 ${
+      className={`aegis-window-shell flex h-full min-h-0 flex-col ${
         windowShellRounded ? 'aegis-window-shell--rounded' : ''
       }`}
     >
-      {/* Sidebar */}
+      {/* Codex-style chrome: every column starts with a title-bar row on the
+          window chrome; below it the sidebar panel, the main view and the
+          right pane form one rounded sheet. */}
+      <div className="flex min-h-0 min-w-0 flex-1">
       {!showSettings && <Sidebar />}
 
-      {/* Main column: the tab strip sits on the window chrome; everything
-          below floats as a rounded content card (Linear-style figure/ground). */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      {!showSettings ? <AppTabBar /> : null}
       {/* Shared chat surface: the wallpaper lives here so it spans both the
           conversation and the utility workspace (including fullscreen). */}
       <div
         ref={skinHostRef}
-        className={`aegis-skin-host relative flex min-h-0 min-w-0 flex-1 overflow-hidden ${showSettings ? 'aegis-settings-host' : 'aegis-content-card'} ${
+        className={`aegis-skin-host relative flex min-h-0 min-w-0 flex-1 overflow-hidden ${showSettings ? 'aegis-settings-host' : 'aegis-main-host'} ${
           skinVisible ? 'aegis-skin-host--active' : ''
         }`}
       >
@@ -1074,7 +1076,9 @@ export function App() {
           of the shared chat surface (preserves existing layout). */}
       <div className={rightPanelFullscreen ? 'hidden' : 'contents'}>
       {!showSettings && activeWorkspace === 'chat' && !sessionsLoaded ? (
-        <div className="flex-1 min-w-0 bg-[var(--bg-primary)]" />
+        <MainSheet>
+          <div className="flex-1 min-w-0 bg-[var(--bg-primary)]" />
+        </MainSheet>
       ) : showSettings ? (
         <div className="flex-1 min-w-0 flex flex-col">
           <div className="flex-1 min-h-0">
@@ -1082,6 +1086,7 @@ export function App() {
           </div>
         </div>
       ) : activeWorkspace === 'skills' ? (
+        <MainSheet>
         <div className="flex-1 min-w-0 min-h-0 flex flex-col bg-[var(--bg-primary)]">
           <main className="min-w-0 flex-1 overflow-y-auto">
             <div className="mx-auto max-w-[1360px] px-8 py-8">
@@ -1089,20 +1094,24 @@ export function App() {
             </div>
           </main>
         </div>
+        </MainSheet>
       ) : activeWorkspace === 'automations' ? (
-        <AutomationsView />
+        <MainSheet>
+          <AutomationsView />
+        </MainSheet>
       ) : activeWorkspace === 'prs' ? (
-        <PullRequestsView />
+        <MainSheet>
+          <PullRequestsView />
+        </MainSheet>
       ) : chatLayoutMode === 'split' || (activeSession && !showNewSession) ? (
         <EnvironmentPanelProvider>
-        <div
-          className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--chat-pane-surface)]"
-        >
-          {/* Top drag region */}
-          <div className="relative h-11 flex-shrink-0 bg-[var(--chat-pane-surface)]">
-            <div className="flex h-full items-center justify-between px-3">
+        <MainSheet
+          joinedRight={rightPaneDocked}
+          sheetClassName="bg-[var(--chat-pane-surface)]"
+          header={
+            <div className="flex h-full min-w-0 flex-1 items-center justify-between">
               <div className="flex min-w-0 flex-1 items-center gap-2">
-                <div className="flex min-w-0 flex-1 items-center gap-2 pl-1">
+                <div className="flex min-w-0 flex-1 items-center gap-2">
                   {activeSession?.handoffSourceProvider ? (
                     <SessionHandoffProviderRoute
                       sourceProvider={activeSession.handoffSourceProvider}
@@ -1112,7 +1121,7 @@ export function App() {
                   <SessionTitleActions session={activeSession} className="text-[13px] font-medium text-[var(--text-primary)]" />
                 </div>
               </div>
-              <div className="flex shrink-0 items-center justify-end gap-1 pr-10">
+              <div className="flex shrink-0 items-center justify-end gap-1">
                 <div className="aegis-header-editor-actions">
                   <EnvironmentEditorPicker context={environmentContext} />
                 </div>
@@ -1140,10 +1149,16 @@ export function App() {
                 >
                   <BottomTerminalToggleIcon />
                 </button>
+                {activeUtilityPanel === null ? (
+                  <>
+                    <span aria-hidden="true" className="mx-1 h-4 w-px bg-[var(--border)]" />
+                    <PanelLauncher activePanel={activeUtilityPanel} onToggle={toggleRightUtilityPanel} />
+                  </>
+                ) : null}
               </div>
             </div>
-          </div>
-
+          }
+        >
           <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
             <WorkspaceHost
               codexModelConfig={codexModelConfig}
@@ -1164,10 +1179,12 @@ export function App() {
               cwd={activeSession?.cwd || projectCwd || null}
             />
           </div>
-        </div>
+        </MainSheet>
         </EnvironmentPanelProvider>
       ) : (
-        <NewSessionView key={newSessionKey} />
+        <MainSheet joinedRight={rightPaneDocked}>
+          <NewSessionView key={newSessionKey} />
+        </MainSheet>
       )}
       </div>
 
@@ -1193,7 +1210,7 @@ export function App() {
           fullscreen={rightPanelFullscreen !== null}
           onSelectTab={selectRightUtilityTab}
           onCloseTab={closeRightUtilityTab}
-          onOpenTab={openRightUtilityTab}
+          onOpenLauncher={openRightUtilityLauncher}
           onTogglePanel={toggleRightUtilityPanel}
           onToggleFullscreen={(() => {
             const target =
@@ -1209,17 +1226,31 @@ export function App() {
             return null;
           })()}
         >
+          {/* One page serves every "New tab"; picking a tool there replaces
+              the active New tab in place, like Codex. */}
           <RightPanelLauncherContent
+            key={activeUtilityPanel === 'launcher' ? activeRightUtilityTab ?? 'launcher' : 'launcher'}
             hidden={activeUtilityPanel !== 'launcher'}
             browserAvailable={true}
-            onOpenFiles={() => openRightUtilityTab('files')}
+            onOpenFiles={() => openRightUtilityTab('files', { newTab: true, replace: activeLauncherTab })}
             onOpenSideChat={() => {
+              const launcher = activeLauncherTab;
               void openSideChat(activeSessionId);
-              setRightPanelLauncherOpen(false);
+              if (launcher) closeRightUtilityTabInStore(launcher);
             }}
-            onOpenBrowser={() => openRightUtilityTab('browser')}
-            onOpenReview={() => openRightUtilityTab('review')}
-            onOpenTerminal={() => openRightUtilityTab('terminal')}
+            onOpenBrowser={() => openRightUtilityTab('browser', { newTab: true, replace: activeLauncherTab })}
+            onOpenReview={() => openRightUtilityTab('review', { replace: activeLauncherTab })}
+            onOpenTerminal={() => openRightUtilityTab('terminal', { replace: activeLauncherTab })}
+            onOpenUrl={(typed) => {
+              openRightUtilityTab('browser', { newTab: true, replace: activeLauncherTab });
+              const browserTab = useAppStore.getState().activeRightUtilityTab ?? 'browser';
+              void openUrlInBrowserSession({
+                sessionId: getBrowserUtilitySessionId(activeSessionId, browserTab),
+                url: resolveAddress(typed),
+              }).catch((reason) =>
+                toast.error(`Could not open the page: ${reason instanceof Error ? reason.message : String(reason)}`)
+              );
+            }}
           />
           {fileUtilityTabs.map((tabId) => (
             <ProjectTreePanel
@@ -1367,14 +1398,15 @@ export function App() {
       ) : null}
       </SessionRightPanelPresence>
 
-      {!showSettings && activeWorkspace === 'chat' && activeUtilityPanel === null ? (
-        <div className="absolute right-3 top-2 z-[90] no-drag">
+      {!showSettings && activeWorkspace === 'chat' && activeUtilityPanel === null && !sessionViewShown ? (
+        <div className="absolute right-3 top-1.5 z-[90] no-drag">
           <PanelLauncher
             activePanel={activeUtilityPanel}
             onToggle={toggleRightUtilityPanel}
           />
         </div>
       ) : null}
+      </div>
       </div>
       </div>
 
@@ -1446,7 +1478,7 @@ function getUtilityTabIcon(target: ProjectUtilityPanelKind) {
   if (target === 'images') return ImageStudioIcon;
   if (target === 'goal') return Target;
   if (target === 'terminal') return SquareTerminal;
-  if (target === 'browser') return Globe;
+  if (target === 'browser' || target === 'launcher') return Globe;
   if (target === 'side-chat') return MessageCircle;
   if (target === 'review') return FileDiff;
   if (target === 'subagent') return Users;
@@ -1468,7 +1500,7 @@ function RightUtilityWorkspace({
   onWidthChange,
   onSelectTab,
   onCloseTab,
-  onOpenTab,
+  onOpenLauncher,
   onTogglePanel,
   onToggleFullscreen,
   children,
@@ -1491,7 +1523,8 @@ function RightUtilityWorkspace({
   onWidthChange: (width: number) => void;
   onSelectTab: (target: ProjectUtilityPanelTarget) => void;
   onCloseTab: (target: ProjectUtilityPanelTarget) => void;
-  onOpenTab: (target: ProjectUtilityPanelKind, options?: { newTab?: boolean }) => void;
+  /** Show the new-tab page (the pane's tool launcher). */
+  onOpenLauncher: () => void;
   onTogglePanel: () => void;
   /** Fullscreen toggle for the active tab; null when it has no fullscreen. */
   onToggleFullscreen: (() => void) | null;
@@ -1507,8 +1540,7 @@ function RightUtilityWorkspace({
     return () => window.cancelAnimationFrame(raf);
   }, [instantReveal]);
 
-  const [nativeOverlayOpen, setNativeOverlayOpen] = useState(false);
-  useBrowserNativeOverlayRegistration(nativeOverlayOpen);
+  const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed);
 
   return (
     <ResizableRightPane
@@ -1522,6 +1554,8 @@ function RightUtilityWorkspace({
       activePanel={activePanel}
       onWidthChange={onWidthChange}
     >
+      {/* The tab strip sits in the title-bar row on the chrome; the panels
+          are the pane's piece of the sheet below it. */}
       <RightUtilityTabStrip
         tabs={tabs}
         activeTab={activeTab}
@@ -1530,13 +1564,16 @@ function RightUtilityWorkspace({
         fullscreen={fullscreen}
         onSelectTab={onSelectTab}
         onCloseTab={onCloseTab}
-        onOpenTab={onOpenTab}
+        onOpenLauncher={onOpenLauncher}
         onTogglePanel={onTogglePanel}
         onToggleFullscreen={onToggleFullscreen}
-        onNativeOverlayChange={setNativeOverlayOpen}
       />
 
-      <div className="relative min-h-0 flex-1 overflow-hidden">
+      <div
+        className={`aegis-sheet aegis-sheet--pane relative min-h-0 flex-1 overflow-hidden ${
+          fullscreen ? `aegis-sheet--pane-fullscreen ${sidebarCollapsed ? '' : 'aegis-sheet--join-left'}` : ''
+        }`}
+      >
         {children}
       </div>
     </ResizableRightPane>
@@ -1608,10 +1645,9 @@ function RightUtilityTabStrip({
   fullscreen,
   onSelectTab,
   onCloseTab,
-  onOpenTab,
+  onOpenLauncher,
   onTogglePanel,
   onToggleFullscreen,
-  onNativeOverlayChange,
 }: {
   tabs: ProjectUtilityTabDescriptor[];
   activeTab: ProjectUtilityPanelTarget | null;
@@ -1620,18 +1656,11 @@ function RightUtilityTabStrip({
   fullscreen: boolean;
   onSelectTab: (target: ProjectUtilityPanelTarget) => void;
   onCloseTab: (target: ProjectUtilityPanelTarget) => void;
-  onOpenTab: (target: ProjectUtilityPanelKind, options?: { newTab?: boolean }) => void;
+  onOpenLauncher: () => void;
   onTogglePanel: () => void;
   onToggleFullscreen: (() => void) | null;
-  onNativeOverlayChange: (open: boolean) => void;
 }) {
   const tabListRef = useRef<HTMLDivElement | null>(null);
-  const items = [
-    { id: 'files' as const, label: 'Files', icon: FolderClosed, disabled: false },
-    { id: 'browser' as const, label: 'Browser', icon: Globe, disabled: !browserAvailable },
-    { id: 'review' as const, label: 'Review', icon: FileDiff, disabled: false },
-    { id: 'terminal' as const, label: 'Terminal', icon: SquareTerminal, disabled: false },
-  ];
 
   useEffect(() => {
     if (!activeTab) return;
@@ -1648,7 +1677,7 @@ function RightUtilityTabStrip({
       // so dialog backdrops dim this strip like everything else. The old
       // z-[120] predates the native launcher popup and let the strip float
       // above every dialog overlay.
-      className="drag-region relative z-[80] flex h-10 shrink-0 items-center gap-1 overflow-visible bg-[var(--utility-pane-surface-strong)] backdrop-[var(--utility-pane-backdrop)] px-2"
+      className="drag-region relative z-[80] flex h-10 shrink-0 items-center gap-1 overflow-visible px-2"
     >
       <div
         ref={tabListRef}
@@ -1657,24 +1686,16 @@ function RightUtilityTabStrip({
         {tabs.map((tab, index) => {
           const Icon = getUtilityTabIcon(tab.kind);
           const active = activeTab === tab.id;
-          const prevTab = tabs[index - 1];
-          const showDivider = index > 0 && !active && prevTab?.id !== activeTab;
           // File tabs are labeled with the open file's name; show its type icon
           // (like a real editor tab) instead of the generic folder.
           const useFileIcon = (tab.kind === 'files' || tab.id.startsWith('sources:')) && tab.label.includes('.');
           return (
-            <div key={tab.id} className="flex flex-shrink-0 items-center">
-              <span
-                className={`mx-0.5 h-4 w-px flex-shrink-0 bg-[var(--border)] ${
-                  showDivider ? '' : 'opacity-0'
-                }`}
-                aria-hidden="true"
-              />
+            <div key={tab.id} className="flex flex-shrink-0 items-center pr-0.5">
               <div
-                className={`group flex h-8 max-w-[190px] items-center rounded-[9px] text-xs transition-colors ${
+                className={`group flex h-7 max-w-[190px] items-center rounded-[8px] text-xs transition-colors ${
                   active
-                    ? 'bg-[var(--sidebar-item-active)] font-medium text-[var(--text-primary)]'
-                    : 'bg-transparent text-[var(--text-secondary)] hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)]'
+                    ? 'bg-[var(--bg-primary)] text-[var(--text-primary)] shadow-[0_0_0_1px_var(--panel-soft-divider)]'
+                    : 'bg-transparent text-[var(--text-muted)] hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)]'
                 }`}
               >
                 <button
@@ -1729,40 +1750,15 @@ function RightUtilityTabStrip({
             </div>
           );
         })}
-        <DropdownMenu.Root onOpenChange={onNativeOverlayChange}>
-          <DropdownMenu.Trigger asChild>
-            <button
-              type="button"
-              className="ml-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px] text-[var(--text-secondary)] transition-colors hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] data-[popup-open]:bg-[var(--sidebar-item-hover)] data-[popup-open]:text-[var(--text-primary)]"
-              aria-label="Open another panel"
-            >
-              <Plus className="h-3.5 w-3.5" aria-hidden="true" />
-            </button>
-          </DropdownMenu.Trigger>
-          <DropdownMenu.Portal>
-            <DropdownMenu.Content align="start" sideOffset={6} className="min-w-[224px] p-1">
-              {items.map((item) => (
-                <DropdownMenu.Item
-                  key={item.id}
-                  disabled={item.disabled}
-                  // Compact rows matching the panel-launcher reference: icon +
-                  // tighter vertical rhythm on a wider card (defaults are
-                  // px-3 py-2 text-sm, visibly taller/narrower).
-                  className="gap-2 px-2.5 py-1.5 text-[13px]"
-                  onSelect={() =>
-                    onOpenTab(
-                      item.id,
-                      item.id === 'files' || item.id === 'browser' ? { newTab: true } : undefined
-                    )
-                  }
-                >
-                  <item.icon className="h-3.5 w-3.5 flex-shrink-0 text-[var(--text-muted)]" aria-hidden="true" />
-                  {item.label}
-                </DropdownMenu.Item>
-              ))}
-            </DropdownMenu.Content>
-          </DropdownMenu.Portal>
-        </DropdownMenu.Root>
+        <button
+          type="button"
+          onClick={onOpenLauncher}
+          className="ml-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] text-[var(--text-muted)] transition-colors hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+          aria-label="New tab"
+          title="New tab"
+        >
+          <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+        </button>
       </div>
       <div className="min-w-4 flex-1 self-stretch" aria-hidden="true" />
 
@@ -1901,6 +1897,10 @@ function getPanelLauncherItems({
   ];
 }
 
+/**
+ * The right pane's new-tab page, Codex-style: an address bar that opens the
+ * in-app browser, then the pane's tools as a two-column grid.
+ */
 function RightPanelLauncherContent({
   hidden,
   browserAvailable,
@@ -1909,6 +1909,7 @@ function RightPanelLauncherContent({
   onOpenBrowser,
   onOpenReview,
   onOpenTerminal,
+  onOpenUrl,
 }: {
   hidden: boolean;
   browserAvailable: boolean;
@@ -1917,6 +1918,7 @@ function RightPanelLauncherContent({
   onOpenBrowser: () => void;
   onOpenReview: () => void;
   onOpenTerminal: () => void;
+  onOpenUrl: (typed: string) => void;
 }) {
   const items = getPanelLauncherItems({
     browserAvailable,
@@ -1926,16 +1928,37 @@ function RightPanelLauncherContent({
     onOpenReview,
     onOpenTerminal,
   });
+  const [address, setAddress] = useState('');
 
   return (
     <div
-      className={`absolute inset-0 min-h-0 min-w-0 bg-[var(--bg-primary)] ${
-        hidden ? 'hidden' : 'flex flex-col'
-      }`}
+      className={`absolute inset-0 min-h-0 min-w-0 ${hidden ? 'hidden' : 'flex flex-col'}`}
       aria-hidden={hidden}
     >
-      <div className="flex min-h-0 flex-1 items-center justify-center px-6 pb-16">
-        <div className="flex w-full max-w-[420px] flex-col">
+      <form
+        className="flex h-[46px] flex-shrink-0 items-center px-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const typed = address.trim();
+          if (!typed || !browserAvailable) return;
+          onOpenUrl(typed);
+          setAddress('');
+        }}
+      >
+        <input
+          type="text"
+          value={address}
+          onChange={(event) => setAddress(event.target.value)}
+          disabled={!browserAvailable}
+          placeholder="Search or enter a URL"
+          aria-label="Search or enter a URL"
+          spellCheck={false}
+          className="h-[30px] min-w-0 flex-1 rounded-full border-0 bg-[var(--sidebar-item-hover)] px-4 text-center text-[12.5px] text-[var(--text-primary)] outline-none placeholder:text-[var(--text-muted)] focus:bg-[var(--sidebar-item-active)] focus:text-left disabled:opacity-50"
+        />
+      </form>
+      <div className="min-h-0 flex-1 overflow-y-auto px-7 pb-6 pt-4">
+        <div className="mb-2.5 text-[12px] text-[var(--text-muted)]">Tools</div>
+        <div className="grid grid-cols-2 gap-2">
           {items.map((item) => {
             const Icon = item.icon;
             const disabled = item.disabled === true;
@@ -1946,17 +1969,10 @@ function RightPanelLauncherContent({
                 disabled={disabled}
                 onClick={item.onSelect}
                 title={disabled ? item.disabledReason : item.label}
-                className={`flex h-10 min-w-0 items-center gap-3 rounded-lg px-4 text-left text-[var(--text-secondary)] transition-colors hover:bg-[#EFEFED] hover:text-[var(--text-primary)] ${
-                  disabled ? 'cursor-not-allowed opacity-45 hover:bg-transparent hover:text-[var(--text-secondary)]' : ''
-                }`}
+                className="flex h-[38px] min-w-0 items-center gap-2.5 rounded-[9px] bg-[var(--sidebar-item-hover)] px-3 text-left text-[13px] text-[var(--text-secondary)] transition-colors hover:bg-[var(--sidebar-item-active)] hover:text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-[var(--sidebar-item-hover)]"
               >
-                <Icon
-                  className="h-[18px] w-[18px] shrink-0 text-[var(--text-secondary)]"
-                  strokeWidth={1.5}
-                />
-                <span className="min-w-0 flex-1 truncate text-[13px] font-normal text-[var(--text-primary)]">
-                  {item.label}
-                </span>
+                <Icon className="h-[15px] w-[15px] shrink-0 text-[var(--text-muted)]" strokeWidth={1.6} />
+                <span className="min-w-0 flex-1 truncate">{item.label}</span>
               </button>
             );
           })}

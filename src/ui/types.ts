@@ -202,7 +202,7 @@ export interface SessionStreamingState {
 export type ActiveWorkspace = 'chat' | 'skills' | 'automations' | 'prs';
 export type ChatSidebarView = 'threads' | 'skills';
 export type ProjectPanelView = 'files' | 'changes';
-export type ProjectUtilityPanelKind = 'files' | 'side-chat' | 'browser' | 'review' | 'terminal' | 'subagent' | 'goal' | 'images' | 'sources' | 'workflow-member';
+export type ProjectUtilityPanelKind = 'files' | 'side-chat' | 'browser' | 'review' | 'terminal' | 'subagent' | 'goal' | 'images' | 'sources' | 'workflow-member' | 'launcher';
 export type ProjectUtilityPanelTarget =
   | ProjectUtilityPanelKind
   | `files:${string}`
@@ -218,7 +218,11 @@ export type ProjectUtilityPanelTarget =
   | `side-chat:${string}`
   // A workflow member's session (its id after the colon), opened from the
   // workflow board in the chat that started the workflow. Never persisted.
-  | `workflow-member:${string}`;
+  | `workflow-member:${string}`
+  // Codex-style "New tab": the pane's tool launcher as a tab of its own (a
+  // fresh id after the colon, so several can be open). Picking a tool in it
+  // replaces the tab in place. Never persisted.
+  | `launcher:${string}`;
 export interface ProjectFileOpenInput {
   cwd: string;
   path: string;
@@ -607,8 +611,12 @@ export interface AppActions {
        * reflows the chat pane every frame, which janks on heavy transcripts.
        */
       instantReveal?: boolean;
+      /** Put the opened tab where this tab is (a "New tab" picking a tool) and drop it. */
+      replace?: ProjectUtilityPanelTarget;
     }
   ) => void;
+  /** Add a "New tab" (the tool launcher) to the right pane and show it. */
+  openRightUtilityLauncherTab: () => void;
   openProjectFileInRightPanel: (request: ProjectFileOpenInput) => void;
   clearPendingProjectFileOpen: (requestId: number) => void;
   setReviewDiffSelection: (selection: ReviewDiffSelectionInput | null) => void;

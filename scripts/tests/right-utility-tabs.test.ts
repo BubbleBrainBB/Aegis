@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { resolveRightUtilityTabOpen } from '../../src/ui/utils/right-utility-tabs';
+import {
+  createLauncherTabId,
+  getRightUtilityTabKind,
+  replaceLauncherTab,
+  resolveRightUtilityTabOpen,
+} from '../../src/ui/utils/right-utility-tabs';
 import { resolveDockedRightPanelWidth } from '../../src/ui/utils/right-panel-width';
 
 async function main() {
@@ -44,35 +49,45 @@ async function main() {
   assert.deepEqual(existing.tabs, second.tabs, 'ordinary Files navigation should reuse a tab');
   assert.equal(existing.activeTab, first.activeTab);
 
+  // Codex-style "New tab": each one is its own tab, and picking a tool in it
+  // replaces that tab in place.
+  const launcherA = createLauncherTabId();
+  const launcherB = createLauncherTabId();
+  assert.notEqual(launcherA, launcherB, 'several New tabs can be open at once');
+  assert.equal(getRightUtilityTabKind(launcherA), 'launcher');
+  const withLaunchers = ['review', launcherA, 'terminal', launcherB] as const;
+  const pickedFiles = resolveRightUtilityTabOpen([...withLaunchers], 'files', { newTab: true });
+  assert.deepEqual(
+    replaceLauncherTab([...withLaunchers], pickedFiles.tabs, pickedFiles.activeTab, launcherA),
+    ['review', pickedFiles.activeTab, 'terminal', launcherB],
+    'a new tool tab takes the New tab\'s place'
+  );
+  const pickedReview = resolveRightUtilityTabOpen([...withLaunchers], 'review');
+  assert.deepEqual(
+    replaceLauncherTab([...withLaunchers], pickedReview.tabs, pickedReview.activeTab, launcherB),
+    ['review', launcherA, 'terminal'],
+    'picking a tool that is already open just drops the New tab'
+  );
+
   const appSource = await readFile(new URL('../../src/ui/App.tsx', import.meta.url), 'utf8');
-  // Tabs must open via onSelect (click completion) so Base UI still closes
-  // the popup itself. Firing on pointerdown reflows the tab strip mid-press,
-  // the popup re-anchors, and the release no longer counts as an item click,
-  // leaving the menu stuck open.
+  // Codex-style: "+" opens the new-tab page (the pane's tool launcher)
+  // instead of a dropdown, and the page's tools open tabs on click.
   assert.match(
     appSource,
-    /onSelect=\{\(\) =>\s*onOpenTab\(/,
-    'the plus menu must open tabs on select, not pointerdown'
+    /onClick=\{onOpenLauncher\}[\s\S]{0,600}aria-label="New tab"/,
+    'the plus button must open the new-tab page'
   );
-  assert.doesNotMatch(
+  // The launcher is an HTML surface in the pane, so the browser's native view
+  // must be collapsed whenever another panel (the launcher included) shows.
+  assert.match(
     appSource,
-    /onPointerDown=\{[\s\S]{0,200}?onOpenTab\(/,
-    'opening tabs on pointerdown leaves the plus menu stuck open'
+    /collapsed=\{activeUtilityPanel !== 'browser' \|\| activeRightUtilityTab !== tabId\}/,
+    'a browser tab must collapse its native view while the launcher shows'
   );
   assert.match(
     appSource,
     /scrollIntoView\(\{ block: 'nearest', inline: 'nearest' \}\)/,
     'a newly active utility tab must be scrolled into view'
-  );
-  assert.match(
-    appSource,
-    /onOpenChange=\{onNativeOverlayChange\}/,
-    'the plus menu must suspend the native browser view while open'
-  );
-  assert.match(
-    appSource,
-    /useBrowserNativeOverlayRegistration\(nativeOverlayOpen\)/,
-    'the plus menu must register with the shared native-view overlay manager'
   );
   assert.match(
     appSource,

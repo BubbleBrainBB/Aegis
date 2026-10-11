@@ -91,6 +91,8 @@ import {
   resolveRightUtilityTabOpen,
   resolveRightUtilityTabOpenPreservingActive,
   workflowMemberTab,
+  createLauncherTabId,
+  replaceLauncherTab,
 } from '../utils/right-utility-tabs';
 import {
   captureLiveRightPanel,
@@ -1891,7 +1893,9 @@ export const useAppStore = create<Store>()(
       const opened = resolveRightUtilityTabOpen(state.rightUtilityTabs, target, options);
       const activeKind = getRightUtilityTabKind(opened.activeTab);
       const patch: Partial<Store> = {
-        rightUtilityTabs: opened.tabs,
+        rightUtilityTabs: options?.replace
+          ? replaceLauncherTab(state.rightUtilityTabs, opened.tabs, opened.activeTab, options.replace)
+          : opened.tabs,
         activeRightUtilityTab: opened.activeTab,
         rightUtilityPanelHidden: false,
         rightPanelFullscreen: fullscreenFollowingTab(state.rightPanelFullscreen, opened.activeTab),
@@ -1920,6 +1924,20 @@ export const useAppStore = create<Store>()(
       }
 
       return patch;
+    });
+  },
+
+  openRightUtilityLauncherTab: () => {
+    set((state) => {
+      const tab = createLauncherTabId();
+      return {
+        rightUtilityTabs: [...state.rightUtilityTabs, tab],
+        activeRightUtilityTab: tab,
+        rightUtilityPanelHidden: false,
+        rightPanelFullscreen: null,
+        browserPanelOpen: false,
+        projectTreeCollapsed: true,
+      };
     });
   },
 

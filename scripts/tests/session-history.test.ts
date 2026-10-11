@@ -194,10 +194,26 @@ assert.equal(migrated.tabs[0].historyIndex, 0);
   assert.equal(upgraded.activeTabId, 'mixed');
 }
 
+// v4 drops the tab strip: only the active tab survives the upgrade.
+{
+  const upgraded = migrate(
+    {
+      tabs: [
+        { id: 'a', view: prs, history: [prs], historyIndex: 0 },
+        { id: 'b', view: chat(sessionY), history: [chat(sessionY)], historyIndex: 0 },
+      ],
+      activeTabId: 'b',
+    },
+    3
+  ) as { tabs: AppTab[]; activeTabId: string | null };
+  assert.deepEqual(upgraded.tabs.map((tab) => tab.id), ['b']);
+  assert.equal(upgraded.activeTabId, 'b');
+}
+
 // --- chrome placement -------------------------------------------------------
 
 async function main() {
-  for (const file of ['AppTabBar.tsx', 'Sidebar.tsx']) {
+  for (const file of ['Sidebar.tsx']) {
     const source = await readFile(
       new URL(`../../src/ui/components/${file}`, import.meta.url),
       'utf8'

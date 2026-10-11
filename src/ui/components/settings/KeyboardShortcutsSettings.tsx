@@ -91,7 +91,7 @@ export function KeyboardShortcutsSettings() {
       </div>
     </div>
     {error && <p role="alert" className="shortcut-error">{error}</p>}
-    {['Navigation', 'Conversation', 'Tabs'].map(group => {
+    {['Navigation', 'Conversation'].map(group => {
       const rows = commands.filter(c => c.group === group);
       if (!rows.length) return null;
       return <section key={group} className="shortcut-group" aria-label={group}>

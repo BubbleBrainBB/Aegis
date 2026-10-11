@@ -167,7 +167,8 @@ app.whenReady().then(async()=>{
   startPoint=await start();await input('mouseMove',startPoint.x+90,startPoint.y);await delay(100);
   assert.equal(await width(),nativeStart-90);
   assert.equal(await js('qa.commits.length'),nativeCommits);
-  assert.equal(nativeView.getBounds().width,Math.round(nativeStart-91),'native view tracks live DOM width before commit');
+  // 90px drag + the pane sheet's 1px edge on each side.
+  assert.equal(nativeView.getBounds().width,Math.round(nativeStart-92),'native view tracks live DOM width before commit');
   assert.equal(nativeView.getBounds().x,Math.round(1400-(nativeStart-90)+1),'native view tracks the moving left edge');
   assert.ok(bounds.length>1);
   await stop({x:startPoint.x+90,y:startPoint.y});

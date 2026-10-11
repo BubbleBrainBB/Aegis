@@ -9,7 +9,11 @@ import {
 import { useAppStore } from './useAppStore';
 
 /**
- * Browser-style tabs over the app's existing navigation. A tab does NOT own
+ * Navigation history for the main window. The window no longer shows a tab
+ * strip (sessions are switched from the sidebar and ⌘K), so there is one
+ * live tab; the store keeps the tab shape for its back/forward stack.
+ *
+ * Originally browser-style tabs over the app's existing navigation. A tab does NOT own
  * its content — it is a bookmark of a navigation state (which workspace,
  * which session). Switching tabs replays that state into
  * the global stores; navigating inside the app writes the new state back
@@ -198,7 +202,7 @@ export const useTabsStore = create<TabsStore>()(
     {
       name: 'cowork-tabs-storage',
       storage: createJSONStorage(() => rendererStateStorage),
-      version: 3,
+      version: 4,
       migrate: (persistedState) => {
         const state = persistedState as Partial<TabsStore> | undefined;
         // v1 tabs had no history (seed it with the current view); v2 could
@@ -219,7 +223,10 @@ export const useTabsStore = create<TabsStore>()(
         const activeTabId = tabs.some((tab) => tab.id === state?.activeTabId)
           ? state!.activeTabId!
           : tabs[0]?.id ?? null;
-        return { ...state, tabs, activeTabId };
+        // v3 could hold several tabs; with the strip gone only the active one
+        // is reachable, so keep just that one.
+        const kept = tabs.filter((tab) => tab.id === activeTabId);
+        return { ...state, tabs: kept, activeTabId };
       },
     }
   )

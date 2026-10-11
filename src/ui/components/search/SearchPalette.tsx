@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useState, type ComponentType, type ReactNode } from 'react';
-import { Boxes, FolderOpen, MessageSquare, Search, Settings, SquarePen } from '../icons';
+import { Boxes, Clock, FolderOpen, GitPullRequest, Home, MessageSquare, Search, Settings, SquarePen } from '../icons';
 import {
   CommandDialog,
   CommandEmpty,
@@ -27,7 +27,9 @@ type Icon = ComponentType<{ className?: string }>;
 const ACTION_ICON: Partial<Record<string, Icon>> = {
   'new-thread': SquarePen,
   'open-project': FolderOpen,
-  'switch-chat': MessageSquare,
+  'switch-chat': Home,
+  'switch-automations': Clock,
+  'switch-prs': GitPullRequest,
   'switch-skills': Boxes,
   settings: Settings,
 };
@@ -107,24 +109,11 @@ export function SearchPalette(props: SearchPaletteProps) {
     run();
   };
 
+  // Codex-style order: recent sessions lead, then actions and projects.
   const sections: Array<{ key: string; heading: string; rows: ReactNode[] }> = [
     {
-      key: 'actions',
-      heading: 'Suggested',
-      rows: results.actions.map((action) => (
-        <ResultRow
-          key={action.id}
-          value={`action:${action.id}`}
-          icon={ACTION_ICON[action.id]}
-          onSelect={closeThen(() => props.onPickAction(action.id))}
-          title={action.label}
-          aside={action.shortcut ? <CommandShortcut>{action.shortcut}</CommandShortcut> : null}
-        />
-      )),
-    },
-    {
       key: 'threads',
-      heading: query ? 'Threads' : 'Recent',
+      heading: query ? 'Sessions' : 'Recent sessions',
       rows: results.threads.map((hit) => {
         const label = threadHitLabel(hit);
         return (
@@ -159,6 +148,20 @@ export function SearchPalette(props: SearchPaletteProps) {
       }),
     },
     {
+      key: 'actions',
+      heading: 'Actions',
+      rows: results.actions.map((action) => (
+        <ResultRow
+          key={action.id}
+          value={`action:${action.id}`}
+          icon={ACTION_ICON[action.id]}
+          onSelect={closeThen(() => props.onPickAction(action.id))}
+          title={action.label}
+          aside={action.shortcut ? <CommandShortcut>{action.shortcut}</CommandShortcut> : null}
+        />
+      )),
+    },
+    {
       key: 'projects',
       heading: 'Projects',
       rows: results.projects.map((project) => (
@@ -184,7 +187,7 @@ export function SearchPalette(props: SearchPaletteProps) {
       <CommandInput
         value={query}
         onValueChange={setQuery}
-        placeholder="Search threads, projects, and actions"
+        placeholder="Search sessions, projects and actions"
         startAddon={<Search className="h-4 w-4" />}
       />
       <CommandList>
@@ -204,8 +207,8 @@ export function SearchPalette(props: SearchPaletteProps) {
         ))}
       </CommandList>
       <CommandFooter>
-        <span>Sessions, projects and app commands</span>
-        <span>↵ to open · esc to close</span>
+        <span>↑↓ Move · ↵ Open</span>
+        <span>esc Close</span>
       </CommandFooter>
     </CommandDialog>
   );

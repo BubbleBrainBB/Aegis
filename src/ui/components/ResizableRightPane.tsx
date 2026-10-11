@@ -215,7 +215,7 @@ export function ResizableRightPane({
       )}
       <div className="absolute inset-0 overflow-hidden">
         <motion.div
-          className="absolute inset-y-0 left-0 flex min-h-0 flex-col overflow-hidden border-l border-[var(--border)] bg-[var(--utility-pane-surface)] backdrop-[var(--utility-pane-backdrop)] [contain:layout_paint]"
+          className="absolute inset-y-0 left-0 flex min-h-0 flex-col overflow-hidden [contain:layout_paint]"
           style={{ width: contentWidth }}
         >
           {children}

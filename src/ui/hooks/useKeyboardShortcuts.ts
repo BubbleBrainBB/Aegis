@@ -31,7 +31,6 @@ export function useKeyboardShortcuts() {
       if (editing && ['sidebar', 'activity', 'back', 'forward'].includes(id)) return;
       if (id === 'find' && (state.activeWorkspace !== 'chat' || !state.activeSessionId)) return;
       const tabs = useTabsStore.getState();
-      if (id === 'closeTab' && (tabs.tabs.length <= 1 || !tabs.activeTabId)) return;
       event.preventDefault();
       switch (id) {
         case 'search': state.toggleSearchPalette(); break;
@@ -43,20 +42,6 @@ export function useKeyboardShortcuts() {
         case 'newTask': state.setShowNewSession(true); break;
         case 'find': state.openInSessionSearch(); break;
         case 'screenshot': void startScreenshotCapture('area'); break;
-        case 'newTab': tabs.openTab({ kind: 'chat', sessionId: null }); break;
-        case 'closeTab': tabs.closeTab(tabs.activeTabId!); break;
-        case 'nextTab':
-        case 'previousTab': {
-          const index = tabs.tabs.findIndex(t => t.id === tabs.activeTabId);
-          const next = tabs.tabs[(index + (id === 'nextTab' ? 1 : -1) + tabs.tabs.length) % tabs.tabs.length];
-          if (next) tabs.activateTab(next.id);
-          break;
-        }
-        default: {
-          const number = Number(id.slice(3));
-          const tab = number === 9 ? tabs.tabs.at(-1) : tabs.tabs[number - 1];
-          if (tab) tabs.activateTab(tab.id);
-        }
       }
     };
     // Bubble on window: React controls and document-level local handlers get priority.

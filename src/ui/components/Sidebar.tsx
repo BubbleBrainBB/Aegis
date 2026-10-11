@@ -9,8 +9,9 @@ import {
   type ReactNode,
 } from 'react';
 import {
-  FolderOpen,
   GitPullRequest,
+  Home,
+  HomeFilled,
   Script,
   Search,
   SquarePen,
@@ -76,17 +77,23 @@ function SidebarToggleButton({
   );
 }
 
-export function SidebarHeaderTrigger({ className = '' }: { className?: string }) {
-  // Click only: the collapsed sidebar opens from this button (or its
-  // shortcut), never on hover.
-  const { sidebarCollapsed, setSidebarCollapsed } = useAppStore();
+/**
+ * Sidebar toggle and Back/Forward, Codex-style, right of the traffic lights.
+ * The sidebar's top row hosts them while it is open; a collapsed sidebar
+ * hands them to the main column's top row.
+ */
+export function TitlebarControls() {
+  const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed);
+  const setSidebarCollapsed = useAppStore((state) => state.setSidebarCollapsed);
 
   return (
-    <SidebarToggleButton
-      collapsed={sidebarCollapsed}
-      className={className}
-      onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-    />
+    <div className="no-drag flex flex-shrink-0 items-center gap-0.5" data-titlebar-controls>
+      <SidebarToggleButton
+        collapsed={sidebarCollapsed}
+        onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+      />
+      <SessionHistoryButtons />
+    </div>
   );
 }
 
@@ -183,11 +190,6 @@ export function Sidebar() {
     createDraftSession(selected, DEFAULT_WORKSPACE_CHANNEL_ID);
   };
 
-  const toggleSidebarCollapsed = () => {
-    finishSidebarResize();
-    setSidebarCollapsed(!sidebarCollapsed);
-  };
-
   const shortcuts = useAppPreferences(state => state.keyboardShortcuts);
   const paletteActions = useMemo<PaletteAction[]>(
     () => [
@@ -206,8 +208,8 @@ export function Sidebar() {
       },
       {
         id: 'switch-chat',
-        label: 'Go to Threads',
-        description: 'Show the threads workspace',
+        label: 'Go to Home',
+        description: 'Show your sessions',
         keywords: ['chat', 'sessions'],
       },
       {
@@ -246,6 +248,11 @@ export function Sidebar() {
           session.scope !== 'dm'
       ),
     [sessions]
+  );
+
+  const hasRunningSession = useMemo(
+    () => visibleSessions.some((session) => session.status === 'running'),
+    [visibleSessions]
   );
 
   const paletteProjects = useMemo<PaletteProject[]>(() => {
@@ -364,8 +371,9 @@ export function Sidebar() {
     setShowSettings(false);
   };
 
-  const openSkillWorkspace = () => {
-    setActiveWorkspace('skills');
+
+  const goToWorkspace = (workspace: 'chat' | 'automations' | 'prs' | 'skills') => {
+    setActiveWorkspace(workspace);
     setChatSidebarView('threads');
     setShowSettings(false);
   };
@@ -380,29 +388,36 @@ export function Sidebar() {
         />
       )}
 
-      <div className="aegis-sidebar relative flex h-full min-h-0 flex-shrink-0 self-stretch select-none">
+      <div className="aegis-sidebar relative flex h-full min-h-0 flex-shrink-0 flex-col self-stretch select-none">
+        {/* Title bar row over the rail and panel: traffic lights, then the
+            toggle and history. Collapsed, the main column's row hosts them. */}
         <div
-          className="relative flex h-full min-h-0 flex-shrink-0 self-stretch overflow-hidden transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]"
+          className={`drag-region flex h-10 flex-shrink-0 items-center ${sidebarCollapsed ? '' : 'pl-[84px] pr-2'}`}
+        >
+          {!sidebarCollapsed ? <TitlebarControls /> : null}
+        </div>
+        <div className="flex min-h-0 flex-1">
+        <SidebarRail
+          activeWorkspace={activeWorkspace}
+          showRunningDot={sidebarCollapsed && hasRunningSession}
+          onSelect={goToWorkspace}
+          onOpenSettings={() => setShowSettings(true)}
+        />
+
+        <div
+          className="relative flex h-full min-h-0 flex-shrink-0 self-stretch overflow-hidden pb-1 transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]"
           style={{ width: sidebarCollapsed ? 0 : sidebarWidth }}
         >
           <div
-            className={`relative h-full flex min-h-0 flex-col overflow-hidden bg-[var(--app-sidebar-surface)] transition-[opacity,transform] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+            className={`aegis-sidebar-panel relative h-full flex min-h-0 flex-col overflow-hidden transition-[opacity,transform] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] ${
                 sidebarHidden ? '-translate-x-2 opacity-0 pointer-events-none' : 'translate-x-0 opacity-100'
               }`}
-            style={{ width: sidebarWidth, minWidth: sidebarWidth, backdropFilter: 'var(--app-sidebar-backdrop-filter)', WebkitBackdropFilter: 'var(--app-sidebar-backdrop-filter)' }}
+            style={{ width: sidebarWidth, minWidth: sidebarWidth }}
             aria-hidden={sidebarHidden}
           >
-            <div className="drag-region flex h-12 flex-shrink-0 items-center gap-0.5 pl-[84px] pr-2">
-              <SidebarToggleButton
-                collapsed={sidebarCollapsed}
-                onClick={toggleSidebarCollapsed}
-              />
-              <SessionHistoryButtons />
-            </div>
-
             <div className="flex min-h-0 flex-1 flex-col">
-              <div className="flex items-center justify-between px-3 pb-2 pt-1">
-                <div className="aegis-sidebar-brand font-semibold leading-none tracking-[-0.04em] text-[var(--text-primary)]">
+              <div className="flex items-center justify-between pb-1 pl-3.5 pr-2 pt-2.5">
+                <div className="aegis-sidebar-brand font-semibold leading-none tracking-[-0.02em] text-[var(--text-primary)]">
                   Aegis
                 </div>
                 <div className="flex items-center gap-0.5">
@@ -411,7 +426,7 @@ export function Sidebar() {
                     onClick={() => setSearchPaletteOpen(true)}
                     className={SIDEBAR_TRIGGER_CLASS}
                     aria-label="Search"
-                    title="Search"
+                    title={['Search', shortcutLabel('search', shortcuts)].filter(Boolean).join(' · ')}
                   >
                     <Search className="h-4 w-4" strokeWidth={1.4} />
                   </button>
@@ -419,14 +434,12 @@ export function Sidebar() {
                 </div>
               </div>
 
-              <div className="px-2 pt-1">
+              <div className="px-2 pt-2">
                 <SidebarNavRow
                   icon={<SquarePen className="h-[15px] w-[15px]" />}
                   label="New Task"
                   onClick={() => {
-                    setShowSettings(false);
-                    setActiveWorkspace('chat');
-                    setChatSidebarView('threads');
+                    goToWorkspace('chat');
                     createDraftSession(newThreadCwd, getActiveChannelIdForProject(newThreadCwd));
                   }}
                 />
@@ -438,37 +451,6 @@ export function Sidebar() {
                   className="sidebar-scrollbar h-full overflow-y-auto overflow-x-hidden px-2"
                   data-sidebar-scroll-region
                 >
-                  <div className="pb-2 pt-0.5">
-                    <div className="space-y-0.5">
-                      <SidebarNavRow
-                        icon={<Clock className="h-[15px] w-[15px]" />}
-                        label="Automations"
-                        active={activeWorkspace === 'automations'}
-                        onClick={() => {
-                          setActiveWorkspace('automations');
-                          setChatSidebarView('threads');
-                          setShowSettings(false);
-                        }}
-                      />
-                      <SidebarNavRow
-                        icon={<GitPullRequest className="h-[15px] w-[15px]" />}
-                        label="Pull Requests"
-                        active={activeWorkspace === 'prs'}
-                        onClick={() => {
-                          setActiveWorkspace('prs');
-                          setChatSidebarView('threads');
-                          setShowSettings(false);
-                        }}
-                      />
-                      <SidebarNavRow
-                        icon={<Script className="h-[15px] w-[15px]" />}
-                        label="Skill Library"
-                        active={activeWorkspace === 'skills'}
-                        onClick={openSkillWorkspace}
-                      />
-                    </div>
-                  </div>
-
                   <div className="pt-3">
                     <FolderTreeView
                       onSessionClick={(sessionId, options) => {
@@ -497,21 +479,18 @@ export function Sidebar() {
 
                 <CappedScrollbar scrollRef={sidebarScrollRef} />
               </div>
-
-              <div className="shrink-0 px-2 py-2">
-                <SidebarProfileMenu onOpenSettings={() => setShowSettings(true)} />
-              </div>
             </div>
           </div>
 
           {!sidebarCollapsed ? (
             <div
-              className="group absolute right-0 top-0 bottom-0 w-3 translate-x-1/2 cursor-col-resize no-drag"
+              className="group absolute right-0 top-0 bottom-1 w-3 translate-x-1/2 cursor-col-resize no-drag"
               onMouseDown={handleSidebarResizeStart}
             >
               <div className="absolute left-1/2 top-0 bottom-0 w-px -translate-x-1/2 bg-transparent group-hover:bg-[var(--border)]" />
             </div>
           ) : null}
+        </div>
         </div>
       </div>
 
@@ -526,6 +505,82 @@ export function Sidebar() {
         onPickThread={openThreadFromPalette}
       />
     </>
+  );
+}
+
+const RAIL_BUTTON_CLASS =
+  'no-drag relative inline-flex h-[30px] w-[30px] items-center justify-center rounded-[9px] transition-[background-color,color,transform] duration-150 ease-[cubic-bezier(0.22,1,0.36,1)] active:scale-95';
+
+/**
+ * The always-visible icon rail on the window's left edge. It switches the
+ * app's top-level sections; the panel beside it shows the current one.
+ */
+function SidebarRail({
+  activeWorkspace,
+  showRunningDot,
+  onSelect,
+  onOpenSettings,
+}: {
+  activeWorkspace: string;
+  showRunningDot: boolean;
+  onSelect: (workspace: 'chat' | 'automations' | 'prs' | 'skills') => void;
+  onOpenSettings: () => void;
+}) {
+  const item = (
+    workspace: 'chat' | 'automations' | 'prs' | 'skills',
+    label: string,
+    icon: ReactNode,
+    activeIcon?: ReactNode,
+    dot = false
+  ) => {
+    const active = activeWorkspace === workspace;
+    return (
+      <button
+        type="button"
+        onClick={(event) => {
+          onSelect(workspace);
+          event.currentTarget.blur();
+        }}
+        aria-label={label}
+        aria-current={active ? 'page' : undefined}
+        title={label}
+        className={`${RAIL_BUTTON_CLASS} ${
+          active
+            ? 'bg-[var(--sidebar-item-active)] text-[var(--text-primary)]'
+            : 'text-[var(--text-muted)] hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)]'
+        }`}
+      >
+        {active && activeIcon ? activeIcon : icon}
+        {dot ? (
+          <span
+            role="img"
+            aria-label="A task is running"
+            className="absolute right-[3px] top-[3px] h-[7px] w-[7px] rounded-full bg-[var(--text-primary)] ring-2 ring-[var(--app-chrome-bg)]"
+          />
+        ) : null}
+      </button>
+    );
+  };
+
+  return (
+    <nav
+      aria-label="Sections"
+      className="flex h-full w-11 flex-shrink-0 flex-col items-center gap-1.5 pb-3"
+    >
+      {item(
+        'chat',
+        'Home',
+        <Home className="h-[17px] w-[17px]" strokeWidth={1.6} />,
+        <HomeFilled className="h-[17px] w-[17px]" />,
+        showRunningDot
+      )}
+      {item('skills', 'Skill Library', <Script className="h-[17px] w-[17px]" strokeWidth={1.6} />)}
+      {item('automations', 'Automations', <Clock className="h-[17px] w-[17px]" strokeWidth={1.6} />)}
+      <div aria-hidden="true" className="my-1 h-px w-[22px] bg-[var(--panel-soft-divider)]" />
+      {item('prs', 'Pull Requests', <GitPullRequest className="h-[17px] w-[17px]" strokeWidth={1.6} />)}
+      <div className="flex-1" />
+      <SidebarProfileMenu variant="rail" onOpenSettings={onOpenSettings} />
+    </nav>
   );
 }
 

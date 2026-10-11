@@ -14,7 +14,14 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 
-export function SidebarProfileMenu({ onOpenSettings }: { onOpenSettings: () => void }) {
+export function SidebarProfileMenu({
+  onOpenSettings,
+  variant = 'row',
+}: {
+  onOpenSettings: () => void;
+  /** `rail`: avatar-only trigger at the foot of the icon rail. */
+  variant?: 'row' | 'rail';
+}) {
   const profile = useUserProfile();
   const displayName = profile?.displayName || 'Profile';
   const shortcuts = useAppPreferences((state) => state.keyboardShortcuts);
@@ -31,17 +38,33 @@ export function SidebarProfileMenu({ onOpenSettings }: { onOpenSettings: () => v
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          aria-label={`Profile menu: ${displayName}`}
-          title={displayName}
-          className="no-drag flex h-8 w-full min-w-0 items-center gap-1.5 rounded-lg px-2 text-left text-[var(--text-secondary)] outline-none transition-colors duration-150 hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--accent)] data-[popup-open]:bg-[var(--sidebar-item-hover)]"
-        >
-          {avatar(true)}
-          <span className="sidebar-profile-name min-w-0 truncate text-[12px] font-normal">{displayName}</span>
-        </button>
+        {variant === 'rail' ? (
+          <button
+            type="button"
+            aria-label={`Profile menu: ${displayName}`}
+            title={displayName}
+            className="no-drag flex h-8 w-8 items-center justify-center rounded-full outline-none transition-transform duration-150 active:scale-95 focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+          >
+            {avatar()}
+          </button>
+        ) : (
+          <button
+            type="button"
+            aria-label={`Profile menu: ${displayName}`}
+            title={displayName}
+            className="no-drag flex h-8 w-full min-w-0 items-center gap-1.5 rounded-lg px-2 text-left text-[var(--text-secondary)] outline-none transition-colors duration-150 hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--accent)] data-[popup-open]:bg-[var(--sidebar-item-hover)]"
+          >
+            {avatar(true)}
+            <span className="sidebar-profile-name min-w-0 truncate text-[12px] font-normal">{displayName}</span>
+          </button>
+        )}
       </DropdownMenuTrigger>
-      <DropdownMenuContent side="top" align="start" sideOffset={8} className="w-[var(--anchor-width)] min-w-[200px]">
+      <DropdownMenuContent
+        side={variant === 'rail' ? 'right' : 'top'}
+        align={variant === 'rail' ? 'end' : 'start'}
+        sideOffset={8}
+        className={variant === 'rail' ? 'min-w-[220px]' : 'w-[var(--anchor-width)] min-w-[200px]'}
+      >
         <div className="flex min-w-0 items-center gap-2 px-2 py-2">
           {avatar()}
           <div className="min-w-0">

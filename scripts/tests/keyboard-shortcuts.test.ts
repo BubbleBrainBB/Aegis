@@ -12,13 +12,13 @@ assert(!matchesShortcut(key({ key: 'Tab', code: 'Tab', metaKey: false, ctrlKey: 
 assert.equal(shortcutFromEvent(key({ key: 'Dead', code: 'KeyU', altKey: true }), true), 'Mod+Alt+KeyU');
 assert.equal(shortcutFromEvent(key({ metaKey: false }), true), null);
 assert.equal(shortcutFromEvent(key({ metaKey: false, altKey: true }), true), null);
-assert.deepEqual(normalizeShortcutOverrides({ unknown: ['Mod+KeyA'], search: [], sidebar: ['bogus'], newTab: ['Shift+Mod+KeyT', 'Shift+Mod+KeyT'] }), { search: [], newTab: ['Mod+Shift+KeyT'] });
+assert.deepEqual(normalizeShortcutOverrides({ unknown: ['Mod+KeyA'], search: [], sidebar: ['bogus'], newTask: ['Shift+Mod+KeyT', 'Shift+Mod+KeyT'] }), { search: [], newTask: ['Mod+Shift+KeyT'] });
 assert.deepEqual(shortcutBindings('search', { search: [] }), []);
-assert.equal(shortcutConflict('Mod+KeyT', 'search', {}, true), 'New tab');
+assert.equal(shortcutConflict('Mod+KeyN', 'search', {}, true), 'New task');
 assert.equal(shortcutConflict('Mod+KeyC', 'search', {}, true), 'Copy');
 assert.equal(shortcutConflict('Mod+Ctrl+KeyF', 'search', {}, true), 'Full screen');
-assert.equal(shortcutConflict('Mod+KeyT', 'search', { newTab: [] }, true), null);
-assert.equal(shortcutConflict('Ctrl+KeyT', 'search', {}, false), 'New tab');
+assert.equal(shortcutConflict('Mod+KeyN', 'search', { newTask: [] }, true), null);
+assert.equal(shortcutConflict('Ctrl+KeyN', 'search', {}, false), 'New task');
 assert.deepEqual(shortcutKeycaps('Mod+Shift+KeyK', true), ['⇧', '⌘', 'K']);
 assert.deepEqual(shortcutKeycaps('Mod+Shift+KeyK', false), ['Ctrl', 'Shift', 'K']);
 assert.equal(shortcutFromEvent(key({ metaKey: false, key: 'Enter', code: 'Enter', shiftKey: true }), true, true), 'Shift+Enter');

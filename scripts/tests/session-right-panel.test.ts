@@ -212,10 +212,14 @@ async function assertWiring() {
   );
   assert.match(storeSource, /switchSessionRightPanel\(/);
   assert.match(storeSource, /rightPanelBySessionId:/);
+  // The launcher is a "New tab" in the session's own tab list (no app-level
+  // open flag), so switching sessions swaps it out with the rest of the
+  // panel and an empty session stays collapsed.
+  assert.doesNotMatch(appSource, /rightPanelLauncherOpen/);
   assert.match(
-    appSource,
-    /setRightPanelLauncherOpen\(false\);\s*\}, \[activeSessionId\]\)/,
-    'switching sessions must dismiss the right-panel launcher so an empty session stays collapsed'
+    storeSource,
+    /openRightUtilityLauncherTab: \(\) => \{[\s\S]{0,200}rightUtilityTabs: \[\.\.\.state\.rightUtilityTabs, tab\]/,
+    'a New tab must live in the session-scoped tab list'
   );
   assert.match(treePanelSource, /syncSessionFileTabs\(/);
   assert.match(
