@@ -3512,15 +3512,6 @@ button.aegis-mdx-metadata-key:hover {
   }
 }
 
-/* A manually collapsed sidebar should leave a calm, fully usable chat at
-   compact desktop widths. Keep the desktop information hierarchy, but release
-   non-essential chrome and reclaim the outer gutters before controls collide. */
-@media (max-width: 640px) {
-  .aegis-header-editor-actions {
-    display: none;
-  }
-}
-
 /* Match Codex's desktop composer-footer container query: side panels can
    narrow the composer while the window itself remains wide. */
 .aegis-composer-toolbar {

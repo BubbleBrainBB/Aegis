@@ -51,6 +51,7 @@ import { PullRequestsView } from './components/PullRequestsView';
 import { useTabsStore, type TabView } from './store/useTabsStore';
 import { NewSessionView } from './components/NewSessionView';
 import { SessionTitleActions } from './components/SessionTitleActions';
+import { SessionActionsMenu } from './components/SessionActionsMenu';
 import { LogoShimmer } from './components/LogoShimmer';
 import { SessionHandoffProviderRoute } from './components/SessionHandoffIndicator';
 import { PromptInput } from './components/PromptInput';
@@ -76,7 +77,7 @@ import { getSubagentPersona } from './utils/subagent-persona';
 import { WorkspaceHost } from './components/WorkspaceHost';
 import { ChatPane } from './components/ChatPane';
 import { useBrowserStateStore, type RememberedPage } from './store/useBrowserStateStore';
-import { EnvironmentEditorPicker, EnvironmentHub } from './components/environment/EnvironmentHub';
+import { EnvironmentHub } from './components/environment/EnvironmentHub';
 import { SessionSourcesPanel } from './components/SessionSourcesPanel';
 import { useSessionSources } from './hooks/useSessionSources';
 import { getRightUtilityTabKind, sessionSourceTabPath } from './utils/right-utility-tabs';
@@ -1118,13 +1119,11 @@ export function App() {
                       targetProvider={activeSession.provider ?? 'claude'}
                     />
                   ) : null}
-                  <SessionTitleActions session={activeSession} className="text-[13px] font-medium text-[var(--text-primary)]" />
+                  <SessionTitleActions session={activeSession} showMenu={false} className="text-[13px] font-medium text-[var(--text-primary)]" />
                 </div>
               </div>
               <div className="flex shrink-0 items-center justify-end gap-1">
-                <div className="aegis-header-editor-actions">
-                  <EnvironmentEditorPicker context={environmentContext} />
-                </div>
+                {activeSession ? <SessionActionsMenu session={activeSession} /> : null}
                 <EnvironmentHub
                   context={environmentContext}
                   git={gitEnvironment}
