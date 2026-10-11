@@ -26,6 +26,8 @@ import { setupSessionProjectIPC } from './ipc/session-project';
 import { broadcastSessionEvent } from './ipc/session-windows';
 import { getGitPullRequestInfo, parseGitHubRepoFromRemote } from './libs/git-pull-requests';
 import { setupSessionPullRequestsIPC } from './ipc/session-pull-requests';
+import { registerDesignIpc } from './design/ipc';
+import { deleteSessionDesigns, moveSessionDesigns } from './design/service';
 import { disposeSessionHttpServer, primeSessionToken, releaseKimiWidgetEntrySync, writeKimiWidgetEntry } from './libs/session-http-server';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, shell } from 'electron';
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from 'http';
@@ -5124,6 +5126,7 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
   });
 
   setupSessionPullRequestsIPC();
+  registerDesignIpc();
   setupWorkflows(mainWindow);
   setupSessionGoalIPC({
     changeClaudeGoal: async (sessionId, action, settings) => {
@@ -9263,6 +9266,8 @@ async function handleSessionStart(
   onCreated?.(session.id);
   // Pages opened while it was a draft now belong to the real chat.
   if (payload.draftSessionId) browserManager.rekeyChat(payload.draftSessionId, session.id);
+  // So do designs drawn on the draft's canvas.
+  if (payload.draftSessionId) moveSessionDesigns(payload.draftSessionId, session.id);
 
   // 更新状态为 running
   sessions.updateSessionStatus(session.id, 'running');
@@ -12035,6 +12040,7 @@ function handleSessionDelete(mainWindow: BrowserWindow, sessionId: string): void
 
   // 删除数据库记录
   sessions.deleteSession(sessionId);
+  deleteSessionDesigns(sessionId);
   trackTaskPowerState(sessionId, false);
   removeClaudeGoalState(sessionId);
 

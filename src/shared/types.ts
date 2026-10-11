@@ -1005,7 +1005,7 @@ export type ServerEvent =
   | { type: 'session.renamed'; payload: { sessionId: string; title: string; updatedAt: number } }
   | {
       type: 'stream.user_prompt';
-      payload: { sessionId: string; prompt: string; attachments?: Attachment[]; createdAt?: number; workflowPrompt?: WorkflowPromptKind };
+      payload: { sessionId: string; prompt: string; attachments?: Attachment[]; createdAt?: number; workflowPrompt?: WorkflowPromptKind; design?: DesignPromptRef };
     }
   | { type: 'stream.message'; payload: { sessionId: string; message: StreamMessage } }
   // Incremental stdout/stderr from a tool that is still running (codex
@@ -1194,10 +1194,26 @@ export interface BubbleRewindInput {
   dryRun?: boolean;
 }
 
+/** Links a chat message to the design comment thread it was sent from. */
+export interface DesignPromptRef {
+  kind: 'design-comment';
+  documentId: string;
+  documentTitle: string;
+  boardId: string;
+  boardName: string;
+  layerName?: string;
+  commentId: string;
+  messageId: string;
+  /** A follow-up in an existing thread rather than a new comment. */
+  reply: boolean;
+}
+
 export interface SessionContinuePayload {
   sessionId: string;
   prompt: string;
   effectivePrompt?: string;
+  /** Design comment thread this message was sent from. */
+  design?: DesignPromptRef;
   workflowPrompt?: WorkflowPromptKind;
   attachments?: Attachment[];
   provider?: AgentProvider;
@@ -1745,7 +1761,7 @@ export interface AvailableCommand {
 }
 
 export type StreamMessage =
-  | (StreamMessageBase & { type: 'user_prompt'; prompt: string; attachments?: Attachment[]; workflowPrompt?: WorkflowPromptKind })
+  | (StreamMessageBase & { type: 'user_prompt'; prompt: string; attachments?: Attachment[]; workflowPrompt?: WorkflowPromptKind; design?: DesignPromptRef })
   | (StreamMessageBase & {
       /** Durable, native completion metadata; never sent to the model as a prompt. */
       type: 'goal_completed';

@@ -421,6 +421,8 @@ declare global {
     createInlineImageAttachment: (mimeType: string, data: Uint8Array) => Promise<Attachment | null>;
     writeProjectTextFile: (cwd: string, filePath: string, content: string) => Promise<{ ok: boolean; message?: string; size?: number; mtimeMs?: number }>;
     previewArtifactPath: (cwd: string, filePath: string, options?: { openInBrowser?: boolean }) => Promise<{ ok: boolean; url?: string; message?: string }>;
+    /** Design canvases: session-bound HTML boards. */
+    design: import('./shared/design-types').DesignAPI;
     /** Copy text for a chat widget (main-process clipboard: no focus needed). */
     copyWidgetText: (text: string) => Promise<boolean>;
     /** Codex `visualize` references: validate the fragment file and get its frame URL. */

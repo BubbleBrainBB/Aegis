@@ -1042,6 +1042,28 @@ contextBridge.exposeInMainWorld('electron', {
   },
 
   // 预览 artifact 文件
+  // Design canvases (src/electron/design): session-bound HTML boards.
+  design: {
+    list: (input?: unknown) => ipcRenderer.invoke('design:list', input),
+    listAll: (input?: unknown) => ipcRenderer.invoke('design:listAll', input),
+    create: (input?: unknown) => ipcRenderer.invoke('design:create', input),
+    read: (input?: unknown) => ipcRenderer.invoke('design:read', input),
+    update: (input?: unknown) => ipcRenderer.invoke('design:update', input),
+    history: (input?: unknown) => ipcRenderer.invoke('design:history', input),
+    restore: (input?: unknown) => ipcRenderer.invoke('design:restore', input),
+    comment: (input?: unknown) => ipcRenderer.invoke('design:comment', input),
+    reply: (input?: unknown) => ipcRenderer.invoke('design:reply', input),
+    comments: (input?: unknown) => ipcRenderer.invoke('design:comments', input),
+    resolve: (input?: unknown) => ipcRenderer.invoke('design:resolve', input),
+    focus: (input?: unknown) => ipcRenderer.invoke('design:focus', input),
+    preview: (input?: unknown) => ipcRenderer.invoke('design:preview', input),
+    export: (input?: unknown) => ipcRenderer.invoke('design:export', input),
+    onChanged: (callback: (event: unknown) => void) => {
+      const handler = (_: unknown, event: unknown) => callback(event);
+      ipcRenderer.on('design:changed', handler);
+      return () => ipcRenderer.removeListener('design:changed', handler);
+    },
+  },
   copyWidgetText: (text: string): Promise<boolean> => ipcRenderer.invoke('widget:copy-text', text),
   prepareCodexVisualization: (input: {
     path: string; roots: string[]; styleVariables: Record<string, string>; dark: boolean; state: unknown; title?: string;
