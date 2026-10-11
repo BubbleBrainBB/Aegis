@@ -215,5 +215,7 @@ export interface DesignAPI {
     /** PNG pixel ratio; defaults to 1. */
     scale?: number;
   }): Promise<{ saved: boolean; path?: string }>;
+  /** The design composer's picks for a conversation: style guide and variations (1 = none). */
+  composer(input: { sessionId: string; styleId?: string; variants?: number }): Promise<void>;
   onChanged(callback: (event: DesignEvent) => void): () => void;
 }

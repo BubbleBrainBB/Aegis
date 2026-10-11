@@ -4,7 +4,7 @@ import { randomUUID } from "crypto";
 import { strToU8, zipSync } from "fflate";
 import { ipcMainHandle } from "../util";
 import { getDesignRepository, previewDesign } from "./service";
-import { setDesignFocus } from "./focus";
+import { setDesignComposerPrefs, setDesignFocus } from "./focus";
 import { designFrameHtml } from "./html";
 import { getUserProfile } from "../libs/user-profile";
 import type { DesignAPI, DesignAuthor } from "../../shared/design-types";
@@ -94,6 +94,10 @@ export function registerDesignIpc() {
       ),
     focus: (x) => {
       if (typeof x?.sessionId === "string") setDesignFocus(x.sessionId, x);
+      return Promise.resolve();
+    },
+    composer: (x) => {
+      if (typeof x?.sessionId === "string") setDesignComposerPrefs(x.sessionId, x);
       return Promise.resolve();
     },
     preview: (x) =>

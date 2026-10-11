@@ -1056,6 +1056,7 @@ contextBridge.exposeInMainWorld('electron', {
     comments: (input?: unknown) => ipcRenderer.invoke('design:comments', input),
     resolve: (input?: unknown) => ipcRenderer.invoke('design:resolve', input),
     focus: (input?: unknown) => ipcRenderer.invoke('design:focus', input),
+    composer: (input?: unknown) => ipcRenderer.invoke('design:composer', input),
     preview: (input?: unknown) => ipcRenderer.invoke('design:preview', input),
     export: (input?: unknown) => ipcRenderer.invoke('design:export', input),
     onChanged: (callback: (event: unknown) => void) => {

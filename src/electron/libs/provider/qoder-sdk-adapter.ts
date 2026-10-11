@@ -514,7 +514,7 @@ export class QoderSdkAdapter implements ProviderAdapter {
       options: {
         ...this.buildQueryOptions(sdk, input, cwd),
         mcpServers: {
-          [SESSION_MCP_SERVER_NAME]: await getSessionReaderHttpConfig(),
+          [SESSION_MCP_SERVER_NAME]: await getSessionReaderHttpConfig({ sessionId: input.threadId }),
           // Browser Use runs in-process and bound to this session, like
           // Claude's; nothing is written to ~/.qoder/mcp.json.
           ...(isBrowserUseEnabled() && sdk.createSdkMcpServer && sdk.tool

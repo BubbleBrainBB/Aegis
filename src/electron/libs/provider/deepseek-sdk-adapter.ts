@@ -616,7 +616,7 @@ export class DeepseekSdkAdapter implements ProviderAdapter {
     const entry = resolveDeepseekRuntimeEntry(profileDir);
     let disposeBrowserDescriptor = () => {};
     const servers = getDeepseekMcpServers(cwd);
-    servers[SESSION_MCP_SERVER_NAME] = await getSessionReaderHttpConfig();
+    servers[SESSION_MCP_SERVER_NAME] = await getSessionReaderHttpConfig({ sessionId: threadId });
     delete servers[BROWSER_USE_SERVER_NAME];
     if (isBrowserUseEnabled()) {
       const descriptor = await createBrowserUseSessionMcpDescriptor(threadId);

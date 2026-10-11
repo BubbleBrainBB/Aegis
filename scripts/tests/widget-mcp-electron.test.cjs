@@ -51,7 +51,8 @@ app.whenReady().then(async () => {
     await writeKimiWidgetEntry();
     const kimiFile = path.join(temp, 'kimi-code', 'mcp.json');
     const entry = JSON.parse(fs.readFileSync(kimiFile, 'utf8')).mcpServers[KIMI_WIDGET_SERVER_NAME];
-    assert.deepEqual(entry, { url: `${info.url}?tools=show_widget,widget_guide`, bearerTokenEnvVar: SESSION_TOKEN_ENV_VAR });
+    const { DESIGN_TOOL_NAMES } = require('../../dist-electron/shared/design-tools.js');
+    assert.deepEqual(entry, { url: `${info.url}?tools=${['show_widget', 'widget_guide', ...DESIGN_TOOL_NAMES].join(',')}`, bearerTokenEnvVar: SESSION_TOKEN_ENV_VAR });
     assert.ok(!fs.readFileSync(kimiFile, 'utf8').includes(info.token), 'the token stays out of the file');
     assert.equal(process.env[SESSION_TOKEN_ENV_VAR], info.token, 'the daemon inherits the token');
     releaseKimiWidgetEntrySync();

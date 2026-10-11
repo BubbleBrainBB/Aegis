@@ -4,6 +4,7 @@ import { isWithinProjectPath } from './project-paths';
 import { createSessionSdkMcpServer, SESSION_MCP_SERVER_NAME } from './session-mcp';
 import { isStartWorkflowToolName } from '../../shared/workflow';
 import { isShowWidgetToolName, isWidgetGuideToolName } from '../../shared/widget';
+import { designToolNameOf } from '../../shared/design-tools';
 import { WidgetDraftTracker, trackMessagesStreamEvent } from './widget-draft';
 import type {
   McpServerConfig as SDKMcpServerConfig,
@@ -1042,6 +1043,11 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
             }
             // A widget only draws in the chat: nothing to approve, plan mode included.
             if (isShowWidgetToolName(toolName) || isWidgetGuideToolName(toolName)) {
+              return { behavior: 'allow' as const, updatedInput: input };
+            }
+            // Design tools change only this session's designs, which keep every
+            // version: no project files, so plan mode included.
+            if (designToolNameOf(toolName)) {
               return { behavior: 'allow' as const, updatedInput: input };
             }
 

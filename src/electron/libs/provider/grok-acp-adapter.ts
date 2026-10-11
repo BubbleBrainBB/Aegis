@@ -408,7 +408,7 @@ export class GrokAcpAdapter implements ProviderAdapter {
     // feature is on (ACP session/new mcpServers, http variant).
     const browserUseDescriptor = getBrowserUseMcpDescriptor();
     const mcpServers = [
-      createGrokAcpHttpMcpServer(SESSION_MCP_SERVER_NAME, await getSessionReaderHttpConfig()),
+      createGrokAcpHttpMcpServer(SESSION_MCP_SERVER_NAME, await getSessionReaderHttpConfig({ sessionId: input.threadId })),
       ...(browserUseDescriptor ? [createGrokAcpHttpMcpServer('aegis-browser', browserUseDescriptor)] : []),
     ];
     const sessionResult = await rpc

@@ -1,6 +1,8 @@
 import { CompactionTracker } from './compaction-tracker';
 import { addAgentCost, costFields, emptyCostDetails } from '../agent-cost';
 import { createPiSessionReader, createPiShowWidget, createPiStartWorkflow, createPiWidgetGuide } from '../session-native-tool';
+import { createPiDesignTools } from '../../design/tools';
+import { DESIGN_TOOL_NAMES } from '../../../shared/design-tools';
 import { getWorkflowSessionPolicy } from '../workflow/session-hooks';
 import { WidgetDraftTracker } from '../widget-draft';
 import { START_WORKFLOW_TOOL } from '../../../shared/workflow';
@@ -350,8 +352,8 @@ export class PiSdkAdapter implements ProviderAdapter {
       modelRuntime,
       sessionManager,
       // Workflow members do not get the workflow entry (no nested workflows).
-      tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls', 'read_session', SHOW_WIDGET_TOOL, WIDGET_GUIDE_TOOL, ...(offersWorkflows ? [START_WORKFLOW_TOOL] : [])],
-      customTools: [createPiSessionReader(), createPiShowWidget(), createPiWidgetGuide(), ...(offersWorkflows ? [createPiStartWorkflow(input.threadId)] : [])],
+      tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls', 'read_session', SHOW_WIDGET_TOOL, WIDGET_GUIDE_TOOL, ...DESIGN_TOOL_NAMES, ...(offersWorkflows ? [START_WORKFLOW_TOOL] : [])],
+      customTools: [createPiSessionReader(), createPiShowWidget(), createPiWidgetGuide(), ...createPiDesignTools(input.threadId), ...(offersWorkflows ? [createPiStartWorkflow(input.threadId)] : [])],
       ...(selectedModel ? { model: selectedModel } : {}),
     });
 

@@ -392,7 +392,7 @@ export class MimoAcpAdapter implements ProviderAdapter {
     // servers); workflow members get none.
     const mcpServers = getWorkflowSessionPolicy(input.threadId)
       ? []
-      : [createGrokAcpHttpMcpServer(SESSION_MCP_SERVER_NAME, await getSessionReaderHttpConfig())];
+      : [createGrokAcpHttpMcpServer(SESSION_MCP_SERVER_NAME, await getSessionReaderHttpConfig({ sessionId: input.threadId }))];
 
     let sessionRecord: Record<string, unknown> | null = null;
     let providerSessionId = '';

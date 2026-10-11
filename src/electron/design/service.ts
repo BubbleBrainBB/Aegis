@@ -3,6 +3,7 @@ import { join } from "path";
 import { randomUUID } from "crypto";
 import { DesignRepository } from "./repository";
 import { designFrameHtml } from "./html";
+import { moveDesignFocus } from "./focus";
 import type { DesignPreview } from "../../shared/design-types";
 
 let repository: DesignRepository | undefined;
@@ -34,6 +35,7 @@ export function deleteSessionDesigns(sessionId: string) {
 export function moveSessionDesigns(from: string, to: string) {
   try {
     getDesignRepository().moveSession(from, to);
+    moveDesignFocus(from, to);
   } catch (error) {
     console.warn("Failed to move the draft's designs:", error);
   }

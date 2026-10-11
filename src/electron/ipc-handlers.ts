@@ -27,7 +27,11 @@ import { broadcastSessionEvent } from './ipc/session-windows';
 import { getGitPullRequestInfo, parseGitHubRepoFromRemote } from './libs/git-pull-requests';
 import { setupSessionPullRequestsIPC } from './ipc/session-pull-requests';
 import { registerDesignIpc } from './design/ipc';
-import { deleteSessionDesigns, moveSessionDesigns } from './design/service';
+import { deleteSessionDesigns, moveSessionDesigns, settleDesignTurn } from './design/service';
+import { designContextText } from './design/focus';
+import { setDesignAgentNamer } from './design/tools';
+import { initializeToolCallerAttribution } from './libs/tool-caller-attribution';
+import { PROVIDER_LABELS } from './feishu/agent-settings';
 import { disposeSessionHttpServer, primeSessionToken, releaseKimiWidgetEntrySync, writeKimiWidgetEntry } from './libs/session-http-server';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, shell } from 'electron';
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from 'http';
@@ -4921,6 +4925,16 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
       payload: { sessionId, tab },
     } as Parameters<typeof broadcast>[1]);
   });
+  // HTTP session tools without a session header find their caller this way.
+  initializeToolCallerAttribution({
+    getSessionHistory: (sessionId) => sessions.getSessionHistory(sessionId),
+    listRunningSessionIds: () => [...runnerHandles.keys()],
+  });
+  // Design history names the agent that made a version.
+  setDesignAgentNamer((sessionId) => {
+    const provider = sessions.getSession(sessionId)?.provider;
+    return provider ? PROVIDER_LABELS[provider] : undefined;
+  });
   initializeBrowserUseConsent({
     getSessionHistory: (sessionId) => sessions.getSessionHistory(sessionId),
     listRunningSessionIds: () => [...runnerHandles.keys()],
@@ -9158,7 +9172,7 @@ async function handleSessionStart(
   const outgoingAttachments = (attachments ?? []).filter((attachment) => !!attachment?.path);
   const effectiveRunnerPrompt = (effectivePrompt ?? sourcePrompt).trim();
   const runnerPrompt = chosenProvider === 'claude' && parseGoalInput(sourcePrompt, false).isGoal ? sourcePrompt : augmentPromptForLiveWidgetProtocol(
-    await buildRunnerPromptWithMemory(chosenProvider, effectiveRunnerPrompt + referenceContext + sessions.buildProjectSourcesContext(normalizedProjectCwd, isolated?.worktreePath || normalizedWorktreePath || sessionCwd, Boolean(isolated) || normalizedEnvMode === 'worktree'), sessionCwd),
+    await buildRunnerPromptWithMemory(chosenProvider, effectiveRunnerPrompt + referenceContext + (payload.draftSessionId ? designContextText(payload.draftSessionId) : '') + sessions.buildProjectSourcesContext(normalizedProjectCwd, isolated?.worktreePath || normalizedWorktreePath || sessionCwd, Boolean(isolated) || normalizedEnvMode === 'worktree'), sessionCwd),
   );
   const selectedModel = normalizeProviderModel(chosenProvider, model);
   const selectedBetas = chosenProvider === 'claude' ? normalizeBetas(betas) : undefined;
@@ -9755,7 +9769,7 @@ async function handleSessionContinueImpl(
     sessions.clearSessionHandoffPending(sessionId);
   }
   const runnerPrompt = nextProvider === 'claude' && parseGoalInput(prompt, false).isGoal ? prompt.trim() : augmentPromptForLiveWidgetProtocol(
-    await buildRunnerPromptWithMemory(nextProvider, effectiveRunnerPrompt + referenceContext + sessions.buildProjectSourcesContext(session.project_cwd || session.cwd, session.cwd, session.env_mode === 'worktree' && Boolean(session.worktree_path)), session.cwd || undefined),
+    await buildRunnerPromptWithMemory(nextProvider, effectiveRunnerPrompt + referenceContext + designContextText(sessionId) + sessions.buildProjectSourcesContext(session.project_cwd || session.cwd, session.cwd, session.env_mode === 'worktree' && Boolean(session.worktree_path)), session.cwd || undefined),
     historyBeforeContinue
   );
   const previousOpenCodePermissionMode = normalizeOpenCodePermissionMode(session.opencode_permission_mode);
@@ -11000,6 +11014,8 @@ function startRunner(
           );
           // The turn is over: the agent's browser tabs go back to the panel.
           finishBrowserUseTurn(browserManager, session.id);
+          // Design comments the turn worked on are answered or reopened.
+          settleDesignTurn(session.id, PROVIDER_LABELS[provider]);
           if (provider === 'claude') {
             // The interrupted turn's result has landed — settle one stopped
             // turn; the hard-abort fallback stands down once none remain.
@@ -11165,6 +11181,7 @@ function startRunner(
         turnDone?.('error', message);
         settleWorkflowTurn(session.id, 'error', message);
         finishBrowserUseTurn(browserManager, session.id);
+        settleDesignTurn(session.id, PROVIDER_LABELS[provider]);
         // dispose, not abort: the session already errored, so a stopSession
         // here would emit a spurious stop_settled — but plain detach leaks
         // the adapter session's local resources (a live SSE loop double-fed

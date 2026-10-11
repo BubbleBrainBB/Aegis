@@ -1,7 +1,7 @@
 import { spawnSync } from 'child_process';
 import { randomBytes } from 'crypto';
 import { createServer } from 'net';
-import { getSessionReaderHttpConfig, SESSION_MCP_SERVER_NAME } from '../session-http-server';
+import { getSessionReaderHttpConfig, registerSessionMetaResolver, SESSION_MCP_SERVER_NAME } from '../session-http-server';
 import { BROWSER_USE_SERVER_NAME } from '../browser-use';
 import {
   createBrowserUseProviderMcpDescriptor,
@@ -25,6 +25,7 @@ export type OpenCodeClient = OpenCodeV2Client;
 export type OpenCodeEventListener = (event: OpenCodeServerEvent) => void;
 
 /** Synthetic event sent to every subscriber when the server process dies. */
+const OPENCODE_SESSION_RESOLVER = 'opencode';
 export const OPENCODE_SERVER_EXITED_EVENT = 'aegis.server.exited';
 
 /**
@@ -243,7 +244,9 @@ export class OpenCodeServeManager {
     const binary = await resolveOpenCodeBinary();
     console.log(`[OpenCodeServeManager] starting opencode ${binary.version.raw} from ${binary.path}`);
     const hostname = '127.0.0.1';
-    const [port, reader] = await Promise.all([findAvailablePort(hostname), getSessionReaderHttpConfig()]);
+    // Session tools that need the caller (designs) name it from the call's request meta.
+    registerSessionMetaResolver(OPENCODE_SESSION_RESOLVER, (meta) => this.resolveBrowserSession?.(meta) ?? Promise.resolve(null));
+    const [port, reader] = await Promise.all([findAvailablePort(hostname), getSessionReaderHttpConfig({ resolver: OPENCODE_SESSION_RESOLVER })]);
     const password = randomBytes(24).toString('base64url');
     const resolve = this.resolveBrowserSession;
     const browserUse =

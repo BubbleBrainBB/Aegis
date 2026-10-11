@@ -1,5 +1,6 @@
 import { isStartWorkflowToolName } from '../../shared/workflow';
 import { isShowWidgetToolName, isWidgetGuideToolName, widgetFromToolInput } from '../../shared/widget';
+import { designToolDisplay } from './design-tool-display';
 import type { CanonicalToolKind, ToolStatus } from '../types';
 import {
   classifyComputerUseAction,
@@ -49,6 +50,8 @@ export function getToolSummary(name: string, input: unknown): string {
   // The widget's HTML is no summary; its title is.
   if (isShowWidgetToolName(name)) return widgetFromToolInput(input)?.title || 'Widget';
   if (isWidgetGuideToolName(name)) return 'Widget design guide';
+  const design = designToolDisplay(name, input, 'success');
+  if (design) return design.target;
 
   switch (name.trim().toLowerCase()) {
     case 'Bash':
@@ -347,6 +350,8 @@ export function deriveReadableToolDisplay(
   if (isWidgetGuideToolName(name)) {
     return { verb: status === 'pending' ? 'Reading' : 'Read', target: 'the widget design guide' };
   }
+  const design = designToolDisplay(name, input, status);
+  if (design) return design;
 
   if (name === 'Bash' || name === 'bash') {
     const command = getStringField(input, 'command');
