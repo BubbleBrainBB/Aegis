@@ -3,6 +3,7 @@ import { Image as ImageStudioIcon } from './components/icons';
 import { ImageStudioPanel, ImageStudioFileActions } from './components/ImageStudioPanel';
 import { Palette as DesignIcon } from './components/icons';
 import { DesignPanel } from './components/design/DesignPanel';
+import { DesignSection } from './components/design/DesignSection';
 import { useDesignStore, subscribeDesignChanges } from './store/useDesignStore';
 import { subscribeAppPreferences } from './store/useAppPreferences';
 import { TextInputDialogHost } from './components/ui/text-input-dialog';
@@ -388,6 +389,7 @@ export function App() {
     if (activeWorkspace === 'chat') {
       view = { kind: 'chat', sessionId: showNewSession ? null : activeSessionId };
     } else if (
+      activeWorkspace === 'design' ||
       activeWorkspace === 'automations' ||
       activeWorkspace === 'prs' ||
       activeWorkspace === 'skills'
@@ -1082,7 +1084,8 @@ export function App() {
       {/* Main content area — hidden (display:none) when a right panel is fullscreened.
           Uses display:contents when visible so its children still participate as flex items
           of the shared chat surface (preserves existing layout). */}
-      <div className={rightPanelFullscreen ? 'hidden' : 'contents'}>
+      {/* The right pane shows only in Home; elsewhere its fullscreen hides nothing. */}
+      <div className={rightPanelFullscreen && activeWorkspace === 'chat' && !showSettings ? 'hidden' : 'contents'}>
       {!showSettings && activeWorkspace === 'chat' && !sessionsLoaded ? (
         <MainSheet>
           <div className="flex-1 min-w-0 bg-[var(--bg-primary)]" />
@@ -1103,6 +1106,8 @@ export function App() {
           </main>
         </div>
         </MainSheet>
+      ) : activeWorkspace === 'design' ? (
+        <DesignSection codexModelConfig={codexModelConfig} />
       ) : activeWorkspace === 'automations' ? (
         <MainSheet>
           <AutomationsView />

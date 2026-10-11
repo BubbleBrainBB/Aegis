@@ -158,6 +158,8 @@ import {
   IconLockOpen,
   IconPointer,
   IconStack2,
+  IconArrowUpRight,
+  IconGripVertical,
 } from '@tabler/icons-react';
 
 export type IconComponent = ComponentType<
@@ -170,6 +172,8 @@ export type IconComponent = ComponentType<
 export type LucideIcon = IconComponent;
 
 export {
+  IconArrowUpRight as ArrowUpRight,
+  IconGripVertical as GripVertical,
   IconFrame as Frame,
   IconHandStop as Hand,
   IconLetterT as Type,

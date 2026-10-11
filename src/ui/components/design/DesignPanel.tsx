@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import {
   editDesignLayer,
@@ -66,6 +67,8 @@ const undoStacks = new Map<string, DesignUndo>();
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
 const uid = () => crypto.randomUUID();
+/** Width of the history column (design.css .design-history). */
+const HISTORY_WIDTH = 288;
 type Selection = { boardId: string; revision: number; anchor: DesignAnchor };
 type Tab = "design" | "code" | "comments";
 type CommentInput = { text: string; toAgent: boolean; attachments: Attachment[] };
@@ -75,6 +78,12 @@ type DesignPanelProps = {
   sessionId: string | null;
   documentId?: string;
   hidden: boolean;
+  /** "section": the Design section's full canvas, its library in the sidebar. */
+  chrome?: "pane" | "section";
+  /** Where the toolbar goes instead of the panel's own top row (the title bar). */
+  toolbarHost?: HTMLElement | null;
+  /** Drawn over the canvas area only (left of the inspector), e.g. the agent dock. */
+  canvasOverlay?: (stage: RefObject<HTMLDivElement | null>) => ReactNode;
 };
 
 /** A chat's designs: its library, or one design's canvas with the editing tools. */
@@ -88,7 +97,8 @@ export function DesignPanel(props: DesignPanelProps) {
   );
 }
 
-function DesignPanelBody({ sessionId, documentId, hidden }: DesignPanelProps) {
+function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolbarHost, canvasOverlay }: DesignPanelProps) {
+  const overlayStage = useRef<HTMLDivElement>(null);
   const agentName = useDesignAgentName();
   const session = useAppStore((s) =>
     sessionId ? s.sessions[sessionId] : undefined,
@@ -910,24 +920,20 @@ function DesignPanelBody({ sessionId, documentId, hidden }: DesignPanelProps) {
         ? "Read-only"
         : "saved";
 
-  return (
-    <section
-      ref={root}
-      className="design-panel"
-      aria-label="Design canvas"
-      data-design-document={documentId}
-    >
+  const toolbar = (
       <header className="design-toolbar">
-        <button
-          className="design-icon-button"
-          title="All designs"
-          aria-label="All designs"
-          onClick={() =>
-            useAppStore.getState().setActiveRightUtilityTab("design")
-          }
-        >
-          ←
-        </button>
+        {chrome === "pane" && (
+          <button
+            className="design-icon-button"
+            title="All designs"
+            aria-label="All designs"
+            onClick={() =>
+              useAppStore.getState().setActiveRightUtilityTab("design")
+            }
+          >
+            ←
+          </button>
+        )}
         {doc ? (
           <input
             className="design-title"
@@ -1001,6 +1007,19 @@ function DesignPanelBody({ sessionId, documentId, hidden }: DesignPanelProps) {
           Implement in project
         </button>
       </header>
+  );
+
+  return (
+    <>
+    <section
+      ref={root}
+      className="design-panel"
+      aria-label="Design canvas"
+      data-design-document={documentId}
+    >
+      {toolbarHost
+        ? createPortal(<div className="design-panel design-panel--titlebar">{toolbar}</div>, toolbarHost)
+        : toolbar}
       {failure && (
         <div className="design-error" role="alert">
           {failure}
@@ -1684,6 +1703,19 @@ function DesignPanelBody({ sessionId, documentId, hidden }: DesignPanelProps) {
         )}
       </div>
     </section>
+    {/* Outside the panel, so the canvas's own control styles stay off it. */}
+      {canvasOverlay && (
+        <div
+          ref={overlayStage}
+          className="design-canvas-overlay"
+          style={{
+            right: !previewing && !historyOpen && doc && inspectorOpen ? inspectorWidth : historyOpen ? HISTORY_WIDTH : 0,
+          }}
+        >
+          {canvasOverlay(overlayStage)}
+        </div>
+      )}
+    </>
   );
 }
 

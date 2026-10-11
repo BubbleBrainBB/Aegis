@@ -2326,3 +2326,97 @@ details.design-section > .design-grid {
   font-variant-numeric: tabular-nums;
   transform: translateX(-50%);
 }
+
+/* Dotted canvas ground, as in the Design section mockups. */
+.design-viewport {
+  background-image: radial-gradient(
+    color-mix(in srgb, var(--text-primary) 16%, transparent) 1px,
+    transparent 1.2px
+  );
+  background-size: 20px 20px;
+}
+
+/* The Design section: the toolbar lives in the window's title bar row. */
+.design-panel.design-panel--titlebar {
+  position: static;
+  inset: auto;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  background: transparent;
+  font-size: 12.5px;
+}
+.design-panel--titlebar .design-toolbar {
+  height: 100%;
+  padding: 0;
+  border-bottom: 0;
+  flex-wrap: nowrap;
+  -webkit-app-region: no-drag;
+}
+.design-panel--titlebar .design-title {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.design-panel--titlebar .design-spacer {
+  -webkit-app-region: drag;
+  align-self: stretch;
+}
+
+/* The design's conversation, floating over the Design section's canvas. */
+.design-dock {
+  background: var(--popover-bg, var(--bg-primary));
+  box-shadow:
+    0 18px 50px color-mix(in srgb, var(--text-primary) 16%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--text-primary) 9%, transparent);
+  transition: box-shadow 160ms ease;
+}
+.design-dock.is-dragging {
+  transition: none;
+  box-shadow:
+    0 24px 60px color-mix(in srgb, var(--text-primary) 22%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--text-primary) 12%, transparent);
+}
+.design-dock-composer {
+  padding: 2px 0 0;
+}
+.design-dock-snap {
+  width: 132px;
+  height: 56px;
+  border-radius: 14px;
+  border: 1.5px dashed color-mix(in srgb, var(--accent) 50%, transparent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+.design-dock-spinner {
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  border: 1.5px solid color-mix(in srgb, var(--text-muted) 35%, transparent);
+  border-top-color: var(--text-muted);
+  animation: design-dock-spin 0.9s linear infinite;
+}
+@keyframes design-dock-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .design-dock-spinner {
+    animation: none;
+  }
+}
+/* Over the canvas only; its children take pointer events themselves. */
+.design-canvas-overlay {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+  z-index: 25;
+}
+.design-canvas-overlay > * {
+  pointer-events: auto;
+}
+.design-canvas-overlay > .design-dock-snap {
+  pointer-events: none;
+}

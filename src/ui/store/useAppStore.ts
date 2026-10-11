@@ -842,6 +842,7 @@ export const useAppStore = create<Store>()(
       globalError: null,
       pendingStart: false,
       pendingDraftSessionId: null,
+      draftPromotion: null,
       // Hydration lives in the store (single owner): components used to keep
       // per-instance "already requested" refs that never retried on failure
       // and double-requested across App/ChatPane — a failed first request
@@ -2461,6 +2462,17 @@ export const useAppStore = create<Store>()(
     return draft.id;
   },
 
+  createDetachedDraftSession: (cwd, title) => {
+    const draft = createDraftSessionView(cwd ?? get().projectCwd, resolveActiveChannelIdForProject(get().activeChannelByProject, cwd ?? get().projectCwd), { title });
+    // Not placed in a chat pane and not made active: the view that asked for
+    // it (the Design section) shows it on its own.
+    set((state) => ({
+      sessions: { ...state.sessions, [draft.id]: draft },
+      rightPanelBySessionId: { ...state.rightPanelBySessionId, [draft.id]: emptyRightPanelSnapshot() },
+    }));
+    return draft.id;
+  },
+
   removeDraftSession: (sessionId) => {
     set((state) => {
       const session = state.sessions[sessionId];
@@ -3452,6 +3464,7 @@ function handleSessionStatus(
       pendingStart: false,
       pendingDraftSessionId: null,
       rightPanelBySessionId,
+      ...(pendingDraftSessionId ? { draftPromotion: { from: pendingDraftSessionId, to: sessionId } } : {}),
     });
   }
 }

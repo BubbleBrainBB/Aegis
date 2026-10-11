@@ -428,6 +428,8 @@ export interface AppState {
   activeChannelByProject: Record<string, string>;
   activeSessionId: string | null;
   activeWorkspace: ActiveWorkspace;
+  /** The last draft chat that became a real session (views holding the draft id follow it). */
+  draftPromotion: { from: string; to: string } | null;
   chatSidebarView: ChatSidebarView;
   // Source of truth for the chat workspace layout (recursive tiling tree).
   workspaceLayout: import('./store/layout-tree').WorkspaceLayout;
@@ -650,6 +652,8 @@ export interface AppActions {
   applyUiResumeState: (state: import('../shared/types').UiResumeState | null) => void;
   clearGlobalError: () => void;
   setPendingStart: (pending: boolean) => void;
+  /** A draft chat that no pane shows yet; returns its id. */
+  createDetachedDraftSession: (cwd?: string | null, title?: string) => string;
   createDraftSession: (
     cwd?: string | null,
     channelId?: string | null,

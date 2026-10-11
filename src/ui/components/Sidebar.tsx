@@ -11,6 +11,7 @@ import {
 import {
   GitPullRequest,
   Home,
+  Palette,
   HomeFilled,
   Script,
   Search,
@@ -25,6 +26,7 @@ import type {
   PaletteThread,
 } from './search/palette-ranking';
 import { FolderTreeView } from './FolderTreeView';
+import { DesignSidebarPanel } from './design/DesignSidebarPanel';
 import { CappedScrollbar } from './CappedScrollbar';
 import { DEFAULT_WORKSPACE_CHANNEL_ID } from '../../shared/types';
 import { getMessageContentBlocks } from '../utils/message-content';
@@ -213,6 +215,12 @@ export function Sidebar() {
         keywords: ['chat', 'sessions'],
       },
       {
+        id: 'switch-design',
+        label: 'Go to Design',
+        description: 'Your design canvases',
+        keywords: ['design', 'canvas', 'mockup', 'boards'],
+      },
+      {
         id: 'switch-automations',
         label: 'Go to Automations',
         description: 'Manage scheduled project workflows',
@@ -333,6 +341,11 @@ export function Sidebar() {
         setChatSidebarView('threads');
         setShowSettings(false);
         break;
+      case 'switch-design':
+        setActiveWorkspace('design');
+        setChatSidebarView('threads');
+        setShowSettings(false);
+        break;
       case 'switch-automations':
         setActiveWorkspace('automations');
         setChatSidebarView('threads');
@@ -372,7 +385,7 @@ export function Sidebar() {
   };
 
 
-  const goToWorkspace = (workspace: 'chat' | 'automations' | 'prs' | 'skills') => {
+  const goToWorkspace = (workspace: 'chat' | 'design' | 'automations' | 'prs' | 'skills') => {
     setActiveWorkspace(workspace);
     setChatSidebarView('threads');
     setShowSettings(false);
@@ -415,6 +428,9 @@ export function Sidebar() {
             style={{ width: sidebarWidth, minWidth: sidebarWidth }}
             aria-hidden={sidebarHidden}
           >
+            {activeWorkspace === 'design' ? (
+              <DesignSidebarPanel />
+            ) : (
             <div className="flex min-h-0 flex-1 flex-col">
               <div className="flex items-center justify-between pb-1 pl-3.5 pr-2 pt-2.5">
                 <div className="aegis-sidebar-brand font-semibold leading-none tracking-[-0.02em] text-[var(--text-primary)]">
@@ -480,6 +496,7 @@ export function Sidebar() {
                 <CappedScrollbar scrollRef={sidebarScrollRef} />
               </div>
             </div>
+            )}
           </div>
 
           {!sidebarCollapsed ? (
@@ -523,11 +540,11 @@ function SidebarRail({
 }: {
   activeWorkspace: string;
   showRunningDot: boolean;
-  onSelect: (workspace: 'chat' | 'automations' | 'prs' | 'skills') => void;
+  onSelect: (workspace: 'chat' | 'design' | 'automations' | 'prs' | 'skills') => void;
   onOpenSettings: () => void;
 }) {
   const item = (
-    workspace: 'chat' | 'automations' | 'prs' | 'skills',
+    workspace: 'chat' | 'design' | 'automations' | 'prs' | 'skills',
     label: string,
     icon: ReactNode,
     activeIcon?: ReactNode,
@@ -574,6 +591,7 @@ function SidebarRail({
         <HomeFilled className="h-[17px] w-[17px]" />,
         showRunningDot
       )}
+      {item('design', 'Design', <Palette className="h-[17px] w-[17px]" strokeWidth={1.6} />)}
       {item('skills', 'Skill Library', <Script className="h-[17px] w-[17px]" strokeWidth={1.6} />)}
       {item('automations', 'Automations', <Clock className="h-[17px] w-[17px]" strokeWidth={1.6} />)}
       <div aria-hidden="true" className="my-1 h-px w-[22px] bg-[var(--panel-soft-divider)]" />
