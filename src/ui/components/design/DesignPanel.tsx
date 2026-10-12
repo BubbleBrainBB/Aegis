@@ -643,6 +643,57 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
     setSelection({ boardId, revision, anchor: { nodeId: node.id, text: node.text } });
     setLayerTarget({ boardId, nodeId: node.id, request: Date.now() });
   };
+  /**
+   * Keyboard moves through the layer tree: into the first child, up to the
+   * parent (a top-level layer's parent is its board), or across siblings
+   * (boards when no layer is selected). False when there is nowhere to go.
+   */
+  const navigateLayers = (direction: "child" | "parent" | "next" | "prev"): boolean => {
+    if (!doc) return false;
+    const nodeId = selection?.anchor.nodeId;
+    const boardId = selection?.boardId ?? selected;
+    const board = doc.boards.find((b) => b.id === boardId);
+    if (!board) return false;
+    const tree = readDesignLayers(board.html);
+    const step = <T,>(list: T[], at: number) => list[(at + (direction === "next" ? 1 : -1) + list.length) % list.length];
+    if (!nodeId) {
+      if (direction === "child") {
+        if (!tree[0]) return false;
+        selectLayer(board.id, tree[0], board.contentRevision);
+        return true;
+      }
+      if (direction === "next" || direction === "prev") {
+        const next = step(doc.boards, doc.boards.indexOf(board));
+        setSelectedIds([next.id]);
+        setSelection(undefined);
+        setLayerTarget(undefined);
+        return true;
+      }
+      return false;
+    }
+    const node = findDesignLayer(tree, nodeId);
+    const ancestors = designLayerPath(tree, nodeId);
+    if (!node || !ancestors) return false;
+    const parent = ancestors[ancestors.length - 1];
+    if (direction === "parent") {
+      if (parent) selectLayer(board.id, parent, board.contentRevision);
+      else {
+        setSelectedIds([board.id]);
+        setSelection(undefined);
+        setLayerTarget(undefined);
+      }
+      return true;
+    }
+    if (direction === "child") {
+      if (!node.children[0]) return false;
+      selectLayer(board.id, node.children[0], board.contentRevision);
+      return true;
+    }
+    const siblings = parent ? parent.children : tree;
+    if (siblings.length < 2) return false;
+    selectLayer(board.id, step(siblings, siblings.findIndex((n) => n.id === nodeId)), board.contentRevision);
+    return true;
+  };
   /** Text and Frame tools: one write per new layer, which then becomes the selection. */
   const insertLayer = (
     boardId: string,
@@ -1117,6 +1168,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
           }}
           onCommentRequest={startComment}
           onEditRequest={() => startTextEdit()}
+          onNavigate={navigateLayers}
           elementEditable={!!layerEditable(selection) && !textEdit && !composer}
           selectionIsText={(() => {
             const n = layerEditable(selection)?.node;

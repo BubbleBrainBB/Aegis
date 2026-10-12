@@ -138,6 +138,8 @@ type Props = {
   ): void;
   /** Enter / double-click on the current selection: edit its text in place. */
   onEditRequest?(): boolean;
+  /** Keyboard moves through the layer tree; false when there is nowhere to go. */
+  onNavigate?(direction: "child" | "parent" | "next" | "prev"): boolean;
   /** Layer hidden in its frame while an in-place editor covers it. */
   maskedNode?: { boardId: string; nodeId: string };
   onModeChange?(mode: CanvasMode): void;
@@ -315,8 +317,13 @@ export function DesignCanvas(props: Props) {
   const selectedBoards = boards.filter((b) => selectedIds.includes(b.id));
   const previewBoard = boards.find((b) => b.id === previewId);
 
+  // The layer the panel last asked a frame to select (keyboard, layers list).
+  // A frame's reply to an older request is stale: stepping quickly would
+  // otherwise snap back. Clicks are never affected (they are not replies).
+  const expectedLayer = useRef<{ boardId: string; nodeId: string } | null>(null);
   useEffect(() => {
     const target = props.layerTarget;
+    expectedLayer.current = target ? { boardId: target.boardId, nodeId: target.nodeId } : null;
     if (!target) return;
     // The iframe may be reloading after a content revision. Retry briefly; all
     // replies are still validated against that frame's current nonce.
@@ -1230,6 +1237,8 @@ export function DesignCanvas(props: Props) {
       if (previewId) preview();
       else if (gesture.current) cancel();
       else if (mode === "text" || mode === "frame") setMode("select");
+      // One level at a time: a layer steps out to its board, a board to nothing.
+      else if (selection?.anchor.nodeId && mode !== "comment") onSelectionChange([selection.boardId]);
       else {
         onSelectionChange([]);
         setZoomMenu(false);
@@ -1301,7 +1310,17 @@ export function DesignCanvas(props: Props) {
       e.preventDefault();
       zoom(viewRef.current.zoom / 1.2);
     }
-    if (e.key === "Enter" && selection?.anchor.nodeId && props.onEditRequest?.()) {
+    // Layer tree: Enter edits text or goes into a layer, Shift+Enter goes up,
+    // Tab and Shift+Tab move across siblings (boards when none is selected).
+    if (e.key === "Enter" && e.shiftKey && props.onNavigate?.("parent")) {
+      e.preventDefault();
+      return;
+    }
+    if (e.key === "Tab" && (selection?.anchor.nodeId || selectedIds.length === 1) && props.onNavigate?.(e.shiftKey ? "prev" : "next")) {
+      e.preventDefault();
+      return;
+    }
+    if (e.key === "Enter" && selection?.anchor.nodeId && (props.onEditRequest?.() || props.onNavigate?.("child"))) {
       e.preventDefault();
       return;
     }
@@ -1636,7 +1655,9 @@ export function DesignCanvas(props: Props) {
                   if (t?.boardId === b.id && Date.now() - t.request < 5000)
                     inspectors.current.get(b.id)?.selectNode(t.nodeId);
                 }}
-                onInspect={(anchor, hovering) => {
+                onInspect={(anchor, hovering, requested) => {
+                  const expected = expectedLayer.current;
+                  if (requested && (!expected || expected.boardId !== b.id || expected.nodeId !== anchor.nodeId)) return;
                   if (hovering) {
                     if (hoverBoard.current === b.id)
                       setHover({

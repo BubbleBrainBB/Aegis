@@ -25,7 +25,9 @@ Precedence: the user's words, then the style guide in <design_context>, then the
 - Default sizes: desktop 1440 wide, laptop 1280, tablet 768, phone 390 (844 tall for one screen). Let height follow the content for scrolling pages.
 - Responsive variants are separate boards with the same content, not a squeezed copy.
 - When <design_context> asks for several variations, make that many boards side by side, each a distinct direction, named "Home · A", "Home · B".
-- Build one board at a time: add it, preview it, then do the next.`,
+- Build one board at a time: add it, preview it, then do the next.
+- For several pages, finish one representative board first and settle its type, spacing and components there; then build the others from it.
+- When something is unclear but doesn't change the goal, make a sensible assumption, say it in one line, and keep going. Ask only when the answer would change what you build.`,
   structure: `## Structure that edits well
 People edit these boards by hand: they reorder, resize, change spacing and text.
 - Use semantic sections (header, nav, main, section, footer) and give meaningful layers a data-aegis-layer-name ("Hero", "Pricing card", "Primary CTA").
@@ -33,7 +35,13 @@ People edit these boards by hand: they reorder, resize, change spacing and text.
 - Avoid absolute positioning except for true overlays (badges, floating decorations, sticky bars). Never position a whole layout absolutely.
 - Avoid fixed heights on text containers; let content set height.
 - Use readable class names (.pricing-card, not .c3); the Code panel shows them.
-- Text people will edit sits directly in its own element (an h1, a p, a span), not split across many inline fragments.`,
+- Text people will edit sits directly in its own element (an h1, a p, a span), not split across many inline fragments.
+
+## Changing what exists
+- Change only what the request needs. Leave other layers, colors, type and spacing as they are, and keep layer ids and names.
+- A change to one element is not a change to the system: edit a shared token or class only when the request is meant to apply everywhere.
+- Turning absolutely positioned layers into auto layout is a re-layout, not a conversion: decide direction, gap, padding, sizing and wrapping on purpose, then check reading order and the result.
+- Prefer text that grows with its content; give a fixed height only to regions that are meant to clip, scroll or keep a ratio. Never hide an accidental overflow with overflow: hidden.`,
   tokens: `## Tokens first
 Before the first board, write a compact token set as CSS variables on :root and derive every color and type decision from it:
 - Color: 4–6 named tokens (background, surface, text, muted text, accent, and a line color if needed).
@@ -65,6 +73,7 @@ Don't use these unless the user asks:
 Instead, ground the design in the subject: its real content, units, terms and conventions. Include at least one detail only this subject would have.`,
   content: `## Content and images
 - Real content only, never lorem ipsum. Use plausible names, numbers and copy from the subject's world.
+- Try realistic lengths: a long name, mixed Chinese and English, a big number, a long link. Show the states the page needs (an empty list, a loading area, an error in a form), not every state of everything.
 - Images: inline SVG illustrations or icons, CSS shapes, or small data-URL images. No remote images.
 - Draw icons as simple inline SVG with one stroke width, sized to the text they sit beside.
 
@@ -74,7 +83,10 @@ Instead, ground the design in the subject: its real content, units, terms and co
 - Short, plain sentences. Avoid em-dash asides, "not X but Y" framing and stock phrases.
 - Match the language the user writes in.`,
   review: `## Check once with a preview
-After each board, preview it once and look for: text overflowing or clipped, elements overlapping, misaligned edges in repeated items, low contrast, an empty or stretched area, and anything from "Avoid the generated look". Fix what you find in one pass, then move on. Don't loop on previews; the user reviews and comments on the canvas.`,
+After each board, preview it once. The preview lists what it measured (text over other text, text cut off by a clipping box, an empty page, content wider or taller than the board, images that failed): treat these as leads, then look at the screenshot yourself for what geometry can't see: misaligned edges in repeated items, low contrast, an empty or stretched area, weak hierarchy, and anything from "Avoid the generated look". Fix the cause in one pass (not by shrinking text or hiding content), then move on. Don't loop on previews; the user reviews and comments on the canvas.
+
+## When you finish
+Say what you made, the decisions that matter, what you checked (previews, warnings fixed) and what you did not verify. Only call something checked if you actually checked it.`,
 };
 
 export const DESIGN_GUIDE_DESCRIPTION =

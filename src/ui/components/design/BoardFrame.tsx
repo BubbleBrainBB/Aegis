@@ -113,7 +113,8 @@ export const BoardFrame = memo(
     {
       board: DesignBoard;
       preview?: boolean;
-      onInspect?: (anchor: DesignAnchor, hover: boolean) => void;
+      /** `requested`: the frame answering selectNode rather than reporting a click. */
+      onInspect?: (anchor: DesignAnchor, hover: boolean, requested?: boolean) => void;
       onLoad?: () => void;
     }
   >(function BoardFrame({ board, preview = false, onInspect, onLoad }, ref) {
@@ -338,6 +339,8 @@ export const BoardFrame = memo(
             rect: { x: r.x, y: r.y, width: r.width, height: r.height },
           },
           e.data.hover === true,
+          // A reply to selectNode, as opposed to a click.
+          e.data.requested === true,
         );
       };
       window.addEventListener("message", receive);

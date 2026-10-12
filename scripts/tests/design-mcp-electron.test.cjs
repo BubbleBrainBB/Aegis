@@ -116,6 +116,25 @@ app.whenReady().then(async () => {
     const piGuide = await pi.find((t) => t.name === 'design_guide').execute('call-2', {});
     assert.match(piGuide.content[0].text, /Designing on the Aegis canvas/);
 
+    // Render checks: what the screenshot alone might not show.
+    const broken = json(await call(info.url, a, 'design_update', {
+      documentId: created.id, operationId: 'op-checks', operations: [
+        { type: 'add', name: 'Broken', width: 400, height: 300, html: '<main style="position:relative;height:600px;font:16px system-ui"><h2 style="position:absolute;top:20px;left:20px;margin:0">Overlapping title</h2><p style="position:absolute;top:24px;left:30px;margin:0">Body text on top</p><div style="position:absolute;top:120px;left:20px;width:80px;height:20px;overflow:hidden;white-space:nowrap">A caption that is far too long for its box</div><div style="position:absolute;top:160px;left:20px;width:80px;height:20px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">Ellipsis is intended here</div><img alt="" src="data:image/png;base64,AAAA"></main>' },
+        { type: 'add', name: 'Empty', width: 400, height: 300, html: '<main></main>' },
+      ],
+    }));
+    const boardId = (name) => broken.boards.find((b) => b.name === name).id;
+    const checks = json(await call(info.url, a, 'design_preview', { documentId: created.id, boardId: boardId('Broken'), revision: broken.revision })).warnings;
+    assert.ok(checks.some((w) => /Text overlaps: h2 "Overlapping title" and p "Body text on top"/.test(w)), JSON.stringify(checks));
+    assert.ok(checks.some((w) => /cut off inside div "A caption/.test(w)), JSON.stringify(checks));
+    assert.ok(!checks.some((w) => /Ellipsis is intended/.test(w)), 'an ellipsis is intended overflow');
+    assert.ok(checks.some((w) => /taller than the board \(600 > 300px\)/.test(w)), JSON.stringify(checks));
+    assert.ok(checks.some((w) => /1 image could not be loaded/.test(w)), JSON.stringify(checks));
+    const empty = json(await call(info.url, a, 'design_preview', { documentId: created.id, boardId: boardId('Empty'), revision: broken.revision })).warnings;
+    assert.deepEqual(empty, ['The board renders empty: nothing visible is drawn.']);
+    const clean = json(preview).warnings;
+    assert.deepEqual(clean, [], 'a sound board has no warnings');
+
     // The composer's style and variations reach the agent: context and guide.
     const { setDesignComposerPrefs, designContextText } = require('../../dist-electron/electron/design/focus.js');
     const { setDesignPromptSource } = require('../../dist-electron/electron/design/tools.js');

@@ -3,6 +3,7 @@ import { join } from "path";
 import { randomUUID } from "crypto";
 import { DesignRepository } from "./repository";
 import { designFrameHtml } from "./html";
+import { renderChecksScript } from "./render-checks";
 import { moveDesignFocus } from "./focus";
 import type { DesignPreview } from "../../shared/design-types";
 
@@ -117,9 +118,10 @@ export function previewDesign(
           `data:text/html;charset=utf-8,${encodeURIComponent(designFrameHtml(b.html, randomUUID(), false))}`,
         );
         if (scale !== 1) w.webContents.setZoomFactor(scale);
-        const warnings = await w.webContents.executeJavaScript(
-          `(async()=>{await document.fonts.ready;await Promise.all([...document.images].map(i=>i.decode().catch(()=>null)));await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));return [...(document.documentElement.scrollWidth>${b.width}+2?['Content overflows the board width.']:[]),...([...document.images].some(i=>!i.naturalWidth)?['Some images could not be loaded.']:[])]})()`,
-        );
+        // What the screenshot alone might not show: overlaps, clipping, emptiness, size.
+        const warnings = (await w.webContents.executeJavaScript(
+          renderChecksScript(b.width, b.height),
+        ).catch(() => ["Checks could not run on this board; judge the screenshot alone."])) as string[];
         signal?.throwIfAborted();
         let image = await w.webContents.capturePage();
         // HiDPI displays capture at the device pixel ratio; export exact pixels.

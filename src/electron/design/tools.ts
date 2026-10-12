@@ -163,7 +163,7 @@ const specs: DesignToolSpec[] = [
   },
   {
     name: DESIGN_PREVIEW_TOOL,
-    description: 'Render one saved board and return a screenshot for visual inspection, with warnings for overflow and broken images. Use the current document revision. Does not change the design.',
+    description: 'Render one saved board and return a screenshot plus checks: text overlapping other text, text cut off by a clipping container, an empty page, content wider or taller than the board, and images that did not load. Fix what the warnings and the screenshot show in one pass; warnings are hints, not a pass/fail verdict. Use the current document revision. Does not change the design.',
     readOnly: true,
     shape: { documentId: z.string(), boardId: z.string(), revision: z.number().int().min(0) },
     jsonSchema: object({ documentId: string, boardId: string, revision: integer }, ['documentId', 'boardId', 'revision']),

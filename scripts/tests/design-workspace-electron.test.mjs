@@ -81,6 +81,31 @@ app.whenReady().then(async()=>{
   await js('[...document.querySelectorAll(".design-toolbar button")].find(b=>b.textContent.trim()==="Fit")?.click()');await delay(300);
   await shot('design-section');
 
+  // Keyboard through the layer tree: Tab across siblings, Shift+Enter up, Escape out one level at a time.
+  // Probing every srcdoc frame also tries the script-free thumbnails, which log a blocked-script notice.
+  const homeFrame=async()=>{for(const f of win.webContents.mainFrame.framesInSubtree.filter(f=>f.url==='about:srcdoc'))if(await f.executeJavaScript('document.body.textContent.includes("Notes that think")').catch(()=>false))return f};
+  await (await homeFrame()).executeJavaScript('document.querySelector("h1").click()');
+  await until('document.querySelector(".design-float-name")?.textContent==="h1"','h1 selected');
+  const press=(key,shift=false)=>js('document.querySelector("[data-design-section] .design-viewport").dispatchEvent(new KeyboardEvent("keydown",{key:'+JSON.stringify(key)+',shiftKey:'+shift+',bubbles:true,cancelable:true}))');
+  await press('Tab');
+  await until('document.querySelector(".design-float-name")?.textContent==="p"','Tab: next sibling');
+  await press('Tab',true);
+  await until('document.querySelector(".design-float-name")?.textContent==="h1"','Shift+Tab: previous sibling');
+  await press('Enter',true);
+  await until('document.querySelector(".design-float-name")?.textContent==="main"','Shift+Enter: parent');
+  await press('Escape');
+  await until('document.querySelector(".design-float-name")?.textContent==="Home"','Escape: out to the board');
+  // Preview a board and come back: the canvas view is where it was.
+  const view=()=>js('(()=>{const v=document.querySelector("[data-design-section] .design-viewport");const w=v.querySelector(".design-world");return v.dataset.viewZoom+"|"+w.style.transform})()');
+  const viewBefore=await view();
+  await press('Enter');
+  await until('!!document.querySelector(".design-board-preview-overlay")','board preview');
+  await press('Escape');
+  await until('!document.querySelector(".design-board-preview-overlay")','preview closed');
+  assert.equal(await view(),viewBefore,'the canvas view is kept across a preview');
+  await press('Escape');
+  await until('!document.querySelector(".design-float-name")','Escape: nothing selected');
+
   // Prompt cards: the message behind each board, under it, with Re-run.
   await until('document.querySelectorAll(".design-prompt-card").length===2','a prompt card under each board');
   assert.match(await js('document.querySelector(".design-prompt-card").textContent'),/Design a landing page for Atlas[\s\S]*Re-run/);
@@ -115,6 +140,17 @@ app.whenReady().then(async()=>{
   await until('document.querySelectorAll(".design-version-step").length===2','its saves');
   await shot('design-history');
   await click('[aria-label="Close history"]');
+
+  // An approval opens the dock's chat until it is answered, then the dock returns as it was.
+  const prefBefore=await js('localStorage.getItem("aegis.design.dock")');
+  await js('qa.app.setState(s=>({sessions:{...s.sessions,s1:{...s.sessions.s1,status:"running",permissionRequests:[{sessionId:"s1",toolUseId:"perm-1",toolName:"Bash",input:{command:"ls"}}]}}}))');
+  await until('document.querySelector("[data-design-dock]")?.dataset.designDockAttention==="approval"&&!!document.querySelector("[data-design-dock-chat]")','an approval opens the chat');
+  await until('document.querySelector("[data-design-dock-chat]").textContent.includes("Waiting")','the approval card shows');
+  assert.match(await js('document.querySelector("[data-design-dock-status]").textContent'),/Waiting for your approval/);
+  await shot('design-dock-approval');
+  await js('qa.app.setState(s=>({sessions:{...s.sessions,s1:{...s.sessions.s1,status:"idle",permissionRequests:[]}}}))');
+  await until('document.querySelector("[data-design-dock]")?.dataset.designDock==="composer"&&!document.querySelector("[data-design-dock-attention]")','back to the composer');
+  assert.equal(await js('localStorage.getItem("aegis.design.dock")'),prefBefore,'the dock preference is untouched');
 
   // Show chat → the conversation; minimize → a pill; expand back.
   await js('[...document.querySelectorAll("[data-design-dock] button")].find(b=>b.textContent.includes("Show chat")).click()');
@@ -189,7 +225,7 @@ app.whenReady().then(async()=>{
   await until('document.querySelectorAll(".design-panel .design-board").length===2','design tab canvas');
   await shot('design-pane');
 
-  console.log(JSON.stringify({ok:true,errors:errors.filter(e=>!/No handler registered|Failed to load resource/.test(e)).slice(0,6)}));app.exit(0);
+  console.log(JSON.stringify({ok:true,errors:errors.filter(e=>!/No handler registered|Failed to load resource|Blocked script execution in 'about:srcdoc'/.test(e)).slice(0,6)}));app.exit(0);
  }catch(e){console.error(e);await shot('failure').catch(()=>{});console.log(JSON.stringify({errors:errors.slice(0,10)}));app.exit(1)}
 });
 `;

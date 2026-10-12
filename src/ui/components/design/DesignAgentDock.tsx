@@ -67,8 +67,11 @@ export function DesignAgentDock({
   const running = session?.status === "running";
   const agent = PROVIDERS.find((p) => p.id === session?.provider)?.label ?? "Agent";
   const status = useDesignDraftStatus(sessionId, running);
+  // The agent waits on an approval: the chat opens until it is answered,
+  // then the dock goes back to how the user left it (the preference is kept).
+  const waiting = !isDraft && (session?.permissionRequests?.length ?? 0) > 0;
   // A new design has no chat to show yet.
-  const shownMode: DockMode = isDraft && mode === "chat" ? "composer" : mode;
+  const shownMode: DockMode = waiting ? "chat" : isDraft && mode === "chat" ? "composer" : mode;
 
   const dock = useRef<HTMLDivElement>(null);
   const [drag, setDrag] = useState<{ x: number; y: number; dx: number; dy: number } | null>(null);
@@ -111,7 +114,9 @@ export function DesignAgentDock({
   const statusLine = (
     <span className="flex min-w-0 flex-1 items-center gap-1.5 text-[12.5px] text-[var(--text-muted)]" data-design-dock-status>
       {running ? <span aria-hidden="true" className="design-dock-spinner" /> : null}
-      <span className="truncate">{status ?? (running ? "Working…" : shownMode === "pill" ? "Ready" : isDraft ? "New design" : agent)}</span>
+      <span className="truncate">
+        {waiting ? "Waiting for your approval" : status ?? (running ? "Working…" : shownMode === "pill" ? "Ready" : isDraft ? "New design" : agent)}
+      </span>
     </span>
   );
   const iconButton = "inline-flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-[6px] text-[var(--text-muted)] hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)]";
@@ -124,6 +129,7 @@ export function DesignAgentDock({
         role="complementary"
         aria-label="Design conversation"
         data-design-dock={shownMode}
+        data-design-dock-attention={waiting ? "approval" : undefined}
         data-design-dock-corner={corner}
         className={`design-dock absolute z-30 flex flex-col overflow-hidden ${shownMode === "pill" ? "rounded-full" : "rounded-[16px]"} ${drag ? "is-dragging" : ""}`}
         style={{
@@ -157,7 +163,7 @@ export function DesignAgentDock({
                   <ArrowUpRight className="h-3.5 w-3.5" />
                 </button>
               ) : null}
-              {!isDraft ? (
+              {!isDraft && !waiting ? (
                 <button
                   type="button"
                   className="inline-flex h-6 items-center gap-1 rounded-[6px] px-1.5 text-[12px] text-[var(--text-muted)] hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)]"
@@ -168,9 +174,11 @@ export function DesignAgentDock({
                   {shownMode === "chat" ? <ChevronDown className="h-3 w-3" /> : <ChevronUp className="h-3 w-3" />}
                 </button>
               ) : null}
-              <button type="button" className={iconButton} onClick={() => update({ mode: "pill" })} aria-label="Minimize">
-                <Minus className="h-3.5 w-3.5" />
-              </button>
+              {!waiting ? (
+                <button type="button" className={iconButton} onClick={() => update({ mode: "pill" })} aria-label="Minimize">
+                  <Minus className="h-3.5 w-3.5" />
+                </button>
+              ) : null}
             </div>
             {shownMode === "chat" ? (
               <div className="relative flex min-h-0 min-w-0 flex-1 flex-col" data-design-dock-chat>
