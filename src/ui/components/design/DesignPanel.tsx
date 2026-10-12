@@ -994,10 +994,8 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
         ) : (
           <strong>Loading design…</strong>
         )}
-        <span className="design-meta">
-          v{head || "…"} · {doc?.boards.length ?? 0} board
-          {doc?.boards.length === 1 ? "" : "s"} · {status}
-        </span>
+        {/* Only what needs attention: saving, read-only, or an old version on view. */}
+        {status !== "saved" && <span className="design-meta">{status}</span>}
         <span className="design-spacer" />
         <button
           disabled={!editable || busy}
