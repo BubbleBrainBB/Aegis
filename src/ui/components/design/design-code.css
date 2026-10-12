@@ -1,0 +1,13 @@
+.cx-inline-editor { padding: 12px; border-bottom: 1px solid var(--border-color, #8883); }
+.cx-source-title { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; font-size: 12px; font-weight: 600; padding: 6px 0; }
+.cx-source-title > span { font-size: 10px; font-weight: 400; opacity: .6; }
+.cx-source-note { margin: 0 0 9px; font-size: 11px; line-height: 1.5; opacity: .65; }
+.cx-inline-editor textarea { box-sizing: border-box; width: 100%; min-height: 132px; resize: vertical; padding: 8px; border: 1px solid var(--border-color, #8884); border-radius: 6px; background: var(--bg-secondary, transparent); color: inherit; font: 11px/1.6 ui-monospace, SFMono-Regular, monospace; tab-size: 2; }
+.cx-inline-editor textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.cx-inline-editor textarea:read-only { opacity: .65; }
+.cx-inline-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
+.cx-inline-actions button { border: 1px solid var(--border-color, #8884); border-radius: 5px; background: var(--bg-secondary, transparent); color: inherit; padding: 5px 8px; font: inherit; font-size: 11px; }
+.cx-inline-actions button:disabled { opacity: .4; }
+.cx-inline-actions button:not(:disabled):hover { background: var(--bg-hover, #8882); }
+.cx-source-warning { color: var(--text-danger, #c34b4b); font-size: 11px; line-height: 1.5; }
+.design-code-tab > .cx-source-title { padding-inline: 12px; }

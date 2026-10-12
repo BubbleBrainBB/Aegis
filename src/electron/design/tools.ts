@@ -56,8 +56,16 @@ const rules =
 
 const operation = z
   .object({
-    type: z.enum(['add', 'content', 'placement', 'duplicate', 'remove', 'title']),
+    type: z.enum(['add', 'content', 'placement', 'duplicate', 'remove', 'title', 'canvas']),
     boardId: z.string().optional(),
+    pageId: z.string().optional(),
+    pages: z.array(z.object({ id: z.string(), name: z.string().min(1).max(120) }).strict()).max(40).optional(),
+    marks: z.array(z.object({
+      id: z.string(), type: z.enum(['note', 'rectangle', 'ellipse', 'line', 'arrow', 'freehand']),
+      pageId: z.string().optional(), x: z.number(), y: z.number(), width: z.number(), height: z.number(),
+      fill: z.string(), stroke: z.string(), strokeWidth: z.number(), text: z.string().optional(), fontSize: z.number().optional(),
+      points: z.array(z.object({ x: z.number(), y: z.number() })).optional(),
+    }).strict()).max(200).optional(),
     expectedRevision: z.number().int().min(0).optional(),
     name: z.string().optional(),
     title: z.string().optional(),
@@ -128,14 +136,14 @@ const specs: DesignToolSpec[] = [
   },
   {
     name: DESIGN_UPDATE_TOOL,
-    description: 'Atomically update a design; this is how a design continues. Use the open design from <design_context> unless the user names another. Operations: add{name,html,width?,height?}; content{boardId,expectedRevision,html}; placement{boardId,expectedRevision,name?,x?,y?,width?,height?}; duplicate/remove{boardId,expectedRevision}; title{title,expectedRevision}. content/duplicate/remove use the board’s contentRevision, placement its placementRevision, title the document revision. After REVISION_CONFLICT, read, merge and retry.',
+    description: 'Atomically update a design; this is how a design continues. Use the open design from <design_context> unless the user names another. Operations: add{name,html,width?,height?,pageId?}; content{boardId,expectedRevision,html}; placement{boardId,expectedRevision,name?,x?,y?,width?,height?,pageId?}; duplicate/remove{boardId,expectedRevision}; title{title,expectedRevision}; canvas{expectedRevision,pages?,marks?} atomically replaces provided page/annotation arrays (read and preserve existing entries). Page IDs group boards independently of screen names; missing pageId belongs to the first page. Use pageId from design_context for new boards. content/duplicate/remove use the board’s contentRevision, placement its placementRevision, title/canvas the document revision. After REVISION_CONFLICT, read, merge and retry.',
     readOnly: false,
     shape: {
       documentId: z.string(),
       operationId: z.string().describe('A new unique id for this write; reuse it only to retry the same call.'),
       summary: z.string().optional().describe("One-line past-tense summary for version history, e.g. 'Tightened hero headline on Home'."),
       commentId: z.string().optional().describe('Set when this change addresses a design comment.'),
-      operations: z.array(operation).min(1).max(32),
+      operations: z.array(operation).min(1).max(64),
     },
     jsonSchema: object({
       documentId: string,
@@ -143,10 +151,13 @@ const specs: DesignToolSpec[] = [
       summary: { type: 'string', description: "One-line past-tense summary for version history, e.g. 'Tightened hero headline on Home'." },
       commentId: { type: 'string', description: 'Set when this change addresses a design comment.' },
       operations: {
-        type: 'array', minItems: 1, maxItems: 32,
+        type: 'array', minItems: 1, maxItems: 64,
         items: object({
-          type: { type: 'string', enum: ['add', 'content', 'placement', 'duplicate', 'remove', 'title'] },
-          boardId: string, expectedRevision: integer, name: string, title: string, html: string,
+          type: { type: 'string', enum: ['add', 'content', 'placement', 'duplicate', 'remove', 'title', 'canvas'] },
+          boardId: string, pageId: string,
+          pages: { type: 'array', maxItems: 40, items: object({ id: string, name: string }, ['id', 'name']) },
+          marks: { type: 'array', maxItems: 200, items: object({ id: string, type: { type: 'string', enum: ['note', 'rectangle', 'ellipse', 'line', 'arrow', 'freehand'] }, pageId: string, x: { type: 'number' }, y: { type: 'number' }, width: { type: 'number' }, height: { type: 'number' }, fill: string, stroke: string, strokeWidth: { type: 'number' }, text: string, fontSize: { type: 'number' }, points: { type: 'array', items: object({ x: { type: 'number' }, y: { type: 'number' } }, ['x', 'y']) } }, ['id', 'type', 'x', 'y', 'width', 'height', 'fill', 'stroke', 'strokeWidth']) },
+          expectedRevision: integer, name: string, title: string, html: string,
           x: { type: 'number' }, y: { type: 'number' }, width: { type: 'integer' }, height: { type: 'integer' },
         }, ['type']),
       },

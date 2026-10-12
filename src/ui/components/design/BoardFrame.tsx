@@ -122,7 +122,7 @@ export const BoardFrame = memo(
     const pending = useRef(new Map<string, (data: any) => void>());
     const token = useMemo(
       () => crypto.randomUUID(),
-      [board.id, board.contentRevision, preview],
+      [board.id, board.contentRevision, board.html, preview],
     );
     const source = useMemo(
       () => designFrameHtml(board.html, token, !preview),

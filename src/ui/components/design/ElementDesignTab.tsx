@@ -333,7 +333,19 @@ export function ElementDesignTab({
         </Section>
       )}
 
-      <Section title="Position">
+      <Section title="Size">
+        {(["width", "height"] as const).map((axis) => (
+          <Row key={axis} label={axis === "width" ? "Width" : "Height"}>
+            {field(axis, { unit: "px", format: px, live: live?.[axis] })}
+            <Dropdown
+              label={`${axis === "width" ? "Width" : "Height"} sizing`}
+              value={sizing(axis)}
+              options={sizingOptions(axis)}
+              disabled={!canEdit}
+              onChange={(m) => setSizing(axis, m)}
+            />
+          </Row>
+        ))}
         <Row label="Position">
           <Dropdown
             wide
@@ -371,21 +383,6 @@ export function ElementDesignTab({
         )}
       </Section>
 
-      <Section title="Size">
-        {(["width", "height"] as const).map((axis) => (
-          <Row key={axis} label={axis === "width" ? "Width" : "Height"}>
-            {field(axis, { unit: "px", format: px, live: live?.[axis] })}
-            <Dropdown
-              label={`${axis === "width" ? "Width" : "Height"} sizing`}
-              value={sizing(axis)}
-              options={sizingOptions(axis)}
-              disabled={!canEdit}
-              onChange={(m) => setSizing(axis, m)}
-            />
-          </Row>
-        ))}
-      </Section>
-
       {!autoLayout && onAutoLayout && (
         <Section title="Auto layout">
           {node.children.length > 0 && (
@@ -411,7 +408,7 @@ export function ElementDesignTab({
       )}
 
       {autoLayout && (
-        <Section title={display.includes("grid") ? "Grid layout" : "Flex layout"}>
+        <Section title="Layout">
           <Row label="Layout">
             <Dropdown
               wide

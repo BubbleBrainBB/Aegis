@@ -373,8 +373,95 @@ try {
     assert.throws(() => pr.boardPrompts("other", d1.id), /not found/i);
     pr.close();
     const raw = new (require("better-sqlite3"))(join(root, "prompts.db"));
-    assert.equal(raw.pragma("user_version", { simple: true }), 3);
+    assert.equal(raw.pragma("user_version", { simple: true }), 4);
     raw.close();
+  }
+
+  // Pages and canvas objects are atomic metadata, restored independently of agent board edits.
+  {
+    const canvasFile = join(root, "canvas.db");
+    let cr = new DesignRepository(canvasFile);
+    let c = cr.create("c", "Canvas", "", "c-create");
+    assert.equal(c.pages, undefined, "legacy shape does not need a page migration");
+    assert.deepEqual(c.marks, []);
+    c = cr.update("c", { documentId: c.id, operationId: "c-boards", operations: [{ type: "add", name: "Original" }] });
+    const original = c.boards[0];
+    const baseline = c.revision;
+    const pages = [{ id: "page-1", name: "Page 1" }, { id: "page-2", name: "Drafts" }];
+    const mark = { id: "note-1", type: "note", pageId: "page-2", x: 8, y: 12, width: 240, height: 160, fill: "#fff3b0", stroke: "#4a4220", strokeWidth: 2, text: "Keep me", fontSize: 14 };
+    const canvasWrite = { documentId: c.id, operationId: "c-pages", operations: [{ type: "canvas", expectedRevision: c.revision, pages, marks: [mark] }] };
+    c = cr.update("c", canvasWrite);
+    assert.equal(cr.update("c", canvasWrite).revision, c.revision, "canvas write retries are idempotent");
+    const withCanvas = c.revision;
+    assert.equal(cr.history("c", c.id)[0].canvasChanged, true);
+    assert.deepEqual(cr.history("c", c.id)[0].boardIds, []);
+    const persisted = cr.read("c", c.id);
+    assert.deepEqual(persisted.pages, pages);
+    assert.deepEqual(persisted.marks, [mark]);
+    assert.throws(() => cr.update("c", { documentId: c.id, operationId: "c-stale", operations: [{ type: "canvas", expectedRevision: baseline, pages: [] }] }), /REVISION_CONFLICT/);
+    // A malformed second operation cannot leave the first board edit committed.
+    for (const [suffix, metadata] of [
+      ["duplicate", { pages: [pages[0], pages[0]] }],
+      ["long-name", { pages: [{ id: "page-1", name: "x".repeat(121) }] }],
+      ["too-many", { pages: Array.from({ length: 41 }, (_, i) => ({ id: `page-${i}`, name: "Page" })) }],
+      ["bad-mark", { marks: [{ ...mark, x: Infinity }] }],
+      ["duplicate-mark", { marks: [mark, mark] }],
+      ["long-note", { marks: [{ ...mark, text: "x".repeat(5001) }] }],
+      ["bad-path", { marks: [{ ...mark, type: "freehand", points: [{ x: 0, y: 0 }, { x: 999, y: 0 }] }] }],
+    ]) {
+      assert.throws(() => cr.update("c", { documentId: c.id, operationId: `c-${suffix}`, operations: [{ type: "content", boardId: original.id, expectedRevision: original.contentRevision, html: "<p>Must not save</p>" }, { type: "canvas", expectedRevision: c.revision, ...metadata }] }));
+      assert.equal(cr.read("c", c.id).revision, c.revision);
+    }
+    c = cr.update("c", { documentId: c.id, operationId: "c-agent", operations: [{ type: "content", boardId: original.id, expectedRevision: original.contentRevision, html: "<p>New agent content</p>" }] });
+    assert.equal(cr.history("c", c.id)[0].canvasChanged, false);
+    const latestBoard = { ...c.boards[0] };
+    assert.throws(() => cr.update("c", { documentId: c.id, operationId: "c-atomic-stale", operations: [{ type: "content", boardId: original.id, expectedRevision: latestBoard.contentRevision, html: "<p>Must roll back</p>" }, { type: "canvas", expectedRevision: baseline, pages: [] }] }), /REVISION_CONFLICT/);
+    assert.deepEqual(cr.read("c", c.id).boards[0], latestBoard, "a later metadata conflict rolls back earlier board edits in the transaction");
+    c = cr.restore("c", c.id, baseline, c.revision, "c-undo-canvas", undefined, { kind: "user" }, { canvas: true });
+    assert.equal(c.pages, undefined);
+    assert.deepEqual(c.marks, []);
+    assert.deepEqual(c.boards[0], latestBoard, "metadata undo leaves unrelated board HTML and write tokens intact");
+    c = cr.restore("c", c.id, withCanvas, c.revision, "c-redo-canvas", [], { kind: "user" }, { canvas: true });
+    assert.deepEqual(c.pages, pages);
+    assert.deepEqual(c.marks, [mark]);
+    c = cr.update("c", { documentId: c.id, operationId: "c-page-board", operations: [{ type: "add", name: "Second page", pageId: "page-2" }] });
+    const second = c.boards[1];
+    assert.equal(second.x, 0, "new page placement ignores other pages");
+    assert.equal(second.pageId, "page-2");
+    assert.equal(cr.history("c", c.id)[0].canvasChanged, true, "a new board changes page membership");
+    const beforeDelete = c.revision;
+    c = cr.update("c", { documentId: c.id, operationId: "c-delete-page", operations: [{ type: "remove", boardId: second.id, expectedRevision: second.contentRevision }, { type: "canvas", expectedRevision: c.revision, pages: [pages[0]], marks: [] }] });
+    assert.deepEqual(cr.history("c", c.id)[0].boardIds, [second.id]);
+    assert.equal(cr.history("c", c.id)[0].canvasChanged, true);
+    c = cr.restore("c", c.id, beforeDelete, c.revision, "c-undo-delete", [second.id], { kind: "user" }, { canvas: true });
+    assert.deepEqual(c.pages, pages);
+    assert.deepEqual(c.marks, [mark]);
+    assert.equal(c.boards[1].pageId, "page-2");
+    assert.deepEqual(c.boards[0], latestBoard);
+    const restoredSecond = c.boards[1];
+    c = cr.update("c", { documentId: c.id, operationId: "c-move-page", operations: [{ type: "placement", boardId: restoredSecond.id, expectedRevision: restoredSecond.placementRevision, pageId: "page-1" }] });
+    assert.equal(c.boards[1].pageId, "page-1");
+    assert.deepEqual(cr.history("c", c.id)[0].boardIds, [restoredSecond.id]);
+    assert.equal(cr.history("c", c.id)[0].canvasChanged, true, "moving between pages is both a board and canvas conflict");
+    cr.close();
+    cr = new DesignRepository(canvasFile);
+    assert.deepEqual(cr.read("c", c.id).marks, [mark], "metadata survives reopening");
+    // A full page can be removed atomically: 32 board removals plus metadata is 33 operations.
+    let full = cr.create("full", "Full", "", "full-create");
+    full = cr.update("full", { documentId: full.id, operationId: "full-add", operations: Array.from({ length: 32 }, (_, i) => ({ type: "add", name: `Board ${i}` })) });
+    full = cr.update("full", { documentId: full.id, operationId: "full-remove", operations: [...full.boards.map((b) => ({ type: "remove", boardId: b.id, expectedRevision: b.contentRevision })), { type: "canvas", expectedRevision: full.revision, pages: [pages[1]], marks: [] }] });
+    assert.equal(full.boards.length, 0);
+    assert.equal(cr.history("full", full.id)[0].boardIds.length, 32);
+    cr.close();
+    // Reopening a v3 database adds only the metadata history column, preserving snapshots.
+    const raw = new (require("better-sqlite3"))(canvasFile);
+    raw.exec("ALTER TABLE design_revisions DROP COLUMN canvas_changed");
+    raw.pragma("user_version = 3");
+    raw.close();
+    cr = new DesignRepository(canvasFile);
+    assert.deepEqual(cr.read("c", c.id).marks, [mark]);
+    assert.equal(cr.history("c", c.id)[0].canvasChanged, false, "legacy history gets conservative default");
+    cr.close();
   }
 
   // Session lifecycle: a draft's designs follow it, a delete takes them along.

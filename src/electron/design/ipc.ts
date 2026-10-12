@@ -1,10 +1,11 @@
-import { dialog } from "electron";
+import { BrowserWindow, dialog, type SaveDialogOptions } from "electron";
 import { writeFile } from "fs/promises";
 import { isAbsolute } from "path";
 import { randomUUID } from "crypto";
 import { strToU8, zipSync } from "fflate";
 import { ipcMainHandle } from "../util";
 import { designPdf, getDesignRepository, previewDesign } from "./service";
+import { designForPage } from "../../shared/design-pages";
 import { setDesignComposerPrefs, setDesignFocus } from "./focus";
 import { listDesignStyles, listProjectTemplates } from "./styles";
 import { cancelQuickEdit, quickEditDesign } from "./quick-edit";
@@ -63,6 +64,7 @@ export function registerDesignIpc() {
         {
           summary: typeof x.summary === "string" ? x.summary.slice(0, 160) : undefined,
           title: x.title === true,
+          canvas: x.canvas === true,
         },
       ),
     comment: async (x) =>
@@ -126,12 +128,17 @@ export function registerDesignIpc() {
     },
     preview: (x) =>
       previewDesign(x.sessionId, x.documentId, x.boardId, x.revision),
-    export: async (x) => {
-      const d = getDesignRepository().read(
+    export: async (x, owner?: BrowserWindow) => {
+      let d = getDesignRepository().read(
         x.sessionId,
         x.documentId,
         x.revision,
       );
+      if (x.pageId !== undefined) {
+        d = designForPage(d, x.pageId);
+        if (x.boardId && !d.boards.some(board => board.id === x.boardId)) throw new Error("Board does not belong to this page.");
+      }
+      if (!d.boards.length && x.format !== "html") throw new Error("This page has no boards to export.");
       if (x.format !== "png" && x.format !== "html" && x.format !== "pdf")
         throw new Error("Unsupported export format");
       let bytes: Uint8Array;
@@ -173,7 +180,7 @@ export function registerDesignIpc() {
         bytes = zipSync(files);
       }
       const extension = x.format === "png" ? "png" : x.format === "pdf" ? "pdf" : "zip";
-      const result = await dialog.showSaveDialog({
+      const options: SaveDialogOptions = {
         defaultPath: `${d.title.replace(/[^\p{L}\p{N} _-]/gu, "").slice(0, 80) || "Design"}.${extension}`,
         filters: [
           {
@@ -181,15 +188,18 @@ export function registerDesignIpc() {
             extensions: [extension],
           },
         ],
-      });
+      };
+      const result = owner && !owner.isDestroyed()
+        ? await dialog.showSaveDialog(owner, options)
+        : await dialog.showSaveDialog(options);
       if (result.canceled || !result.filePath) return { saved: false };
       await writeFile(result.filePath, bytes);
       return { saved: true, path: result.filePath };
     },
   };
   for (const [method, handler] of Object.entries(handlers)) {
-    ipcMainHandle(`design:${method}`, (_event, input) =>
-      (handler as (input: unknown) => unknown)(input),
+    ipcMainHandle(`design:${method}`, (event, input) =>
+      (handler as (input: unknown, owner?: BrowserWindow) => unknown)(input, BrowserWindow.fromWebContents(event.sender) ?? undefined),
     );
   }
 }

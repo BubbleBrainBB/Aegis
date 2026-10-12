@@ -1,3 +1,9 @@
+import type { DesignMark } from "./design-marks";
+
+export interface DesignPage {
+  id: string;
+  name: string;
+}
 export interface DesignBoard {
   id: string;
   name: string;
@@ -8,6 +14,8 @@ export interface DesignBoard {
   contentRevision: number;
   placementRevision: number;
   html: string;
+  /** Missing or stale membership belongs to the first page (legacy documents). */
+  pageId?: string;
 }
 export interface DesignAnchor {
   nodeId?: string;
@@ -62,6 +70,8 @@ export interface DesignRevisionInfo {
   summary: string | null;
   commentId: string | null;
   boardIds: string[];
+  /** This version changed pages, canvas annotations, or board page membership. */
+  canvasChanged?: boolean;
   /** The message an agent version answered, and that message's id (one request, many saves). */
   prompt?: string | null;
   requestId?: string | null;
@@ -73,6 +83,8 @@ export interface DesignDocument {
   brief: string;
   revision: number;
   boards: DesignBoard[];
+  pages?: DesignPage[];
+  marks?: DesignMark[];
   comments: DesignComment[];
   createdAt: number;
   updatedAt: number;
@@ -91,6 +103,7 @@ export type DesignOperation =
       y?: number;
       width?: number;
       height?: number;
+      pageId?: string;
     }
   | { type: "content"; boardId: string; expectedRevision: number; html: string }
   | {
@@ -102,9 +115,11 @@ export type DesignOperation =
       y?: number;
       width?: number;
       height?: number;
+      pageId?: string;
     }
   | { type: "remove" | "duplicate"; boardId: string; expectedRevision: number }
-  | { type: "title"; title: string; expectedRevision: number };
+  | { type: "title"; title: string; expectedRevision: number }
+  | { type: "canvas"; expectedRevision: number; pages?: DesignPage[]; marks?: DesignMark[] };
 export interface DesignUpdate {
   documentId: string;
   operationId: string;
@@ -177,6 +192,8 @@ export interface DesignAPI {
     boardIds?: string[];
     /** With boardIds (or alone): also restore the document title. */
     title?: boolean;
+    /** Restore pages and canvas annotations without replacing unrelated boards. */
+    canvas?: boolean;
     /** History line for this version, e.g. "Undo · Moved Home". */
     summary?: string;
   }): Promise<DesignDocument>;
@@ -212,6 +229,7 @@ export interface DesignAPI {
   focus(input: {
     sessionId: string;
     documentId?: string;
+    pageId?: string;
     boardId?: string;
     nodeId?: string;
     /** false: this panel closed; clears the focus only if it is still this design. */
@@ -228,6 +246,7 @@ export interface DesignAPI {
     documentId: string;
     revision: number;
     format: "html" | "png" | "pdf";
+    pageId?: string;
     boardId?: string;
     /** PNG pixel ratio; defaults to 1. */
     scale?: number;

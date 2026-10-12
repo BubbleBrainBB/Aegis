@@ -20,6 +20,11 @@ import { DesignCanvas, type CanvasApi, type CanvasPin } from "./DesignCanvas";
 import { LayersPopover } from "./LayersPopover";
 import { ElementDesignTab } from "./ElementDesignTab";
 import { BoardDesignTab } from "./BoardDesignTab";
+import { DesignPages } from "./DesignPages";
+import { designPages, designPageId } from "../../../shared/design-pages";
+import type { DesignMark } from "../../../shared/design-marks";
+import { rendererStateStorage } from "../../utils/renderer-state-storage";
+import { DesignTweaksTab } from "./DesignTweaksTab";
 import { CodeTab } from "./CodeTab";
 import { InspectorResizer, useInspectorWidth } from "./InspectorResizer";
 import { useCommentsHidden, useInspectorOpen } from "./design-prefs";
@@ -41,7 +46,7 @@ import {
   layerName,
   useDesignUser,
 } from "./design-ui";
-import { Eye, EyeOff, Layers, MoreHorizontal, Sparkles, X } from "../icons";
+import { ArrowLeft, ChevronDown, History, Plus, Eye, EyeOff, Layers, MoreHorizontal, Sparkles, X } from "../icons";
 import { useAppStore } from "../../store/useAppStore";
 import { useDesignStore } from "../../store/useDesignStore";
 import { selectDesignDrafts, useDesignDraftStore } from "../../store/useDesignDraftStore";
@@ -67,6 +72,8 @@ import { DesignAgentName, useDesignAgentName } from "./design-ui";
 import { DesignStylesDialog } from "./DesignStylesDialog";
 import { PROVIDERS } from "../../utils/provider";
 import "./design.css";
+import "./design-claude.css";
+import { DesignActionMenu, DesignFloatingToolbar, DesignLayersSection } from "./DesignChrome";
 
 /** A board made with the Frame tool starts empty and white. */
 const BLANK_BOARD = '<html><head></head><body style="margin: 0; background: #ffffff"></body></html>';
@@ -78,7 +85,7 @@ const uid = () => crypto.randomUUID();
 /** Width of the history column (design.css .design-history). */
 const HISTORY_WIDTH = 288;
 type Selection = { boardId: string; revision: number; anchor: DesignAnchor };
-type Tab = "design" | "code" | "comments";
+type Tab = "design" | "tweaks" | "code" | "comments";
 type CommentInput = { text: string; toAgent: boolean; attachments: Attachment[] };
 const EMPTY_QUEUE: never[] = [];
 
@@ -114,6 +121,12 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
   const user = useDesignUser();
   const [list, setList] = useState<DesignSummary[]>([]);
   const [doc, setDoc] = useState<DesignDocument | null>(null);
+  const pageKey = "aegis.design.page:" + documentId;
+  const [pageChoice, setPageChoice] = useState<string>(() => rendererStateStorage.getItem(pageKey) ?? "");
+  const pages = designPages(doc ?? {});
+  const activePageId = pages.some(page => page.id === pageChoice) ? pageChoice : pages[0].id;
+  const [selectedMarkIds, setSelectedMarkIds] = useState<string[]>([]);
+  useEffect(() => { setPageChoice(rendererStateStorage.getItem(pageKey) ?? ""); }, [pageKey]);
   const [failure, setFailure] = useState("");
   const [busy, setBusy] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -124,7 +137,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
     nodeId: string;
     request: number;
   }>();
-  const [layersOpen, setLayersOpen] = useState(false);
+  const [tweakPreview, setTweakPreview] = useState<{ boardId: string; revision: number; html: string }>();
   const [tab, setTab] = useState<Tab>("design");
   const [inspectorWidth, setInspectorWidth, saveInspectorWidth] = useInspectorWidth();
   const [inspectorOpen, setInspectorOpen] = useInspectorOpen();
@@ -159,6 +172,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
       .focus?.({
         sessionId,
         documentId: open,
+        pageId: open ? activePageId : undefined,
         boardId: open ? (selection?.boardId ?? selected) : undefined,
         nodeId: open ? selection?.anchor.nodeId : undefined,
       })
@@ -166,7 +180,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
     return () => {
       if (open) void window.electron.design.focus?.({ sessionId, documentId: open, open: false })?.catch(() => {});
     };
-  }, [sessionId, hidden, doc?.id, historical, selected, selection?.boardId, selection?.anchor.nodeId]);
+  }, [sessionId, hidden, doc?.id, historical, activePageId, selected, selection?.boardId, selection?.anchor.nodeId]);
   // The chat composer shows what is selected here as a chip; dropping the
   // chip clears the selection.
   useEffect(() => {
@@ -198,7 +212,26 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
   }, [clearRequest, sessionId]);
   const [head, setHead] = useState(0);
   const [stylesOpen, setStylesOpen] = useState(false);
-  const [exportMenu, setExportMenu] = useState<{ x: number; y: number }>();
+  const [exporting, setExporting] = useState(false);
+  const [exportAllPages, setExportAllPages] = useState(false);
+  const [exportScale, setExportScale] = useState<1 | 2>(2);
+  const [exportMenu, setExportMenu] = useState<true>();
+  const exportTrigger = useRef<HTMLButtonElement>(null);
+  /** Title: one click opens the design menu, a double click renames in place. */
+  const [renaming, setRenaming] = useState(false);
+  const titleClick = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(titleClick.current), []);
+  const startRename = () => {
+    clearTimeout(titleClick.current);
+    setExportMenu(undefined);
+    setRenaming(true);
+  };
+  // Layers and Properties share a panel; the existing shortcut still toggles it.
+  const layersOpen = inspectorOpen && !historyOpen && tab !== "comments";
+  const toggleLayers = () => {
+    setInspectorOpen(!layersOpen);
+    if (!layersOpen) { setHistoryOpen(false); setTab("design"); }
+  };
   /** A quick edit of the selected layer: typing, running, or what came back. */
   const [quick, setQuick] = useState<{
     boardId: string;
@@ -233,6 +266,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
     commentId?: string;
   }>();
   const [boardMenu, setBoardMenu] = useState(false);
+  const boardMenuTrigger = useRef<HTMLButtonElement>(null);
   const canvas = useRef<CanvasApi | null>(null);
   const root = useRef<HTMLElement>(null);
   const stepRef = useRef<(direction: "undo" | "redo") => void>(() => {});
@@ -242,8 +276,8 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
   const drafts = useDesignDraftStore(useShallow((s) => selectDesignDrafts(s, sessionId, doc?.id ?? "")));
   const writing = !historical && drafts.length > 0;
   const canvasBoards = useMemo(
-    () => (doc ? (historical ? doc.boards : boardsWithDrafts(doc.boards, drafts)) : []),
-    [doc, drafts, historical],
+    () => (doc ? (historical ? doc.boards : boardsWithDrafts(doc.boards, drafts)).filter(board => designPageId(doc, board) === activePageId).map(board => tweakPreview?.boardId === board.id && tweakPreview.revision === board.contentRevision ? { ...board, html: tweakPreview.html } : board) : []),
+    [doc, drafts, historical, activePageId, tweakPreview],
   );
   // A board the agent starts writing comes into view.
   const seenDraftBoards = useRef(new Set<string>());
@@ -369,17 +403,18 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
   useEffect(() => {
     if (hidden || !documentId) return;
     const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
       const direction = undoKey(e, isMac);
       if (!direction) return;
       const target = e.target instanceof HTMLElement ? e.target : null;
-      if (target?.closest("input,textarea,select,[contenteditable]:not([contenteditable=false])")) return;
-      if (target && target !== document.body && !root.current?.contains(target)) return;
+      if (target?.closest("input,textarea,select,[contenteditable]:not([contenteditable=false]),[role=menu],[role=dialog]")) return;
+      if (target && target !== document.body && !root.current?.contains(target) && !toolbarHost?.contains(target)) return;
       e.preventDefault();
       stepRef.current(direction);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [hidden, documentId]);
+  }, [hidden, documentId, toolbarHost]);
 
   function openThread(comment?: DesignComment, boardId?: string) {
     if (!doc) return;
@@ -391,6 +426,8 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
       if (comment) toast.error("That board was deleted.");
       return;
     }
+    const targetBoard = doc.boards.find(board => board.id === target)!;
+    if (designPageId(doc, targetBoard) !== activePageId) selectPage(designPageId(doc, targetBoard));
     setSelectedIds([target]);
     setSelection(undefined);
     setActiveCommentId(comment?.id);
@@ -431,6 +468,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
       to: result.revision,
       boardIds: touchedBoards(operations, before.boards, result.boards),
       title: operations.some((op) => op.type === "title"),
+      canvas: operations.some((op) => op.type === "canvas"),
       summary: summary || summarizeOperations(operations, before),
     });
     return result;
@@ -440,11 +478,12 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
     run(async () => {
       if (!doc || !sessionId || !editable) return;
       const stack = undoStacks.get(doc.id);
-      const entry = (direction === "undo" ? stack?.undo : stack?.redo)?.pop();
+      const sourceStack = direction === "undo" ? stack?.undo : stack?.redo;
+      const entry = sourceStack?.at(-1);
       if (!stack || !entry) return;
       const history = await window.electron.design.history({ sessionId, documentId: doc.id });
       const headNow = history[0]?.revision ?? head;
-      if (blockedBy(entry, history)) {
+      if (blockedBy(entry, history, stack.ownedRevisions)) {
         // The agent edited the same boards since; restoring would discard that.
         stack.undo = [];
         stack.redo = [];
@@ -459,8 +498,11 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
         operationId: uid(),
         ...(entry.boardIds.length ? { boardIds: entry.boardIds } : {}),
         title: entry.title,
+        canvas: entry.canvas,
         summary: `${direction === "undo" ? "Undo" : "Redo"} · ${entry.summary}`,
       });
+      sourceStack?.pop();
+      stack.ownedRevisions.add(result.revision);
       const back = { ...entry, from: entry.to, to: result.revision };
       if (direction === "undo") stack.redo.push(back);
       else stack.undo.push(back);
@@ -474,6 +516,41 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
       await writeDesign(operations, summary);
       await reload();
     });
+  };
+  const selectPage = (id: string) => {
+    setTweakPreview(undefined);
+    setPageChoice(id);
+    rendererStateStorage.setItem(pageKey, id);
+    setSelection(undefined); setSelectedIds([]); setSelectedMarkIds([]);
+    setLayerTarget(undefined); setFocusTarget(undefined); setActiveCommentId(undefined);
+    setTextEdit(undefined); setTextInsert(undefined); setComposer(undefined); setPreviewing(false);
+  };
+  const createPage = () => void run(async () => {
+    if (!doc || !editable || pages.length >= 40) return;
+    if (doc.boards.length >= 32) throw new Error("This design has 32 boards. Remove a board before adding a page.");
+    const page = { id: "page-" + uid(), name: `Page ${pages.length + 1}` };
+    await writeDesign([
+      { type: "canvas", expectedRevision: doc.revision, pages: [...pages, page] },
+      { type: "add", name: "Board 1", html: BLANK_BOARD, x: 0, y: 0, pageId: page.id },
+    ], `Added ${page.name}`);
+    await reload(); selectPage(page.id);
+  });
+  const deletePage = (id: string) => void run(async () => {
+    if (!doc || !editable || pages.length <= 1) return;
+    const index = pages.findIndex(page => page.id === id);
+    if (index < 0) return;
+    const boards = doc.boards.filter(board => designPageId(doc, board) === id);
+    const operations: DesignOperation[] = boards.map(board => ({ type: "remove", boardId: board.id, expectedRevision: board.contentRevision }));
+    operations.push({ type: "canvas", expectedRevision: doc.revision, pages: pages.filter(page => page.id !== id), marks: (doc.marks ?? []).filter(mark => designPageId(doc, mark) !== id) });
+    await writeDesign(operations, `Deleted ${pages[index].name}`);
+    await reload(); if (activePageId === id) selectPage(pages[index - 1]?.id ?? pages[index + 1].id);
+    requestAnimationFrame(() => canvas.current?.focus());
+  });
+  const changeMarks = (changed: DesignMark[], reason: string) => {
+    if (!doc) return;
+    const byId = new Map(changed.map(mark => [mark.id, mark]));
+    const marks = (doc.marks ?? []).map(mark => byId.get(mark.id) ?? mark);
+    return update([{ type: "canvas", expectedRevision: doc.revision, marks }], `Changed canvas ${reason}`);
   };
   const inject = (text: string) => {
     const store = useAppStore.getState();
@@ -681,7 +758,9 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
         return true;
       }
       if (direction === "next" || direction === "prev") {
-        const next = step(doc.boards, doc.boards.indexOf(board));
+        const pageBoards = doc.boards.filter(item => designPageId(doc, item) === activePageId);
+        const next = step(pageBoards, pageBoards.indexOf(board));
+        if (!next) return false;
         setSelectedIds([next.id]);
         setSelection(undefined);
         setLayerTarget(undefined);
@@ -823,7 +902,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
       if (!doc) return;
       const name = `Board ${doc.boards.length + 1}`;
       const result = await writeDesign(
-        [{ type: "add", name, html: BLANK_BOARD, x: Math.round(rect.x), y: Math.round(rect.y), width: rect.width, height: rect.height }],
+        [{ type: "add", pageId: activePageId, name, html: BLANK_BOARD, x: Math.round(rect.x), y: Math.round(rect.y), width: rect.width, height: rect.height }],
         `Added ${name}`,
       );
       await reload();
@@ -1004,20 +1083,24 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
   const exportAs = (format: "pdf" | "html" | "png", boardId?: string) =>
     run(async () => {
       const what = format === "pdf" ? "PDF" : format === "html" ? "HTML bundle" : "PNG";
+      setExporting(true);
+      try {
       const r = await window.electron.design.export({
         sessionId: sessionId!,
         documentId: doc!.id,
         revision: doc!.revision,
         format,
         ...(boardId ? { boardId } : {}),
-        ...(format === "png" ? { scale: 2 as const } : {}),
+        ...(!exportAllPages ? { pageId: activePageId } : {}),
+        ...(format === "png" ? { scale: exportScale } : {}),
       });
       if (r.saved && r.path) {
         const saved = r.path;
         toast.success(`${what} saved as ${saved.split(/[\\/]/).pop()}`, {
           action: { label: "Show", onClick: () => void window.electron.revealPath(saved) },
         });
-      } else if (!r.saved) toast(`${what} not saved`);
+      } else if (!r.saved) toast(`${what} export canceled`);
+      } finally { setExporting(false); }
     });
   const exportBoard = (boardId: string) => exportAs("png", boardId);
 
@@ -1103,7 +1186,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
     );
 
   const pins: CanvasPin[] = (doc?.comments ?? [])
-    .filter((c) => c.status !== "resolved")
+    .filter((c) => c.status !== "resolved" && canvasBoards.some(board => board.id === c.boardId))
     .map((c) => ({
       id: c.id,
       boardId: c.boardId,
@@ -1123,101 +1206,83 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
   })();
   const status = historical
     ? "Viewing an earlier version"
-    : busy
+    : exporting
+      ? "Preparing export…"
+      : busy
       ? "Saving…"
       : session?.readOnly
         ? "Read-only"
         : "saved";
 
+  const pagePicker = (
+    doc && <DesignPages pages={pages} activeId={activePageId} editable={editable && !busy}
+          onSelect={selectPage} onCreate={createPage} onDelete={deletePage}
+          onRename={(id, name) => void update([{ type: "canvas", expectedRevision: doc.revision, pages: pages.map(page => page.id === id ? { ...page, name } : page) }], `Renamed page to ${name}`)}
+          counts={id => ({ boards: doc.boards.filter(board => designPageId(doc, board) === id).length, marks: (doc.marks ?? []).filter(mark => designPageId(doc, mark) === id).length })} />
+  );
+
   const toolbar = (
       <header className="design-toolbar">
         {chrome === "pane" && (
           <button
-            className="design-icon-button"
+            className="design-icon-button design-back-button"
             title="All designs"
             aria-label="All designs"
             onClick={() =>
               useAppStore.getState().setActiveRightUtilityTab("design")
             }
           >
-            ←
+            <ArrowLeft size={15} />
           </button>
         )}
-        {doc ? (
+        {doc && renaming ? (
           <input
-            className="design-title"
+            className="design-title is-editing"
             aria-label="Design title"
-            key={`${doc.id}:${doc.title}`}
             defaultValue={doc.title}
-            disabled={!editable || busy}
+            autoFocus
+            onFocus={(e) => e.currentTarget.select()}
             onBlur={(e) => {
-              if (e.target.value.trim() && e.target.value !== doc.title)
-                void update([
-                  {
-                    type: "title",
-                    title: e.target.value,
-                    expectedRevision: doc.revision,
-                  },
-                ]);
+              setRenaming(false);
+              const title = e.target.value.trim();
+              if (title && title !== doc.title)
+                void update([{ type: "title", title, expectedRevision: doc.revision }]);
             }}
             onKeyDown={(e) => {
               if (e.key === "Enter") e.currentTarget.blur();
+              if (e.key === "Escape") {
+                e.currentTarget.value = doc.title;
+                e.currentTarget.blur();
+              }
             }}
           />
+        ) : doc ? (
+          <button
+            ref={exportTrigger}
+            className="design-title design-title-button"
+            aria-label={`${doc.title}, design actions`}
+            title={editable ? "Double-click to rename" : undefined}
+            disabled={busy}
+            aria-haspopup="menu"
+            aria-expanded={!!exportMenu}
+            onClick={(e) => {
+              clearTimeout(titleClick.current);
+              // Keyboard opens at once; a mouse click waits to see if it becomes a double click.
+              if (e.detail === 0) setExportMenu(exportMenu ? undefined : true);
+              else if (e.detail === 1) titleClick.current = setTimeout(() => setExportMenu((open) => (open ? undefined : true)), 220);
+            }}
+            onDoubleClick={() => editable && startRename()}
+          >
+            <span className="design-title-text">{doc.title}</span>
+            <ChevronDown size={14} />
+          </button>
         ) : (
           <strong>Loading design…</strong>
         )}
         {/* Only what needs attention: saving, read-only, or an old version on view. */}
         {status !== "saved" && <span className="design-meta">{status}</span>}
         <span className="design-spacer" />
-        <button
-          disabled={!editable || busy}
-          onClick={() =>
-            void update([
-              { type: "add", name: `Board ${(doc?.boards.length ?? 0) + 1}` },
-            ])
-          }
-        >
-          + Board
-        </button>
-        <button
-          aria-pressed={historyOpen}
-          disabled={!doc}
-          onClick={() => {
-            setHistoryOpen((v) => !v);
-            setHistorical(undefined);
-          }}
-        >
-          History
-        </button>
-        {chrome === "pane" && sessionId && (
-          <button aria-haspopup="dialog" onClick={() => setStylesOpen(true)} title="Choose a style guide for the agent">
-            {composerChoice?.styleName ? `Style · ${composerChoice.styleName}` : "Style"}
-          </button>
-        )}
-        <button
-          disabled={!doc || busy}
-          aria-haspopup="menu"
-          aria-expanded={!!exportMenu}
-          onClick={(e) => {
-            const r = e.currentTarget.getBoundingClientRect();
-            setExportMenu(exportMenu ? undefined : { x: r.right, y: r.bottom + 6 });
-          }}
-        >
-          Export
-        </button>
-        <button
-          className="design-primary"
-          disabled={!doc || busy || !!session?.readOnly}
-          title={
-            selectedIds.length
-              ? `Write the selected board${selectedIds.length === 1 ? "" : "s"} into the project and ask the agent to build ${selectedIds.length === 1 ? "it" : "them"}`
-              : "Write the boards into the project and ask the agent to build them"
-          }
-          onClick={() => void implement()}
-        >
-          Implement in project
-        </button>
+
       </header>
   );
 
@@ -1260,15 +1325,27 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
       )}
       <div className="design-editor-body">
         <DesignCanvas
-          key={documentId}
+          key={documentId + ":" + activePageId}
           apiRef={canvas}
+          toolbarLeading={pagePicker}
+          history={{
+            canUndo: !!doc && editable && !busy && !!undoStacks.get(doc.id)?.undo.length,
+            canRedo: !!doc && editable && !busy && !!undoStacks.get(doc.id)?.redo.length,
+            step: (direction) => stepRef.current(direction),
+          }}
           inspector={
             !previewing && !historyOpen && doc
               ? { open: inspectorOpen, toggle: () => setInspectorOpen(!inspectorOpen) }
               : undefined
           }
           boards={canvasBoards}
-          storageKey={"aegis.design.view:" + sessionId + ":" + documentId}
+          marks={(doc?.marks ?? []).filter(mark => doc && designPageId(doc, mark) === activePageId)}
+          selectedMarkIds={selectedMarkIds}
+          onMarkSelectionChange={ids => { setSelectedMarkIds(ids); if (ids.length) { setSelectedIds([]); setSelection(undefined); } }}
+          onMarksChange={changeMarks}
+          onMarksDelete={ids => { if (doc) void update([{ type: "canvas", expectedRevision: doc.revision, marks: (doc.marks ?? []).filter(mark => !ids.includes(mark.id)) }], "Deleted canvas annotations"); setSelectedMarkIds([]); }}
+          onCreateMark={mark => { if (doc) { void update([{ type: "canvas", expectedRevision: doc.revision, marks: [...(doc.marks ?? []), { ...mark, pageId: activePageId }] }], `Added ${mark.type}`); setSelectedMarkIds([mark.id]); setSelectedIds([]); setSelection(undefined); } }}
+          storageKey={"aegis.design.view:" + sessionId + ":" + documentId + ":" + activePageId}
           selectedIds={selectedIds}
           layerTarget={layerTarget}
           selection={selection}
@@ -1356,8 +1433,9 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
                 )
           }
           onCreateBoard={(rect) => void createBoard(rect)}
-          onToggleLayers={() => setLayersOpen((v) => !v)}
+          onToggleLayers={toggleLayers}
           onSelectionChange={(ids) => {
+            setSelectedMarkIds([]);
             setTextEdit(undefined);
             setSelectedIds(ids);
             setSelection(undefined);
@@ -1533,13 +1611,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
               const r = ctx.toScreen(selection.boardId, selection.anchor.rect);
               if (r)
                 nodes.push(
-                  <div
-                    key="selection-bar"
-                    className="design-float-bar"
-                    data-canvas-ui
-                    style={{ left: r.x, top: Math.max(8, r.y - 40) }}
-                    onPointerDown={(e) => e.stopPropagation()}
-                  >
+                  <DesignFloatingToolbar key="selection-bar" rect={r} viewport={ctx.size}>
                     {quick && quick.nodeId === selection.anchor.nodeId ? (
                       <QuickEditBar
                         quick={quick}
@@ -1558,7 +1630,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
                       aria-label="Layers"
                       title="Layers (⌥L)"
                       aria-pressed={layersOpen}
-                      onClick={() => setLayersOpen((v) => !v)}
+                      onClick={toggleLayers}
                     >
                       <Layers size={14} />
                     </button>
@@ -1601,7 +1673,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
                     </button>
                     </>
                     )}
-                  </div>,
+                  </DesignFloatingToolbar>,
                 );
               // The selection's size under it, like a design tool's dimension badge.
               const box = liveRect ?? selection.anchor.rect;
@@ -1622,22 +1694,12 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
               const r = ctx.toScreen(activeBoard.id);
               if (r)
                 nodes.push(
-                  <div
-                    key="board-bar"
-                    className="design-float-bar"
-                    data-canvas-ui
-                    style={{
-                      left: r.x + r.width / 2,
-                      top: Math.min(ctx.size.height - 48, r.y + r.height + 12),
-                      transform: "translateX(-50%)",
-                    }}
-                    onPointerDown={(e) => e.stopPropagation()}
-                  >
+                  <DesignFloatingToolbar key="board-bar" rect={r} viewport={ctx.size}>
                     <button
                       aria-label="Layers"
                       title="Layers (⌥L)"
                       aria-pressed={layersOpen}
-                      onClick={() => setLayersOpen((v) => !v)}
+                      onClick={toggleLayers}
                     >
                       <Layers size={14} />
                     </button>
@@ -1653,14 +1715,16 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
                       ↗
                     </button>
                     <button
+                      ref={boardMenuTrigger}
                       aria-label="More board actions"
+                      aria-haspopup="menu"
                       aria-expanded={boardMenu}
                       onClick={() => setBoardMenu((v) => !v)}
                     >
                       <MoreHorizontal size={14} />
                     </button>
                     {boardMenu && (
-                      <div className="design-float-menu" role="menu">
+                      <DesignActionMenu trigger={boardMenuTrigger} onClose={() => setBoardMenu(false)}>
                         <button
                           role="menuitem"
                           disabled={!editable || busy}
@@ -1703,9 +1767,9 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
                         >
                           Delete board
                         </button>
-                      </div>
+                      </DesignActionMenu>
                     )}
-                  </div>,
+                  </DesignFloatingToolbar>,
                 );
             }
             if (composer) {
@@ -1825,7 +1889,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
             return nodes;
           }}
         >
-          {!doc?.boards.length && (
+          {!canvasBoards.length && !(doc?.marks ?? []).some(mark => doc && designPageId(doc, mark) === activePageId) && (
             <div className="design-canvas-empty">
               <span>▧</span>
               <p>Your boards will appear here.</p>
@@ -1844,31 +1908,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
               </button>
             </div>
           )}
-          {layersOpen && !previewing && doc && (
-            <LayersPopover
-              boards={doc.boards}
-              selectedBoardId={selected}
-              selection={selection}
-              editable={editable && !busy}
-              onBoardSelect={(id) => {
-                setSelectedIds([id]);
-                setSelection(undefined);
-                setLayerTarget(undefined);
-              }}
-              onSelect={(board, node) =>
-                selectLayer(board.id, node, board.contentRevision)
-              }
-              onChange={(board, html) => changeLayer(board, html)}
-              onClose={() => {
-                setLayersOpen(false);
-                canvas.current?.focus();
-              }}
-              onOpenHistory={() => {
-                setLayersOpen(false);
-                setHistoryOpen(true);
-              }}
-            />
-          )}
+
         </DesignCanvas>
         {!previewing && historyOpen && doc && (
           <HistoryPanel
@@ -1903,15 +1943,15 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
               onPreview={setInspectorWidth}
               onCommit={saveInspectorWidth}
             />
-            <div className="design-tabs" role="tablist">
-              {(["design", "code", "comments"] as const).map((t) => (
+            <div className="design-tabs" role="tablist" aria-label="Inspector views">
+              {(["design", "tweaks", "code", "comments"] as const).map((t) => (
                 <button
                   key={t}
                   role="tab"
                   aria-selected={tab === t}
                   onClick={() => setTab(t)}
                 >
-                  {t === "design" ? "Design" : t === "code" ? "Code" : "Comments"}
+                  {t === "design" ? "Properties" : t === "tweaks" ? "Tweaks" : t === "code" ? "Code" : "Comments"}
                   {t === "comments" && pins.length > 0 && (
                     <span className="design-count">{pins.length}</span>
                   )}
@@ -1928,7 +1968,32 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
                   {commentsHidden ? <EyeOff size={16} stroke={1.5} /> : <Eye size={16} stroke={1.5} />}
                 </button>
               )}
+              <button className="design-inspector-close" aria-label="Close properties" title="Close properties" onClick={() => setInspectorOpen(false)}><X size={14} /></button>
             </div>
+            {tab !== "comments" && <DesignLayersSection>
+            <LayersPopover embedded
+              boards={doc.boards.filter(board => designPageId(doc, board) === activePageId)}
+              selectedBoardId={selected}
+              selection={selection}
+              editable={editable && !busy}
+              onBoardSelect={(id) => {
+                setSelectedIds([id]);
+                setSelection(undefined);
+                setLayerTarget(undefined);
+              }}
+              onSelect={(board, node) =>
+                selectLayer(board.id, node, board.contentRevision)
+              }
+              onChange={(board, html) => changeLayer(board, html)}
+              onClose={() => {
+                setInspectorOpen(false);
+                canvas.current?.focus();
+              }}
+              onOpenHistory={() => {
+                setHistoryOpen(true);
+              }}
+            />
+            </DesignLayersSection>}
             {tab === "design" &&
               (selection && activeBoard && selection.anchor.nodeId ? (
                 <ElementDesignTab
@@ -1971,10 +2036,15 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
                   onExport={() => void exportBoard(activeBoard.id)}
                 />
               ) : (
-                <p className="design-empty-note">Select a board or layer</p>
+                <div className="design-inspector-empty"><strong>Nothing selected</strong><span>Click any element in the design to edit it here.</span></div>
               ))}
+            {tab === "tweaks" && <DesignTweaksTab board={activeBoard} editable={editable && !busy}
+              onChange={(board, html) => changeLayer(board, html, `Saved tweaks for ${board.name}`)}
+              onPreview={html => setTweakPreview(html && activeBoard ? { boardId: activeBoard.id, revision: activeBoard.contentRevision, html } : undefined)} />}
             {tab === "code" && (
-              <CodeTab
+              <CodeTab hideTree
+                editable={editable && !busy}
+                onChange={(board, html) => changeLayer(board, html)}
                 board={activeBoard}
                 selection={selection}
                 loadStyles={async (boardId, nodeId) =>
@@ -2030,32 +2100,32 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
     </section>
     {exportMenu &&
       doc &&
-      createPortal(
-        <div className="design-export-layer" onMouseDown={() => setExportMenu(undefined)}>
-          <div
-            className="design-export-menu"
-            role="menu"
-            aria-label="Export"
-            style={{ top: exportMenu.y, left: exportMenu.x }}
-            onMouseDown={(e) => e.stopPropagation()}
-          >
+      <DesignActionMenu trigger={exportTrigger} onClose={() => setExportMenu(undefined)} label="Design actions" align="start" className="design-export-actions">
+            {editable && <button role="menuitem" disabled={busy} onClick={startRename}>Rename <span>Double-click the title</span></button>}
+            <button className="design-menu-icon-action" role="menuitem" disabled={!editable || busy} onClick={() => { setExportMenu(undefined); void update([{ type: "add", pageId: activePageId, name: `Board ${(doc?.boards.length ?? 0) + 1}` }]); }}><Plus size={16} />New artboard</button>
+            <button className="design-menu-icon-action" role="menuitem" onClick={() => { setExportMenu(undefined); setHistoryOpen(v => !v); setHistorical(undefined); }}><History size={16} />{historyOpen ? "Close history" : "History"}</button>
+            {sessionId && <button className="design-menu-icon-action" role="menuitem" onClick={() => { setExportMenu(undefined); setStylesOpen(true); }}><Sparkles size={16} />{composerChoice?.styleName ? `Style · ${composerChoice.styleName}` : "Styles"}</button>}
+            <div className="design-menu-divider" role="separator" />
+            <div className="design-menu-label">Export</div>
+            <button role="menuitemcheckbox" aria-checked={exportAllPages} onClick={() => setExportAllPages(!exportAllPages)}>{exportAllPages ? "✓ All pages" : "Current page"}</button>
+            <button role="menuitemcheckbox" aria-checked={exportScale === 2} onClick={() => setExportScale(exportScale === 2 ? 1 : 2)}>PNG resolution · {exportScale}×</button>
+            <div className="design-menu-divider" />
             <button role="menuitem" onClick={() => (setExportMenu(undefined), void exportAs("pdf"))}>
-              PDF <span>{doc.boards.length} {doc.boards.length === 1 ? "page" : "pages"}, a board each</span>
+              PDF <span>{exportAllPages ? doc.boards.length : canvasBoards.length} boards · {exportAllPages ? "all pages" : "current page"}</span>
             </button>
             <button role="menuitem" onClick={() => (setExportMenu(undefined), void exportAs("html"))}>
-              HTML bundle <span>every board, zipped</span>
+              HTML bundle <span>{exportAllPages ? "all pages" : "current page"}, zipped</span>
             </button>
             <button
               role="menuitem"
               disabled={!activeBoard}
               onClick={() => activeBoard && (setExportMenu(undefined), void exportAs("png", activeBoard.id))}
             >
-              PNG <span>{activeBoard ? `${activeBoard.name} at 2x` : "select a board"}</span>
+              PNG <span>{activeBoard ? `${activeBoard.name} at ${exportScale}×` : "select a board"}</span>
             </button>
-          </div>
-        </div>,
-        document.body,
-      )}
+            <div className="design-menu-divider" role="separator" />
+            <button role="menuitem" disabled={busy || !!session?.readOnly} onClick={() => { setExportMenu(undefined); void implement(); }}>Hand off to project <span>Build with {agentName}</span></button>
+      </DesignActionMenu>}
     {stylesOpen && sessionId && (
       <DesignStylesDialog
         sessionId={sessionId}

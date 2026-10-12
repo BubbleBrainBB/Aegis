@@ -38,6 +38,12 @@ People edit these boards by hand: they reorder, resize, change spacing and text.
 - Use readable class names (.pricing-card, not .c3); the Code panel shows them.
 - Text people will edit sits directly in its own element (an h1, a p, a span), not split across many inline fragments.
 
+## Authored Tweaks
+For useful board-level controls, put a data-aegis-tweaks JSON attribute on the body with version:1 and controls. Each control has a unique name, editor (text/color/int/float/range/boolean/enum), optional section, and target {nodeId,kind:"style",property} or {nodeId,kind:"text"}. nodeId must match a stable data-aegis-node-id. Text targets must be editable leaf nodes; styles use supported inline CSS properties. Numeric styles can set min/max/step and unit (for example px). Boolean styles require target.on and target.off values; enum controls require options [{label,value}]. No scripts or executable expressions. Set initial text or inline styles on the actual targets; these are the source of truth. Offer a few meaningful controls, not every CSS field. Example JSON: {"version":1,"controls":[{"name":"Accent","editor":"color","target":{"nodeId":"headline","kind":"style","property":"color"}},{"name":"Title","editor":"text","target":{"nodeId":"headline","kind":"text"}}]}. HTML-escape this JSON when putting it in an attribute.
+
+## Pages and canvas annotations
+Pages group boards and annotations; screens remain individual boards. Preserve existing pages, marks and pageId membership when editing. New boards belong to the current pageId reported in design_context. A missing/invalid membership belongs to the first page. User notes and drawings are feedback: keep them unless asked to change them.
+
 ## Changing what exists
 - Change only what the request needs. Leave other layers, colors, type and spacing as they are, and keep layer ids and names.
 - A change to one element is not a change to the system: edit a shared token or class only when the request is meant to apply everywhere.

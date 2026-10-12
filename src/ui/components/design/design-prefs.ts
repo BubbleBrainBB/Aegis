@@ -24,6 +24,6 @@ export function useStoredFlag(key: string, fallback: boolean) {
 }
 
 /** Whether the inspector column is shown. */
-export const useInspectorOpen = () => useStoredFlag("aegis.design.inspectorOpen", true);
+export const useInspectorOpen = () => useStoredFlag("aegis.design.inspectorOpen", false);
 /** Whether comment pins are hidden on the canvas (visual only). */
 export const useCommentsHidden = () => useStoredFlag("aegis.design.commentsHidden", false);

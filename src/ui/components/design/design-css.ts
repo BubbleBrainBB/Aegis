@@ -68,3 +68,60 @@ export function swatchColor(property: string, value: string): string | undefined
 
 export const cssText = (decls: CssDecl[]) =>
   decls.map(([k, v]) => `${k}: ${hexColors(v)};`).join("\n");
+
+export interface InlineCssDeclaration {
+  property: string;
+  value: string;
+  important: boolean;
+}
+
+/** Parse a declaration list, never a selector/rule. No DOM or CSS is executed. */
+export function parseInlineCss(source: string): InlineCssDeclaration[] {
+  if (source.length > 32_000) throw new Error("Inline CSS is too long.");
+  const declarations: InlineCssDeclaration[] = [];
+  let buffer = "", quote = "", escaped = false, comment = false;
+  const brackets: string[] = [];
+  function flush() {
+    const text = buffer.trim();
+    buffer = "";
+    if (!text) return;
+    const match = /^(--[a-zA-Z_][\w-]*|-?[a-zA-Z][\w-]*)\s*:\s*([\s\S]+)$/.exec(text);
+    if (!match) throw new Error(`Expected a CSS declaration: ${text.slice(0, 60)}`);
+    const property = match[1].startsWith("--") ? match[1] : match[1].toLowerCase();
+    const important = /!\s*important\s*$/i.test(match[2]);
+    const value = match[2].replace(/!\s*important\s*$/i, "").trim();
+    if (!value) throw new Error(`Enter a value for ${property}.`);
+    declarations.push({ property, value, important });
+    if (declarations.length > 200) throw new Error("Use at most 200 inline declarations.");
+  }
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i], next = source[i + 1];
+    if (comment) {
+      if (ch === "*" && next === "/") { comment = false; i++; buffer += " "; }
+      continue;
+    }
+    if (escaped) { buffer += ch; escaped = false; continue; }
+    if (ch === "\\") { buffer += ch; escaped = true; continue; }
+    if (quote) { buffer += ch; if (ch === quote) quote = ""; continue; }
+    if (ch === '"' || ch === "'") { quote = ch; buffer += ch; continue; }
+    if (ch === "/" && next === "*") { comment = true; i++; continue; }
+    if (ch === "{" || ch === "}") throw new Error("Enter declarations only, without selectors or braces.");
+    if (ch === "(" || ch === "[") brackets.push(ch);
+    if (ch === ")" || ch === "]") {
+      if (brackets.pop() !== (ch === ")" ? "(" : "[")) throw new Error("Unbalanced CSS brackets.");
+    }
+    if (ch === ";" && brackets.length === 0) flush();
+    else buffer += ch;
+  }
+  if (quote || comment || escaped || brackets.length) throw new Error("Finish the CSS string, comment or function before saving.");
+  flush();
+  return declarations;
+}
+
+export const inlineCssText = (decls: InlineCssDeclaration[]) =>
+  decls.map(({ property, value, important }) => `${property}: ${value}${important ? " !important" : ""};`).join("\n");
+
+/** Never seed the editor from LayerCss.own: it merges rule and inline sources. */
+export function formatInlineCss(source: string): string {
+  try { return inlineCssText(parseInlineCss(source)); } catch { return source; }
+}

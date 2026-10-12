@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { ChevronDown, ChevronRight, Copy } from "../icons";
-import { designLayerPath, readDesignLayers, type DesignLayer } from "../../../shared/design-layers";
+import { designLayerPath, findDesignLayer, readDesignLayers, replaceDesignLayerStyle, type DesignLayer } from "../../../shared/design-layers";
 import type { DesignAnchor, DesignBoard } from "../../../shared/design-types";
-import { cssText, hexColors, swatchColor, type LayerCss } from "./design-css";
+import { cssText, formatInlineCss, inlineCssText, parseInlineCss, hexColors, swatchColor, type LayerCss } from "./design-css";
+
+import "./design-code.css";
 
 const svg = (path: ReactNode) => (
   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
@@ -31,7 +33,8 @@ function labelOf(n: DesignLayer) {
 
 /**
  * The selection's place in the tree, its authored CSS and what it inherits.
- * Read-only: edits go through the Design tab or the agent.
+ * Only the selected layer’s inline declarations can be changed here.
+ * The frame’s merged matched/inherited styles remain read-only.
  */
 export function CodeTab({
   board,
@@ -39,15 +42,37 @@ export function CodeTab({
   loadStyles,
   onBoardSelect,
   onSelect,
+  hideTree = false,
+  editable = false,
+  onChange,
 }: {
+  hideTree?: boolean;
+  editable?: boolean;
+  onChange?(board: DesignBoard, html: string): Promise<unknown>;
   board?: DesignBoard;
-  selection?: { boardId: string; anchor: DesignAnchor };
+  selection?: { boardId: string; revision?: number; anchor: DesignAnchor };
   loadStyles(boardId: string, nodeId?: string): Promise<LayerCss | null>;
   onBoardSelect(board: DesignBoard): void;
   onSelect(board: DesignBoard, layer: DesignLayer): void;
 }) {
   const nodeId = selection?.boardId === board?.id ? selection?.anchor.nodeId : undefined;
   const tree = useMemo(() => (board ? readDesignLayers(board.html) : []), [board?.html]);
+  const node = findDesignLayer(tree, nodeId);
+  const inline = node?.styles.cssText ?? "";
+  const [draft, setDraft] = useState(() => formatInlineCss(inline));
+  const [base, setBase] = useState(inline);
+  const [baseRevision, setBaseRevision] = useState(board?.contentRevision);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+  const editingTarget = useRef("");
+  editingTarget.current = `${board?.id ?? ""}:${nodeId ?? ""}`;
+  const dirty = draft !== formatInlineCss(base);
+  useEffect(() => {
+    setDraft(formatInlineCss(inline)); setBase(inline); setBaseRevision(board?.contentRevision); setError("");
+  }, [board?.id, nodeId]);
+  useEffect(() => {
+    if (!dirty) { setDraft(formatInlineCss(inline)); setBase(inline); setBaseRevision(board?.contentRevision); }
+  }, [inline, board?.contentRevision, dirty]);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [css, setCss] = useState<{ key: string; value: LayerCss } | null>(null);
   const list = useRef<HTMLDivElement>(null);
@@ -84,6 +109,26 @@ export function CodeTab({
   // Keep the last answer for the same layer across revisions, so edits don't flash.
   const same = (a: string) => a.split(":").filter((_, i) => i !== 1).join(":");
   const current = css && same(css.key) === same(key) ? css.value : null;
+  const stale = baseRevision !== board.contentRevision;
+  const locked = nodeId && (designLayerPath(tree, nodeId) ?? []).some((n) => n.locked);
+  const canEdit = !!(editable && onChange && node && !locked && !pending &&
+    (selection?.revision === undefined || selection.revision === board.contentRevision));
+  const resetDraft = () => { setDraft(formatInlineCss(inline)); setBase(inline); setBaseRevision(board.contentRevision); setError(""); };
+  async function saveInline() {
+    if (!canEdit || !node || !onChange || stale) return;
+    const target = editingTarget.current;
+    setError(""); setPending(true);
+    try {
+      const declarations = parseInlineCss(draft);
+      for (const { property, value } of declarations) {
+        if (!CSS.supports(property, value)) throw new Error(`Invalid ${property}: ${value}`);
+      }
+      await onChange(board!, replaceDesignLayerStyle(board!.html, node.id, inlineCssText(declarations)));
+      if (editingTarget.current === target) { setBase(inlineCssText(declarations)); setDraft(inlineCssText(declarations)); }
+    } catch (e) {
+      if (editingTarget.current === target) setError(e instanceof Error ? e.message : String(e));
+    } finally { setPending(false); }
+  }
   const toggle = (id: string) =>
     setCollapsed((old) => {
       const next = new Set(old);
@@ -127,7 +172,7 @@ export function CodeTab({
   };
   return (
     <div className="design-tab-body design-code-tab">
-      <div className="cx-tree" role="tree" aria-label="Board layers" ref={list}>
+      {!hideTree && <div className="cx-tree" role="tree" aria-label="Board layers" ref={list}>
         <div className="cx-row" role="treeitem" aria-selected={!nodeId} aria-expanded>
           <span className="cx-chev">
             <ChevronDown size={11} />
@@ -138,7 +183,24 @@ export function CodeTab({
           </button>
         </div>
         <div role="group">{tree.map((n) => row(n, 1))}</div>
-      </div>
+      </div>}
+      <section className="cx-inline-editor" aria-label="Inline CSS overrides">
+        <div className="cx-source-title">Inline overrides <span>Editable source</span></div>
+        <p className="cx-source-note">{node
+          ? "Only declarations on this layer. Remove an override to use the stylesheet again."
+          : "Select a layer to edit its inline CSS."}</p>
+        {node && <>
+          <textarea aria-label="Inline CSS" spellCheck={false} value={draft} readOnly={!canEdit}
+            onChange={(e) => setDraft(e.target.value)} placeholder="color: #333;"
+            onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); void saveInline(); } }} />
+          {stale && dirty && <p className="cx-source-warning" role="status">This board changed while you were editing. Reload its current inline CSS before saving.</p>}
+          {error && <p className="cx-source-warning" role="alert">{error}</p>}
+          <div className="cx-inline-actions">
+            <button type="button" disabled={pending || (!dirty && !stale)} onClick={resetDraft}>{stale ? "Reload source" : "Discard"}</button>
+            <button type="button" disabled={!canEdit || !dirty || stale} onClick={() => void saveInline()}>{pending ? "Saving…" : "Apply overrides"}</button>
+          </div>
+        </>}
+      </section>
       {current && (
         <>
           <div className="cx-head">
@@ -158,7 +220,8 @@ export function CodeTab({
               <Copy size={13} />
             </button>
           </div>
-          <div className="cx-css" aria-label="Layer CSS">
+          <div className="cx-source-title">Matched styles <span>Read only · stylesheet + inline</span></div>
+          <div className="cx-css" aria-label="Matched layer CSS">
             {current.own.length ? (
               current.own.map(([k, v]) => <div key={k}>{cssText([[k, v]])}</div>)
             ) : (

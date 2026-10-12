@@ -1,3 +1,4 @@
+import { designPages } from "../../shared/design-pages";
 import { getDesignRepository } from "./service";
 import { findDesignLayer, readDesignLayers } from "../../shared/design-layers";
 import type { DesignSummary } from "../../shared/design-types";
@@ -6,6 +7,7 @@ import type { DesignSummary } from "../../shared/design-types";
 export interface DesignFocus {
   documentId: string;
   boardId?: string;
+  pageId?: string;
   nodeId?: string;
 }
 /** What the user asked for in the design composer: a style guide and how many directions. */
@@ -76,7 +78,7 @@ export function setDesignFocus(
     focus.delete(sessionId);
     return;
   }
-  focus.set(sessionId, { documentId, boardId: id(value?.boardId), nodeId: id(value?.nodeId) });
+  focus.set(sessionId, { documentId, pageId: id(value?.pageId), boardId: id(value?.boardId), nodeId: id(value?.nodeId) });
 }
 
 // Titles and layer names are user content: one line, no markup, bounded.
@@ -114,6 +116,8 @@ export function designContextText(sessionId: string): string {
     lines.push(`Open: ${label(open.title)} (documentId ${open.id}, ${open.boardCount} board${open.boardCount === 1 ? "" : "s"}).`);
     try {
       const doc = getDesignRepository().read(sessionId, open.id);
+      const page = designPages(doc).find(page => page.id === f.pageId) ?? designPages(doc)[0];
+      lines.push(`Current page: ${label(page.name)} (pageId ${page.id}). Add boards to this page with pageId unless the user requests another page.`);
       const board = f.boardId ? doc.boards.find((b) => b.id === f.boardId) : undefined;
       if (board) {
         const node = f.nodeId ? findDesignLayer(readDesignLayers(board.html), f.nodeId) : undefined;

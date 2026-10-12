@@ -1,12 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const KEY = "aegis.design.inspectorWidth";
-export const INSPECTOR_WIDTH = 288;
-const MIN = 240;
-const MAX = 640;
+export const INSPECTOR_WIDTH = 312;
+const MIN = 285;
+const MAX = 560;
 /** Leave the canvas usable when the panel itself is narrow. */
 const clamp = (w: number, room: number) =>
-  Math.round(Math.max(MIN, Math.min(MAX, room - 320, w)));
+  Math.round(Math.max(MIN, Math.min(MAX, room - 120, w)));
 
 /** Inspector width, remembered per viewer; a convenience, so storage may fail. */
 export function useInspectorWidth() {
@@ -39,6 +39,21 @@ export function InspectorResizer({
   onCommit(width: number): void;
 }) {
   const [dragging, setDragging] = useState(false);
+  const handle = useRef<HTMLDivElement>(null);
+  const cancelDrag = useRef<(() => void) | undefined>(undefined);
+  useEffect(() => () => cancelDrag.current?.(), []);
+  useEffect(() => {
+    const panel = handle.current?.closest(".design-panel");
+    if (!panel) return;
+    const fit = () => {
+      const next = clamp(width, panel.getBoundingClientRect().width);
+      if (next !== width) onPreview(next);
+    };
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(panel);
+    return () => observer.disconnect();
+  }, [width, onPreview]);
   useEffect(() => {
     if (!dragging) return;
     const cursor = document.body.style.cursor;
@@ -53,6 +68,7 @@ export function InspectorResizer({
   const room = (el: Element) => el.closest(".design-panel")?.getBoundingClientRect().width ?? 1200;
   return (
     <div
+      ref={handle}
       className={"design-inspector-resizer" + (dragging ? " is-dragging" : "")}
       role="separator"
       aria-orientation="vertical"
@@ -78,9 +94,8 @@ export function InspectorResizer({
         };
         const end = (m: PointerEvent) => {
           if (m.pointerId !== id) return;
-          window.removeEventListener("pointermove", move);
-          window.removeEventListener("pointerup", end);
-          window.removeEventListener("pointercancel", end);
+          cancelDrag.current?.();
+          cancelDrag.current = undefined;
           if (target.hasPointerCapture(id)) target.releasePointerCapture(id);
           setDragging(false);
           onCommit(last);
@@ -88,13 +103,19 @@ export function InspectorResizer({
         window.addEventListener("pointermove", move);
         window.addEventListener("pointerup", end);
         window.addEventListener("pointercancel", end);
+        cancelDrag.current = () => {
+          window.removeEventListener("pointermove", move);
+          window.removeEventListener("pointerup", end);
+          window.removeEventListener("pointercancel", end);
+        };
       }}
-      onDoubleClick={() => onCommit(INSPECTOR_WIDTH)}
+      onDoubleClick={(e) => onCommit(clamp(INSPECTOR_WIDTH, room(e.currentTarget)))}
       onKeyDown={(e) => {
         const step = e.shiftKey ? 48 : 16;
-        if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) {
           e.preventDefault();
-          onCommit(clamp(width + (e.key === "ArrowLeft" ? step : -step), room(e.currentTarget)));
+          e.stopPropagation();
+          onCommit(clamp(e.key === "Home" ? MIN : e.key === "End" ? MAX : width + (e.key === "ArrowLeft" ? step : -step), room(e.currentTarget)));
         }
       }}
     />

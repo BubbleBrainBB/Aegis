@@ -17,6 +17,7 @@ import type {
   DesignUpdate,
 } from "../../shared/design-types";
 import { summarizeOperations } from "../../shared/design-history";
+import { validateDesignMarks, MAX_DESIGN_MARKS } from "../../shared/design-marks";
 import { sanitizeDesignHtml } from "./html";
 
 const name = z.string().trim().min(1).max(160);
@@ -24,6 +25,9 @@ const id = z.string().min(1).max(200);
 const revision = z.number().int().nonnegative();
 const size = z.number().int().min(100).max(4096);
 const point = z.number().finite().min(-100000).max(100000);
+const pagesSchema = z.array(z.object({ id, name: z.string().trim().min(1).max(120) }).strict())
+  .max(40).refine((pages) => new Set(pages.map((page) => page.id)).size === pages.length, "Page IDs must be unique.");
+const marksSchema = z.array(z.unknown()).max(MAX_DESIGN_MARKS).transform(validateDesignMarks);
 const operations = z
   .array(
     z.discriminatedUnion("type", [
@@ -36,6 +40,7 @@ const operations = z
           y: point.optional(),
           width: size.optional(),
           height: size.optional(),
+          pageId: id.optional(),
         })
         .strict(),
       z
@@ -56,6 +61,7 @@ const operations = z
           y: point.optional(),
           width: size.optional(),
           height: size.optional(),
+          pageId: id.optional(),
         })
         .strict(),
       z
@@ -65,6 +71,12 @@ const operations = z
           expectedRevision: revision,
         })
         .strict(),
+      z.object({
+        type: z.literal("canvas"),
+        expectedRevision: revision,
+        pages: pagesSchema.optional(),
+        marks: marksSchema.optional(),
+      }).strict(),
       z
         .object({
           type: z.literal("duplicate"),
@@ -82,7 +94,7 @@ const operations = z
     ]),
   )
   .min(1)
-  .max(32);
+  .max(64);
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 const anchorSchema = z
   .object({
@@ -158,7 +170,7 @@ type MessageRow = {
 };
 /** Boards whose content, placement or name differ between two heads. */
 function changedBoards(
-  before: Pick<DesignBoard, "id" | "name" | "x" | "y" | "width" | "height">[] &
+  before: Pick<DesignBoard, "id" | "name" | "x" | "y" | "width" | "height" | "pageId">[] &
     { contentHash?: string; html?: string }[],
   after: typeof before,
 ) {
@@ -169,12 +181,21 @@ function changedBoards(
       b.y,
       b.width,
       b.height,
+      b.pageId,
       b.contentHash ?? hash(b.html ?? ""),
     ]);
   const prior = new Map(before.map((b) => [b.id, key(b)]));
   const ids = after.filter((b) => prior.get(b.id) !== key(b)).map((b) => b.id);
   const kept = new Set(after.map((b) => b.id));
   return [...ids, ...before.filter((b) => !kept.has(b.id)).map((b) => b.id)];
+}
+/** Membership is part of canvas semantics, even when board HTML is unchanged. */
+function canvasState(document?: DesignDocument) {
+  return JSON.stringify([
+    document?.pages ?? [],
+    document?.marks ?? [],
+    (document?.boards ?? []).map((board) => [board.id, board.pageId ?? null]).sort(([a], [b]) => a!.localeCompare(b!)),
+  ]);
 }
 const conflict = () => {
   throw new Error(
@@ -200,6 +221,17 @@ export class DesignRepository {
       CREATE INDEX IF NOT EXISTS design_by_session ON design_documents(session_id);`);
     this.migrate();
     this.migratePrompts();
+    this.migrateCanvas();
+  }
+  /** v4 records canvas metadata edits separately from board content edits. */
+  private migrateCanvas() {
+    if ((this.db.pragma("user_version", { simple: true }) as number) >= 4) return;
+    this.db.transaction(() => {
+      const columns = this.db.prepare("PRAGMA table_info(design_revisions)").all() as { name: string }[];
+      if (!columns.some((column) => column.name === "canvas_changed"))
+        this.db.exec("ALTER TABLE design_revisions ADD COLUMN canvas_changed INTEGER NOT NULL DEFAULT 0");
+      this.db.pragma("user_version = 4");
+    })();
   }
   /**
    * v2: versions remember the message that asked for them (prompt cards).
@@ -389,6 +421,7 @@ export class DesignRepository {
       return { ...rest, html: content.html };
     });
     d.comments = this.listComments(documentId);
+    d.marks ??= [];
     return d;
   }
   private owner(sessionId: string, documentId: string) {
@@ -562,7 +595,7 @@ export class DesignRepository {
       const summary = meta.summary?.trim().slice(0, 160) || null;
       this.db
         .prepare(
-          "INSERT INTO design_revisions(document_id,revision,snapshot,created_at,author,summary,comment_id,board_ids,hidden,prompt,request_id) VALUES(?,?,?,?,?,?,?,?,0,?,?)",
+          "INSERT INTO design_revisions(document_id,revision,snapshot,created_at,author,summary,comment_id,board_ids,hidden,prompt,request_id,canvas_changed) VALUES(?,?,?,?,?,?,?,?,0,?,?,?)",
         )
         .run(
           next.id,
@@ -575,6 +608,7 @@ export class DesignRepository {
           JSON.stringify(before ? changedBoards(before.boards, next.boards) : []),
           meta.prompt?.trim().slice(0, 2000) || null,
           meta.requestId?.slice(0, 200) || null,
+          canvasState(before) !== canvasState(next) ? 1 : 0,
         );
       this.db
         .prepare("INSERT INTO design_receipts VALUES(?,?,?,?,?)")
@@ -616,6 +650,7 @@ export class DesignRepository {
         brief: z.string().max(20000).parse(brief),
         revision: 0,
         boards: [],
+        marks: [],
         comments: [],
         createdAt: Date.now(),
         updatedAt: Date.now(),
@@ -655,17 +690,27 @@ export class DesignRepository {
         const d = this.read(sessionId, input.documentId);
         if (!meta.summary?.trim()) meta.summary = summarizeOperations(ops, d);
         for (const op of ops) {
+          if (op.type === "canvas") {
+            if (d.revision !== op.expectedRevision) conflict();
+            if (op.pages !== undefined) d.pages = op.pages;
+            if (op.marks !== undefined) d.marks = op.marks;
+            continue;
+          }
           if (op.type === "title") {
             if (d.revision !== op.expectedRevision) conflict();
             d.title = op.title;
             continue;
           }
           if (op.type === "add") {
+            const firstPage = d.pages?.[0]?.id ?? "page-1";
+            const pageOf = (pageId?: string) => d.pages?.some((page) => page.id === pageId) ? pageId : firstPage;
+            const siblings = d.boards.filter((board) => pageOf(board.pageId) === pageOf(op.pageId));
             d.boards.push({
               id: `brd_${randomUUID()}`,
               name: op.name,
-              // Right of every existing board, like duplicates, so new boards never overlap drawn ones.
-              x: op.x ?? (d.boards.length ? Math.max(...d.boards.map((b) => b.x + b.width)) + 80 : 0),
+              ...(op.pageId !== undefined ? { pageId: op.pageId } : {}),
+              // Each page has its own world: place after that page's boards.
+              x: op.x ?? (siblings.length ? Math.max(...siblings.map((b) => b.x + b.width)) + 80 : 0),
               y: op.y ?? 0,
               width: op.width ?? 880,
               height: op.height ?? 640,
@@ -736,7 +781,7 @@ export class DesignRepository {
     return (
       this.db
         .prepare(
-          "SELECT revision, created_at, author, summary, comment_id, board_ids, prompt, request_id FROM design_revisions WHERE document_id=? AND hidden=0 ORDER BY revision DESC LIMIT 300",
+          "SELECT revision, created_at, author, summary, comment_id, board_ids, prompt, request_id, canvas_changed FROM design_revisions WHERE document_id=? AND hidden=0 ORDER BY revision DESC LIMIT 300",
         )
         .all(documentId) as {
         revision: number;
@@ -747,6 +792,7 @@ export class DesignRepository {
         board_ids: string | null;
         prompt: string | null;
         request_id: string | null;
+        canvas_changed: number;
       }[]
     ).map((r) => ({
       revision: r.revision,
@@ -757,6 +803,7 @@ export class DesignRepository {
       boardIds: r.board_ids ? JSON.parse(r.board_ids) : [],
       prompt: r.prompt,
       requestId: r.request_id,
+      canvasChanged: r.canvas_changed === 1,
     }));
   }
   restore(
@@ -767,19 +814,28 @@ export class DesignRepository {
     operationId: string,
     boardId?: string | string[],
     author: DesignAuthor = { kind: "user" },
-    options: { summary?: string; title?: boolean } = {},
+    options: { summary?: string; title?: boolean; canvas?: boolean } = {},
   ) {
     const meta: DesignWriteMeta = { author };
     const boardIds = boardId === undefined ? undefined : z.array(id).max(32).parse([boardId].flat());
     return this.mutate(
       sessionId,
       operationId,
-      { documentId, rev, expectedRevision, boardIds, title: options.title, summary: options.summary },
+      { documentId, rev, expectedRevision, boardIds, title: options.title, canvas: options.canvas, summary: options.summary },
       meta,
       () => {
         const current = this.read(sessionId, documentId);
         if (current.revision !== expectedRevision) conflict();
         const previous = this.read(sessionId, documentId, rev);
+        if ((!boardIds && (options.title || options.canvas)) || boardIds?.length === 0) {
+          if (options.title) current.title = previous.title;
+          if (options.canvas) {
+            current.pages = previous.pages;
+            current.marks = previous.marks ?? [];
+          }
+          meta.summary = options.summary ?? `Restored ${options.canvas ? "canvas" : options.title ? "title" : "selection"} from v${rev}`;
+          return current;
+        }
         // Never reuse old content versions: previously issued write tokens must fail.
         const snapshots = this.db
           .prepare("SELECT snapshot FROM design_revisions WHERE document_id=?")
@@ -808,19 +864,23 @@ export class DesignRepository {
             }
             old.contentRevision = nextVersion;
             old.placementRevision = nextVersion;
-            if (index < 0) current.boards.push(old);
+            if (index < 0) {
+              const oldIndex = previous.boards.findIndex((b) => b.id === target);
+              const next = previous.boards.slice(oldIndex + 1).find((b) => current.boards.some((live) => live.id === b.id));
+              const at = next ? current.boards.findIndex((b) => b.id === next.id) : current.boards.length;
+              current.boards.splice(at, 0, old);
+            }
             else current.boards[index] = old;
             names.push(old.name);
           }
           if (options.title) current.title = previous.title;
+          if (options.canvas) {
+            current.pages = previous.pages;
+            current.marks = previous.marks ?? [];
+          }
           meta.summary =
             options.summary ??
             (boardIds.length === 1 ? `Restored ${names[0]} from v${rev}` : `Restored ${names.length} boards from v${rev}`);
-          return current;
-        }
-        if (options.title) {
-          current.title = previous.title;
-          meta.summary = options.summary ?? `Restored title from v${rev}`;
           return current;
         }
         previous.revision = current.revision;

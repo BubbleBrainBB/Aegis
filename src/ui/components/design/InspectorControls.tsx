@@ -1,4 +1,6 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
+import { useDesignMenu } from "./DesignChrome";
 import { Check } from "../icons";
 
 /** Label column + control row, the inspector's basic unit. */
@@ -51,18 +53,25 @@ export function Dropdown<T extends string>({
 }) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const close = (e: PointerEvent) => {
-      if (!root.current?.contains(e.target as Node)) setOpen(false);
-    };
-    window.addEventListener("pointerdown", close, true);
-    return () => window.removeEventListener("pointerdown", close, true);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState({ left: 0, top: 0 });
+  useDesignMenu(open, menu, trigger, () => setOpen(false));
+  useLayoutEffect(() => {
+    if (!open || !root.current || !menu.current) return;
+    const anchor = root.current.getBoundingClientRect();
+    const box = menu.current.getBoundingClientRect();
+    setPosition({ left: Math.max(8, Math.min(window.innerWidth - box.width - 8, anchor.right - box.width)), top: Math.max(8, anchor.bottom + box.height + 6 < window.innerHeight ? anchor.bottom + 6 : anchor.top - box.height - 6) });
+    const scroll = (event: Event) => { if (!menu.current?.contains(event.target as Node)) setOpen(false); };
+    window.addEventListener("scroll", scroll, true);
+    window.addEventListener("resize", scroll);
+    return () => { window.removeEventListener("scroll", scroll, true); window.removeEventListener("resize", scroll); };
   }, [open]);
   const current = options.find((o) => o.value === value);
   return (
     <div ref={root} className={"iv-dd-wrap" + (wide ? " is-wide" : "")}>
       <button
+        ref={trigger}
         type="button"
         className={"iv-in iv-dd" + (open ? " is-open" : "")}
         aria-label={label}
@@ -76,8 +85,8 @@ export function Dropdown<T extends string>({
       >
         <span>{current?.label ?? value}</span>
       </button>
-      {open && (
-        <div className="iv-menu" role="listbox" aria-label={label}>
+      {open && createPortal(
+        <div ref={menu} className="iv-menu design-surface design-inspector-menu" style={{ position: "fixed", ...position, right: "auto" }} role="listbox" aria-label={label}>
           {options.map((o) => (
             <button
               type="button"
@@ -87,6 +96,7 @@ export function Dropdown<T extends string>({
               className={o.value === value ? "is-on" : undefined}
               onClick={() => {
                 setOpen(false);
+                trigger.current?.focus();
                 if (o.value !== value) onChange(o.value);
               }}
             >
@@ -95,7 +105,7 @@ export function Dropdown<T extends string>({
               {o.hint && <small>{o.hint}</small>}
             </button>
           ))}
-        </div>
+        </div>, document.body
       )}
     </div>
   );

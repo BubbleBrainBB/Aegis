@@ -53,7 +53,9 @@ export function LayersPopover({
   onChange,
   onClose,
   onOpenHistory,
+  embedded = false,
 }: {
+  embedded?: boolean;
   boards: DesignBoard[];
   selectedBoardId?: string;
   selection?: { boardId: string; revision: number; anchor: DesignAnchor };
@@ -194,16 +196,16 @@ export function LayersPopover({
               {t === "layers" ? "Layers" : "Components"}
             </button>
           ))}
-          {onOpenHistory && (
+          {!embedded && onOpenHistory && (
             <button role="tab" aria-selected={false} onClick={onOpenHistory}>
               History
             </button>
           )}
         </div>
         <span />
-        <button className="design-icon-button" aria-label="Close layers" title="Close (⌥L)" onClick={onClose}>
+        {!embedded && <button className="design-icon-button" aria-label="Close layers" title="Close (⌥L)" onClick={onClose}>
           <X size={12} />
-        </button>
+        </button>}
       </header>
       {tab === "components" ? (
         <div className="design-layer-tree" aria-label="Design components">

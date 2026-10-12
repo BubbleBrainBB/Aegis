@@ -15,9 +15,12 @@ import type {
 } from "../../../shared/design-types";
 import { rendererStateStorage } from "../../utils/renderer-state-storage";
 import { findDesignLayer, readDesignLayers } from "../../../shared/design-layers";
-import { ChevronDown, Hand, Hash, MessageCircle, Minus, MousePointer, PanelRight, Plus, Type } from "../icons";
+import { ChevronDown, Check, Hand, Hash, MessageCircle, MousePointer, PanelRight, Play, Type } from "../icons";
+import { DesignActionMenu, DesignToolButton, useDesignMenu } from "./DesignChrome";
 import { BoardFrame, type BoardInspector, type DragState, type DropTarget } from "./BoardFrame";
 import { FRAME_SIZE, snapBoard, textTagFor } from "./design-insert";
+import { CanvasMarks } from "./CanvasMarks";
+import { createDesignMark, isDesignMarkType, markFromPoints, translateDesignMark, MAX_MARK_POINTS, type DesignMark, type DesignMarkType, type MarkChangeReason } from "./design-marks";
 import type { LayerCss } from "./design-css";
 import {
   absoluteConstraints,
@@ -58,7 +61,8 @@ type Gesture = {
     | "comment-area"
     | "spacing"
     | "element-move-abs"
-    | "tool";
+    | "tool"
+    | "mark";
   pointerId: number;
   start: Point;
   view: CanvasView;
@@ -80,6 +84,7 @@ type Gesture = {
   pick?: DesignBoard;
   /** Text and Frame tools: where the press started and where it would insert. */
   tool?: { kind: "text" | "frame"; board?: DesignBoard; world: Point; abs: boolean; target?: Promise<DropTarget | null> };
+  mark?: { type: DesignMarkType; start: Point; samples: Point[]; preview: DesignMark };
 };
 /** A comment pin, anchored to a layer (tracked live) or a stored rect. */
 export type CanvasPin = {
@@ -106,7 +111,7 @@ export type CanvasOverlay = {
   gesturing: boolean;
   mode: CanvasMode;
 };
-export type CanvasMode = "select" | "pan" | "comment" | "text" | "frame";
+export type CanvasMode = "select" | "pan" | "comment" | "text" | "frame" | DesignMarkType;
 /** Imperative canvas actions for toolbars and inspectors outside the viewport. */
 export type CanvasApi = {
   preview(boardId: string): void;
@@ -126,7 +131,15 @@ export type CanvasApi = {
   focus(): void;
 };
 type Props = {
+  /** Page picker belongs before the canvas tools, not in the host titlebar. */
+  toolbarLeading?: ReactNode;
   boards: DesignBoard[];
+  marks?: DesignMark[];
+  selectedMarkIds?: string[];
+  onMarkSelectionChange?(ids: string[]): void;
+  onMarksChange?(changed: DesignMark[], reason: MarkChangeReason): void | Promise<unknown>;
+  onMarksDelete?(ids: string[]): void;
+  onCreateMark?(mark: DesignMark): void;
   storageKey: string;
   selectedIds: string[];
   selection?: ElementSelection;
@@ -202,6 +215,7 @@ type Props = {
   onToggleComments?(): void;
   /** Show or hide the inspector column beside the canvas. */
   inspector?: { open: boolean; toggle(): void };
+  history?: { canUndo: boolean; canRedo: boolean; step(direction: "undo" | "redo"): void };
   overlay?(ctx: CanvasOverlay): ReactNode;
   children?: React.ReactNode;
 };
@@ -266,6 +280,16 @@ export function DesignCanvas(props: Props) {
   const hoverBoard = useRef<string | undefined>(undefined);
   const [previewId, setPreviewId] = useState<string>();
   const [zoomMenu, setZoomMenu] = useState(false);
+  const [shapesMenu, setShapesMenu] = useState(false);
+  const shapesTrigger = useRef<HTMLButtonElement>(null);
+  const [markDraft, setMarkDraft] = useState<DesignMark>();
+  const [editMarkId, setEditMarkId] = useState<string>();
+  const [markGesturing, setMarkGesturing] = useState(false);
+  const markGesturingRef = useRef(false);
+  const [layoutGuides, setLayoutGuides] = useState(true);
+  const zoomTrigger = useRef<HTMLButtonElement>(null);
+  const zoomList = useRef<HTMLDivElement>(null);
+  useDesignMenu(zoomMenu, zoomList, zoomTrigger, () => setZoomMenu(false));
   const [saving, setSaving] = useState(false);
   const [measured, setMeasured] = useState<Record<string, Rect | null>>({});
   const [loads, setLoads] = useState(0);
@@ -318,7 +342,10 @@ export function DesignCanvas(props: Props) {
   const ready = useRef(false);
   const touched = useRef(!!readView(storageKey));
   const canEdit = editable && !saving;
+  const marks = props.marks ?? [];
+  const selectedMarkIds = props.selectedMarkIds ?? [];
   const selectedBoards = boards.filter((b) => selectedIds.includes(b.id));
+  const selectedMarks = marks.filter(m => selectedMarkIds.includes(m.id));
   const previewBoard = boards.find((b) => b.id === previewId);
 
   // The layer the panel last asked a frame to select (keyboard, layers list).
@@ -461,7 +488,7 @@ export function DesignCanvas(props: Props) {
       height: viewport.current?.clientHeight ?? 0,
     };
   }
-  function fit(target = boards) {
+  function fit(target: Rect[] = [...boards, ...marks]) {
     const next = fitView(target, size());
     if (next) {
       touched.current = true;
@@ -488,6 +515,7 @@ export function DesignCanvas(props: Props) {
     gesture.current = undefined;
     setArea(undefined);
     setDraw(undefined);
+    setMarkDraft(undefined);
     if (g?.kind === "tool") setInsertHint(undefined);
     if (g?.element) {
       const api = inspectors.current.get(g.element.boardId);
@@ -539,14 +567,23 @@ export function DesignCanvas(props: Props) {
     hoverBoard.current = undefined;
     latest.current.onModeChange?.(mode);
   }, [mode]);
+  useEffect(() => {
+    if (!canEdit && gesture.current?.kind === "mark") cancel();
+  }, [canEdit]);
+  useEffect(() => {
+    // A page/document change must not commit a gesture into its successor.
+    cancel();
+    setShapesMenu(false);
+    setEditMarkId(undefined);
+  }, [storageKey]);
   useLayoutEffect(() => {
-    if (!boards.length || ready.current || !viewport.current) return;
+    if ((!boards.length && !marks.length) || ready.current || !viewport.current) return;
     ready.current = true;
     if (!touched.current) {
-      const next = fitView(boards, size());
+      const next = fitView([...boards, ...marks], size());
       if (next) changeView(next);
     }
-  }, [boards]);
+  }, [boards, marks]);
   useEffect(() => {
     if (previewId && !previewBoard) {
       setPreviewId(undefined);
@@ -579,6 +616,7 @@ export function DesignCanvas(props: Props) {
       // Overlays scroll themselves; pins and on-canvas labels still pan the canvas.
       if (
         previewId ||
+        isTextInput(e.target) ||
         (e.target instanceof Element &&
           e.target.closest("[data-canvas-ui]") &&
           !e.target.closest(".design-pin"))
@@ -586,7 +624,7 @@ export function DesignCanvas(props: Props) {
         return;
       e.preventDefault();
       e.stopPropagation();
-      if (gesture.current) return;
+      if (gesture.current || markGesturingRef.current) return;
       touched.current = true;
       const v = viewRef.current,
         r = el.getBoundingClientRect();
@@ -672,6 +710,18 @@ export function DesignCanvas(props: Props) {
     const point = local(e),
       board = boardAt(e.target);
     const hand = e.button === 1 || spaceRef.current || mode === "pan";
+    if (!hand && isDesignMarkType(mode)) {
+      if (!canEdit || !props.onCreateMark) return;
+      const world = toWorld(point, viewRef.current);
+      const draft = createDesignMark(mode, world);
+      gesture.current = { kind: "mark", pointerId: e.pointerId, start: point, view: viewRef.current, boards: [], initialSelection: [...selectedIds], additive: false, moved: false, mark: { type: mode, start: world, samples: [world], preview: draft } };
+      props.onMarkSelectionChange?.([]);
+      onSelectionChange([]);
+      setMarkDraft(mode === "freehand" ? undefined : draft);
+      viewport.current!.setPointerCapture(e.pointerId);
+      return;
+    }
+    if (!hand && selectedMarkIds.length) props.onMarkSelectionChange?.([]);
     const edge = e.target.closest("[data-resize]")?.getAttribute("data-resize");
     let kind: Gesture["kind"] = "pan",
       moving: DesignBoard[] = [],
@@ -868,6 +918,31 @@ export function DesignCanvas(props: Props) {
     const dx = point.x - g.start.x,
       dy = point.y - g.start.y;
     if (!g.moved && Math.hypot(dx, dy) < 3) return;
+    if (g.kind === "mark" && g.mark) {
+      g.moved = true;
+      let end = toWorld(point, g.view);
+      const m = g.mark;
+      if (m.type === "freehand") {
+        const last = m.samples.at(-1)!;
+        if (Math.hypot(end.x - last.x, end.y - last.y) * g.view.zoom >= 1) m.samples.push(end);
+        if (m.samples.length > MAX_MARK_POINTS * 2) m.samples = m.samples.filter((_, i) => i % 2 === 0 || i === m.samples.length - 1);
+        m.preview = markFromPoints(m.samples, m.preview.id) ?? m.preview;
+      } else {
+        if (e.shiftKey && ["rectangle", "ellipse", "line", "arrow"].includes(m.type)) {
+          const x = end.x - m.start.x, y = end.y - m.start.y;
+          if (m.type === "line" || m.type === "arrow") {
+            const angle = Math.round(Math.atan2(y, x) / (Math.PI / 4)) * Math.PI / 4, length = Math.hypot(x, y);
+            end = { x: m.start.x + Math.cos(angle) * length, y: m.start.y + Math.sin(angle) * length };
+          } else {
+            const side = Math.max(Math.abs(x), Math.abs(y));
+            end = { x: m.start.x + Math.sign(x || 1) * side, y: m.start.y + Math.sign(y || 1) * side };
+          }
+        }
+        m.preview = createDesignMark(m.type, m.start, end, m.preview.id);
+      }
+      setMarkDraft(m.preview);
+      return;
+    }
     if (g.kind === "tool") {
       g.moved = true;
       // The tool chosen at press time, even if a shortcut changed the mode mid-drag.
@@ -1102,6 +1177,14 @@ export function DesignCanvas(props: Props) {
     setGuides([]);
     if (viewport.current?.hasPointerCapture(e.pointerId))
       viewport.current.releasePointerCapture(e.pointerId);
+    if (g.kind === "mark" && g.mark) {
+      setMarkDraft(undefined);
+      if (!canEdit) return;
+      if (g.mark.type !== "freehand" || g.moved) props.onCreateMark?.(g.mark.preview);
+      if (g.mark.type === "note") setEditMarkId(g.mark.preview.id);
+      if (g.mark.type !== "freehand") setMode("select");
+      return;
+    }
     if (g.kind === "tool" && g.tool) {
       const tool = g.tool;
       const drawn = draw;
@@ -1235,13 +1318,16 @@ export function DesignCanvas(props: Props) {
     }
   }
   function key(e: React.KeyboardEvent<HTMLDivElement>) {
-    if (isTextInput(e.target)) return;
+    if (e.defaultPrevented || isTextInput(e.target)) return;
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();
-      if (previewId) preview();
+      if (shapesMenu) { setShapesMenu(false); shapesTrigger.current?.focus(); }
+      else if (zoomMenu) { setZoomMenu(false); zoomTrigger.current?.focus(); }
+      else if (previewId) preview();
       else if (gesture.current) cancel();
-      else if (mode === "text" || mode === "frame") setMode("select");
+      else if (mode === "text" || mode === "frame" || isDesignMarkType(mode)) setMode("select");
+      else if (selectedMarkIds.length) props.onMarkSelectionChange?.([]);
       // One level at a time: a layer steps out to its board, a board to nothing.
       else if (selection?.anchor.nodeId && mode !== "comment") onSelectionChange([selection.boardId]);
       else {
@@ -1252,10 +1338,28 @@ export function DesignCanvas(props: Props) {
       return;
     }
     if (previewId) return;
+    if (gesture.current?.kind === "mark" && (e.metaKey || e.ctrlKey) && ["z", "y"].includes(e.key.toLowerCase())) { cancel(); return; }
     if (e.code === "Space") {
       e.preventDefault();
       spaceRef.current = true;
       setSpace(true);
+      return;
+    }
+    // Mark controls own object editing; canvas zoom/tools still work from a focused mark.
+    // Unhandled undo bubbles to DesignPanel's window handler.
+    if (e.target instanceof Element && e.target.closest("[data-design-marks]")) {
+      const zoomShortcut = ((e.metaKey || e.ctrlKey) && (e.code === "Digit0" || ["+", "=", "-"].includes(e.key))) || (e.shiftKey && ["Digit0", "Digit1", "Digit2"].includes(e.code));
+      const toolShortcut = !e.metaKey && !e.ctrlKey && !e.altKey && ["v", "h", "t", "f", "c", "n", "p", "r", "o", "l"].includes(e.key.toLowerCase());
+      if (!zoomShortcut && !toolShortcut) return;
+    }
+    if (selectedMarkIds.length && !e.metaKey && !e.ctrlKey && !e.altKey && ["Delete", "Backspace", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) {
+      e.preventDefault(); e.stopPropagation();
+      if (!canEdit || markGesturing || gesture.current) return;
+      if (e.key === "Delete" || e.key === "Backspace") props.onMarksDelete?.(selectedMarkIds);
+      else {
+        const step = e.shiftKey ? 10 : 1;
+        void props.onMarksChange?.(marks.filter(m => selectedMarkIds.includes(m.id)).map(m => translateDesignMark(m, e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0, e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0)), "move");
+      }
       return;
     }
     if (e.shiftKey && e.code === "KeyA" && !e.metaKey && !e.ctrlKey && selection?.anchor.nodeId && canEdit) {
@@ -1271,8 +1375,12 @@ export function DesignCanvas(props: Props) {
       return;
     }
     if (e.metaKey || e.ctrlKey) {
+      if (e.code === "Digit0") { e.preventDefault(); fit(); return; }
+      if (e.key === "+" || e.key === "=") { e.preventDefault(); zoom(viewRef.current.zoom * 1.25); return; }
+      if (e.key === "-") { e.preventDefault(); zoom(viewRef.current.zoom / 1.25); return; }
       if (e.key.toLowerCase() === "a") {
         e.preventDefault();
+        props.onMarkSelectionChange?.([]);
         onSelectionChange(boards.map((b) => b.id));
       }
       if (e.key.toLowerCase() === "d" && canEdit && selectedIds.length) {
@@ -1295,13 +1403,20 @@ export function DesignCanvas(props: Props) {
       e.preventDefault();
       if (e.code === "Digit0") zoom(1);
       if (e.code === "Digit1") fit();
-      if (e.code === "Digit2") fit(selectedBoards);
+      if (e.code === "Digit2") fit([...selectedBoards, ...selectedMarks]);
       return;
     }
     if (e.key.toLowerCase() === "v") setMode("select");
     if (e.key.toLowerCase() === "h") setMode("pan");
     if (e.key.toLowerCase() === "t" && canEdit) setMode("text");
     if (e.key.toLowerCase() === "f" && canEdit) setMode("frame");
+    if (canEdit && props.onCreateMark && !e.altKey && !e.repeat) {
+      if (e.key.toLowerCase() === "n") setMode("note");
+      if (e.key.toLowerCase() === "p") setMode("freehand");
+      if (e.key.toLowerCase() === "r") setMode("rectangle");
+      if (e.key.toLowerCase() === "o") setMode("ellipse");
+      if (e.key.toLowerCase() === "l") setMode(e.shiftKey ? "arrow" : "line");
+    }
     if (e.key.toLowerCase() === "c" && e.shiftKey && !e.altKey) {
       e.preventDefault();
       props.onToggleComments?.();
@@ -1315,11 +1430,11 @@ export function DesignCanvas(props: Props) {
     }
     if (e.key === "+" || e.key === "=") {
       e.preventDefault();
-      zoom(viewRef.current.zoom * 1.2);
+      zoom(viewRef.current.zoom * 1.25);
     }
     if (e.key === "-") {
       e.preventDefault();
-      zoom(viewRef.current.zoom / 1.2);
+      zoom(viewRef.current.zoom / 1.25);
     }
     // Layer tree: Enter edits text or goes into a layer, Shift+Enter goes up,
     // Tab and Shift+Tab move across siblings (boards when none is selected).
@@ -1403,7 +1518,7 @@ export function DesignCanvas(props: Props) {
         (mode === "pan" || space) && "is-pan",
         dragging && "is-dragging",
         mode === "comment" && "is-inspecting",
-        (mode === "text" || mode === "frame") && "is-inserting is-" + mode,
+        (mode === "text" || mode === "frame" || isDesignMarkType(mode)) && "is-inserting is-" + mode,
       ]
         .filter(Boolean)
         .join(" ")}
@@ -1424,6 +1539,7 @@ export function DesignCanvas(props: Props) {
       }}
       onKeyDown={key}
       onDoubleClick={(e) => {
+        if (mode !== "select") return;
         const edge =
           (e.target instanceof Element &&
             e.target.closest("[data-element-resize]")?.getAttribute("data-element-resize")) ||
@@ -1448,7 +1564,6 @@ export function DesignCanvas(props: Props) {
           );
         if (
           b &&
-          mode !== "pan" &&
           !spaceRef.current &&
           !(e.target instanceof Element && e.target.closest("[data-canvas-ui]"))
         ) {
@@ -1467,23 +1582,24 @@ export function DesignCanvas(props: Props) {
         role="toolbar"
         aria-label="Canvas tools"
       >
-        <button
+        {props.toolbarLeading && <>{props.toolbarLeading}<span className="design-tools-divider" /></>}
+        <DesignToolButton
           title="Select and move (V)"
           aria-label="Select and move"
           aria-pressed={mode === "select"}
           onClick={() => setMode("select")}
         >
           <MousePointer size={17} stroke={1.5} />
-        </button>
-        <button
+        </DesignToolButton>
+        <DesignToolButton
           title="Hand tool (H) · hold Space to pan"
           aria-label="Hand tool"
           aria-pressed={mode === "pan"}
           onClick={() => setMode("pan")}
         >
           <Hand size={17} stroke={1.5} />
-        </button>
-        <button
+        </DesignToolButton>
+        <DesignToolButton
           title="Text (T)"
           aria-label="Text tool"
           aria-pressed={mode === "text"}
@@ -1491,8 +1607,8 @@ export function DesignCanvas(props: Props) {
           onClick={() => setMode(mode === "text" ? "select" : "text")}
         >
           <Type size={17} stroke={1.5} />
-        </button>
-        <button
+        </DesignToolButton>
+        <DesignToolButton
           title="Frame (F) · drag outside a board for a new board"
           aria-label="Frame tool"
           aria-pressed={mode === "frame"}
@@ -1500,19 +1616,25 @@ export function DesignCanvas(props: Props) {
           onClick={() => setMode(mode === "frame" ? "select" : "frame")}
         >
           <Hash size={17} stroke={1.5} />
-        </button>
-        <button
+        </DesignToolButton>
+        <DesignToolButton
           title="Comment · C"
           aria-label="Comment mode"
           aria-pressed={mode === "comment"}
           onClick={() => setMode(mode === "comment" ? "select" : "comment")}
         >
           <MessageCircle size={17} stroke={1.5} />
-        </button>
-        <span className="design-tools-divider" />
-        <button title="Fit all boards (Shift 1)" onClick={() => fit()}>
-          Fit
-        </button>
+        </DesignToolButton>
+        {props.onCreateMark && <>
+          <DesignToolButton title="Note (N)" aria-label="Note tool" aria-pressed={mode === "note"} disabled={!canEdit} onClick={() => setMode(mode === "note" ? "select" : "note")}><MarkToolIcon type="note" /></DesignToolButton>
+          <DesignToolButton title="Draw (P)" aria-label="Draw tool" aria-pressed={mode === "freehand"} disabled={!canEdit} onClick={() => setMode(mode === "freehand" ? "select" : "freehand")}><MarkToolIcon type="freehand" /></DesignToolButton>
+          <div className="design-mark-shapes">
+            <button ref={shapesTrigger} title="Shapes" aria-label="Shapes" aria-haspopup="menu" aria-expanded={shapesMenu} aria-pressed={["rectangle", "ellipse", "line", "arrow"].includes(mode)} disabled={!canEdit} onClick={() => setShapesMenu(v => !v)}><MarkToolIcon type={["rectangle", "ellipse", "line", "arrow"].includes(mode) ? mode as DesignMarkType : "rectangle"} /></button>
+            {shapesMenu && <DesignActionMenu trigger={shapesTrigger} label="Shapes" className="design-mark-shape-menu" onClose={() => setShapesMenu(false)}>
+              {([ ["rectangle", "Rectangle", "R"], ["ellipse", "Ellipse", "O"], ["line", "Line", "L"], ["arrow", "Arrow", "⇧L"] ] as const).map(([kind, label, shortcut]) => <button key={kind} role="menuitemradio" aria-checked={mode === kind} onClick={() => { setMode(kind); setShapesMenu(false); viewport.current?.focus({ preventScroll: true }); }}><MarkToolIcon type={kind} />{label}<kbd>{shortcut}</kbd></button>)}
+            </DesignActionMenu>}
+          </div>
+        </>}
       </div>
       {(mode === "text" || mode === "frame") && !previewId && (
         <div className="design-mode-hint" data-canvas-ui role="status">
@@ -1527,6 +1649,11 @@ export function DesignCanvas(props: Props) {
           </button>
         </div>
       )}
+      {isDesignMarkType(mode) && !previewId && <div className="design-mode-hint" data-canvas-ui role="status">
+        <MarkToolIcon type={mode} />
+        <span>{mode === "note" ? "Click or drag to add a note" : mode === "freehand" ? "Drag to draw · Esc when done" : `Drag to draw ${mode === "ellipse" || mode === "arrow" ? "an" : "a"} ${mode} · Shift to constrain`}</span>
+        <button onClick={() => setMode("select")}>Done <kbd>Esc</kbd></button>
+      </div>}
       {mode === "comment" && !previewId && (
         <div className="design-mode-hint" data-canvas-ui role="status">
           <MessageCircle size={14} />
@@ -1537,66 +1664,30 @@ export function DesignCanvas(props: Props) {
         </div>
       )}
       <div className="design-canvas-zoom" data-canvas-ui>
-        {props.inspector && (
-          <>
-            <button
-              className="design-inspector-toggle"
-              aria-label={props.inspector.open ? "Hide inspector" : "Show inspector"}
-              title={props.inspector.open ? "Hide inspector" : "Show inspector"}
-              aria-pressed={props.inspector.open}
-              onClick={props.inspector.toggle}
-            >
-              <PanelRight size={16} stroke={1.5} />
-            </button>
-            <span className="design-tools-divider" />
-          </>
-        )}
-        <button
-          aria-label="Zoom out"
-          className="design-zoom-step"
-          onClick={() => zoom(viewRef.current.zoom / 1.2)}
-        >
-          <Minus size={14} stroke={1.5} />
+        <DesignToolButton aria-label="Play design" title="Play design (Enter)" disabled={!boards.length} onClick={() => preview(selectedIds[0] ?? boards[0]?.id)}><Play size={16} stroke={1.5} /></DesignToolButton>
+        {props.inspector && <>
+          <DesignToolButton className="design-inspector-toggle" aria-label={props.inspector.open ? "Hide inspector" : "Show inspector"} title="Properties" aria-pressed={props.inspector.open} onClick={props.inspector.toggle}><PanelRight size={16} stroke={1.5} /></DesignToolButton>
+          <span className="design-tools-divider" />
+        </>}
+        <button ref={zoomTrigger} className="design-zoom" aria-label="Zoom options" aria-haspopup="menu" aria-expanded={zoomMenu} onClick={() => setZoomMenu(v => !v)}>
+          <span>{Math.round(view.zoom * 100)}%</span><ChevronDown size={12} />
         </button>
-        <button
-          className="design-zoom"
-          aria-label="Zoom options"
-          aria-expanded={zoomMenu}
-          onClick={() => setZoomMenu((v) => !v)}
-        >
-          <span>{Math.round(view.zoom * 100)}%</span>
-          <ChevronDown size={12} />
-        </button>
-        <button
-          aria-label="Zoom in"
-          className="design-zoom-step"
-          onClick={() => zoom(viewRef.current.zoom * 1.2)}
-        >
-          <Plus size={14} stroke={1.5} />
-        </button>
-        {zoomMenu && (
-          <div className="design-zoom-menu" role="menu">
-            <button
-              role="menuitem"
-              onClick={() => {
-                zoom(1);
-                setZoomMenu(false);
-              }}
-            >
-              100% <kbd>⇧0</kbd>
-            </button>
-            <button role="menuitem" onClick={() => fit()}>
-              Fit all <kbd>⇧1</kbd>
-            </button>
-            <button
-              role="menuitem"
-              disabled={!selectedIds.length}
-              onClick={() => fit(selectedBoards)}
-            >
-              Fit selection <kbd>⇧2</kbd>
-            </button>
-          </div>
-        )}
+        {zoomMenu && <div ref={zoomList} className="design-zoom-menu" role="menu" aria-label="Zoom">
+          <button role="menuitem" onClick={() => zoom(viewRef.current.zoom * 1.25)}>Zoom in <kbd>⌘+</kbd></button>
+          <button role="menuitem" onClick={() => zoom(viewRef.current.zoom / 1.25)}>Zoom out <kbd>⌘−</kbd></button>
+          <button role="menuitem" onClick={() => fit()}>Fit canvas <kbd>⌘0</kbd></button>
+          <button role="menuitem" disabled={!selectedIds.length && !selectedMarkIds.length} onClick={() => fit([...selectedBoards, ...selectedMarks])}>Fit selection <kbd>⇧2</kbd></button>
+          <div className="design-menu-divider" role="separator" />
+          <div className="design-menu-label">Now {Math.round(view.zoom * 100)}%</div>
+          {[25,50,75,100,150,200].map(percent => <button key={percent} role="menuitemradio" aria-checked={Math.round(view.zoom * 100) === percent} onClick={() => { zoom(percent / 100); setZoomMenu(false); zoomTrigger.current?.focus(); }}>{percent}% {Math.round(view.zoom * 100) === percent && <Check size={12} />}</button>)}
+          <div className="design-menu-divider" role="separator" />
+          <button role="menuitemcheckbox" aria-checked={layoutGuides} onClick={() => setLayoutGuides(value => !value)}>Layout guides {layoutGuides && <Check size={12} />}</button>
+          {props.history && <>
+            <div className="design-menu-divider" role="separator" />
+            <button role="menuitem" disabled={!props.history.canUndo} onClick={() => { setZoomMenu(false); zoomTrigger.current?.focus(); props.history?.step("undo"); }}>Undo <kbd>⌘Z</kbd></button>
+            <button role="menuitem" disabled={!props.history.canRedo} onClick={() => { setZoomMenu(false); zoomTrigger.current?.focus(); props.history?.step("redo"); }}>Redo <kbd>⇧⌘Z</kbd></button>
+          </>}
+        </div>}
       </div>
       <div
         className="design-world"
@@ -1748,7 +1839,7 @@ export function DesignCanvas(props: Props) {
                   !g && !hover && !!props.elementEditable && canEdit && mode === "select" && !space;
                 const L = currentLayout;
                 const parts: React.ReactNode[] = [];
-                if ((idle || spacingLive) && isAutoLayout(L)) {
+                if (layoutGuides && (idle || spacingLive) && isAutoLayout(L)) {
                   for (const p of paddingRegions(L)) {
                     const r = p.rect;
                     if (r.width > 0.5 && r.height > 0.5)
@@ -1912,6 +2003,13 @@ export function DesignCanvas(props: Props) {
             </div>
           );
         })}
+        <CanvasMarks marks={marks} selectedIds={selectedMarkIds} zoom={view.zoom} editable={canEdit}
+          interactive={mode === "select" && !space && !previewId}
+          onSelect={(id, additive) => props.onMarkSelectionChange?.(additive ? selectedMarkIds.includes(id) ? selectedMarkIds.filter(x => x !== id) : [...selectedMarkIds, id] : [id])}
+          onChange={(changed, reason) => props.onMarksChange?.(changed, reason)} onDelete={props.onMarksDelete}
+          editId={editMarkId} onEditEnd={() => setEditMarkId(undefined)}
+          onGestureChange={active => { markGesturingRef.current = active; setMarkGesturing(active); }} />
+        {markDraft && <div className="design-mark-draft"><CanvasMarks marks={[markDraft]} selectedIds={[]} zoom={view.zoom} editable={false} interactive={false} onSelect={() => {}} onChange={() => {}} /></div>}
       </div>
       {(() => {
         const g = gesture.current;
@@ -1981,7 +2079,7 @@ export function DesignCanvas(props: Props) {
       {props.overlay?.({
         view,
         size: size(),
-        gesturing: !!dragPoint || !!elementRect,
+        gesturing: !!dragPoint || !!elementRect || markGesturing || !!markDraft,
         mode,
         pinRect,
         toScreen(boardId, rect) {
@@ -2051,6 +2149,12 @@ export function DesignCanvas(props: Props) {
   );
 }
 
+function MarkToolIcon({ type }: { type: DesignMarkType }) {
+  return <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    {type === "note" ? <path d="M3 3h14v10l-4 4H3V3Zm10 14v-4h4M6 7h8M6 10h5" /> : type === "ellipse" ? <ellipse cx="10" cy="10" rx="7" ry="6" /> : type === "rectangle" ? <rect x="3" y="4" width="14" height="12" rx="1" /> : type === "freehand" ? <path d="M3 15c-2-5 5-13 7-11s-7 12-3 12 5-9 7-7-3 7 3 5" /> : <path d={type === "arrow" ? "M3 17 17 3M8 3h9v9" : "M3 17 17 3"} />}
+  </svg>;
+}
+
 function BoardPreview({
   board,
   boards,
@@ -2069,9 +2173,9 @@ function BoardPreview({
   };
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
-      if (isTextInput(e.target)) return;
-      if (e.key === "ArrowLeft") go(-1);
-      if (e.key === "ArrowRight") go(1);
+      if (e.defaultPrevented || e.repeat || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey || isTextInput(e.target)) return;
+      if (e.key === "ArrowLeft" || e.key === "PageUp") { e.preventDefault(); go(-1); }
+      if (e.key === "ArrowRight" || e.key === "PageDown") { e.preventDefault(); go(1); }
     };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
