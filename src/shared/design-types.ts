@@ -227,7 +227,7 @@ export interface DesignAPI {
     sessionId: string;
     documentId: string;
     revision: number;
-    format: "html" | "png";
+    format: "html" | "png" | "pdf";
     boardId?: string;
     /** PNG pixel ratio; defaults to 1. */
     scale?: number;

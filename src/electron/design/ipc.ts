@@ -4,7 +4,7 @@ import { isAbsolute } from "path";
 import { randomUUID } from "crypto";
 import { strToU8, zipSync } from "fflate";
 import { ipcMainHandle } from "../util";
-import { getDesignRepository, previewDesign } from "./service";
+import { designPdf, getDesignRepository, previewDesign } from "./service";
 import { setDesignComposerPrefs, setDesignFocus } from "./focus";
 import { listDesignStyles, listProjectTemplates } from "./styles";
 import { cancelQuickEdit, quickEditDesign } from "./quick-edit";
@@ -130,10 +130,12 @@ export function registerDesignIpc() {
         x.documentId,
         x.revision,
       );
-      if (x.format !== "png" && x.format !== "html")
+      if (x.format !== "png" && x.format !== "html" && x.format !== "pdf")
         throw new Error("Unsupported export format");
       let bytes: Uint8Array;
-      if (x.format === "png") {
+      if (x.format === "pdf") {
+        bytes = await designPdf(d.boards);
+      } else if (x.format === "png") {
         if (!x.boardId) throw new Error("Select a board to export as PNG.");
         const preview = await previewDesign(
           x.sessionId,
@@ -168,12 +170,13 @@ export function registerDesignIpc() {
           );
         bytes = zipSync(files);
       }
+      const extension = x.format === "png" ? "png" : x.format === "pdf" ? "pdf" : "zip";
       const result = await dialog.showSaveDialog({
-        defaultPath: `${d.title.replace(/[^\p{L}\p{N} _-]/gu, "").slice(0, 80) || "Design"}.${x.format === "png" ? "png" : "zip"}`,
+        defaultPath: `${d.title.replace(/[^\p{L}\p{N} _-]/gu, "").slice(0, 80) || "Design"}.${extension}`,
         filters: [
           {
-            name: x.format === "png" ? "PNG image" : "HTML design bundle",
-            extensions: [x.format === "png" ? "png" : "zip"],
+            name: x.format === "png" ? "PNG image" : x.format === "pdf" ? "PDF, a page per board" : "HTML design bundle",
+            extensions: [extension],
           },
         ],
       });

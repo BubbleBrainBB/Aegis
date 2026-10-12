@@ -198,6 +198,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
   }, [clearRequest, sessionId]);
   const [head, setHead] = useState(0);
   const [stylesOpen, setStylesOpen] = useState(false);
+  const [exportMenu, setExportMenu] = useState<{ x: number; y: number }>();
   /** A quick edit of the selected layer: typing, running, or what came back. */
   const [quick, setQuick] = useState<{
     boardId: string;
@@ -973,17 +974,29 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
       `Implement ${boardName ? `the "${boardName}" board` : "the boards"} from design "${doc.title}" (document ${doc.id}) in this project using its existing components. Read the design with design_read first.`,
     );
   };
-  const exportBoard = (boardId: string) =>
+  /**
+   * Export, then say where it went: a save dialog can be cancelled, and a
+   * file ready is not a file saved until the user picked where.
+   */
+  const exportAs = (format: "pdf" | "html" | "png", boardId?: string) =>
     run(async () => {
-      await window.electron.design.export({
+      const what = format === "pdf" ? "PDF" : format === "html" ? "HTML bundle" : "PNG";
+      const r = await window.electron.design.export({
         sessionId: sessionId!,
         documentId: doc!.id,
         revision: doc!.revision,
-        boardId,
-        format: "png",
-        scale: 2,
+        format,
+        ...(boardId ? { boardId } : {}),
+        ...(format === "png" ? { scale: 2 as const } : {}),
       });
+      if (r.saved && r.path) {
+        const saved = r.path;
+        toast.success(`${what} saved as ${saved.split(/[\\/]/).pop()}`, {
+          action: { label: "Show", onClick: () => void window.electron.revealPath(saved) },
+        });
+      } else if (!r.saved) toast(`${what} not saved`);
     });
+  const exportBoard = (boardId: string) => exportAs("png", boardId);
 
   if (hidden) return null;
   if (!documentId)
@@ -1161,17 +1174,12 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
         )}
         <button
           disabled={!doc || busy}
-          onClick={() =>
-            void run(async () => {
-              const r = await window.electron.design.export({
-                sessionId: sessionId!,
-                documentId,
-                revision: doc!.revision,
-                format: "html",
-              });
-              if (r.saved) toast.success("HTML bundle exported");
-            })
-          }
+          aria-haspopup="menu"
+          aria-expanded={!!exportMenu}
+          onClick={(e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            setExportMenu(exportMenu ? undefined : { x: r.right, y: r.bottom + 6 });
+          }}
         >
           Export
         </button>
@@ -1987,6 +1995,34 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
         )}
       </div>
     </section>
+    {exportMenu &&
+      doc &&
+      createPortal(
+        <div className="design-export-layer" onMouseDown={() => setExportMenu(undefined)}>
+          <div
+            className="design-export-menu"
+            role="menu"
+            aria-label="Export"
+            style={{ top: exportMenu.y, left: exportMenu.x }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <button role="menuitem" onClick={() => (setExportMenu(undefined), void exportAs("pdf"))}>
+              PDF <span>{doc.boards.length} {doc.boards.length === 1 ? "page" : "pages"}, a board each</span>
+            </button>
+            <button role="menuitem" onClick={() => (setExportMenu(undefined), void exportAs("html"))}>
+              HTML bundle <span>every board, zipped</span>
+            </button>
+            <button
+              role="menuitem"
+              disabled={!activeBoard}
+              onClick={() => activeBoard && (setExportMenu(undefined), void exportAs("png", activeBoard.id))}
+            >
+              PNG <span>{activeBoard ? `${activeBoard.name} at 2x` : "select a board"}</span>
+            </button>
+          </div>
+        </div>,
+        document.body,
+      )}
     {stylesOpen && sessionId && (
       <DesignStylesDialog
         sessionId={sessionId}

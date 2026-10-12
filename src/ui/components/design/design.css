@@ -2676,3 +2676,46 @@ details.design-section > .design-grid {
   white-space: nowrap;
   color: var(--text-secondary);
 }
+
+/* Export menu (in a portal, so it is not clipped by the title bar). */
+.design-export-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+}
+.design-export-menu {
+  position: fixed;
+  transform: translateX(-100%);
+  display: flex;
+  flex-direction: column;
+  min-width: 240px;
+  padding: 4px;
+  border-radius: 10px;
+  background: var(--popover-bg, var(--bg-primary));
+  box-shadow: 0 12px 32px #00000026, 0 0 0 1px color-mix(in srgb, var(--text-primary) 10%, transparent);
+  font-size: 12.5px;
+  color: var(--text-primary);
+}
+.design-export-menu button {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.design-export-menu button:hover:not(:disabled) {
+  background: var(--sidebar-item-hover);
+}
+.design-export-menu button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.design-export-menu span {
+  color: var(--text-muted);
+}

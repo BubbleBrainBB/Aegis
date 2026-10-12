@@ -176,3 +176,64 @@ export function previewDesign(
   captureTail = job;
   return job;
 }
+
+/**
+ * Every board of a design as one PDF, a page per board at the board's own
+ * size (CSS named pages), in the same isolated, request-blocking window as
+ * previews. Boards render in their usual script-free frames.
+ */
+export function designPdf(
+  boards: { id: string; html: string; width: number; height: number }[],
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
+  const job = captureTail
+    .catch(() => {})
+    .then(async () => {
+      if (!boards.length) throw new Error("This design has no boards to export.");
+      const escape = (html: string) => html.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+      const pages = boards
+        .map(
+          (b, i) =>
+            `<section class="page p${i}"><iframe sandbox="" srcdoc="${escape(designFrameHtml(b.html, randomUUID(), false))}" style="width:${b.width}px;height:${b.height}px"></iframe></section>`,
+        )
+        .join("");
+      const sizes = boards.map((b, i) => `@page s${i}{size:${b.width}px ${b.height}px;margin:0}.p${i}{page:s${i}}`).join("");
+      const doc = `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; frame-src about: data:"><style>${sizes}html,body{margin:0;padding:0}.page{display:block;break-after:page}.page:last-child{break-after:auto}iframe{display:block;border:0}</style></head><body>${pages}</body></html>`;
+      const partition = `design-pdf-${randomUUID()}`;
+      const isolated = electronSession.fromPartition(partition);
+      isolated.setPermissionRequestHandler((_wc, _permission, cb) => cb(false));
+      isolated.webRequest.onBeforeRequest((request, done) =>
+        done({ cancel: !request.url.startsWith("data:") && request.url !== "about:blank" && request.url !== "about:srcdoc" }),
+      );
+      const w = new BrowserWindow({
+        show: false,
+        width: Math.max(...boards.map((b) => b.width)),
+        height: 900,
+        webPreferences: { partition, nodeIntegration: false, contextIsolation: true, sandbox: true, backgroundThrottling: false },
+      });
+      w.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+      w.webContents.on("will-navigate", (e) => e.preventDefault());
+      const stop = () => {
+        if (!w.isDestroyed()) w.destroy();
+      };
+      const timeout = setTimeout(stop, 60_000);
+      signal?.addEventListener("abort", stop, { once: true });
+      try {
+        await w.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(doc)}`);
+        await w.webContents.executeJavaScript(
+          "(async()=>{await document.fonts.ready;await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));return true})()",
+        );
+        signal?.throwIfAborted();
+        return new Uint8Array(
+          await w.webContents.printToPDF({ printBackground: true, preferCSSPageSize: true, margins: { marginType: "none" } }),
+        );
+      } finally {
+        clearTimeout(timeout);
+        signal?.removeEventListener("abort", stop);
+        stop();
+        await isolated.clearStorageData().catch(() => {});
+      }
+    });
+  captureTail = job;
+  return job;
+}

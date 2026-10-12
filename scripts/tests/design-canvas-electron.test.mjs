@@ -192,7 +192,15 @@ assert(await js('[...document.querySelectorAll(".design-version-step")].some(v=>
 await click('.design-version-step[data-step-revision="2"]');await until('!!document.querySelector(".design-historical")','historical view');
 await click('.design-version-step.is-active button');await delay(300);assert(repo.read(a,d.id).boards[0].html.includes('Some places'));
 assert.equal(repo.history(a,d.id)[0].summary,'Restored v2');
-await click('[aria-label="Close history"]');await text('Export');await delay(350);assert(fs.existsSync(path.join(process.env.QA_DATA,'Fieldnotes.zip')));
+await click('[aria-label="Close history"]');
+const exportItem=async(prefix)=>{await until('[...document.querySelectorAll("button")].some(b=>b.textContent.trim()==="Export"&&!b.disabled)','export ready');await text('Export');await until('!!document.querySelector("[role=menu][aria-label=Export]")','export menu');await js('[...document.querySelectorAll("[role=menu][aria-label=Export] button")].find(b=>b.textContent.startsWith('+JSON.stringify(prefix)+')).click()');};
+await exportItem('HTML bundle');for(let i=0;i<40&&!fs.existsSync(path.join(process.env.QA_DATA,'Fieldnotes.zip'));i++)await delay(75);assert(fs.existsSync(path.join(process.env.QA_DATA,'Fieldnotes.zip')));
+// PDF: a page per board, each at the board's size.
+await exportItem('PDF');const pdfFile=path.join(process.env.QA_DATA,'Fieldnotes.pdf');for(let i=0;i<120&&!fs.existsSync(pdfFile);i++)await delay(100);
+const pdf=fs.readFileSync(pdfFile).toString('latin1');assert(pdf.startsWith('%PDF'));
+const boardsNow=repo.read(a,d.id).boards;const boxes=[...pdf.matchAll(/\/MediaBox\s*\[\s*0\s+0\s+([\d.]+)\s+([\d.]+)\s*\]/g)].map(m=>[Math.round(+m[1]*96/72),Math.round(+m[2]*96/72)]);
+assert.equal(boxes.length,boardsNow.length,'a page per board: '+JSON.stringify(boxes));
+assert.deepEqual(boxes,boardsNow.map(b=>[b.width,b.height]),'pages at board size');
 // Board inspector: devices, export @2x and preview navigation.
 await click('[data-board-id="'+first.id+'"] .design-board-label');await until('!!document.querySelector(".design-devices")','board inspector');
 await js('[...document.querySelectorAll(".design-devices button")].find(b=>b.textContent.startsWith("Phone")).click()');await until('document.querySelector(".design-devices [aria-checked=true]")?.textContent.startsWith("Phone")','phone width');
