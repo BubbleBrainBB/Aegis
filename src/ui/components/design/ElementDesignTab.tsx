@@ -41,8 +41,11 @@ export function ElementDesignTab({
   onSelectLayer,
   onSelectBoard,
   loadStyles,
+  onAutoLayout,
   live,
 }: {
+  /** Lay out this layer's children (or wrap the layer) with auto layout. */
+  onAutoLayout?(kind: "row" | "column" | "grid", wrap: boolean): void;
   /** The layer's stylesheet rules, read from its frame (null until it answers). */
   loadStyles?(boardId: string, nodeId: string): Promise<LayerCss | null>;
   /** Rect of the layer while it is being resized or moved on the canvas. */
@@ -382,6 +385,30 @@ export function ElementDesignTab({
           </Row>
         ))}
       </Section>
+
+      {!autoLayout && onAutoLayout && (
+        <Section title="Auto layout">
+          {node.children.length > 0 && (
+            <Row label="Lay out">
+              <div className="iv-actions" role="group" aria-label="Lay out children">
+                {(["column", "row", "grid"] as const).map((kind) => (
+                  <button key={kind} type="button" disabled={!canEdit} onClick={() => onAutoLayout(kind, false)}>
+                    {kind === "column" ? "Column" : kind === "row" ? "Row" : "Grid"}
+                  </button>
+                ))}
+              </div>
+            </Row>
+          )}
+          <Row label="">
+            <div className="iv-actions">
+              <button type="button" disabled={!canEdit} onClick={() => onAutoLayout("column", true)} title="Shift+A">
+                Wrap in auto layout
+              </button>
+            </div>
+          </Row>
+          <p className="design-empty-note iv-note">A re-layout: positions may shift. Undo brings them back.</p>
+        </Section>
+      )}
 
       {autoLayout && (
         <Section title={display.includes("grid") ? "Grid layout" : "Flex layout"}>

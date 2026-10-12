@@ -121,6 +121,8 @@ export type CanvasApi = {
   resetPreview(boardId: string): void;
   /** Authored CSS of a layer (or the board's body); null until its frame answers. */
   styles(boardId: string, nodeId?: string): Promise<LayerCss | null>;
+  /** Rendered rects of layers on one board (board coordinates). */
+  measure(boardId: string, ids: string[]): Promise<Record<string, { x: number; y: number; width: number; height: number } | null>>;
   focus(): void;
 };
 type Props = {
@@ -138,6 +140,8 @@ type Props = {
   ): void;
   /** Enter / double-click on the current selection: edit its text in place. */
   onEditRequest?(): boolean;
+  /** Shift+A on a selected layer: give it (or a new wrapper) auto layout. */
+  onAutoLayout?(): void;
   /** Keyboard moves through the layer tree; false when there is nowhere to go. */
   onNavigate?(direction: "child" | "parent" | "next" | "prev"): boolean;
   /** Layer hidden in its frame while an in-place editor covers it. */
@@ -443,6 +447,7 @@ export function DesignCanvas(props: Props) {
         (await inspectors.current.get(id)?.measure([]))?.height ?? 0,
       resetPreview: (id) => inspectors.current.get(id)?.resetPreview(),
       styles: async (id, nodeId) => (await inspectors.current.get(id)?.styles(nodeId)) ?? null,
+      measure: async (id, ids) => (await inspectors.current.get(id)?.measure(ids))?.rects ?? {},
       focus: () => viewport.current?.focus({ preventScroll: true }),
     };
 
@@ -1251,6 +1256,12 @@ export function DesignCanvas(props: Props) {
       e.preventDefault();
       spaceRef.current = true;
       setSpace(true);
+      return;
+    }
+    if (e.shiftKey && e.code === "KeyA" && !e.metaKey && !e.ctrlKey && selection?.anchor.nodeId && canEdit) {
+      // Auto layout: the selected container lays out its children, or the layer gets wrapped in one.
+      e.preventDefault();
+      props.onAutoLayout?.();
       return;
     }
     if (e.altKey && e.code === "KeyL") {

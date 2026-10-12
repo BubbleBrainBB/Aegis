@@ -378,3 +378,126 @@ export function insertDesignLayer(
     throw new Error("A layer can't be added here. Try the space beside it.");
   return { html: next, nodeId };
 }
+
+// ── Auto layout ────────────────────────────────────────────────────────────
+
+export type AutoLayoutKind = "row" | "column" | "grid";
+type Box = { x: number; y: number; width: number; height: number };
+
+/**
+ * How laid-out children read: a row when their centers spread wider than
+ * tall, else a column; for a grid, rows group children that overlap
+ * vertically and the longest row gives the column count.
+ */
+export function inferAutoLayout(rects: Box[]): { direction: "row" | "column"; columns: number } {
+  if (rects.length < 2) return { direction: "column", columns: 1 };
+  const cx = rects.map((r) => r.x + r.width / 2);
+  const cy = rects.map((r) => r.y + r.height / 2);
+  const spread = (v: number[]) => Math.max(...v) - Math.min(...v);
+  const direction = spread(cx) > spread(cy) ? "row" : "column";
+  const rows: Box[][] = [];
+  for (const r of [...rects].sort((a, b) => a.y - b.y)) {
+    const row = rows.find((group) => group.some((o) => Math.min(o.y + o.height, r.y + r.height) - Math.max(o.y, r.y) > 0));
+    if (row) row.push(r);
+    else rows.push([r]);
+  }
+  return { direction, columns: Math.max(...rows.map((row) => row.length)) };
+}
+
+/** Inline declarations in order, with their !important flags. */
+function declarations(css: string): [string, string][] {
+  return css
+    .split(";")
+    .map((d) => d.trim())
+    .filter(Boolean)
+    .map((d) => {
+      const at = d.indexOf(":");
+      return at > 0 ? ([d.slice(0, at).trim().toLowerCase(), d.slice(at + 1).trim()] as [string, string]) : null;
+    })
+    .filter((d): d is [string, string] => !!d);
+}
+const cssText = (decls: [string, string][]) => decls.map(([k, v]) => `${k}: ${v}`).join("; ");
+const POSITION_PROPS = ["position", "left", "top", "right", "bottom", "inset", "z-index"];
+const LAYOUT_PROPS = ["display", "flex-direction", "flex-wrap", "grid-template-columns", "grid-template-rows"];
+
+function layoutDeclarations(kind: AutoLayoutKind, columns: number, keepGap: string | undefined): [string, string][] {
+  const important = (v: string) => `${v} !important`;
+  return [
+    ["display", important(kind === "grid" ? "grid" : "flex")],
+    ...(kind === "grid"
+      ? ([["grid-template-columns", important(`repeat(${Math.max(1, Math.min(12, columns))}, minmax(0, 1fr))`)]] as [string, string][])
+      : ([["flex-direction", important(kind)]] as [string, string][])),
+    ["gap", keepGap ?? important("12px")],
+  ];
+}
+
+/**
+ * Makes a layer lay out its children: flex in a row or column, or a grid of
+ * `columns`. Keeps an existing gap (else 12px) and drops the children's own
+ * inline positioning, so they follow the layout. A re-layout: what classes
+ * position stays, sizes are kept, and the result is one undoable change.
+ */
+export function setAutoLayout(html: string, nodeId: string, layout: { kind: AutoLayoutKind; columns?: number }): string {
+  const { doc, elements } = documentModel(html);
+  const node = elements.find((e) => attr(e, layerIdAttribute) === nodeId);
+  if (!node) throw new Error("Layer no longer exists.");
+  assertUnlocked(node);
+  const own = declarations(attr(node, "style") || "");
+  const gap = own.find(([k]) => k === "gap")?.[1];
+  const rest = own.filter(([k]) => !LAYOUT_PROPS.includes(k) && k !== "gap");
+  set(node, "style", cssText([...rest, ...layoutDeclarations(layout.kind, layout.columns ?? 2, gap)]));
+  for (const child of node.childNodes) {
+    if (!("tagName" in child) || omitted.has(child.tagName)) continue;
+    const decls = declarations(attr(child, "style") || "");
+    const kept = decls.filter(([k]) => !POSITION_PROPS.includes(k));
+    if (kept.length !== decls.length) set(child, "style", cssText(kept));
+  }
+  return serialize(doc);
+}
+
+/**
+ * Wraps a layer in a new auto layout container (named "Auto layout") at its
+ * place. The layer's own inline positioning moves to the container.
+ */
+export function wrapInAutoLayout(
+  html: string,
+  nodeId: string,
+  layout: { kind: AutoLayoutKind; columns?: number },
+): { html: string; nodeId: string } {
+  const { doc, elements } = documentModel(html);
+  const node = elements.find((e) => attr(e, layerIdAttribute) === nodeId);
+  if (!node) throw new Error("Layer no longer exists.");
+  assertUnlocked(node);
+  const parent = node.parentNode as Element;
+  if (!parent || !("tagName" in parent)) throw new Error("This layer can't be wrapped.");
+  const ids = new Set(elements.map((e) => attr(e, layerIdAttribute)));
+  let n = elements.length + 1;
+  while (ids.has(`aegis-layer-${n}`)) n++;
+  const wrapperId = `aegis-layer-${n}`;
+  const decls = declarations(attr(node, "style") || "");
+  const positioned = decls.filter(([k]) => POSITION_PROPS.includes(k));
+  const wrapper = defaultTreeAdapter.createElement("div", parse5Html.NS.HTML, [
+    { name: layerIdAttribute, value: wrapperId },
+    { name: "data-aegis-layer-name", value: "Auto layout" },
+    { name: "style", value: cssText([...positioned, ...layoutDeclarations(layout.kind, layout.columns ?? 2, undefined)]) },
+  ]);
+  if (positioned.length) set(node, "style", cssText(decls.filter(([k]) => !POSITION_PROPS.includes(k))));
+  const siblings = parent.childNodes;
+  siblings.splice(siblings.indexOf(node), 1, wrapper);
+  wrapper.parentNode = parent;
+  wrapper.childNodes.push(node);
+  node.parentNode = wrapper;
+  const out = serialize(doc);
+  // Parsing must keep the wrapper where it was put (no div inside a p): the
+  // layer stays in the wrapper, and the wrapper in the layer's old parent.
+  const parentId = attr(parent, layerIdAttribute);
+  const reparsed = documentModel(out).elements;
+  const placedIn = reparsed.find((e) => attr(e, layerIdAttribute) === nodeId)?.parentNode as Element | undefined;
+  const wrapperIn = reparsed.find((e) => attr(e, layerIdAttribute) === wrapperId)?.parentNode as Element | undefined;
+  const sameParent = parentId
+    ? !!wrapperIn && "tagName" in wrapperIn && attr(wrapperIn, layerIdAttribute) === parentId
+    : !!wrapperIn && "tagName" in wrapperIn && wrapperIn.tagName === parent.tagName;
+  if (!placedIn || !("tagName" in placedIn) || attr(placedIn, layerIdAttribute) !== wrapperId || !sameParent)
+    throw new Error("This layer can't be wrapped here.");
+  return { html: out, nodeId: wrapperId };
+}

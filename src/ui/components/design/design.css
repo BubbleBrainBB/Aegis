@@ -2626,3 +2626,22 @@ details.design-section > .design-grid {
 .design-panel .iv-token[aria-pressed="true"] {
   box-shadow: 0 0 0 2px var(--bg-primary), 0 0 0 3.5px var(--d-select);
 }
+
+.iv-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  flex: 1;
+}
+.design-panel .iv-actions button {
+  padding: 3px 9px;
+  border-radius: 6px;
+  background: var(--d-fill);
+}
+.design-panel .iv-actions button:hover:not(:disabled) {
+  background: var(--d-line);
+}
+.iv-note {
+  margin: 2px 0 0;
+  font-size: 11px;
+}

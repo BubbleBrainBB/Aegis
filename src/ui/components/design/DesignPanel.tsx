@@ -9,6 +9,10 @@ import {
   findDesignLayer,
   designLayerPath,
   insertDesignLayer,
+  inferAutoLayout,
+  setAutoLayout,
+  wrapInAutoLayout,
+  type AutoLayoutKind,
   type DesignLayer,
 } from "../../../shared/design-layers";
 import { buildDesignCommentPrompt } from "../../../shared/design-comment";
@@ -698,6 +702,40 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
     selectLayer(board.id, step(siblings, siblings.findIndex((n) => n.id === nodeId)), board.contentRevision);
     return true;
   };
+  /**
+   * Auto layout for the selected layer: lay out its own children (direction
+   * and grid columns read from where they are now), or wrap the layer in a
+   * new auto layout container, which then becomes the selection.
+   */
+  const applyAutoLayout = async (kind: AutoLayoutKind | "infer", wrap?: boolean) => {
+    const target = selection;
+    const board = doc?.boards.find((b) => b.id === target?.boardId);
+    const node = board && target?.anchor.nodeId ? findDesignLayer(readDesignLayers(board.html), target.anchor.nodeId) : undefined;
+    if (!board || !node) return;
+    const wrapIt = wrap ?? node.children.length === 0;
+    let layout: { kind: AutoLayoutKind; columns?: number } = { kind: kind === "infer" ? "column" : kind };
+    if (!wrapIt && node.children.length > 1) {
+      const rects = await canvas.current?.measure(board.id, node.children.map((c) => c.id));
+      const boxes = Object.values(rects ?? {}).filter((r): r is NonNullable<typeof r> => !!r);
+      const inferred = inferAutoLayout(boxes);
+      if (kind === "infer") layout = { kind: inferred.direction };
+      if (layout.kind === "grid") layout.columns = inferred.columns > 1 ? inferred.columns : 2;
+    }
+    const name = node.name.split(" · ")[0];
+    try {
+      if (wrapIt) {
+        const wrapped = wrapInAutoLayout(board.html, node.id, layout);
+        await changeLayer(board, wrapped.html, `Wrapped ${name} in auto layout`);
+        const fresh = findDesignLayer(readDesignLayers(wrapped.html), wrapped.nodeId);
+        if (fresh) selectLayer(board.id, fresh, board.contentRevision + 1);
+      } else {
+        const label = layout.kind === "grid" ? `a ${layout.columns ?? 2}-column grid` : `a ${layout.kind}`;
+        await changeLayer(board, setAutoLayout(board.html, node.id, layout), `Laid out ${name} as ${label}`);
+      }
+    } catch (e) {
+      setFailure(errorText(e));
+    }
+  };
   /** Text and Frame tools: one write per new layer, which then becomes the selection. */
   const insertLayer = (
     boardId: string,
@@ -1173,6 +1211,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
           onCommentRequest={startComment}
           onEditRequest={() => startTextEdit()}
           onNavigate={navigateLayers}
+          onAutoLayout={() => void applyAutoLayout("infer")}
           elementEditable={!!layerEditable(selection) && !textEdit && !composer}
           selectionIsText={(() => {
             const n = layerEditable(selection)?.node;
@@ -1781,6 +1820,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
               (selection && activeBoard && selection.anchor.nodeId ? (
                 <ElementDesignTab
                   loadStyles={loadLayerStyles}
+                  onAutoLayout={(kind, wrap) => void applyAutoLayout(kind, wrap)}
                   live={liveRect}
                   board={activeBoard}
                   selection={selection}

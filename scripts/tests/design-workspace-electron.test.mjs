@@ -156,7 +156,7 @@ app.whenReady().then(async()=>{
   assert.equal(await js('localStorage.getItem("aegis.design.dock")'),prefBefore,'the dock preference is untouched');
 
   // Value sources and tokens: a stylesheet value shows as such; a token pick writes var(); reset restores the rule.
-  await call('s1','design_update',{documentId:atlas.id,operationId:'tok-1',operations:[{type:'add',name:'Tokens',width:600,height:300,html:'<style>:root{--accent:#4f5bd5;--ink:#23263a}.card{color:#222222;padding:24px}</style><div class="card" data-aegis-layer-name="Card">Card text</div>'}]});
+  await call('s1','design_update',{documentId:atlas.id,operationId:'tok-1',operations:[{type:'add',name:'Tokens',width:600,height:300,html:'<style>:root{--accent:#4f5bd5;--ink:#23263a}.card{color:#222222;padding:24px}</style><div class="card" data-aegis-layer-name="Card">Card text</div><div data-aegis-layer-name="Row" style="position:relative;height:60px"><span style="position:absolute;left:0;top:0">Alpha</span><span style="position:absolute;left:140px;top:2px">Beta</span><span style="position:absolute;left:280px;top:0">Gamma</span></div>'}]});
   const tokensFrame=async()=>{for(const f of win.webContents.mainFrame.framesInSubtree.filter(f=>f.url==='about:srcdoc'))if(await f.executeJavaScript('document.body.textContent.includes("Card text")').catch(()=>false))return f};
   await until('document.querySelectorAll("[data-design-section] .design-board").length===3','token board');
   for(let i=0;i<40&&!(await tokensFrame());i++)await delay(75);
@@ -173,6 +173,22 @@ app.whenReady().then(async()=>{
   await js('document.querySelector(".design-inspector [aria-label=\'Reset Color\']").click()');
   for(let i=0;i<60&&/color: var\(--accent\)/.test(tokenHtml());i++)await delay(75);
   assert.doesNotMatch(tokenHtml(),/color: var\(--accent\)/,'reset removes the override');
+  // Auto layout: Shift+A on a container reads its children's arrangement; on a leaf it wraps it.
+  const shiftA=()=>js('document.querySelector("[data-design-section] .design-viewport").dispatchEvent(new KeyboardEvent("keydown",{key:"A",code:"KeyA",shiftKey:true,bubbles:true,cancelable:true}))');
+  await (await tokensFrame()).executeJavaScript('[...document.querySelectorAll("[data-aegis-layer-name=Row]")][0].dispatchEvent(new MouseEvent("click",{bubbles:true}))');
+  await until('document.querySelector(".design-float-name")?.textContent==="Row"','row selected');
+  await until('[...document.querySelectorAll(".design-inspector .iv-sec h4")].some(h=>h.textContent==="Auto layout")','auto layout offered');
+  await shiftA();
+  for(let i=0;i<60&&!/data-aegis-layer-name="Row" style="[^"]*display: flex !important; flex-direction: row !important/.test(tokenHtml());i++)await delay(75);
+  assert.match(tokenHtml(),/data-aegis-layer-name="Row" style="[^"]*display: flex !important; flex-direction: row !important; gap: 12px !important"/,'laid out as a row');
+  assert.doesNotMatch(tokenHtml(),/<span[^>]*position: ?absolute/,'children follow the layout');
+  await until('[...document.querySelectorAll(".design-inspector .iv-sec h4")].some(h=>h.textContent==="Flex layout")','now a flex layout');
+  await (await tokensFrame()).executeJavaScript('document.querySelector(".card").click()');
+  await until('document.querySelector(".design-float-name")?.textContent==="Card"','card selected again');
+  await shiftA();
+  for(let i=0;i<60&&!/data-aegis-layer-name="Auto layout"[^>]*><div class="card"/.test(tokenHtml());i++)await delay(75);
+  assert.match(tokenHtml(),/data-aegis-layer-name="Auto layout" style="display: flex !important; flex-direction: column !important; gap: 12px !important"><div class="card"/,'a leaf is wrapped');
+  await until('document.querySelector(".design-float-name")?.textContent==="Auto layout"','the wrapper is selected');
   await js('document.querySelector("[data-design-section] .design-viewport").dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))');
   await js('document.querySelector("[data-design-section] .design-viewport").dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))');
 

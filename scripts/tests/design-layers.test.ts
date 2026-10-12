@@ -6,6 +6,9 @@ import {
   replaceDesignLayerStyle,
   moveDesignLayer,
   insertDesignLayer,
+  inferAutoLayout,
+  setAutoLayout,
+  wrapInAutoLayout,
   type DesignLayer,
 } from "../../src/shared/design-layers";
 import { sanitizeDesignHtml } from "../../src/electron/design/html";
@@ -141,3 +144,32 @@ assert.throws(
 console.log(
   "Design layers: hierarchy, identity, text safety, properties, locks, subtree duplication, ordering, moving, inserting and removal passed",
 );
+
+// Auto layout: infer the arrangement, set it on a container, or wrap a layer in one.
+{
+  const r = (x: number, y: number, width = 100, height = 40) => ({ x, y, width, height });
+  assert.deepEqual(inferAutoLayout([r(0, 0), r(120, 4), r(240, 2)]), { direction: "row", columns: 3 });
+  assert.deepEqual(inferAutoLayout([r(0, 0), r(0, 60), r(4, 120)]), { direction: "column", columns: 1 });
+  assert.deepEqual(inferAutoLayout([r(0, 0), r(120, 0), r(0, 60), r(120, 60), r(240, 60)]).columns, 3);
+  assert.deepEqual(inferAutoLayout([r(0, 0)]), { direction: "column", columns: 1 });
+
+  const page =
+    '<div data-aegis-node-id="box" style="padding: 8px; display: block; gap: 20px"><p data-aegis-node-id="a" style="position: absolute; left: 4px; top: 9px; color: red">A</p><p data-aegis-node-id="b">B</p></div>';
+  const row = setAutoLayout(page, "box", { kind: "row" });
+  assert.match(row, /data-aegis-node-id="box" style="padding: 8px; display: flex !important; flex-direction: row !important; gap: 20px"/, row);
+  assert.match(row, /data-aegis-node-id="a" style="color: red"/, "children lose their inline positioning");
+  const grid = setAutoLayout(row, "box", { kind: "grid", columns: 3 });
+  assert.match(grid, /display: grid !important; grid-template-columns: repeat\(3, minmax\(0, 1fr\)\) !important; gap: 20px/);
+  assert.doesNotMatch(grid, /flex-direction/, "switching to grid drops the flex direction");
+  assert.match(setAutoLayout('<div data-aegis-node-id="x"><span>1</span></div>', "x", { kind: "column" }), /gap: 12px !important/, "12px gap by default");
+  assert.throws(() => setAutoLayout('<div data-aegis-node-id="x" data-aegis-locked="true"></div>', "x", { kind: "row" }), /Unlock/);
+
+  const wrapped = wrapInAutoLayout(
+    '<main data-aegis-node-id="m"><h1 data-aegis-node-id="h" style="position: absolute; top: 10px; color: blue">Hi</h1><p data-aegis-node-id="p">P</p></main>',
+    "h",
+    { kind: "column" },
+  );
+  assert.match(wrapped.html, new RegExp(`<div data-aegis-node-id="${wrapped.nodeId}" data-aegis-layer-name="Auto layout" style="position: absolute; top: 10px; display: flex !important; flex-direction: column !important; gap: 12px !important"><h1 data-aegis-node-id="h" style="color: blue">Hi</h1></div><p`), wrapped.html);
+  assert.throws(() => wrapInAutoLayout('<p data-aegis-node-id="p"><span data-aegis-node-id="s">x</span></p>', "s", { kind: "row" }), /can't be wrapped here/);
+  console.log("Design layers: auto layout inference, set and wrap passed");
+}
