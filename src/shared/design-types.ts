@@ -234,7 +234,9 @@ export interface DesignAPI {
   }): Promise<{ saved: boolean; path?: string }>;
   /** Style guides to offer in a conversation: built in, then the project's DESIGN.md. */
   styles(input: { sessionId: string; cwd?: string | null }): Promise<DesignStyleSummary[]>;
-  /** The design composer's picks for a conversation: style guide and variations (1 = none). */
-  composer(input: { sessionId: string; styleId?: string; variants?: number }): Promise<void>;
+  /** The project's templates (design-system/templates), sanitized for thumbnails. */
+  templates(input: { sessionId: string; cwd?: string | null }): Promise<{ id: string; name: string; summary: string; html: string }[]>;
+  /** The design composer's picks for a conversation: style guide, variations (1 = none) and a template. */
+  composer(input: { sessionId: string; styleId?: string; variants?: number; templateId?: string }): Promise<void>;
   onChanged(callback: (event: DesignEvent) => void): () => void;
 }

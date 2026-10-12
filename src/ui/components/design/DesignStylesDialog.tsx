@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { X } from "../icons";
+import { BoardThumb } from "./BoardThumb";
 import type { DesignStyleSummary } from "../../../shared/design-types";
 
-type Tab = "featured" | "all" | "project";
+type Tab = "featured" | "all" | "project" | "templates";
+type Template = { id: string; name: string; summary: string; html: string };
 const SERIF = '"New York", Georgia, "Songti SC", serif';
 
 /**
@@ -15,24 +17,35 @@ export function DesignStylesDialog({
   sessionId,
   cwd,
   value,
+  templateValue,
   onPick,
+  onPickTemplate,
   onClose,
 }: {
   sessionId: string;
   cwd?: string | null;
   value?: string;
+  /** The project template new boards start from, if any. */
+  templateValue?: string;
   onPick(style: DesignStyleSummary | null): void;
+  onPickTemplate?(template: Template | null): void;
   onClose(): void;
 }) {
   const [styles, setStyles] = useState<DesignStyleSummary[] | null>(null);
+  const [templates, setTemplates] = useState<Template[]>([]);
   const [tab, setTab] = useState<Tab>("featured");
   const [picked, setPicked] = useState<string | undefined>(value);
+  const [pickedTemplate, setPickedTemplate] = useState<string | undefined>(templateValue);
   useEffect(() => {
     let alive = true;
     void window.electron.design
       ?.styles({ sessionId, cwd: cwd ?? undefined })
       .then((rows) => alive && setStyles(rows))
       .catch(() => alive && setStyles([]));
+    void window.electron.design
+      ?.templates({ sessionId, cwd: cwd ?? undefined })
+      .then((rows) => alive && setTemplates(rows))
+      .catch(() => {});
     return () => {
       alive = false;
     };
@@ -50,6 +63,8 @@ export function DesignStylesDialog({
     [styles, tab],
   );
   const choice = styles?.find((s) => s.id === picked) ?? null;
+  const templateChoice = templates.find((t) => t.id === pickedTemplate) ?? null;
+  const onTemplates = tab === "templates";
 
   return createPortal(
     <div className="fixed inset-0 z-[90] flex items-center justify-center bg-[color-mix(in_srgb,var(--text-primary)_26%,transparent)] p-6" onMouseDown={onClose}>
@@ -70,6 +85,7 @@ export function DesignStylesDialog({
                 ["featured", "Featured"],
                 ["all", "Styles"],
                 ["project", "From this project"],
+                ...(onPickTemplate ? ([["templates", "Templates"]] as const) : []),
               ] as const
             ).map(([id, label]) => (
               <button
@@ -91,7 +107,33 @@ export function DesignStylesDialog({
           </button>
         </div>
         <div className="grid min-h-[300px] grid-cols-1 content-start gap-5 overflow-y-auto p-5 sm:grid-cols-2 lg:grid-cols-3">
-          {styles === null ? (
+          {onTemplates ? (
+            templates.length === 0 ? (
+              <p className="col-span-full max-w-[52ch] text-[13px] leading-relaxed text-[var(--text-muted)]">
+                Put representative pages in the project's design-system/templates/ folder (one .html each, an optional .md saying what it is for), and new boards can start from them.
+              </p>
+            ) : (
+              templates.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setPickedTemplate(t.id)}
+                  aria-pressed={t.id === pickedTemplate}
+                  data-template-id={t.id}
+                  className="flex flex-col gap-2 text-left outline-none"
+                >
+                  <span
+                    className="block overflow-hidden rounded-[10px] bg-white"
+                    style={{ boxShadow: t.id === pickedTemplate ? "0 0 0 2px var(--accent)" : "0 0 0 1px var(--border)" }}
+                  >
+                    <BoardThumb board={{ id: `template-${t.id}`, html: t.html, width: 1440, height: 900, contentRevision: 1 }} width={280} height={175} />
+                  </span>
+                  <span className="text-[12.5px] text-[var(--text-primary)]">{t.name}</span>
+                  <span className="line-clamp-2 text-[11.5px] leading-snug text-[var(--text-muted)]">{t.summary}</span>
+                </button>
+              ))
+            )
+          ) : styles === null ? (
             <p className="col-span-full text-[13px] text-[var(--text-muted)]">Loading styles…</p>
           ) : shown.length === 0 ? (
             <p className="col-span-full max-w-[52ch] text-[13px] leading-relaxed text-[var(--text-muted)]">
@@ -107,9 +149,16 @@ export function DesignStylesDialog({
         </div>
         <div className="flex min-h-[54px] flex-shrink-0 flex-wrap items-center gap-2.5 border-t border-[var(--border)] px-5 py-2 text-[12.5px] text-[var(--text-muted)]">
           <span className="min-w-[240px] flex-1">
-            The style guide goes to the agent with your next request and applies to new boards. Existing boards change only if you ask.
+            {onTemplates
+              ? "New boards start from the template's structure and components, with your content."
+              : "The style guide goes to the agent with your next request and applies to new boards. Existing boards change only if you ask."}
           </span>
-          {value ? (
+          {onTemplates && templateValue ? (
+            <button type="button" onClick={() => onPickTemplate?.(null)} className="h-[30px] rounded-[8px] px-3 text-[var(--text-secondary)] hover:bg-[var(--sidebar-item-hover)]">
+              No template
+            </button>
+          ) : null}
+          {!onTemplates && value ? (
             <button type="button" onClick={() => onPick(null)} className="h-[30px] rounded-[8px] px-3 text-[var(--text-secondary)] hover:bg-[var(--sidebar-item-hover)]">
               No style
             </button>
@@ -117,14 +166,25 @@ export function DesignStylesDialog({
           <button type="button" onClick={onClose} className="h-[30px] rounded-[8px] px-3 text-[var(--text-secondary)] hover:bg-[var(--sidebar-item-hover)]">
             Cancel
           </button>
-          <button
-            type="button"
-            disabled={!choice}
-            onClick={() => choice && onPick(choice)}
-            className="h-[30px] rounded-[8px] bg-[var(--text-primary)] px-3.5 text-[var(--bg-primary)] disabled:opacity-40"
-          >
-            {choice ? `Use ${choice.name}` : "Use style"}
-          </button>
+          {onTemplates ? (
+            <button
+              type="button"
+              disabled={!templateChoice}
+              onClick={() => templateChoice && onPickTemplate?.(templateChoice)}
+              className="h-[30px] rounded-[8px] bg-[var(--text-primary)] px-3.5 text-[var(--bg-primary)] disabled:opacity-40"
+            >
+              {templateChoice ? `Start from ${templateChoice.name}` : "Use template"}
+            </button>
+          ) : (
+            <button
+              type="button"
+              disabled={!choice}
+              onClick={() => choice && onPick(choice)}
+              className="h-[30px] rounded-[8px] bg-[var(--text-primary)] px-3.5 text-[var(--bg-primary)] disabled:opacity-40"
+            >
+              {choice ? `Use ${choice.name}` : "Use style"}
+            </button>
+          )}
         </div>
       </div>
     </div>,

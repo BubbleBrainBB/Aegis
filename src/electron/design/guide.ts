@@ -15,7 +15,8 @@ Decide the treatment before drawing anything. When the user names a direction, t
 Settle three things in one line each before the first board: the subject, who it is for, and the single job of the page.
 
 ## Start from what already exists
-Precedence: the user's words, then the style guide in <design_context>, then the project's own design system, then your choices.
+Precedence: the user's words, then the style guide in <design_context>, then the project's own design system (design_resources lists its components and templates), then your choices.
+- When the project has a template that fits, start from it (design_resources), not from a blank page; keep its structure and components and replace its sample copy.
 - In a code project, look for its system first: Tailwind config, CSS variables or theme files, a tokens file, component styles, brand assets. Reuse its colors, type, radii and spacing so the design can be built with what the codebase already has.
 - If the design already has boards, match them: same tokens, type scale, spacing rhythm and component shapes.
 - Keep layer names and structure stable when revising, so comments and selections still point at the right things.

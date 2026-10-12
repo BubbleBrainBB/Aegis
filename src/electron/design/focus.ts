@@ -12,18 +12,21 @@ export interface DesignFocus {
 export interface DesignComposerPrefs {
   styleId?: string;
   variants?: number;
+  /** A template from the project's design system to start new boards from. */
+  templateId?: string;
 }
 const focus = new Map<string, DesignFocus>();
 const composer = new Map<string, DesignComposerPrefs>();
 
 export function setDesignComposerPrefs(sessionId: string, prefs: DesignComposerPrefs | null | undefined) {
   const styleId = typeof prefs?.styleId === "string" && /^[\w.-]{1,120}$/.test(prefs.styleId) ? prefs.styleId : undefined;
+  const templateId = typeof prefs?.templateId === "string" && /^[\w.-]{1,120}$/.test(prefs.templateId) ? prefs.templateId : undefined;
   const variants =
     typeof prefs?.variants === "number" && Number.isInteger(prefs.variants) && prefs.variants > 1 && prefs.variants <= 4
       ? prefs.variants
       : undefined;
-  if (!styleId && !variants) composer.delete(sessionId);
-  else composer.set(sessionId, { ...(styleId ? { styleId } : {}), ...(variants ? { variants } : {}) });
+  if (!styleId && !variants && !templateId) composer.delete(sessionId);
+  else composer.set(sessionId, { ...(styleId ? { styleId } : {}), ...(variants ? { variants } : {}), ...(templateId ? { templateId } : {}) });
 }
 export function getDesignComposerPrefs(sessionId: string): DesignComposerPrefs {
   return composer.get(sessionId) ?? {};
@@ -38,10 +41,15 @@ export function moveDesignFocus(from: string, to: string) {
   composer.delete(from);
 }
 
-let styleName: (styleId: string) => string | undefined = () => undefined;
-/** Names a style id for the context line (the style registry sets this). */
-export function setDesignStyleNamer(namer: (styleId: string) => string | undefined) {
-  styleName = namer;
+let styleFor: (sessionId: string) => string | undefined = () => undefined;
+/** The style guide in effect for a session, by name (the style registry sets this). */
+export function setDesignStyleResolver(resolve: (sessionId: string) => string | undefined) {
+  styleFor = resolve;
+}
+let templateName: (sessionId: string, templateId: string) => string | undefined = () => undefined;
+/** Names a picked template (the style registry sets this). */
+export function setDesignTemplateNamer(namer: (sessionId: string, templateId: string) => string | undefined) {
+  templateName = namer;
 }
 const id = (v: unknown) => (typeof v === "string" && v.length > 0 && v.length <= 200 ? v : undefined);
 
@@ -88,9 +96,14 @@ export function designContextText(sessionId: string): string {
     designs = [];
   }
   const prefs = composer.get(sessionId) ?? {};
-  const style = prefs.styleId ? styleName(prefs.styleId) : undefined;
+  // The project's design system applies by default, but only to design work:
+  // a picked style, or a conversation that already has designs.
+  const style = prefs.styleId || designs.length ? styleFor(sessionId) : undefined;
+  const template = prefs.templateId ? templateName(sessionId, prefs.templateId) : undefined;
   const asks: string[] = [];
   if (style) asks.push(`Style guide: ${label(style)}. Read it with design_guide before drawing.`);
+  if (template && prefs.templateId)
+    asks.push(`Template: start new boards from ${label(template)} (design_resources kind "template", name "${prefs.templateId}").`);
   if (prefs.variants) asks.push(`Variations: make ${prefs.variants} distinct directions for each new board, side by side.`);
   if (!designs.length)
     return asks.length ? `\n\n<design_context>\n${asks.join("\n")}\n</design_context>` : "";

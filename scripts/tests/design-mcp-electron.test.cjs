@@ -153,6 +153,31 @@ app.whenReady().then(async () => {
     await call(info.url, a, 'design_update', { documentId: created.id, operationId: 'op-3', operations: [{ type: 'content', boardId: current.boards[0].id, expectedRevision: current.boards[0].contentRevision, html: '<main><h1>Calmer</h1></main>' }] });
     assert.equal(getDesignRepository().boardPrompts('session-a', created.id)[current.boards[0].id].prompt, 'Make the hero calmer');
 
+    // A project's design system: guide by default, components and templates on demand.
+    const { setDesignProjectRoot, listProjectTemplates } = require('../../dist-electron/electron/design/styles.js');
+    const project = path.join(temp, 'project');
+    fs.mkdirSync(path.join(project, 'design-system', 'components'), { recursive: true });
+    fs.mkdirSync(path.join(project, 'design-system', 'templates'), { recursive: true });
+    fs.writeFileSync(path.join(project, 'design-system', 'README.md'), '# Atlas design system\nCalm, paper-like surfaces; one ink accent.\n');
+    fs.writeFileSync(path.join(project, 'design-system', 'components', 'Button.md'), '# Primary and quiet buttons\nVariants: primary, quiet. Never more than one primary per view.\n');
+    fs.writeFileSync(path.join(project, 'design-system', 'components', 'Button.html'), '<button class="btn btn-primary">Start writing</button>');
+    fs.writeFileSync(path.join(project, 'design-system', 'templates', 'landing.html'), '<main><h1>Landing</h1><script>alert(1)</script></main>');
+    fs.writeFileSync(path.join(project, 'design-system', 'templates', 'landing.md'), 'A product landing page: hero, three features, pricing.');
+    setDesignProjectRoot((sessionId) => (sessionId === 'session-ds' ? project : null));
+    const ds = await scoped('session-ds');
+    const index = await call(info.url, ds, 'design_resources', {});
+    assert.match(index.result.content[0].text, /- Button: Primary and quiet buttons[\s\S]*- landing: A product landing page/);
+    assert.match((await call(info.url, ds, 'design_resources', { kind: 'component', name: 'button' })).result.content[0].text, /Never more than one primary[\s\S]*Reference markup[\s\S]*btn-primary/);
+    assert.match((await call(info.url, ds, 'design_resources', { kind: 'template', name: 'landing' })).result.content[0].text, /Template: Landing[\s\S]*<h1>Landing<\/h1>/);
+    assert.match((await call(info.url, ds, 'design_resources', { kind: 'template', name: 'nope' })).result.content[0].text, /No template named "nope"/);
+    const dsGuide = (await call(info.url, ds, 'design_guide', { topics: ['color'] })).result.content[0].text;
+    assert.match(dsGuide, /Style guide: This project's design system[\s\S]*Calm, paper-like[\s\S]*Components \(read one/, 'the project system applies by default');
+    assert.doesNotMatch(listProjectTemplates('session-ds')[0].html, /<script/, 'templates are sanitized for thumbnails');
+    assert.equal(designContextText('session-ds'), '', 'no design work yet: no context line in plain chats');
+    setDesignComposerPrefs('session-ds', { templateId: 'landing' });
+    assert.match(designContextText('session-ds'), /Template: start new boards from "Landing"/);
+    assert.match((await call(info.url, b, 'design_resources', {})).result.content[0].text, /no design system/);
+
     console.log('PASS design MCP: listed, session-bound writes and previews, isolation, forged headers refused, meta and history attribution, Bubble and Pi tools');
   } catch (error) {
     console.error(error);

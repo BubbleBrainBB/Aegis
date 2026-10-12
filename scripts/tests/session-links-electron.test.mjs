@@ -106,7 +106,7 @@ app.whenReady().then(async()=>{
   http=createServer((req,res)=>{void handleSessionMcpRequest(req,res,token).catch(e=>{console.error(e);res.writeHead(500).end()})});
   await new Promise(r=>http.listen(0,'127.0.0.1',r));
   const rpc=async(method,params)=>{const r=await fetch('http://127.0.0.1:'+http.address().port+'/mcp',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json',Accept:'application/json, text/event-stream'},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params})});assert.equal(r.status,200);return r.json()};
-  assert.deepEqual((await rpc('tools/list',{})).result.tools.map(t=>t.name),['read_session','start_workflow','show_widget','widget_guide','design_create','design_read','design_update','design_preview','design_comments','design_reply','design_guide']);
+  assert.deepEqual((await rpc('tools/list',{})).result.tools.map(t=>t.name),['read_session','start_workflow','show_widget','widget_guide','design_create','design_read','design_update','design_preview','design_comments','design_reply','design_guide','design_resources']);
   const result=await rpc('tools/call',{name:'read_session',arguments:{sessionId:source.id,limit:2}});
   assert.equal(JSON.parse(result.result.content[0].text).session.id,source.id);
   const missing=await rpc('tools/call',{name:'read_session',arguments:{sessionId:'missing'}});assert.equal(missing.result.isError,true);
@@ -125,7 +125,7 @@ app.whenReady().then(async()=>{
   const [chatClientTransport,chatServerTransport]=InMemoryTransport.createLinkedPair();
   const chatClient=new Client({name:'session-reader-qa-chat',version:'1'});
   await chatServer.instance.connect(chatServerTransport);await chatClient.connect(chatClientTransport);
-  assert.deepEqual((await chatClient.listTools()).tools.map(t=>t.name),['read_session','start_workflow','show_widget','widget_guide','design_create','design_read','design_update','design_preview','design_comments','design_reply','design_guide']);
+  assert.deepEqual((await chatClient.listTools()).tools.map(t=>t.name),['read_session','start_workflow','show_widget','widget_guide','design_create','design_read','design_update','design_preview','design_comments','design_reply','design_guide','design_resources']);
   const claudeRead=await client.callTool({name:'read_session',arguments:{sessionId:source.id}});
   assert.equal(JSON.parse(claudeRead.content[0].text).session.id,source.id);
   await client.close();await claudeReader.instance.close();

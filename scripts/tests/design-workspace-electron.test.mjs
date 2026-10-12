@@ -128,6 +128,21 @@ app.whenReady().then(async()=>{
   await until('document.querySelector("[data-design-variants]").textContent.includes("2×")','two variations');
   for(let i=0;i<40&&getDesignComposerPrefs('s1').variants!==2;i++)await delay(50);
   assert.deepEqual(getDesignComposerPrefs('s1'),{styleId:'quiet-slate',variants:2},'the next turn carries the picks');
+  // Templates from the project's design system: picked here, new boards start from one.
+  const qaProject=path.join(__dirname,'project');fs.mkdirSync(path.join(qaProject,'design-system','templates'),{recursive:true});
+  fs.writeFileSync(path.join(qaProject,'design-system','templates','landing.html'),'<main style="padding:60px;font-family:Georgia;background:#f6f2ea"><h1 style="font-size:64px">A calm landing page</h1><p>Hero, three features, pricing.</p></main>');
+  fs.writeFileSync(path.join(qaProject,'design-system','templates','landing.md'),'A product landing page: hero, features and pricing.');
+  await js('qa.app.setState(s=>({sessions:{...s.sessions,s1:{...s.sessions.s1,cwd:'+JSON.stringify(qaProject)+',projectCwd:'+JSON.stringify(qaProject)+'}}}))');
+  await click('[data-design-style-button]');
+  await until('!!document.querySelector("[data-design-styles]")','style picker again');
+  await js('[...document.querySelectorAll("[data-design-styles] [role=tab]")].find(b=>b.textContent==="Templates").click()');
+  await until('!!document.querySelector("[data-design-styles] [data-template-id=landing]")','project template listed');
+  await click('[data-design-styles] [data-template-id=landing]');
+  await delay(300);await shot('design-templates');
+  await js('[...document.querySelectorAll("[data-design-styles] button")].find(b=>b.textContent.trim()==="Start from Landing").click()');
+  await until('!document.querySelector("[data-design-styles]")&&document.querySelector("[data-design-style-button]").textContent.includes("Landing")','template picked');
+  for(let i=0;i<40&&getDesignComposerPrefs('s1').templateId!=='landing';i++)await delay(50);
+  assert.equal(getDesignComposerPrefs('s1').templateId,'landing');
 
   // Layers panel: Layers, Components and History tabs.
   await js('document.querySelector(".design-viewport").dispatchEvent(new KeyboardEvent("keydown",{key:"l",code:"KeyL",altKey:true,bubbles:true}))');

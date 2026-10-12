@@ -34,6 +34,9 @@ export interface DesignComposerChoice {
   styleName?: string;
   /** 1 = no variations. */
   variants: number;
+  /** A project template new boards start from. */
+  templateId?: string;
+  templateName?: string;
 }
 export const DEFAULT_COMPOSER_CHOICE: DesignComposerChoice = { variants: 1 };
 
@@ -63,7 +66,7 @@ export const useDesignStore = create<{
   setComposerChoice: (sessionId, choice) => {
     set((s) => ({ composer: { ...s.composer, [sessionId]: choice } }));
     void window.electron.design
-      ?.composer({ sessionId, styleId: choice.styleId, variants: choice.variants })
+      ?.composer({ sessionId, styleId: choice.styleId, variants: choice.variants, templateId: choice.templateId })
       .catch(() => {});
   },
   library: null,

@@ -3,10 +3,10 @@ import { z } from 'zod';
 import { getDesignRepository, previewDesign } from './service';
 import type { DesignRequest } from './repository';
 import { DESIGN_GUIDE_DESCRIPTION, DESIGN_GUIDE_TOPICS, designGuideText } from './guide';
-import { designStyleGuideFor } from './styles';
+import { designStyleGuideFor, readDesignResource } from './styles';
 import {
   DESIGN_COMMENTS_TOOL, DESIGN_CREATE_TOOL, DESIGN_GUIDE_TOOL, DESIGN_PREVIEW_TOOL, DESIGN_READ_TOOL,
-  DESIGN_REPLY_TOOL, DESIGN_UPDATE_TOOL, type DesignToolName,
+  DESIGN_REPLY_TOOL, DESIGN_RESOURCES_TOOL, DESIGN_UPDATE_TOOL, type DesignToolName,
 } from '../../shared/design-tools';
 import type { DesignAuthor, DesignUpdate } from '../../shared/design-types';
 
@@ -206,6 +206,20 @@ const specs: DesignToolSpec[] = [
     }, []),
     run: (sessionId, a) => ({ guide: designGuideText(a.topics, designStyleGuideFor(sessionId, a.documentId)) }),
   },
+  {
+    name: DESIGN_RESOURCES_TOOL,
+    description: "The project's own design system (design-system/): its components with usage notes and reference markup, and its templates (representative pages). With no arguments, lists them. Read a component before using it and follow its usage rather than guessing variants; when a template fits the request, read it and build from its structure, sizes and components with the task's real content. Templates come before generic starting points.",
+    readOnly: true,
+    shape: {
+      kind: z.enum(['component', 'template']).optional(),
+      name: z.string().optional().describe('The component name or template id from the list.'),
+    },
+    jsonSchema: object({
+      kind: { type: 'string', enum: ['component', 'template'] },
+      name: { type: 'string', description: 'The component name or template id from the list.' },
+    }, []),
+    run: (sessionId, a) => ({ guide: readDesignResource(sessionId, a.kind, a.name) }),
+  },
 ];
 
 export const DESIGN_TOOL_SPECS: readonly Pick<DesignToolSpec, 'name' | 'description' | 'readOnly' | 'shape' | 'jsonSchema'>[] = specs;
@@ -230,7 +244,7 @@ export async function runDesignTool(
         image: { mimeType: 'image/png', data: p.dataUrl.split(',')[1] },
       };
     }
-    if (name === DESIGN_GUIDE_TOOL) return { text: (result as { guide: string }).guide };
+    if (name === DESIGN_GUIDE_TOOL || name === DESIGN_RESOURCES_TOOL) return { text: (result as { guide: string }).guide };
     return { text: JSON.stringify(result) };
   } catch (e) {
     return { text: e instanceof Error ? e.message : String(e), isError: true };

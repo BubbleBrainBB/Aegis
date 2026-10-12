@@ -6,7 +6,7 @@ import { strToU8, zipSync } from "fflate";
 import { ipcMainHandle } from "../util";
 import { getDesignRepository, previewDesign } from "./service";
 import { setDesignComposerPrefs, setDesignFocus } from "./focus";
-import { listDesignStyles } from "./styles";
+import { listDesignStyles, listProjectTemplates } from "./styles";
 import { designFrameHtml } from "./html";
 import { getUserProfile } from "../libs/user-profile";
 import type { DesignAPI, DesignAuthor } from "../../shared/design-types";
@@ -104,6 +104,12 @@ export function registerDesignIpc() {
       Promise.resolve(
         typeof x?.sessionId === "string"
           ? listDesignStyles(x.sessionId, typeof x.cwd === "string" && isAbsolute(x.cwd) ? x.cwd : undefined)
+          : [],
+      ),
+    templates: (x) =>
+      Promise.resolve(
+        typeof x?.sessionId === "string"
+          ? listProjectTemplates(x.sessionId, typeof x.cwd === "string" && isAbsolute(x.cwd) ? x.cwd : undefined)
           : [],
       ),
     composer: (x) => {

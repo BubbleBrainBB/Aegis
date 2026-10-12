@@ -28,7 +28,9 @@ export function DesignComposerControls({ sessionId }: { sessionId: string }) {
         data-design-style-button
       >
         <Palette className="h-[15px] w-[15px]" strokeWidth={1.6} />
-        <span className="max-w-[120px] truncate">{choice.styleName ?? "Styles"}</span>
+        <span className="max-w-[140px] truncate">
+          {[choice.styleName ?? "Styles", choice.templateName].filter(Boolean).join(" · ")}
+        </span>
       </button>
       <button
         type="button"
@@ -46,6 +48,11 @@ export function DesignComposerControls({ sessionId }: { sessionId: string }) {
           sessionId={sessionId}
           cwd={cwd}
           value={choice.styleId}
+          templateValue={choice.templateId}
+          onPickTemplate={(template) => {
+            setChoice(sessionId, { ...choice, templateId: template?.id, templateName: template?.name });
+            setPicking(false);
+          }}
           onClose={() => setPicking(false)}
           onPick={(style) => {
             setChoice(sessionId, { ...choice, styleId: style?.id, styleName: style?.name });

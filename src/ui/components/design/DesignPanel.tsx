@@ -1920,10 +1920,19 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
         sessionId={sessionId}
         cwd={session?.projectCwd ?? session?.cwd}
         value={composerChoice?.styleId}
+        templateValue={composerChoice?.templateId}
+        onPickTemplate={(template) => {
+          useDesignStore.getState().setComposerChoice(sessionId, {
+            ...(composerChoice ?? { variants: 1 }),
+            templateId: template?.id,
+            templateName: template?.name,
+          });
+          setStylesOpen(false);
+        }}
         onClose={() => setStylesOpen(false)}
         onPick={(style) => {
           useDesignStore.getState().setComposerChoice(sessionId, {
-            variants: composerChoice?.variants ?? 1,
+            ...(composerChoice ?? { variants: 1 }),
             styleId: style?.id,
             styleName: style?.name,
           });

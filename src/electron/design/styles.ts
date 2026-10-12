@@ -1,11 +1,12 @@
-import { existsSync, readFileSync, statSync } from "fs";
-import { join } from "path";
-import { getDesignComposerPrefs, setDesignStyleNamer } from "./focus";
+import { getDesignComposerPrefs, setDesignStyleResolver, setDesignTemplateNamer } from "./focus";
+import { designSystemIndex, readProjectDesignSystem, summaryOf, type ProjectDesignSystem } from "./design-system";
+import { sanitizeDesignHtml } from "./html";
 import type { DesignStyleSummary } from "../../shared/design-types";
 
 /**
  * Style guides the user can pick for a design: a few built in, and the
- * project's own DESIGN.md. The picked guide reaches the agent through
+ * project's own design system (design-system/ or DESIGN.md), which applies
+ * by default when the project has one. The picked guide reaches the agent through
  * design_guide; <design_context> names it.
  */
 interface BuiltinStyle {
@@ -140,19 +141,9 @@ export function setDesignProjectRoot(resolve: (sessionId: string) => string | nu
 const PROJECT_STYLE_ID = "project";
 const MAX_PROJECT_GUIDE = 40_000;
 
-function projectGuide(sessionId: string, cwdHint?: string): { path: string; text: string } | null {
-  const root = projectRoot(sessionId) || cwdHint;
-  if (!root) return null;
-  for (const name of ["DESIGN.md", "design.md", "docs/DESIGN.md"]) {
-    const path = join(root, name);
-    try {
-      if (!existsSync(path) || !statSync(path).isFile()) continue;
-      return { path, text: readFileSync(path, "utf8").slice(0, MAX_PROJECT_GUIDE) };
-    } catch {
-      continue;
-    }
-  }
-  return null;
+/** The project's design system for a session (its folder, or a DESIGN.md). */
+function projectSystem(sessionId: string, cwdHint?: string): ProjectDesignSystem | null {
+  return readProjectDesignSystem(projectRoot(sessionId) || cwdHint);
 }
 
 /** The styles to offer in a session: built in, then the project's own. */
@@ -166,15 +157,18 @@ export function listDesignStyles(sessionId: string, cwdHint?: string): DesignSty
     palette: [s.palette.background, s.palette.text, s.palette.accent, s.palette.line],
     serif: s.type.display === SERIF,
   }));
-  const own = projectGuide(sessionId, cwdHint);
+  const own = projectSystem(sessionId, cwdHint);
   if (own) {
-    const firstLine = own.text.split("\n").find((line) => line.trim() && !line.startsWith("#"))?.trim() ?? "";
+    const counts = [
+      own.components.length ? `${own.components.length} component${own.components.length === 1 ? "" : "s"}` : "",
+      own.templates.length ? `${own.templates.length} template${own.templates.length === 1 ? "" : "s"}` : "",
+    ].filter(Boolean);
     styles.push({
       id: PROJECT_STYLE_ID,
       name: "This project",
-      description: firstLine.slice(0, 160) || "The project's DESIGN.md.",
+      description: [summaryOf(own.guide) || "The project's own design system.", counts.join(" · ")].filter(Boolean).join(" "),
       source: "project",
-      featured: false,
+      featured: true,
       palette: [],
       serif: false,
     });
@@ -182,18 +176,60 @@ export function listDesignStyles(sessionId: string, cwdHint?: string): DesignSty
   return styles;
 }
 
-/** The style guide picked for a session's designs, handed to the agent by design_guide. */
-export function designStyleGuideFor(sessionId: string, _documentId?: string): { name: string; text: string } | null {
-  const styleId = getDesignComposerPrefs(sessionId).styleId;
-  if (!styleId) return null;
-  if (styleId === PROJECT_STYLE_ID) {
-    const own = projectGuide(sessionId);
-    return own ? { name: "This project's DESIGN.md", text: own.text } : null;
-  }
-  const style = BUILTIN.find((s) => s.id === styleId);
-  return style ? { name: style.name, text: builtinGuide(style) } : null;
+/** The project's templates, to show and pick (HTML sanitized like any board). */
+export function listProjectTemplates(sessionId: string, cwdHint?: string): { id: string; name: string; summary: string; html: string }[] {
+  return (projectSystem(sessionId, cwdHint)?.templates ?? []).map((t) => ({ ...t, html: sanitizeDesignHtml(t.html) }));
 }
 
-setDesignStyleNamer((styleId) =>
-  styleId === PROJECT_STYLE_ID ? "This project's DESIGN.md" : BUILTIN.find((s) => s.id === styleId)?.name,
-);
+/**
+ * The style guide in effect: the one the user picked, else the project's own
+ * design system when it has one (a project's system applies by default).
+ */
+export function effectiveDesignStyle(sessionId: string): { id: string; name: string } | null {
+  const picked = getDesignComposerPrefs(sessionId).styleId;
+  if (picked) {
+    if (picked === PROJECT_STYLE_ID) return projectSystem(sessionId) ? { id: picked, name: "This project's design system" } : null;
+    const style = BUILTIN.find((s) => s.id === picked);
+    return style ? { id: style.id, name: style.name } : null;
+  }
+  return projectSystem(sessionId) ? { id: PROJECT_STYLE_ID, name: "This project's design system" } : null;
+}
+
+/** One component or template from the project's design system, for the agent. */
+export function readDesignResource(sessionId: string, kind?: string, name?: string): string {
+  const own = projectSystem(sessionId);
+  if (!own) return "This project has no design system (no design-system/ folder or DESIGN.md).";
+  if (!kind || !name) return designSystemIndex(own) + (own.guide ? "\n\nThe guide itself comes with design_guide." : "");
+  if (kind === "component") {
+    const c = own.components.find((x) => x.name.toLowerCase() === name.toLowerCase());
+    if (!c) return `No component named ${JSON.stringify(name)}. ${designSystemIndex(own)}`;
+    return [`# ${c.name}`, c.usage.trim(), c.html ? `## Reference markup\n${c.html.trim()}` : ""].filter(Boolean).join("\n\n");
+  }
+  if (kind === "template") {
+    const t = own.templates.find((x) => x.id.toLowerCase() === name.toLowerCase());
+    if (!t) return `No template named ${JSON.stringify(name)}. ${designSystemIndex(own)}`;
+    return `# Template: ${t.name}\n${t.summary}\n\nBuild from its structure, sizes and components; replace its sample copy with the task's content.\n\n${t.html.trim()}`;
+  }
+  return `Unknown kind ${JSON.stringify(kind)}: use "component" or "template".`;
+}
+
+/** The style guide picked for a session's designs, handed to the agent by design_guide. */
+export function designStyleGuideFor(sessionId: string, _documentId?: string): { name: string; text: string } | null {
+  const style = effectiveDesignStyle(sessionId);
+  if (!style) return null;
+  if (style.id === PROJECT_STYLE_ID) {
+    const own = projectSystem(sessionId);
+    if (!own) return null;
+    return { name: style.name, text: [own.guide?.slice(0, MAX_PROJECT_GUIDE).trim(), designSystemIndex(own)].filter(Boolean).join("\n\n") };
+  }
+  const builtin = BUILTIN.find((s) => s.id === style.id);
+  return builtin ? { name: builtin.name, text: builtinGuide(builtin) } : null;
+}
+
+/** A template picked in the composer, by id, when the project still has it. */
+export function designTemplateName(sessionId: string, templateId: string): string | undefined {
+  return projectSystem(sessionId)?.templates.find((t) => t.id === templateId)?.name;
+}
+
+setDesignStyleResolver((sessionId) => effectiveDesignStyle(sessionId)?.name);
+setDesignTemplateNamer(designTemplateName);
