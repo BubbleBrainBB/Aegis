@@ -141,6 +141,11 @@ export function setDesignProjectRoot(resolve: (sessionId: string) => string | nu
 const PROJECT_STYLE_ID = "project";
 const MAX_PROJECT_GUIDE = 40_000;
 
+/** The project folder a session works in, if it has one. */
+export function designProjectRoot(sessionId: string): string | null {
+  return projectRoot(sessionId) || null;
+}
+
 /** The project's design system for a session (its folder, or a DESIGN.md). */
 function projectSystem(sessionId: string, cwdHint?: string): ProjectDesignSystem | null {
   return readProjectDesignSystem(projectRoot(sessionId) || cwdHint);

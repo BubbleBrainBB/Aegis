@@ -968,12 +968,35 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
     }
     return false;
   };
-  const implement = (boardName?: string) => {
-    if (!doc) return;
-    inject(
-      `Implement ${boardName ? `the "${boardName}" board` : "the boards"} from design "${doc.title}" (document ${doc.id}) in this project using its existing components. Read the design with design_read first.`,
-    );
-  };
+  /**
+   * Hands the selected boards (or all of them) to the project: their HTML and
+   * a README are written under .aegis/design/, then the request goes to the
+   * agent pointing at those files. Without a project folder, the agent reads
+   * the design itself.
+   */
+  const implement = () =>
+    run(async () => {
+      if (!doc || !sessionId) return;
+      const boardIds = selectedIds.filter((id) => doc.boards.some((b) => b.id === id));
+      const chosen = boardIds.length ? doc.boards.filter((b) => boardIds.includes(b.id)) : doc.boards;
+      const what = chosen.length === 1 ? `the "${chosen[0].name}" board` : `${chosen.length} boards`;
+      let handoff: Awaited<ReturnType<typeof window.electron.design.handoff>> | undefined;
+      try {
+        handoff = await window.electron.design.handoff({ sessionId, documentId: doc.id, boardIds });
+      } catch (e) {
+        toast(`Couldn't write the boards into the project (${errorText(e)}). The agent will read the design instead.`);
+      }
+      inject(
+        handoff
+          ? [
+              `Implement ${what} from design "${doc.title}" in this project, using its existing components, styles and tokens.`,
+              `The boards are in ${handoff.folder}/ (start with README.md): ${handoff.boards.map((b) => `${b.name} → ${b.file}`).join(", ")}.`,
+              `They are static references for layout, type, spacing and copy, not code to paste in. Design ${doc.id} has the latest version (design_read).`,
+            ].join(" ")
+          : `Implement ${what} from design "${doc.title}" (document ${doc.id}) in this project using its existing components. Read the design with design_read first.`,
+      );
+      if (handoff) toast.success(`${chosen.length === 1 ? "Board" : `${chosen.length} boards`} written to ${handoff.folder}`);
+    });
   /**
    * Export, then say where it went: a save dialog can be cancelled, and a
    * file ready is not a file saved until the user picked where.
@@ -1185,8 +1208,13 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
         </button>
         <button
           className="design-primary"
-          disabled={!doc || !!session?.readOnly}
-          onClick={() => implement(activeBoard?.name)}
+          disabled={!doc || busy || !!session?.readOnly}
+          title={
+            selectedIds.length
+              ? `Write the selected board${selectedIds.length === 1 ? "" : "s"} into the project and ask the agent to build ${selectedIds.length === 1 ? "it" : "them"}`
+              : "Write the boards into the project and ask the agent to build them"
+          }
+          onClick={() => void implement()}
         >
           Implement in project
         </button>
@@ -1734,6 +1762,11 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
                       comment={activeComment}
                       user={user}
                       boardName={board?.name ?? "board"}
+                      anchorLost={
+                        !!board &&
+                        !!activeComment.anchor.nodeId &&
+                        !board.html.includes(`data-aegis-node-id="${activeComment.anchor.nodeId}"`)
+                      }
                       canMention={canMention}
                       editable={editable}
                       busy={busy}

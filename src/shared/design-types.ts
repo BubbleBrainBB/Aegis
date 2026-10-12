@@ -242,6 +242,12 @@ export interface DesignAPI {
     { ok: true; html: string; contentRevision: number } | { ok: false; handoff: string } | { ok: false; error: string }
   >;
   quickEditCancel(input: { requestId: string }): Promise<void>;
+  /** Writes chosen boards and a README into the project (.aegis/design/<design>/) for implementing. */
+  handoff(input: { sessionId: string; documentId: string; boardIds?: string[] }): Promise<{
+    folder: string;
+    files: string[];
+    boards: { name: string; file: string; width: number; height: number }[];
+  }>;
   /** The project's templates (design-system/templates), sanitized for thumbnails. */
   templates(input: { sessionId: string; cwd?: string | null }): Promise<{ id: string; name: string; summary: string; html: string }[]>;
   /** The design composer's picks for a conversation: style guide, variations (1 = none) and a template. */

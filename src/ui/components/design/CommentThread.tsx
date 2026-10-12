@@ -9,6 +9,7 @@ export function CommentThread({
   comment,
   user,
   boardName,
+  anchorLost,
   canMention,
   editable,
   busy,
@@ -20,6 +21,8 @@ export function CommentThread({
   comment: DesignComment;
   user: string;
   boardName: string;
+  /** The layer the comment was pinned to is gone from the board. */
+  anchorLost?: boolean;
   canMention: boolean;
   editable: boolean;
   busy?: boolean;
@@ -61,6 +64,11 @@ export function CommentThread({
           <X size={14} />
         </button>
       </div>
+      {anchorLost && comment.status !== "resolved" ? (
+        <p className="design-thread-notice" data-anchor-lost>
+          The layer this comment was on is gone from {boardName}, so the pin stays where it was. Resolve it if it no longer applies.
+        </p>
+      ) : null}
       <div className="design-thread-messages">
         {comment.messages.map((m) => (
           <div className="design-message" key={m.id}>

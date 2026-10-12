@@ -1237,6 +1237,12 @@ details.design-section > .design-grid {
 .design-thread {
   max-height: 460px;
 }
+.design-thread-notice {
+  margin: 0 56px 0 2px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
 .design-thread-actions {
   position: absolute;
   top: 6px;

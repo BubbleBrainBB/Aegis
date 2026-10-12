@@ -210,7 +210,22 @@ app.whenReady().then(async () => {
     assert.match((await pendingEdit).error, /Cancelled/);
     assert.match((await quickEditDesign(req({ sessionId: 'session-b' })).catch((e) => ({ error: e.message }))).error, /not found/i, 'only the session\'s own designs');
 
-    console.log('PASS design MCP: listed, session-bound writes and previews, isolation, forged headers refused, meta and history attribution, Bubble and Pi tools');
+    // Handoff: chosen boards and a README written into the session's project.
+    const { handOffDesign, slugOf } = require('../../dist-electron/electron/design/handoff.js');
+    assert.throws(() => handOffDesign({ sessionId: 'session-a', documentId: created.id }), /no project folder/);
+    setDesignProjectRoot((sessionId) => (sessionId === 'session-a' ? project : null));
+    const handed = handOffDesign({ sessionId: 'session-a', documentId: created.id, boardIds: [quick.id] });
+    assert.match(handed.folder, /^\.aegis[\\/]design[\\/][a-z0-9-]+$/);
+    assert.deepEqual(handed.boards.map((x) => [x.name, x.file, x.width]), [['Quick', 'quick.html', 400]]);
+    assert.match(fs.readFileSync(path.join(project, handed.folder, 'quick.html'), 'utf8'), /<h1[^>]*>Notes<\/h1>/);
+    const readme = fs.readFileSync(path.join(project, handed.folder, 'README.md'), 'utf8');
+    assert.match(readme, /- Quick \(400 × 300\): quick\.html[\s\S]*## Tokens\n- --accent: #4f5bd5[\s\S]*not code to paste in/);
+    assert.equal(handOffDesign({ sessionId: 'session-a', documentId: created.id }).boards.length, getDesignRepository().read('session-a', created.id).boards.length, 'no choice: every board');
+    assert.throws(() => handOffDesign({ sessionId: 'session-a', documentId: created.id, boardIds: ['gone'] }), /at least one board/);
+    assert.equal(slugOf('Café — Home!', 'x'), 'cafe-home');
+    assert.equal(slugOf('***', 'board-1'), 'board-1');
+
+    console.log('PASS design MCP: listed, session-bound writes and previews, isolation, forged headers refused, meta and history attribution, Bubble and Pi tools, quick edits, handoff');
   } catch (error) {
     console.error(error);
     code = 1;

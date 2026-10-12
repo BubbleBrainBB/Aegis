@@ -8,6 +8,7 @@ import { designPdf, getDesignRepository, previewDesign } from "./service";
 import { setDesignComposerPrefs, setDesignFocus } from "./focus";
 import { listDesignStyles, listProjectTemplates } from "./styles";
 import { cancelQuickEdit, quickEditDesign } from "./quick-edit";
+import { handOffDesign } from "./handoff";
 import { designFrameHtml } from "./html";
 import { getUserProfile } from "../libs/user-profile";
 import type { DesignAPI, DesignAuthor } from "../../shared/design-types";
@@ -114,6 +115,7 @@ export function registerDesignIpc() {
           : [],
       ),
     quickEdit: (x) => quickEditDesign(x),
+    handoff: (x) => Promise.resolve(handOffDesign(x)),
     quickEditCancel: (x) => {
       if (typeof x?.requestId === "string") cancelQuickEdit(x.requestId);
       return Promise.resolve();

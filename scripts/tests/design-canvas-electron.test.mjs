@@ -44,7 +44,7 @@ return <Tooltip.Provider><div style={{height:'100vh',display:'flex',background:'
 </RightUtilityWorkspace></div></Tooltip.Provider>}
 store.getState().openRightUtilityTab('design');createRoot(document.getElementById('root')).render(<App/>);window.qa={store,a,b,queue:useComposerQueueStore,addPrompt:(sessionId,payload)=>store.setState(st=>({sessions:{...st.sessions,[sessionId]:{...st.sessions[sessionId],messages:[...st.sessions[sessionId].messages,{type:'user_prompt',prompt:payload.prompt,attachments:payload.attachments,design:payload.design,createdAt:payload.createdAt}]}}}))};
 `;
-const preload = `const {contextBridge,ipcRenderer}=require('electron');const design={};for(const m of ['list','listAll','create','read','update','history','restore','comment','reply','comments','resolve','focus','composer','preview','export'])design[m]=x=>ipcRenderer.invoke('design:'+m,x);design.onChanged=cb=>{const f=(_,e)=>cb(e);ipcRenderer.on('design:changed',f);return()=>ipcRenderer.removeListener('design:changed',f)};contextBridge.exposeInMainWorld('electron',{design,createInlineImageAttachment:(mime,bytes)=>ipcRenderer.invoke('qa-image',mime,bytes),sendClientEvent:event=>ipcRenderer.invoke('qa-send',event),getUserProfile:()=>Promise.resolve({displayName:'Chengsheng',handle:'chengsheng',customized:true}),selectAttachments:()=>Promise.resolve([])});`;
+const preload = `const {contextBridge,ipcRenderer}=require('electron');const design={};for(const m of ['list','listAll','create','read','update','history','restore','comment','reply','comments','resolve','focus','composer','preview','export','handoff'])design[m]=x=>ipcRenderer.invoke('design:'+m,x);design.onChanged=cb=>{const f=(_,e)=>cb(e);ipcRenderer.on('design:changed',f);return()=>ipcRenderer.removeListener('design:changed',f)};contextBridge.exposeInMainWorld('electron',{design,createInlineImageAttachment:(mime,bytes)=>ipcRenderer.invoke('qa-image',mime,bytes),sendClientEvent:event=>ipcRenderer.invoke('qa-send',event),getUserProfile:()=>Promise.resolve({displayName:'Chengsheng',handle:'chengsheng',customized:true}),selectAttachments:()=>Promise.resolve([])});`;
 const main = String.raw`
 const {app,BrowserWindow,ipcMain,dialog}=require('electron');const fs=require('node:fs');const path=require('node:path');const assert=require('node:assert/strict');
 app.setPath('userData',path.join(process.env.QA_DATA,'profile'));app.setPath('sessionData',path.join(process.env.QA_DATA,'chromium'));
@@ -56,6 +56,7 @@ const {getDesignRepository}=require(path.join(process.env.QA_ROOT,'dist-electron
 const {createNativeDesignTools}=require(path.join(process.env.QA_ROOT,'dist-electron/electron/design/tools.js'));
 const {markDesignCommentSent,settleDesignTurn}=require(path.join(process.env.QA_ROOT,'dist-electron/electron/design/service.js'));
 const sent=[];
+const qaProject=path.join(process.env.QA_DATA,'project');fs.mkdirSync(qaProject,{recursive:true});require(path.join(process.env.QA_ROOT,'dist-electron/electron/design/styles.js')).setDesignProjectRoot(()=>qaProject);
 registerDesignIpc();ipcMain.handle('qa-image',(_e,mime,bytes)=>{const file=path.join(process.env.QA_DATA,'annotation.png');fs.writeFileSync(file,Buffer.from(bytes));return {id:'qa-image',name:'annotation.png',path:file,mimeType:mime,size:bytes.length,type:'image'}});
 // Stands in for ipc-handlers' session.continue: record, mark the thread, echo the chat row.
 ipcMain.handle('qa-send',async(_e,event)=>{const p=event.payload;const createdAt=Date.now();sent.push(p);if(p.design)markDesignCommentSent(p.sessionId,p.design,createdAt);await w.webContents.executeJavaScript('qa.addPrompt('+JSON.stringify(p.sessionId)+','+JSON.stringify({...p,createdAt})+')')});
@@ -210,7 +211,15 @@ const png=fs.readFileSync(path.join(process.env.QA_DATA,'Fieldnotes.png'));asser
 await buttonText('.design-float-bar','↗');await until('document.querySelector(".design-preview-nav")?.textContent.includes("1 / 2")','preview position');
 await click('[aria-label="Next board"]');await until('document.querySelector(".design-preview-nav")?.textContent.includes("2 / 2")','preview next board');
 await text('← Back to canvas');await until('!document.querySelector(".design-board-preview-overlay")','preview closed');
-await text('Implement in project');assert((await js('qa.store.getState().pendingChatInjection?.text??""')).includes('Implement'));
+await text('Implement in project');await until('(qa.store.getState().pendingChatInjection?.text??"").includes("README.md")','implement hands the board over');
+const handoffText=await js('qa.store.getState().pendingChatInjection.text');assert.match(handoffText,/Implement the "Home" board[\s\S]*\.aegis\/design\/[a-z0-9-]+\/ \(start with README\.md\): Home → home\.html/,handoffText);
+const handoffDir=path.join(qaProject,handoffText.match(/(\.aegis\/design\/[a-z0-9-]+)\//)[1]);assert.deepEqual(fs.readdirSync(handoffDir).sort(),['README.md','home.html']);
+// A comment whose layer is gone says so in its thread.
+const lostHome=repo.read(a,d.id).boards.find(x=>x.name==='Home');
+await js('window.electron.design.comment('+JSON.stringify({sessionId:a,documentId:d.id,boardId:lostHome.id,contentRevision:lostHome.contentRevision,text:'Was on a removed layer',anchor:{nodeId:'qa-gone-layer',rect:{x:40,y:40,width:120,height:40}},id:'qa-lost',toAgent:false})+')');
+await until('!!document.querySelector(\'[data-comment-id="qa-lost"]\')','lost-layer pin shown');await click('[data-comment-id="qa-lost"]');
+await until('document.querySelector(".design-thread [data-anchor-lost]")?.textContent.includes("gone from Home")','thread says the layer is gone');
+await click('[aria-label="Resolve comment"]');await until('!document.querySelector(\'[data-comment-id="qa-lost"]\')','lost comment resolved');assert.match(fs.readFileSync(path.join(handoffDir,'README.md'),'utf8'),/- Home \(390 × \d+\): home\.html/);
 const preview=await tools.find(t=>t.name==='design_preview').execute({documentId:d.id,boardId:first.id,revision:repo.read(a,d.id).revision},{});assert(preview.images?.[0]?.data.length>100);assert(!preview.isError,preview.content);fs.writeFileSync(path.join(process.env.QA_CAPTURE,'model-preview.png'),Buffer.from(preview.images[0].data,'base64'));
 await require(path.join(process.env.QA_ROOT,'scripts/tests/design-canvas-interactions.cjs')).run({w,js,repo,sessionId:a,documentId:d.id,screenshotDir:process.env.QA_CAPTURE});
 await require(path.join(process.env.QA_ROOT,'scripts/tests/design-direct-electron.cjs')).run({w,js,repo,sessionId:a,documentId:d.id,screenshotDir:process.env.QA_CAPTURE});
