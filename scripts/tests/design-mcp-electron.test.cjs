@@ -129,7 +129,7 @@ app.whenReady().then(async () => {
     const styled = await call(info.url, a, 'design_guide', { topics: ['color'] });
     assert.match(styled.result.content[0].text, /Style guide: Quiet Slate[\s\S]*--accent: #4f5bd5/);
     // Agent versions keep the message that asked for them.
-    setDesignPromptSource((sessionId) => (sessionId === 'session-a' ? 'Make the hero calmer' : undefined));
+    setDesignPromptSource((sessionId) => (sessionId === 'session-a' ? { prompt: 'Make the hero calmer', id: 'm-1' } : undefined));
     const current = json(await call(info.url, a, 'design_read', { documentId: created.id }));
     await call(info.url, a, 'design_update', { documentId: created.id, operationId: 'op-3', operations: [{ type: 'content', boardId: current.boards[0].id, expectedRevision: current.boards[0].contentRevision, html: '<main><h1>Calmer</h1></main>' }] });
     assert.equal(getDesignRepository().boardPrompts('session-a', created.id)[current.boards[0].id].prompt, 'Make the hero calmer');

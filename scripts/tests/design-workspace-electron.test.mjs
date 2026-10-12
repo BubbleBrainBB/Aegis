@@ -49,7 +49,7 @@ app.whenReady().then(async()=>{
  const {getDesignComposerPrefs}=require(path.join(root,'dist-electron/electron/design/focus.js'));
  registerDesignIpc();
  const sent=[];ipcMain.on('client-event',(_e,event)=>sent.push(typeof event==='string'?JSON.parse(event):event));
- setDesignPromptSource((sessionId)=>sessionId==='s1'?'Design a landing page for Atlas':undefined);
+ setDesignPromptSource((sessionId)=>sessionId==='s1'?{prompt:'Design a landing page for Atlas',id:'s1:1'}:undefined);
  const call=async(sessionId,name,args)=>{const r=await createNativeDesignTools(sessionId).find(t=>t.name===name).execute(args,{});assert(!r.isError,r.content);return JSON.parse(r.content)};
  const page=(title,bg)=>'<main style="padding:48px;background:'+bg+';font-family:Georgia;min-height:100%"><p style="font:11px system-ui;letter-spacing:2px">NOTES · REIMAGINED</p><h1 style="font-size:56px;font-weight:400;margin:20px 0">'+title+'</h1><p style="font:15px system-ui;color:#555">Write freely. Atlas links what you write to what you already know.</p></main>';
  const atlas=await call('s1','design_create',{title:'Atlas website',operationId:'c1'});
@@ -108,6 +108,12 @@ app.whenReady().then(async()=>{
   await until('document.querySelector(".design-layers-popover")?.textContent.includes("show up here as components")','components tab');
   await js('[...document.querySelectorAll(".design-layers-popover [role=tab]")].find(b=>b.textContent==="History").click()');
   await until('!!document.querySelector(".design-history")&&!document.querySelector(".design-layers-popover")','history opens from its tab');
+  // One request, one version: the create and the boards it drew fold together.
+  await until('document.querySelectorAll(".design-version-group").length===1','one version for one request');
+  assert.match(await js('document.querySelector(".design-version-group").textContent'),/“Design a landing page for Atlas”[\s\S]*2 saves/);
+  await js('document.querySelector(".design-version-saves").click()');
+  await until('document.querySelectorAll(".design-version-step").length===2','its saves');
+  await shot('design-history');
   await click('[aria-label="Close history"]');
 
   // Show chat → the conversation; minimize → a pill; expand back.

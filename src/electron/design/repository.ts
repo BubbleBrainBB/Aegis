@@ -120,6 +120,14 @@ export interface DesignWriteMeta {
   commentId?: string;
   /** The user's message that asked for this version (agent writes). */
   prompt?: string;
+  /** Which message that was: every write of one request shares it (History groups by it). */
+  requestId?: string;
+}
+
+/** The request an agent write answers: the message text and its id. */
+export interface DesignRequest {
+  prompt?: string;
+  id?: string;
 }
 type CommentRow = {
   id: string;
@@ -193,15 +201,19 @@ export class DesignRepository {
     this.migrate();
     this.migratePrompts();
   }
-  /** v2: versions remember the message that asked for them (prompt cards). */
+  /**
+   * v2: versions remember the message that asked for them (prompt cards).
+   * v3: and which message it was, so History shows one version per request.
+   */
   private migratePrompts() {
-    if ((this.db.pragma("user_version", { simple: true }) as number) >= 2) return;
+    if ((this.db.pragma("user_version", { simple: true }) as number) >= 3) return;
     const columns = new Set(
       (this.db.prepare("PRAGMA table_info(design_revisions)").all() as { name: string }[]).map((c) => c.name),
     );
     this.db.transaction(() => {
       if (!columns.has("prompt")) this.db.exec("ALTER TABLE design_revisions ADD COLUMN prompt TEXT");
-      this.db.pragma("user_version = 2");
+      if (!columns.has("request_id")) this.db.exec("ALTER TABLE design_revisions ADD COLUMN request_id TEXT");
+      this.db.pragma("user_version = 3");
     })();
   }
   /**
@@ -550,7 +562,7 @@ export class DesignRepository {
       const summary = meta.summary?.trim().slice(0, 160) || null;
       this.db
         .prepare(
-          "INSERT INTO design_revisions(document_id,revision,snapshot,created_at,author,summary,comment_id,board_ids,hidden,prompt) VALUES(?,?,?,?,?,?,?,?,0,?)",
+          "INSERT INTO design_revisions(document_id,revision,snapshot,created_at,author,summary,comment_id,board_ids,hidden,prompt,request_id) VALUES(?,?,?,?,?,?,?,?,0,?,?)",
         )
         .run(
           next.id,
@@ -562,6 +574,7 @@ export class DesignRepository {
           meta.commentId ?? null,
           JSON.stringify(before ? changedBoards(before.boards, next.boards) : []),
           meta.prompt?.trim().slice(0, 2000) || null,
+          meta.requestId?.slice(0, 200) || null,
         );
       this.db
         .prepare("INSERT INTO design_receipts VALUES(?,?,?,?,?)")
@@ -579,13 +592,13 @@ export class DesignRepository {
     operationId: string,
     signal?: AbortSignal,
     author: DesignAuthor = DEFAULT_AGENT_AUTHOR,
-    options: { exclusive?: boolean } = {},
+    options: { exclusive?: boolean; request?: DesignRequest } = {},
   ) {
     return this.mutate(
       sessionId,
       operationId,
       { title, brief },
-      { author, summary: `Created ${title.trim()}` },
+      { author, summary: `Created ${title.trim()}`, prompt: options.request?.prompt, requestId: options.request?.id },
       () => {
         // Checked after the receipt lookup, inside the transaction: a retried
         // create returns its document, and parallel creates can't both pass.
@@ -622,14 +635,16 @@ export class DesignRepository {
     input: DesignUpdate,
     signal?: AbortSignal,
     author: DesignAuthor = DEFAULT_AGENT_AUTHOR,
-    prompt?: string,
+    request?: string | DesignRequest,
   ) {
     const ops = operations.parse(input.operations);
+    const asked = typeof request === "string" ? { prompt: request } : request;
     const meta: DesignWriteMeta = {
       author,
       summary: z.string().max(500).optional().parse(input.summary),
       commentId: id.optional().parse(input.commentId),
-      prompt,
+      prompt: asked?.prompt,
+      requestId: asked?.id,
     };
     return this.mutate(
       sessionId,
@@ -721,7 +736,7 @@ export class DesignRepository {
     return (
       this.db
         .prepare(
-          "SELECT revision, created_at, author, summary, comment_id, board_ids FROM design_revisions WHERE document_id=? AND hidden=0 ORDER BY revision DESC LIMIT 100",
+          "SELECT revision, created_at, author, summary, comment_id, board_ids, prompt, request_id FROM design_revisions WHERE document_id=? AND hidden=0 ORDER BY revision DESC LIMIT 300",
         )
         .all(documentId) as {
         revision: number;
@@ -730,6 +745,8 @@ export class DesignRepository {
         summary: string | null;
         comment_id: string | null;
         board_ids: string | null;
+        prompt: string | null;
+        request_id: string | null;
       }[]
     ).map((r) => ({
       revision: r.revision,
@@ -738,6 +755,8 @@ export class DesignRepository {
       summary: r.summary,
       commentId: r.comment_id,
       boardIds: r.board_ids ? JSON.parse(r.board_ids) : [],
+      prompt: r.prompt,
+      requestId: r.request_id,
     }));
   }
   restore(

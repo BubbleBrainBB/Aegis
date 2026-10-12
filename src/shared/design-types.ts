@@ -62,6 +62,9 @@ export interface DesignRevisionInfo {
   summary: string | null;
   commentId: string | null;
   boardIds: string[];
+  /** The message an agent version answered, and that message's id (one request, many saves). */
+  prompt?: string | null;
+  requestId?: string | null;
 }
 export interface DesignDocument {
   id: string;

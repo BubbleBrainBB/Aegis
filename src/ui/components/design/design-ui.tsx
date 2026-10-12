@@ -44,7 +44,7 @@ export function DesignAvatar({
       style={{ width: size, height: size, fontSize: Math.round(size * 0.5) }}
       aria-hidden
     >
-      {agent ? "B" : initialOf(authorName(author, user))}
+      {initialOf(authorName(author, user))}
     </span>
   );
 }

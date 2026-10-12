@@ -182,11 +182,15 @@ assert.equal(await js('document.querySelectorAll(".design-document-list button")
 await js('qa.store.getState().setActiveSession(qa.a)');await until('document.querySelectorAll("iframe").length===2','session A restored');
 const first=repo.read(a,d.id).boards[0];
 await call('design_update',{documentId:d.id,operationId:'updated-headline',operations:[{type:'content',boardId:first.id,expectedRevision:first.contentRevision,html:html('Remember<br>the journey.','A revised headline.','#81977b')}]});await delay(220);
-await text('History');await until('document.querySelectorAll(".design-version").length>3','history list');
-assert.equal(await js('document.querySelector(".design-version").textContent.includes("Edited Home")'),true,'generated summary for the latest version');
-assert(await js('[...document.querySelectorAll(".design-version")].some(v=>v.textContent.includes("Tightened hero headline on Home"))'),'agent summary in history');
-await click('.design-version[data-revision="2"]');await until('!!document.querySelector(".design-historical")','historical view');
-await text('Restore document');await delay(300);assert(repo.read(a,d.id).boards[0].html.includes('Some places'));
+await text('History');await until('document.querySelectorAll(".design-version-group").length>=1','history list');
+// One row per version; the agent's saves fold into it.
+assert(await js('document.querySelectorAll(".design-version-group").length<document.querySelectorAll(".design-version").length+'+repo.history(a,d.id).length),'saves are grouped');
+assert.equal(await js('document.querySelector(".design-version-group").textContent.includes("Edited Home")'),true,'latest version names its newest save');
+await js('document.querySelectorAll(".design-version-saves").forEach(b=>b.click())');
+await until('document.querySelectorAll(".design-version-step").length>=3','saves inside the versions');
+assert(await js('[...document.querySelectorAll(".design-version-step")].some(v=>v.textContent.includes("Tightened hero headline on Home"))'),'agent summary in its saves');
+await click('.design-version-step[data-step-revision="2"]');await until('!!document.querySelector(".design-historical")','historical view');
+await click('.design-version-step.is-active button');await delay(300);assert(repo.read(a,d.id).boards[0].html.includes('Some places'));
 assert.equal(repo.history(a,d.id)[0].summary,'Restored v2');
 await click('[aria-label="Close history"]');await text('Export');await delay(350);assert(fs.existsSync(path.join(process.env.QA_DATA,'Fieldnotes.zip')));
 // Board inspector: devices, export @2x and preview navigation.

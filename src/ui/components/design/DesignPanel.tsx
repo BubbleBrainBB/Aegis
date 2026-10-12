@@ -949,7 +949,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
     return layerName(b, selection.anchor.nodeId)?.split(" · ")[0] ?? "Element";
   })();
   const status = historical
-    ? `Viewing v${historical}`
+    ? "Viewing an earlier version"
     : busy
       ? "Saving…"
       : session?.readOnly

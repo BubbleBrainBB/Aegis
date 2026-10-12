@@ -15,7 +15,9 @@ exports.run = async ({ w, js, repo, sessionId, documentId, screenshotDir }) => {
   const home = () => doc().boards[0];
   const frame = async () => {
     for (const f of w.webContents.mainFrame.framesInSubtree.filter((f) => f.url === "about:srcdoc"))
-      if (await f.executeJavaScript('!!document.querySelector("[data-aegis-node-id=hero]")').catch(() => false)) return f;
+      // Home's frame by its own copy: earlier steps remove the hero layer's id,
+      // and the Journal board shares the rest of its markup.
+      if (await f.executeJavaScript('document.body.textContent.includes("Collect the moments")').catch(() => false)) return f;
   };
   const toScreen = async (r) => {
     const b = await js(`(()=>{const r=document.querySelector('[data-board-id="${home().id}"]').getBoundingClientRect();return {x:r.x,y:r.y,zoom:+document.querySelector(".design-viewport").dataset.viewZoom}})()`);

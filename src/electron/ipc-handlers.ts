@@ -4942,7 +4942,9 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
     const history = sessions.getSessionHistory(sessionId);
     for (let i = history.length - 1; i >= 0; i -= 1) {
       const message = history[i];
-      if (message.type === 'user_prompt' && !message.workflowPrompt && message.prompt.trim()) return message.prompt;
+      if (message.type === 'user_prompt' && !message.workflowPrompt && message.prompt.trim()) {
+        return { prompt: message.prompt, id: `${sessionId}:${message.createdAt ?? i}` };
+      }
     }
     return undefined;
   });

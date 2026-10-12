@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import { getDesignRepository, previewDesign } from './service';
+import type { DesignRequest } from './repository';
 import { DESIGN_GUIDE_DESCRIPTION, DESIGN_GUIDE_TOPICS, designGuideText } from './guide';
 import { designStyleGuideFor } from './styles';
 import {
@@ -38,9 +39,12 @@ let agentNamer: (sessionId: string) => string | undefined = () => undefined;
 export function setDesignAgentNamer(namer: (sessionId: string) => string | undefined) {
   agentNamer = namer;
 }
-/** The user's latest message in a session; versions keep it for the canvas's prompt cards. */
-let promptSource: (sessionId: string) => string | undefined = () => undefined;
-export function setDesignPromptSource(source: (sessionId: string) => string | undefined) {
+/**
+ * The user's latest message in a session (text and id). Versions keep it: the
+ * canvas's prompt cards show the text, and History makes one version per id.
+ */
+let promptSource: (sessionId: string) => DesignRequest | undefined = () => undefined;
+export function setDesignPromptSource(source: (sessionId: string) => DesignRequest | undefined) {
   promptSource = source;
 }
 function agentAuthor(sessionId: string): DesignAuthor {
@@ -90,6 +94,7 @@ const specs: DesignToolSpec[] = [
       try {
         return getDesignRepository().create(sessionId, a.title, a.brief ?? '', a.operationId, signal, agentAuthor(sessionId), {
           exclusive: a.separate !== true,
+          request: promptSource(sessionId),
         });
       } catch (e) {
         const existing = (e as { designs?: { id: string; title: string }[] }).designs;
