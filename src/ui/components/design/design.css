@@ -2582,3 +2582,47 @@ details.design-section > .design-grid {
   padding: 1px 6px;
   background: var(--d-fill);
 }
+
+/* Where a value comes from: set on this layer, from the stylesheet, or computed. */
+.iv-in[data-source="local"] {
+  box-shadow: inset 2px 0 0 var(--d-select);
+}
+.iv-in[data-source="rule"] input::placeholder {
+  color: var(--text-secondary);
+}
+.design-panel .iv-reset {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1;
+}
+.design-panel .iv-reset:hover {
+  color: var(--text-primary);
+  background: var(--d-line);
+}
+.iv-color {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+}
+.iv-tokens {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.design-panel .iv-token {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text-primary) 18%, transparent);
+}
+.design-panel .iv-token[aria-pressed="true"] {
+  box-shadow: 0 0 0 2px var(--bg-primary), 0 0 0 3.5px var(--d-select);
+}

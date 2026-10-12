@@ -1,6 +1,8 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { DesignAnchor, DesignBoard } from "../../../shared/design-types";
-import { ColorSwatch } from "./ColorSwatch";
+import { ColorSwatch, toHex } from "./ColorSwatch";
+import { preferToken, readBoardTokens, tokenReference } from "../../../shared/design-tokens";
+import type { LayerCss } from "./design-css";
 import { Dropdown, Icons, Row, Section, icon, type Option } from "./InspectorControls";
 import { ChevronDown, ChevronRight, Plus, X } from "../icons";
 import {
@@ -38,8 +40,11 @@ export function ElementDesignTab({
   onChange,
   onSelectLayer,
   onSelectBoard,
+  loadStyles,
   live,
 }: {
+  /** The layer's stylesheet rules, read from its frame (null until it answers). */
+  loadStyles?(boardId: string, nodeId: string): Promise<LayerCss | null>;
   /** Rect of the layer while it is being resized or moved on the canvas. */
   live?: { x: number; y: number; width: number; height: number };
   board: DesignBoard;
@@ -56,6 +61,21 @@ export function ElementDesignTab({
   const [error, setError] = useState("");
   const [advanced, setAdvanced] = useState(advancedOpen);
   const [sides, setSides] = useState(false);
+  // Values the board's stylesheet gives this layer (classes, tags): what a
+  // local override hides, and what removing it brings back.
+  const [rules, setRules] = useState<Record<string, string>>({});
+  useEffect(() => {
+    let alive = true;
+    setRules({});
+    if (!node || !loadStyles) return;
+    void loadStyles(board.id, node.id).then((css) => {
+      if (alive && css) setRules(Object.fromEntries(css.own));
+    });
+    return () => {
+      alive = false;
+    };
+  }, [board.id, board.contentRevision, node?.id, loadStyles]);
+  const tokens = useMemo(() => readBoardTokens(board.html), [board.html]);
   if (!node) return <p className="design-empty-note">Layer no longer exists</p>;
   const current = selection.revision === board.contentRevision;
   const inheritedLock = path.some((n) => n.locked);
@@ -65,6 +85,35 @@ export function ElementDesignTab({
   const own = (p: string) => inline.getPropertyValue(p);
   const computed = (p: string) => (current ? selection.anchor.computedStyles?.[p] : undefined);
   const value = (p: string) => own(p) || computed(p) || "";
+  const rule = (p: string) => rules[p] || "";
+  /** Where a property's value comes from: this layer, the stylesheet, or the browser. */
+  const source = (p: string) => (own(p) ? "local" : rule(p) ? "rule" : "computed");
+  const sourceTitle = (p: string) =>
+    own(p)
+      ? rule(p)
+        ? `Set on this layer (the stylesheet says ${rule(p)})`
+        : "Set on this layer"
+      : rule(p)
+        ? `From the stylesheet: ${rule(p)}`
+        : "The rendered value";
+  /** Removes this layer's own value, so the stylesheet's (or the default) applies again. */
+  const resetButton = (p: string, label: string) =>
+    own(p) ? (
+      <button
+        type="button"
+        className="iv-reset"
+        aria-label={`Reset ${label}`}
+        title={rule(p) ? `Use the stylesheet's ${rule(p)}` : "Remove this override"}
+        disabled={!canEdit}
+        onClick={() => styles({ [p]: "" })}
+      >
+        ↺
+      </button>
+    ) : null;
+  const colorTokens = tokens.filter((t) => !tokenReference(t.value) && toHex(t.value));
+  const sameColor = (a: string, b: string) => !!toHex(a) && toHex(a) === toHex(b);
+  /** A color the user entered, as a token reference when it is one. */
+  const colorValue = (raw: string) => (raw ? preferToken(raw, tokens, sameColor) : "");
 
   async function change(transform: () => string) {
     if (!canEdit) return;
@@ -106,9 +155,10 @@ export function ElementDesignTab({
         </label>
       );
     const shown = opts.format ? opts.format(own(property)) : own(property);
-    const placeholder = (opts.format ? opts.format(computed(property) ?? "") : computed(property)) || "Auto";
+    const fallback = rule(property) || computed(property) || "";
+    const placeholder = (opts.format ? opts.format(fallback) : fallback) || "Auto";
     return (
-      <label className="iv-in">
+      <label className="iv-in" data-source={source(property)} title={sourceTitle(property)}>
         {opts.prefix && <span className="iv-prefix">{opts.prefix}</span>}
         <input
           key={`${board.contentRevision}:${property}`}
@@ -126,7 +176,62 @@ export function ElementDesignTab({
           }}
         />
         {opts.unit && <span className="iv-unit">{opts.unit}</span>}
+        {resetButton(property, opts.label ?? property)}
       </label>
+    );
+  };
+
+  /**
+   * A color: picker, typed value, reset, and the board's color tokens. A
+   * picked or typed color that equals a token is written as that token.
+   */
+  const colorRow = (property: string, label: string, emptyText = "Auto") => {
+    const bound = tokenReference(own(property));
+    const shownColor = bound ? computed(property) : value(property);
+    const fallback = rule(property) || computed(property);
+    return (
+      <div className="iv-color">
+        <label className="iv-in" data-source={source(property)} title={sourceTitle(property)}>
+          <ColorSwatch
+            label={`${label} color picker`}
+            value={shownColor}
+            disabled={!canEdit}
+            onCommit={(hex) => styles({ [property]: colorValue(hex) })}
+          />
+          <input
+            key={`${board.contentRevision}:${property}`}
+            aria-label={`Layer ${property}`}
+            defaultValue={own(property)}
+            placeholder={!fallback || fallback === "rgba(0, 0, 0, 0)" ? emptyText : fallback}
+            disabled={!canEdit}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") e.currentTarget.blur();
+            }}
+            onBlur={(e) => {
+              const next = e.target.value.trim();
+              if (next !== own(property)) styles({ [property]: colorValue(next) });
+            }}
+          />
+          {resetButton(property, label)}
+        </label>
+        {colorTokens.length > 0 && (
+          <div className="iv-tokens" role="group" aria-label={`${label} tokens`}>
+            {colorTokens.slice(0, 10).map((t) => (
+              <button
+                key={t.name}
+                type="button"
+                className="iv-token"
+                aria-label={`Use ${t.name}`}
+                aria-pressed={bound === t.name}
+                title={`${t.name}: ${t.value}`}
+                disabled={!canEdit}
+                style={{ background: t.value }}
+                onClick={() => styles({ [property]: `var(${t.name})` })}
+              />
+            ))}
+          </div>
+        )}
+      </div>
     );
   };
 
@@ -376,29 +481,7 @@ export function ElementDesignTab({
             {field("line-height", { prefix: "↕", format: px, parse: (v) => v })}
             {field("letter-spacing", { prefix: "|A|", format: px })}
           </Row>
-          <Row label="Color">
-            <label className="iv-in">
-              <ColorSwatch
-                label="Color color picker"
-                value={value("color")}
-                disabled={!canEdit}
-                onCommit={(hex) => styles({ color: hex })}
-              />
-              <input
-                key={`${board.contentRevision}:color`}
-                aria-label="Layer color"
-                defaultValue={own("color")}
-                placeholder={computed("color") || "Auto"}
-                disabled={!canEdit}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") e.currentTarget.blur();
-                }}
-                onBlur={(e) => {
-                  if (e.target.value.trim() !== own("color")) styles({ color: e.target.value.trim() });
-                }}
-              />
-            </label>
-          </Row>
+          <Row label="Color">{colorRow("color", "Color")}</Row>
           <Row label="Align">
             <Icons
               label="Text alignment"
@@ -416,34 +499,7 @@ export function ElementDesignTab({
       )}
 
       <Section title="Appearance">
-        <Row label="Fill">
-          <label className="iv-in">
-            <ColorSwatch
-              label="Fill color picker"
-              value={value("background-color")}
-              disabled={!canEdit}
-              onCommit={(hex) => styles({ "background-color": hex })}
-            />
-            <input
-              key={`${board.contentRevision}:fill`}
-              aria-label="Layer background-color"
-              defaultValue={own("background-color")}
-              placeholder={
-                !computed("background-color") || computed("background-color") === "rgba(0, 0, 0, 0)"
-                  ? "None"
-                  : computed("background-color")
-              }
-              disabled={!canEdit}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") e.currentTarget.blur();
-              }}
-              onBlur={(e) => {
-                if (e.target.value.trim() !== own("background-color"))
-                  styles({ "background-color": e.target.value.trim() });
-              }}
-            />
-          </label>
-        </Row>
+        <Row label="Fill">{colorRow("background-color", "Fill", "None")}</Row>
         <Row label="Opacity">
           {field("opacity", {
             unit: "%",

@@ -50,9 +50,12 @@ app.whenReady().then(async()=>{
  registerDesignIpc();
  const sent=[];ipcMain.on('client-event',(_e,event)=>sent.push(typeof event==='string'?JSON.parse(event):event));
  setDesignPromptSource((sessionId)=>sessionId==='s1'?{prompt:'Design a landing page for Atlas',id:'s1:1'}:undefined);
+ const repoRead=()=>require(path.join(root,'dist-electron/electron/design/service.js')).getDesignRepository().read('s1',atlasId());
+ let atlasRef=null;const atlasId=()=>atlasRef;
  const call=async(sessionId,name,args)=>{const r=await createNativeDesignTools(sessionId).find(t=>t.name===name).execute(args,{});assert(!r.isError,r.content);return JSON.parse(r.content)};
  const page=(title,bg)=>'<main style="padding:48px;background:'+bg+';font-family:Georgia;min-height:100%"><p style="font:11px system-ui;letter-spacing:2px">NOTES · REIMAGINED</p><h1 style="font-size:56px;font-weight:400;margin:20px 0">'+title+'</h1><p style="font:15px system-ui;color:#555">Write freely. Atlas links what you write to what you already know.</p></main>';
  const atlas=await call('s1','design_create',{title:'Atlas website',operationId:'c1'});
+ atlasRef=atlas.id;
  await call('s1','design_update',{documentId:atlas.id,operationId:'u1',operations:[{type:'add',name:'Home',width:1440,height:900,html:page('Notes that think along with you.','#f6f2ea')},{type:'add',name:'Pricing',width:1440,height:900,html:page('Simple, calm pricing','#f3f4f7')}]});
  const win=new BrowserWindow({width:1440,height:900,show:true,titleBarStyle:'hidden',trafficLightPosition:{x:15,y:15},webPreferences:{backgroundThrottling:false,preload:path.join(root,'dist-electron/electron/preload.cjs')}});
  win.setAlwaysOnTop(true,'floating');app.focus({steal:true});
@@ -152,6 +155,27 @@ app.whenReady().then(async()=>{
   await until('document.querySelector("[data-design-dock]")?.dataset.designDock==="composer"&&!document.querySelector("[data-design-dock-attention]")','back to the composer');
   assert.equal(await js('localStorage.getItem("aegis.design.dock")'),prefBefore,'the dock preference is untouched');
 
+  // Value sources and tokens: a stylesheet value shows as such; a token pick writes var(); reset restores the rule.
+  await call('s1','design_update',{documentId:atlas.id,operationId:'tok-1',operations:[{type:'add',name:'Tokens',width:600,height:300,html:'<style>:root{--accent:#4f5bd5;--ink:#23263a}.card{color:#222222;padding:24px}</style><div class="card" data-aegis-layer-name="Card">Card text</div>'}]});
+  const tokensFrame=async()=>{for(const f of win.webContents.mainFrame.framesInSubtree.filter(f=>f.url==='about:srcdoc'))if(await f.executeJavaScript('document.body.textContent.includes("Card text")').catch(()=>false))return f};
+  await until('document.querySelectorAll("[data-design-section] .design-board").length===3','token board');
+  for(let i=0;i<40&&!(await tokensFrame());i++)await delay(75);
+  await (await tokensFrame()).executeJavaScript('document.querySelector(".card").click()');
+  await until('document.querySelector(".design-float-name")?.textContent==="Card"','card selected');
+  await until('document.querySelector(".design-inspector [aria-label=\'Layer color\']")?.closest(".iv-in")?.dataset.source==="rule"','color comes from the stylesheet');
+  await js('document.querySelector(".design-inspector [aria-label=\'Use --accent\']").click()');
+  const tokenHtml=()=>repoRead().boards.find(b=>b.name==='Tokens').html;
+  for(let i=0;i<60&&!/color: var\(--accent\)/.test(tokenHtml());i++)await delay(75);
+  assert.match(tokenHtml(),/color: var\(--accent\)/,'a token pick writes the reference');
+  await until('document.querySelector(".design-inspector [aria-label=\'Layer color\']")?.closest(".iv-in")?.dataset.source==="local"&&!!document.querySelector(".design-inspector [aria-label=\'Reset Color\']")','now set on the layer, with a reset');
+  await until('document.querySelector(".design-inspector [aria-label=\'Use --accent\']")?.getAttribute("aria-pressed")==="true"','the bound token shows');
+  await shot('design-tokens');
+  await js('document.querySelector(".design-inspector [aria-label=\'Reset Color\']").click()');
+  for(let i=0;i<60&&/color: var\(--accent\)/.test(tokenHtml());i++)await delay(75);
+  assert.doesNotMatch(tokenHtml(),/color: var\(--accent\)/,'reset removes the override');
+  await js('document.querySelector("[data-design-section] .design-viewport").dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))');
+  await js('document.querySelector("[data-design-section] .design-viewport").dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))');
+
   // Show chat → the conversation; minimize → a pill; expand back.
   await js('[...document.querySelectorAll("[data-design-dock] button")].find(b=>b.textContent.includes("Show chat")).click()');
   await until('!!document.querySelector("[data-design-dock=chat] [data-design-dock-chat]")','chat shown');
@@ -222,7 +246,7 @@ app.whenReady().then(async()=>{
   await js('qa.openDesign({sessionId:"s1",documentId:'+JSON.stringify(atlas.id)+',where:"pane"})');
   await until('qa.app.getState().activeWorkspace==="chat"&&qa.app.getState().activeSessionId==="s1"','Home with the design chat');
   await until('qa.app.getState().activeRightUtilityTab==="design:'+atlas.id+'"','design tab beside it');
-  await until('document.querySelectorAll(".design-panel .design-board").length===2','design tab canvas');
+  await until('document.querySelectorAll(".design-panel .design-board").length===3','design tab canvas');
   await shot('design-pane');
 
   console.log(JSON.stringify({ok:true,errors:errors.filter(e=>!/No handler registered|Failed to load resource|Blocked script execution in 'about:srcdoc'/.test(e)).slice(0,6)}));app.exit(0);

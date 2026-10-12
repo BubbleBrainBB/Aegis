@@ -131,6 +131,7 @@ export function registerDesignIpc() {
           undefined,
           4096,
           x.scale === 2 ? 2 : 1,
+          false,
         );
         bytes = Buffer.from(preview.dataUrl.split(",")[1], "base64");
       } else {

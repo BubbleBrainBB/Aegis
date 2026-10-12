@@ -68,6 +68,9 @@ export function settleDesignTurn(sessionId: string, agentName?: string) {
 // Each capture owns a fresh, nonpersistent Chromium session, with no preload.
 // Serialize captures to bound Chromium/GPU memory even when tools run in parallel.
 let captureTail: Promise<unknown> = Promise.resolve();
+/** Fonts, images and two frames: the board as it will look, nothing measured. */
+const READY_SCRIPT =
+  "(async()=>{await document.fonts.ready;await Promise.all([...document.images].map(i=>i.decode().catch(()=>null)));await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));return []})()";
 export function previewDesign(
   sessionId: string,
   documentId: string,
@@ -76,6 +79,8 @@ export function previewDesign(
   signal?: AbortSignal,
   maxDimension = 1600,
   scale: 1 | 2 = 1,
+  /** Measure the board for the agent (exports skip this). */
+  checks = true,
 ): Promise<DesignPreview> {
   const job = captureTail
     .catch(() => {})
@@ -120,8 +125,8 @@ export function previewDesign(
         if (scale !== 1) w.webContents.setZoomFactor(scale);
         // What the screenshot alone might not show: overlaps, clipping, emptiness, size.
         const warnings = (await w.webContents.executeJavaScript(
-          renderChecksScript(b.width, b.height),
-        ).catch(() => ["Checks could not run on this board; judge the screenshot alone."])) as string[];
+          checks ? renderChecksScript(b.width, b.height) : READY_SCRIPT,
+        ).catch(() => (checks ? ["Checks could not run on this board; judge the screenshot alone."] : []))) as string[];
         signal?.throwIfAborted();
         let image = await w.webContents.capturePage();
         // HiDPI displays capture at the device pixel ratio; export exact pixels.

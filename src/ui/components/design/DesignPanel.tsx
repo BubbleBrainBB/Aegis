@@ -194,6 +194,10 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
   }, [clearRequest, sessionId]);
   const [head, setHead] = useState(0);
   const [stylesOpen, setStylesOpen] = useState(false);
+  const loadLayerStyles = useCallback(
+    async (boardId: string, nodeId: string) => (await canvas.current?.styles(boardId, nodeId)) ?? null,
+    [],
+  );
   const composerChoice = useDesignStore((s) => (sessionId ? s.composer[sessionId] : undefined));
   // The message behind each board's latest agent version (prompt cards).
   const [prompts, setPrompts] = useState<Record<string, { prompt: string; revision: number }>>({});
@@ -1776,6 +1780,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
             {tab === "design" &&
               (selection && activeBoard && selection.anchor.nodeId ? (
                 <ElementDesignTab
+                  loadStyles={loadLayerStyles}
                   live={liveRect}
                   board={activeBoard}
                   selection={selection}
