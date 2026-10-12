@@ -28,12 +28,14 @@ import { DesignTweaksTab } from "./DesignTweaksTab";
 import { CodeTab } from "./CodeTab";
 import { InspectorResizer, useInspectorWidth } from "./InspectorResizer";
 import { useCommentsHidden, useInspectorOpen } from "./design-prefs";
+import { DesignCommentControls } from "./DesignCommentControls";
 import { CommentsList } from "./CommentsList";
 import { CommentComposer } from "./CommentComposer";
 import { CommentThread } from "./CommentThread";
 import { HistoryPanel } from "./HistoryPanel";
 import { DesignCompare } from "./DesignCompare";
 import { InlineTextEditor } from "./InlineTextEditor";
+import { SelectionTools } from "./SelectionTools";
 import { frameStyle } from "./design-insert";
 import type { DropTarget } from "./BoardFrame";
 import type { Rect } from "./canvas-geometry";
@@ -43,7 +45,6 @@ import {
   cropBoardImage,
   errorText,
   initialOf,
-  layerName,
   useDesignUser,
 } from "./design-ui";
 import { ArrowLeft, ChevronDown, History, Plus, Eye, EyeOff, Layers, MoreHorizontal, Sparkles, X } from "../icons";
@@ -142,6 +143,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
   const [inspectorWidth, setInspectorWidth, saveInspectorWidth] = useInspectorWidth();
   const [inspectorOpen, setInspectorOpen] = useInspectorOpen();
   const [commentsHidden, setCommentsHidden] = useCommentsHidden();
+  const [commentMode, setCommentMode] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [composer, setComposer] = useState<Selection>();
   const [textEdit, setTextEdit] = useState<Selection & { caret?: { x: number; y: number } }>();
@@ -232,15 +234,6 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
     setInspectorOpen(!layersOpen);
     if (!layersOpen) { setHistoryOpen(false); setTab("design"); }
   };
-  /** A quick edit of the selected layer: typing, running, or what came back. */
-  const [quick, setQuick] = useState<{
-    boardId: string;
-    nodeId: string;
-    text: string;
-    state: "input" | "running" | "handoff" | "error";
-    message?: string;
-    requestId?: string;
-  }>();
   const loadLayerStyles = useCallback(
     async (boardId: string, nodeId: string) => (await canvas.current?.styles(boardId, nodeId)) ?? null,
     [],
@@ -416,6 +409,23 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
     return () => window.removeEventListener("keydown", onKey);
   }, [hidden, documentId, toolbarHost]);
 
+  function hideComments() {
+    setCommentsHidden(true);
+    setActiveCommentId(undefined);
+    setComposer(undefined);
+    canvas.current?.setMode("select");
+    if (tab === "comments") setInspectorOpen(false);
+    canvas.current?.focus();
+  }
+
+  function showComments() {
+    setCommentsHidden(false);
+    setHistoryOpen(false);
+    setHistorical(undefined);
+    setTab("comments");
+    setInspectorOpen(true);
+  }
+
   function openThread(comment?: DesignComment, boardId?: string) {
     if (!doc) return;
     setHistorical(undefined);
@@ -430,8 +440,13 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
     if (designPageId(doc, targetBoard) !== activePageId) selectPage(designPageId(doc, targetBoard));
     setSelectedIds([target]);
     setSelection(undefined);
+    // A stale layer request would reselect on the comment reload and switch
+    // the inspector from Comments to Properties after resolving a thread.
+    setLayerTarget(undefined);
     setActiveCommentId(comment?.id);
     if (comment) {
+      setCommentsHidden(false);
+      setHistoryOpen(false);
       setTab("comments");
       setInspectorOpen(true);
     }
@@ -825,41 +840,6 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
       setFailure(errorText(e));
     }
   };
-  /**
-   * Quick edit: a fast model rewrites the selected layer from one short
-   * instruction. The result is saved as one version against the board's
-   * revision at the time of asking; anything bigger goes to the agent.
-   */
-  const runQuickEdit = async () => {
-    const q = quick;
-    if (!q || !sessionId || !doc || !q.text.trim()) return;
-    const requestId = uid();
-    setQuick({ ...q, state: "running", requestId, message: undefined });
-    try {
-      const result = await window.electron.design.quickEdit({
-        requestId, sessionId, documentId: doc.id, boardId: q.boardId, nodeId: q.nodeId, instruction: q.text,
-      });
-      if (!result.ok) {
-        setQuick((cur) => cur?.requestId === requestId
-          ? { ...cur, state: "handoff" in result ? "handoff" : "error", message: "handoff" in result ? result.handoff : result.error }
-          : cur);
-        return;
-      }
-      const board = doc.boards.find((b) => b.id === q.boardId);
-      if (!board) throw new Error("That board no longer exists.");
-      await changeLayer({ ...board, contentRevision: result.contentRevision }, result.html, `Quick edit · ${q.text.trim().slice(0, 80)}`);
-      setQuick(undefined);
-      toast.success("Quick edit applied", { action: { label: "Undo", onClick: () => stepRef.current("undo") } });
-    } catch (e) {
-      setQuick((cur) => (cur?.requestId === requestId ? { ...cur, state: "error", message: errorText(e) } : cur));
-    }
-  };
-  /** The same request, as a message to the design's agent (it sees the selection). */
-  const sendQuickToAgent = () => {
-    if (!quick || !sessionId) return;
-    useAppStore.getState().requestChatInjection({ sessionId, text: quick.text.trim(), mode: "append", submit: true, source: "design-quick-edit" });
-    setQuick(undefined);
-  };
   /** Text and Frame tools: one write per new layer, which then becomes the selection. */
   const insertLayer = (
     boardId: string,
@@ -1035,6 +1015,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
   };
   const startComment = (): boolean => {
     if (!editable || !doc) return false;
+    setCommentsHidden(false);
     if (selection) {
       setComposer(selection);
       setActiveCommentId(undefined);
@@ -1185,8 +1166,9 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
       </section>
     );
 
+  const openCommentCount = doc?.comments.filter(comment => comment.status !== "resolved").length ?? 0;
   const pins: CanvasPin[] = (doc?.comments ?? [])
-    .filter((c) => c.status !== "resolved" && canvasBoards.some(board => board.id === c.boardId))
+    .filter((c) => (c.status !== "resolved" || c.id === activeCommentId) && canvasBoards.some(board => board.id === c.boardId))
     .map((c) => ({
       id: c.id,
       boardId: c.boardId,
@@ -1199,11 +1181,6 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
     }));
   const activeComment = doc?.comments.find((c) => c.id === activeCommentId);
   const compareComment = doc?.comments.find((c) => c.id === compare?.commentId);
-  const selectionName = (() => {
-    if (!selection) return undefined;
-    const b = doc?.boards.find((x) => x.id === selection.boardId);
-    return layerName(b, selection.anchor.nodeId)?.split(" · ")[0] ?? "Element";
-  })();
   const status = historical
     ? "Viewing an earlier version"
     : exporting
@@ -1282,7 +1259,11 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
         {/* Only what needs attention: saving, read-only, or an old version on view. */}
         {status !== "saved" && <span className="design-meta">{status}</span>}
         <span className="design-spacer" />
-
+        <DesignCommentControls active={commentMode} visible={!commentsHidden || inspectorOpen && tab === "comments"}
+          count={openCommentCount}
+          disabled={!doc || !!historical || previewing}
+          onToggleMode={() => { if (commentMode) hideComments(); else { setCommentsHidden(false); canvas.current?.setMode("comment"); canvas.current?.focus(); } }}
+          onShow={showComments} onHide={hideComments} />
       </header>
   );
 
@@ -1328,6 +1309,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
           key={documentId + ":" + activePageId}
           apiRef={canvas}
           toolbarLeading={pagePicker}
+          commentControlInHeader
           history={{
             canUndo: !!doc && editable && !busy && !!undoStacks.get(doc.id)?.undo.length,
             canRedo: !!doc && editable && !busy && !!undoStacks.get(doc.id)?.redo.length,
@@ -1350,15 +1332,9 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
           layerTarget={layerTarget}
           selection={selection}
           editable={editable && !busy}
-          pins={
-            historical
-              ? []
-              : commentsHidden
-                ? // Hidden: only the thread opened from the list shows its pin.
-                  pins.filter((p) => p.id === activeCommentId)
-                : pins
-          }
-          onToggleComments={() => setCommentsHidden(!commentsHidden)}
+          pins={historical || commentsHidden ? [] : pins}
+          onToggleComments={() => commentsHidden ? showComments() : hideComments()}
+          onCommentDone={hideComments}
           activePinId={activeCommentId}
           focusTarget={focusTarget}
           onPinOpen={(id) => {
@@ -1377,6 +1353,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
           onLiveRect={setLiveRect}
           onElementMove={moveLayer}
           onModeChange={(m) => {
+            setCommentMode(m === "comment");
             if (m === "comment") {
               setTab("comments");
               setCommentsHidden(false);
@@ -1544,7 +1521,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
           onPreviewChange={setPreviewing}
           overlay={(ctx) => {
             const nodes: React.ReactNode[] = [];
-            // Selection toolbar: name and the single Comment action.
+            // Selection controls follow the selected layer type and edit capability.
             if (textInsert) {
               const r = ctx.toScreen(textInsert.boardId, textInsert.rect);
               const finish = () => {
@@ -1612,67 +1589,17 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
               if (r)
                 nodes.push(
                   <DesignFloatingToolbar key="selection-bar" rect={r} viewport={ctx.size}>
-                    {quick && quick.nodeId === selection.anchor.nodeId ? (
-                      <QuickEditBar
-                        quick={quick}
-                        onText={(text) => setQuick({ ...quick, text, state: "input", message: undefined })}
-                        onRun={() => void runQuickEdit()}
-                        onCancel={() => {
-                          if (quick.requestId) void window.electron.design.quickEditCancel({ requestId: quick.requestId });
-                          setQuick(undefined);
-                          canvas.current?.focus();
-                        }}
-                        onHandoff={sendQuickToAgent}
-                      />
-                    ) : (
-                    <>
-                    <button
-                      aria-label="Layers"
-                      title="Layers (⌥L)"
-                      aria-pressed={layersOpen}
-                      onClick={toggleLayers}
-                    >
-                      <Layers size={14} />
-                    </button>
-                    <span className="design-float-name">{selectionName}</span>
-                    {editableText(selection) && (
-                      <button disabled={!editable} onClick={() => startTextEdit()}>
-                        Edit text
-                      </button>
-                    )}
-                    {selection.anchor.nodeId && !selection.anchor.area && (
-                      <button
-                        disabled={!editable || busy}
-                        onClick={() => {
-                          const board = doc?.boards.find((b) => b.id === selection.boardId);
-                          if (!board || !selection.anchor.nodeId) return;
-                          void changeLayer(
-                            board,
-                            editDesignLayer(board.html, selection.anchor.nodeId, { type: "duplicate" }),
-                            `Duplicated ${selectionName} on ${board.name}`,
-                          ).catch((e) => setFailure(errorText(e)));
-                        }}
-                      >
-                        Duplicate
-                      </button>
-                    )}
-                    {selection.anchor.nodeId && !selection.anchor.area && sessionId && (
-                      <button
-                        disabled={!editable || busy}
-                        aria-label="Quick edit"
-                        title="Quick edit: describe a small change to this layer"
-                        onClick={() =>
-                          setQuick({ boardId: selection.boardId, nodeId: selection.anchor.nodeId!, text: "", state: "input" })
-                        }
-                      >
-                        <Sparkles size={13} /> Quick edit
-                      </button>
-                    )}
-                    <button disabled={!editable} onClick={() => startComment()}>
-                      Comment <kbd>C</kbd>
-                    </button>
-                    </>
-                    )}
+                    {doc?.boards.find(board => board.id === selection.boardId) && <SelectionTools
+                      key={selection.boardId + ":" + (selection.anchor.nodeId ?? "area")}
+                      board={doc.boards.find(board => board.id === selection.boardId)!}
+                      anchor={selection.anchor}
+                      revision={selection.revision}
+                      editable={editable && !busy}
+                      onChange={(board, html) => changeLayer(board, html, "Changed selected layer style")}
+                      onEditText={() => startTextEdit()}
+                      onComment={() => startComment()}
+                      onProperties={() => { setInspectorOpen(true); setHistoryOpen(false); setTab("design"); }}
+                    />}
                   </DesignFloatingToolbar>,
                 );
               // The selection's size under it, like a design tool's dimension badge.
@@ -1806,7 +1733,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
                   </div>,
                 );
             }
-            if (activeComment && !composer && !previewing) {
+            if (activeComment && !composer && !previewing && !commentsHidden) {
               const rect = ctx.pinRect(activeComment.id);
               const r = rect && ctx.toScreen(activeComment.boardId, rect);
               const board = doc?.boards.find((b) => b.id === activeComment.boardId);
@@ -1823,6 +1750,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
                     style={placeBeside(r, ctx.size, 340)}
                   >
                     <CommentThread
+                      key={activeComment.id}
                       comment={activeComment}
                       user={user}
                       boardName={board?.name ?? "board"}
@@ -1835,7 +1763,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
                       editable={editable}
                       busy={busy}
                       onReply={(input) => replyTo(activeComment, input)}
-                      onResolve={() => void resolve(activeComment.id)}
+                      onResolve={() => void resolve(activeComment.id, activeComment.status !== "resolved")}
                       onClose={() => {
                         setActiveCommentId(undefined);
                         canvas.current?.focus();
@@ -1949,11 +1877,11 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
                   key={t}
                   role="tab"
                   aria-selected={tab === t}
-                  onClick={() => setTab(t)}
+                  onClick={() => { setTab(t); if (t === "comments") setCommentsHidden(false); }}
                 >
                   {t === "design" ? "Properties" : t === "tweaks" ? "Tweaks" : t === "code" ? "Code" : "Comments"}
-                  {t === "comments" && pins.length > 0 && (
-                    <span className="design-count">{pins.length}</span>
+                  {t === "comments" && openCommentCount > 0 && (
+                    <span className="design-count">{openCommentCount}</span>
                   )}
                 </button>
               ))}
@@ -1963,12 +1891,12 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
                   aria-label={commentsHidden ? "Show comments" : "Hide comments"}
                   title={(commentsHidden ? "Show comments" : "Hide comments") + " (⇧C)"}
                   aria-pressed={commentsHidden}
-                  onClick={() => setCommentsHidden(!commentsHidden)}
+                  onClick={() => commentsHidden ? showComments() : hideComments()}
                 >
                   {commentsHidden ? <EyeOff size={16} stroke={1.5} /> : <Eye size={16} stroke={1.5} />}
                 </button>
               )}
-              <button className="design-inspector-close" aria-label="Close properties" title="Close properties" onClick={() => setInspectorOpen(false)}><X size={14} /></button>
+              <button className="design-inspector-close" aria-label={tab === "comments" ? "Close comments" : "Close properties"} title={tab === "comments" ? "Close comments" : "Close properties"} onClick={() => tab === "comments" ? hideComments() : setInspectorOpen(false)}><X size={14} /></button>
             </div>
             {tab !== "comments" && <DesignLayersSection>
             <LayersPopover embedded
@@ -2066,7 +1994,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
                 queuedIds={queuedIds}
                 editable={editable && !busy}
                 onOpen={(c) => openThread(c)}
-                onResolve={(c) => void resolve(c.id)}
+                onResolve={(c) => void resolve(c.id, c.status !== "resolved")}
               />
             )}
           </aside>
@@ -2182,56 +2110,4 @@ function placeBeside(
     top: Math.max(8, Math.min(r.y + r.height + 12, size.height - 220)),
     width,
   };
-}
-
-/** The element bar while a quick edit is typed, runs, or needs the agent. */
-function QuickEditBar({
-  quick,
-  onText,
-  onRun,
-  onCancel,
-  onHandoff,
-}: {
-  quick: { text: string; state: "input" | "running" | "handoff" | "error"; message?: string };
-  onText(text: string): void;
-  onRun(): void;
-  onCancel(): void;
-  onHandoff(): void;
-}) {
-  return (
-    <span className="design-quick-edit" data-quick-edit={quick.state}>
-      <Sparkles size={13} aria-hidden="true" />
-      {quick.state === "running" ? (
-        <span className="design-quick-status" role="status">
-          <span className="design-dock-spinner" aria-hidden="true" /> Editing…
-        </span>
-      ) : quick.state === "input" ? (
-        <input
-          autoFocus
-          aria-label="Quick edit instruction"
-          placeholder="Make it smaller, use the accent color…"
-          value={quick.text}
-          onChange={(e) => onText(e.target.value)}
-          onKeyDown={(e) => {
-            e.stopPropagation();
-            if (e.key === "Enter" && quick.text.trim()) onRun();
-            if (e.key === "Escape") onCancel();
-          }}
-        />
-      ) : (
-        <span className="design-quick-status" role="alert" title={quick.message}>
-          {quick.message}
-        </span>
-      )}
-      {(quick.state === "handoff" || quick.state === "error") && (
-        <button onClick={onHandoff} title="Send this request to the design's agent">
-          Send to agent
-        </button>
-      )}
-      {quick.state === "error" && <button onClick={onRun}>Try again</button>}
-      <button aria-label="Cancel quick edit" onClick={onCancel}>
-        <X size={12} />
-      </button>
-    </span>
-  );
 }

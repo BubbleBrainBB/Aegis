@@ -27,6 +27,7 @@ assert(prompt.includes('layer="Hero headline"'));
 assert(prompt.includes("Chengsheng: First") && prompt.includes("Bubble: Done"));
 assert(!prompt.includes("computedStyles"), "styles stay out of the prompt");
 assert(prompt.includes("design_reply"));
+assert(prompt.includes('type:"patch"') && prompt.includes("Preserve existing data-aegis-node-id"), "local comments request exact scoped changes");
 
 const ref = {
   kind: "design-comment",

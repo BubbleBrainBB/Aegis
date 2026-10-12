@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Check } from "../icons";
 import { authorName, initialOf, relativeTime } from "./design-ui";
 import type { DesignComment, DesignDocument } from "../../../shared/design-types";
@@ -20,15 +21,19 @@ export function CommentsList({
   onOpen(comment: DesignComment): void;
   onResolve(comment: DesignComment): void;
 }) {
-  const open = doc.comments.filter((c) => c.status !== "resolved").reverse();
-  if (!open.length) return <p className="design-empty-note">No comments</p>;
+  const [showResolved, setShowResolved] = useState(false);
+  const open = doc.comments.filter((c) => showResolved || c.status !== "resolved").slice().sort((a, b) => b.updatedAt - a.updatedAt);
   return (
     <div className="design-comments">
+      <label className="design-comments-filter"><input type="checkbox" checked={showResolved} onChange={e => setShowResolved(e.target.checked)} />Show resolved</label>
+      {!open.length && <p className="design-empty-note">{doc.comments.length ? "No open comments" : "No comments yet"}</p>}
       {open.map((c) => {
         const replies = c.messages.length - 1;
         const name = authorName(c.author, user);
         const status =
-          c.status === "working"
+          c.status === "resolved"
+            ? "Resolved"
+            : c.status === "working"
             ? "Working on it…"
             : queuedIds.has(c.id)
               ? "Queued"
@@ -59,8 +64,8 @@ export function CommentsList({
               <span className="design-spacer" />
               <button
                 className="design-comment-resolve"
-                aria-label="Resolve comment"
-                title="Resolve"
+                aria-label={c.status === "resolved" ? "Reopen comment" : "Resolve comment"}
+                title={c.status === "resolved" ? "Reopen comment" : "Resolve"}
                 disabled={!editable}
                 onClick={(e) => {
                   e.stopPropagation();

@@ -66,6 +66,7 @@ export function InlineTextEditor({
     if (commit && value !== text) onCommit(value);
     else onCancel();
   };
+  const nativeButton = styles["element-tag"] === "button" && !/flex|grid/.test(styles.display ?? "");
   const style: CSSProperties = {
     left: rect.x,
     top: rect.y,
@@ -75,10 +76,42 @@ export function InlineTextEditor({
     fontFamily: styles["font-family"],
     fontSize: px(styles["font-size"], zoom),
     fontWeight: styles["font-weight"] as CSSProperties["fontWeight"],
+    fontStyle: styles["font-style"],
+    fontVariant: styles["font-variant"],
+    textTransform: styles["text-transform"] as CSSProperties["textTransform"],
+    textIndent: px(styles["text-indent"], zoom),
+    wordSpacing: px(styles["word-spacing"], zoom),
+    wordBreak: styles["word-break"] as CSSProperties["wordBreak"],
+    overflowWrap: styles["overflow-wrap"] as CSSProperties["overflowWrap"],
+    direction: styles.direction as CSSProperties["direction"],
+    display: nativeButton ? "flex" : styles.display,
+    flexDirection: styles["flex-direction"] as CSSProperties["flexDirection"],
+    alignItems: nativeButton ? "center" : styles["align-items"],
+    justifyContent: nativeButton
+      ? /^(left|start)$/.test(styles["text-align"]) ? "flex-start" : /^(right|end)$/.test(styles["text-align"]) ? "flex-end" : "center"
+      : styles["justify-content"],
+    alignContent: styles["align-content"],
+    justifyItems: styles["justify-items"],
+    // The original paints its own decoration. Transparent borders only reproduce
+    // its content inset, without drawing that decoration twice.
+    borderStyle: "solid",
+    borderColor: "transparent",
+    borderTopWidth: px(styles["border-top-width"], zoom) ?? 0,
+    borderRightWidth: px(styles["border-right-width"], zoom) ?? 0,
+    borderBottomWidth: px(styles["border-bottom-width"], zoom) ?? 0,
+    borderLeftWidth: px(styles["border-left-width"], zoom) ?? 0,
     lineHeight: styles["line-height"] === "normal" ? "normal" : px(styles["line-height"], zoom),
     letterSpacing: styles["letter-spacing"] === "normal" ? "normal" : px(styles["letter-spacing"], zoom),
     textAlign: styles["text-align"] as CSSProperties["textAlign"],
     color: styles.color,
+    caretColor: styles.color,
+    WebkitTextFillColor: styles["-webkit-text-fill-color"],
+    WebkitTextStrokeWidth: px(styles["-webkit-text-stroke-width"], zoom),
+    WebkitTextStrokeColor: styles["-webkit-text-stroke-color"],
+    textShadow: styles["text-shadow"]?.replace(/(-?[\d.]+)px/g, (_, value) => `${Number(value) * zoom}px`),
+    textDecorationLine: styles["text-decoration-line"],
+    textDecorationStyle: styles["text-decoration-style"] as CSSProperties["textDecorationStyle"],
+    textDecorationColor: styles["text-decoration-color"],
   };
   return (
     <div

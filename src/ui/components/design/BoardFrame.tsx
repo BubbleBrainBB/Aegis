@@ -5,12 +5,14 @@ import {
   useImperativeHandle,
   useMemo,
   useRef,
+  useState,
 } from "react";
 import type { DesignAnchor, DesignBoard } from "../../../shared/design-types";
 import type {
   DesignNodeRect,
   DesignNodeSnapshot,
 } from "../../../shared/design-diff";
+import { sanitizeDesignHtml } from "../../../shared/design-html";
 import { designFrameHtml } from "../../../shared/design-frame";
 import type { LayerLayout } from "./design-spacing";
 import { toLayerCss, type LayerCss } from "./design-css";
@@ -23,7 +25,7 @@ export interface BoardInspector {
     ids: string[],
   ): Promise<{ rects: Record<string, DesignNodeRect | null>; height: number }>;
   snapshot(): Promise<DesignNodeSnapshot[]>;
-  /** Visually hide one layer (or none) while an editor covers it. */
+  /** Hide only glyphs while editing; keep the layer’s background, border and layout. */
   mask(nodeId: string | null): void;
   /** Live drag preview: the layer moves inside the frame until dragEnd. */
   dragStart(nodeId: string): Promise<boolean>;
@@ -120,14 +122,22 @@ export const BoardFrame = memo(
   >(function BoardFrame({ board, preview = false, onInspect, onLoad }, ref) {
     const frame = useRef<HTMLIFrameElement>(null);
     const pending = useRef(new Map<string, (data: any) => void>());
-    const token = useMemo(
-      () => crypto.randomUUID(),
-      [board.id, board.contentRevision, board.html, preview],
-    );
-    const source = useMemo(
-      () => designFrameHtml(board.html, token, !preview),
-      [board.html, token, preview],
-    );
+    // A board owns one iframe/nonce for its lifetime. Content updates go through
+    // the bridge; changing srcDoc for every streamed chunk navigates the frame.
+    const lifetime = useMemo(() => {
+      const token = crypto.randomUUID();
+      return { token, html: board.html, source: designFrameHtml(board.html, token, !preview) };
+    }, [board.id, preview]);
+    const { token } = lifetime;
+    const html = useMemo(() => sanitizeDesignHtml(board.html), [board.html]);
+    const [recovery, setRecovery] = useState<{ token: string; html: string; source: string; epoch: string } | null>(null);
+    const source = preview ? designFrameHtml(html, token, false)
+      : recovery?.token === token ? recovery.source : lifetime.source;
+    const ready = useRef<string | null>(null);
+    const applied = useRef<string | null>(null);
+    const [loadEpoch, setLoadEpoch] = useState(0);
+    const onLoadRef = useRef(onLoad);
+    onLoadRef.current = onLoad;
     const request = <T,>(type: string, body: object, fallback: T) =>
       new Promise<any>((resolve) => {
         const id = crypto.randomUUID();
@@ -297,7 +307,8 @@ export const BoardFrame = memo(
         )
           return;
         if (
-          (e.data.type === "aegis-design-rects" ||
+          (e.data.type === "aegis-design-patched" ||
+            e.data.type === "aegis-design-rects" ||
             e.data.type === "aegis-design-snapshot" ||
             e.data.type === "aegis-design-drag-state" ||
             e.data.type === "aegis-design-layout" ||
@@ -346,15 +357,39 @@ export const BoardFrame = memo(
       window.addEventListener("message", receive);
       return () => window.removeEventListener("message", receive);
     }, [token, onInspect]);
+    useEffect(() => {
+      if (preview || ready.current !== token || applied.current === html) return;
+      let current = true;
+      applied.current = null; // A → B → A must supersede an in-flight B patch too.
+      void request("aegis-design-patch", { html }, { ok: false }).then((result) => {
+        if (!current) return;
+        if (result?.ok) {
+          applied.current = html;
+          // Re-measure selection/pins after layout changes, without navigation.
+          onLoadRef.current?.();
+        } else {
+          // A broken bridge gets one full, sandboxed recovery for these bytes.
+          ready.current = null;
+          setRecovery({ token, html, source: designFrameHtml(html, token, true), epoch: crypto.randomUUID() });
+        }
+      });
+      return () => { current = false; };
+    }, [html, token, preview, loadEpoch]);
     return (
       <iframe
+        key={recovery?.token === token ? recovery.epoch : token}
         ref={frame}
         title={board.name}
         srcDoc={source}
         sandbox="allow-scripts"
         tabIndex={-1}
         referrerPolicy="no-referrer"
-        onLoad={onLoad}
+        onLoad={() => {
+          ready.current = token;
+          applied.current = sanitizeDesignHtml(recovery?.token === token ? recovery.html : lifetime.html);
+          setLoadEpoch(n => n + 1);
+          onLoadRef.current?.();
+        }}
         style={{ width: board.width, height: board.height }}
       />
     );

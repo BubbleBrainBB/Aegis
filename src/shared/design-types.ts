@@ -105,6 +105,7 @@ export type DesignOperation =
       height?: number;
       pageId?: string;
     }
+  | { type: "patch"; boardId: string; expectedRevision: number; find: string; replace: string }
   | { type: "content"; boardId: string; expectedRevision: number; html: string }
   | {
       type: "placement";

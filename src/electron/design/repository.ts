@@ -51,6 +51,13 @@ const operations = z
           html: z.string(),
         })
         .strict(),
+      z.object({
+        type: z.literal("patch"),
+        boardId: id,
+        expectedRevision: revision,
+        find: z.string().min(1).max(1_000_000),
+        replace: z.string().max(1_000_000),
+      }).strict(),
       z
         .object({
           type: z.literal("placement"),
@@ -733,6 +740,14 @@ export class DesignRepository {
             conflict();
           if (op.type === "content") {
             b.html = sanitizeDesignHtml(op.html);
+            b.contentRevision++;
+          }
+          if (op.type === "patch") {
+            const at = b.html.indexOf(op.find);
+            if (at < 0) throw new Error("PATCH_NOT_FOUND: read the board and use its exact current HTML.");
+            if (b.html.indexOf(op.find, at + 1) >= 0)
+              throw new Error("PATCH_AMBIGUOUS: include more surrounding HTML for a unique match.");
+            b.html = sanitizeDesignHtml(b.html.slice(0, at) + op.replace + b.html.slice(at + op.find.length));
             b.contentRevision++;
           }
           if (op.type === "placement") {

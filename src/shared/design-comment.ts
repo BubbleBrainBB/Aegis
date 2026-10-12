@@ -74,6 +74,6 @@ export function buildDesignCommentPrompt(input: {
     `Selected element: ${escape(JSON.stringify(anchor))}`,
     ...(thread.length ? ["Earlier in this thread:", ...thread] : []),
     "</design_comment>",
-    `Read this board with design_read, apply the change with design_update (pass commentId="${input.commentId}" and a one-line summary), check it with design_preview, then answer in the thread with design_reply. The attached screenshot shows document version ${input.documentRevision}.`,
+    `Read this board with design_read, apply only the requested local change with design_update using a patch operation {type:"patch", boardId, expectedRevision, find, replace} with a unique exact match from the current HTML. Preserve existing data-aegis-node-id values and unrelated layout, styles, and boards; do not recreate the design or rewrite the whole board for a local comment. In design_update pass commentId="${input.commentId}" and a one-line summary, check it with design_preview, then answer in the thread with design_reply. The attached screenshot shows document version ${input.documentRevision}.`,
   ].join("\n");
 }

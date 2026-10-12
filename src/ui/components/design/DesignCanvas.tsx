@@ -133,6 +133,7 @@ export type CanvasApi = {
 type Props = {
   /** Page picker belongs before the canvas tools, not in the host titlebar. */
   toolbarLeading?: ReactNode;
+  commentControlInHeader?: boolean;
   boards: DesignBoard[];
   marks?: DesignMark[];
   selectedMarkIds?: string[];
@@ -213,6 +214,7 @@ type Props = {
   onCreateBoard?(rect: Rect): void;
   /** ⇧C: show or hide comment pins. */
   onToggleComments?(): void;
+  onCommentDone?(): void;
   /** Show or hide the inspector column beside the canvas. */
   inspector?: { open: boolean; toggle(): void };
   history?: { canUndo: boolean; canRedo: boolean; step(direction: "undo" | "redo"): void };
@@ -1333,7 +1335,7 @@ export function DesignCanvas(props: Props) {
       else {
         onSelectionChange([]);
         setZoomMenu(false);
-        if (mode === "comment") setMode("select");
+        if (mode === "comment") { setMode("select"); props.onCommentDone?.(); }
       }
       return;
     }
@@ -1617,14 +1619,14 @@ export function DesignCanvas(props: Props) {
         >
           <Hash size={17} stroke={1.5} />
         </DesignToolButton>
-        <DesignToolButton
+        {!props.commentControlInHeader && <DesignToolButton
           title="Comment · C"
           aria-label="Comment mode"
           aria-pressed={mode === "comment"}
           onClick={() => setMode(mode === "comment" ? "select" : "comment")}
         >
           <MessageCircle size={17} stroke={1.5} />
-        </DesignToolButton>
+        </DesignToolButton>}
         {props.onCreateMark && <>
           <DesignToolButton title="Note (N)" aria-label="Note tool" aria-pressed={mode === "note"} disabled={!canEdit} onClick={() => setMode(mode === "note" ? "select" : "note")}><MarkToolIcon type="note" /></DesignToolButton>
           <DesignToolButton title="Draw (P)" aria-label="Draw tool" aria-pressed={mode === "freehand"} disabled={!canEdit} onClick={() => setMode(mode === "freehand" ? "select" : "freehand")}><MarkToolIcon type="freehand" /></DesignToolButton>
@@ -1658,7 +1660,7 @@ export function DesignCanvas(props: Props) {
         <div className="design-mode-hint" data-canvas-ui role="status">
           <MessageCircle size={14} />
           <span>Click to comment · drag for an area</span>
-          <button onClick={() => setMode("select")}>
+          <button onClick={() => { setMode("select"); props.onCommentDone?.(); }}>
             Done <kbd>Esc</kbd>
           </button>
         </div>

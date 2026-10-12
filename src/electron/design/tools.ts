@@ -56,7 +56,7 @@ const rules =
 
 const operation = z
   .object({
-    type: z.enum(['add', 'content', 'placement', 'duplicate', 'remove', 'title', 'canvas']),
+    type: z.enum(['add', 'content', 'patch', 'placement', 'duplicate', 'remove', 'title', 'canvas']),
     boardId: z.string().optional(),
     pageId: z.string().optional(),
     pages: z.array(z.object({ id: z.string(), name: z.string().min(1).max(120) }).strict()).max(40).optional(),
@@ -70,6 +70,8 @@ const operation = z
     name: z.string().optional(),
     title: z.string().optional(),
     html: z.string().optional(),
+    find: z.string().min(1).optional(),
+    replace: z.string().optional(),
     x: z.number().optional(),
     y: z.number().optional(),
     width: z.number().int().optional(),
@@ -136,7 +138,7 @@ const specs: DesignToolSpec[] = [
   },
   {
     name: DESIGN_UPDATE_TOOL,
-    description: 'Atomically update a design; this is how a design continues. Use the open design from <design_context> unless the user names another. Operations: add{name,html,width?,height?,pageId?}; content{boardId,expectedRevision,html}; placement{boardId,expectedRevision,name?,x?,y?,width?,height?,pageId?}; duplicate/remove{boardId,expectedRevision}; title{title,expectedRevision}; canvas{expectedRevision,pages?,marks?} atomically replaces provided page/annotation arrays (read and preserve existing entries). Page IDs group boards independently of screen names; missing pageId belongs to the first page. Use pageId from design_context for new boards. content/duplicate/remove use the board’s contentRevision, placement its placementRevision, title/canvas the document revision. After REVISION_CONFLICT, read, merge and retry.',
+    description: 'Atomically update a design; this is how a design continues. Use the open design from <design_context> unless the user names another. Operations: add{name,html,width?,height?,pageId?}; patch{boardId,expectedRevision,find,replace} replaces one exact unique nonempty HTML substring (use for comments and local changes, preserve node ids and unrelated markup); content{boardId,expectedRevision,html} replaces the entire board (only for broad redesigns); placement{boardId,expectedRevision,name?,x?,y?,width?,height?,pageId?}; duplicate/remove{boardId,expectedRevision}; title{title,expectedRevision}; canvas{expectedRevision,pages?,marks?} atomically replaces provided page/annotation arrays (read and preserve existing entries). Page IDs group boards independently of screen names; missing pageId belongs to the first page. Use pageId from design_context for new boards. patch/content/duplicate/remove use the board’s contentRevision, placement its placementRevision, title/canvas the document revision. After REVISION_CONFLICT, read, merge and retry.',
     readOnly: false,
     shape: {
       documentId: z.string(),
@@ -153,11 +155,11 @@ const specs: DesignToolSpec[] = [
       operations: {
         type: 'array', minItems: 1, maxItems: 64,
         items: object({
-          type: { type: 'string', enum: ['add', 'content', 'placement', 'duplicate', 'remove', 'title', 'canvas'] },
+          type: { type: 'string', enum: ['add', 'content', 'patch', 'placement', 'duplicate', 'remove', 'title', 'canvas'] },
           boardId: string, pageId: string,
           pages: { type: 'array', maxItems: 40, items: object({ id: string, name: string }, ['id', 'name']) },
           marks: { type: 'array', maxItems: 200, items: object({ id: string, type: { type: 'string', enum: ['note', 'rectangle', 'ellipse', 'line', 'arrow', 'freehand'] }, pageId: string, x: { type: 'number' }, y: { type: 'number' }, width: { type: 'number' }, height: { type: 'number' }, fill: string, stroke: string, strokeWidth: { type: 'number' }, text: string, fontSize: { type: 'number' }, points: { type: 'array', items: object({ x: { type: 'number' }, y: { type: 'number' } }, ['x', 'y']) } }, ['id', 'type', 'x', 'y', 'width', 'height', 'fill', 'stroke', 'strokeWidth']) },
-          expectedRevision: integer, name: string, title: string, html: string,
+          expectedRevision: integer, name: string, title: string, html: string, find: string, replace: string,
           x: { type: 'number' }, y: { type: 'number' }, width: { type: 'integer' }, height: { type: 'integer' },
         }, ['type']),
       },

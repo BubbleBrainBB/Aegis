@@ -48,8 +48,8 @@ export function CommentThread({
       <div className="design-thread-actions">
         <button
           className="design-icon-button"
-          aria-label="Resolve comment"
-          title="Resolve"
+          aria-label={comment.status === "resolved" ? "Reopen comment" : "Resolve comment"}
+          title={comment.status === "resolved" ? "Reopen comment" : "Resolve"}
           disabled={!editable || busy}
           onClick={onResolve}
         >
@@ -58,12 +58,13 @@ export function CommentThread({
         <button
           className="design-icon-button"
           aria-label="Close thread"
-          title="Close"
+          title="Close thread"
           onClick={onClose}
         >
           <X size={14} />
         </button>
       </div>
+      {comment.status === "resolved" && <p className="design-thread-notice">Resolved · Reopen to continue this discussion.</p>}
       {anchorLost && comment.status !== "resolved" ? (
         <p className="design-thread-notice" data-anchor-lost>
           The layer this comment was on is gone from {boardName}, so the pin stays where it was. Resolve it if it no longer applies.
@@ -104,7 +105,7 @@ export function CommentThread({
           </div>
         )}
       </div>
-      {editable && (
+      {editable && comment.status !== "resolved" && (
         <CommentComposer
           canMention={canMention}
           placeholder="Reply…"

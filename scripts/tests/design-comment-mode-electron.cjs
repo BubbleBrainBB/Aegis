@@ -24,14 +24,21 @@ exports.run = async ({ w, js, repo, sessionId, documentId, screenshotDir, sent }
   const mouse = (type, p) => w.webContents.sendInputEvent({ type, button: "left", clickCount: 1, x: Math.round(p.x), y: Math.round(p.y) });
   const type = (selector, value) =>
     js(`(()=>{const el=document.querySelector(${JSON.stringify(selector)});el.focus();Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,"value").set.call(el,${JSON.stringify(value)});el.dispatchEvent(new Event("input",{bubbles:true}))})()`);
+  const showAll = async () => {
+    await js('document.querySelector(\'[aria-label="More comment options"]\').click()');
+    await until(() => js('!!document.querySelector(".design-comment-options")'), "comment options");
+    await js('[...document.querySelectorAll(".design-comment-options button")].find(b=>b.textContent.startsWith("Show all comments")).click()');
+    await until(() => js('!!document.querySelector(".design-comments")'), "comments list");
+  };
   const enter = async () => {
-    await js('document.querySelector(\'[aria-label="Comment mode"]\').click()');
+    await js('document.querySelector(\'.design-comment-controls [aria-label="Comment"]\').click()');
     await until(() => js('!!document.querySelector(".design-mode-hint")'), "comment mode hint");
   };
 
-  // Entry from the toolbar: hint bar, pressed tool, Comments tab.
+  // Header placement mode is independent of the comments list.
+  await showAll();
   await enter();
-  assert.equal(await js('document.querySelector(\'[aria-label="Comment mode"]\').getAttribute("aria-pressed")'), "true");
+  assert.equal(await js('document.querySelector(\'[aria-label="Done commenting"]\').getAttribute("aria-pressed")'), "true");
   await until(() => js('document.querySelector(".design-tabs [aria-selected=true]").textContent.startsWith("Comments")'), "Comments tab");
   // Click a layer: the pin lands where it was clicked.
   const p = await (await frame()).executeJavaScript('(()=>{const r=document.querySelector("p").getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height}})()');
@@ -93,29 +100,45 @@ exports.run = async ({ w, js, repo, sessionId, documentId, screenshotDir, sent }
   await until(() => js('!document.querySelector(".design-mode-hint")'), "Esc exits comment mode");
   assert.equal(await js('document.querySelector(\'[aria-label="Select and move"]\').getAttribute("aria-pressed")'), "true");
 
-  // Hide comments: pins go away; a list row shows only its own thread; ⇧C and comment mode bring them back.
+  // Esc/Done hide the complete comment UI without resolving any records.
   const pinCount = () => js('document.querySelectorAll(".design-pin").length');
+  assert.equal(await pinCount(), 0, "Esc hides pins");
+  await showAll();
   const shown = await pinCount();
   assert(shown >= 2, "pins before hiding: " + shown);
-  await js('[...document.querySelectorAll(".design-tabs [role=tab]")].find(b=>b.textContent.startsWith("Comments")).click()');
-  await until(() => js('!!document.querySelector(\'[aria-label="Hide comments"]\')'), "hide toggle on the Comments tab");
+  await js('document.querySelector(".design-comment-row").click()');
+  await until(() => js('!!document.querySelector(".design-thread")'), "thread open before hide");
+  const saved = comments().map(c => ({id:c.id,status:c.status,text:c.text}));
   await js('document.querySelector(\'[aria-label="Hide comments"]\').click()');
   await until(async () => (await pinCount()) === 0, "pins hidden");
   assert.equal(await js('localStorage.getItem("aegis.design.commentsHidden")'), "true", "remembered");
-  assert.equal(await js('document.querySelector(\'[aria-label="Show comments"]\').getAttribute("aria-pressed")'), "true");
-  assert(await js('document.querySelectorAll(".design-comment-row").length') >= 2, "the list still shows them");
-  await js('document.querySelector(".design-comment-row").click()');
-  await until(async () => (await pinCount()) === 1 && (await js('!!document.querySelector(".design-thread")')), "a list row shows its own pin and thread");
-  await js('document.querySelector(\'[aria-label="Close thread"]\').click()');
-  await until(async () => (await pinCount()) === 0, "hidden again after closing the thread");
-  await js('document.querySelector(".design-viewport").dispatchEvent(new KeyboardEvent("keydown",{key:"C",code:"KeyC",shiftKey:true,bubbles:true}))');
-  await until(async () => (await pinCount()) === shown, "⇧C shows them");
+  assert.equal(await js('!!document.querySelector(".design-comments,.design-thread")'), false, "list and active thread hidden");
+  assert.deepEqual(comments().map(c => ({id:c.id,status:c.status,text:c.text})), saved, "hide does not mutate comments");
+  await showAll();
+  assert.equal(await pinCount(), shown, "show restores pins");
+
+  // Resolve and reopen keep the Comments panel, even after a selected layer reloads.
+  await js(`document.querySelector('[data-comment-id="${placed.id}"]').click()`);
+  await until(() => js('!!document.querySelector(".design-thread")'), "thread to resolve");
+  await js('document.querySelector(\'.design-thread [aria-label="Resolve comment"]\').click()');
+  await until(() => comments().find(c => c.id === placed.id)?.status === "resolved", "resolved saved");
+  await wait(250);
+  assert(await js('!!document.querySelector(".design-comments")'), "resolve keeps Comments panel");
+  await js('document.querySelector(".design-comments-filter input").click()');
+  await until(() => js(`!!document.querySelector('[data-comment-id="${placed.id}"] [aria-label="Reopen comment"]')`), "resolved row visible");
+  await js(`document.querySelector('[data-comment-id="${placed.id}"]').click()`);
+  await until(() => js('!!document.querySelector(\'.design-thread [aria-label="Reopen comment"]\')'), "resolved thread opens");
+  await js('document.querySelector(\'.design-thread [aria-label="Reopen comment"]\').click()');
+  await until(() => comments().find(c => c.id === placed.id)?.status === "open", "reopened saved");
+  await wait(250);
+  assert(await js('!!document.querySelector(".design-comments")'), "reopen keeps Comments panel");
+
   await js('document.querySelector(".design-viewport").dispatchEvent(new KeyboardEvent("keydown",{key:"C",code:"KeyC",shiftKey:true,bubbles:true}))');
   await until(async () => (await pinCount()) === 0, "⇧C hides them");
-  assert(!(await js('!!document.querySelector(".design-mode-hint")')), "⇧C does not enter comment mode");
-  await js('document.querySelector(\'[aria-label="Comment mode"]\').click()');
-  await until(async () => (await pinCount()) === shown, "comment mode shows them again");
-  await js('document.querySelector(".design-viewport").dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))');
-  await until(() => js('!document.querySelector(".design-mode-hint")'), "Esc exits comment mode again");
-  console.log("PASS: comment mode entry, Comments tab, click-point pins, area comments with close-up, Esc exit, hide comments");
+  await js('document.querySelector(".design-viewport").dispatchEvent(new KeyboardEvent("keydown",{key:"C",code:"KeyC",shiftKey:true,bubbles:true}))');
+  await until(async () => (await pinCount()) === shown, "⇧C shows them");
+  await enter();
+  await js('document.querySelector(".design-mode-hint button").click()');
+  await until(async () => (await pinCount()) === 0 && !(await js('!!document.querySelector(".design-mode-hint,.design-comments")')), "Done hides comments");
+  console.log("PASS: comment mode, click-point pins, area comments, Hide/Show, Resolve/Reopen, Done/Esc");
 };

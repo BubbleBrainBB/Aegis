@@ -464,6 +464,35 @@ try {
     cr.close();
   }
 
+  // Exact local edits preserve other boards, links and revision/idempotency semantics.
+  {
+    let local = repo.create("patch-session", "Patch fixture", "", "patch-create");
+    local = repo.update("patch-session", { documentId: local.id, operationId: "patch-add", operations: [
+      { type: "add", name: "Target", html: '<h1 data-aegis-node-id="hero">Before</h1><p>same</p><p>same</p>' },
+      { type: "add", name: "Other", html: '<p>Untouched</p>' },
+    ] });
+    const before = local;
+    const edit = { documentId: local.id, operationId: "patch-edit", operations: [{ type: "patch", boardId: local.boards[0].id, expectedRevision: 1, find: 'Before', replace: 'After' }] };
+    local = repo.update("patch-session", edit);
+    assert.equal(local.boards[0].html, before.boards[0].html.replace('Before','After'));
+    assert.deepEqual(local.boards[1], before.boards[1]);
+    assert.equal(local.boards[0].contentRevision, 2);
+    assert.equal(repo.history("patch-session", local.id)[0].summary, "Edited Target");
+    assert.equal(repo.update("patch-session", edit).revision, local.revision, "identical retries do not write twice");
+    assert.throws(() => repo.update("patch-session", { ...edit, operationId: "stale-patch" }), /REVISION_CONFLICT/);
+    for (const [find, error] of [['absent', /PATCH_NOT_FOUND/], ['same', /PATCH_AMBIGUOUS/]]) {
+      assert.throws(() => repo.update("patch-session", { documentId: local.id, operationId: 'bad-'+find, operations: [
+        { type: "patch", boardId: local.boards[0].id, expectedRevision: 2, find: 'After', replace: 'Should roll back' },
+        { type: "patch", boardId: local.boards[0].id, expectedRevision: 3, find, replace: 'No' },
+      ] }), error);
+      assert.deepEqual(repo.read("patch-session",local.id), local, "failed batch rolls back all local edits");
+    }
+    local = repo.update("patch-session", { documentId: local.id, operationId: "patch-safety", operations: [
+      { type: "patch", boardId: local.boards[0].id, expectedRevision: 2, find: 'After', replace: 'Safe<script>bad()</script>' },
+    ] });
+    assert(!local.boards[0].html.includes('script'), "patches pass through the same HTML sanitizer");
+  }
+
   // Session lifecycle: a draft's designs follow it, a delete takes them along.
   {
     const lifeFile = join(root, "life.db");

@@ -11,6 +11,7 @@ export function summarizeOperations(
     switch (op.type) {
       case "add":
         return `Added ${op.name}`;
+      case "patch":
       case "content":
         return `Edited ${name(op.boardId)}`;
       case "remove":

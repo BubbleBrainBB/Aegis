@@ -131,3 +131,72 @@ REA 静态关系不证明运行时等价。独立工作区 Tooltip 的默认 400
 实机验收为源码开发版Electron，1963×1235：Pages单行菜单、Rename打开后Escape取消并恢复Pages焦点；标题菜单History打开/关闭；HTML导出打开原生保存sheet并取消，显示canceled；Frame工具进入绘制模式，Escape回到Select。会话内Design面板从934px缩到499px时右侧工具组下移一行，无工具栏重叠，随后恢复原宽度与完整Design界面。该时刻用户AI播客设计已有6个画板。
 
 截图：`output/design-claude-parity/toolbar-placement-final.png`、`pages-placement-menu.png`、`design-actions-menu.png`、`toolbar-placement-narrow.png`。TypeScript、图标规范、主题变量检查、Vite生产构建及`git diff --check`通过；构建日志`toolbar-build.log`。构建仍有已有的大chunk与KaTeX混合导入警告。本次为入口与布局修改，未重跑全部历史编辑测试；未打包安装或发布。
+
+## 评论可见性与已解决线程（2026-10-12）
+
+### Claude 对照证据
+
+- CUA实机观察了Claude Design的artifact外层Comment按钮与More comment options：未展开列表时显示Show all comments，列表展开后显示Hide comments；点击Hide后All comments面板消失。Comment切到Done commenting，再点一次退出放置模式。Filter comments包含This page / All pages / Show resolved。只操作可见性，没有发送或修改Claude评论。
+- 评论Chrome由宿主提供，不能只从画布app.js判断。恢复Claude本地Chromium缓存中的静态JS，按响应content-encoding解压zstd，验证缓存stream CRC并记录SHA。最新缓存header模块为`c547ae5e3-CB424AuW.js`（24580 bytes）；REA parent：`ev_d682967e7ab37783e5e72c61f4c130d9f8c748d9d09d1fe7fb6f1eaa205d26ea`，1个JS解析成功，6658 AST节点，1245语义未知。
+- 缓存宿主`frame-shell-chrome-FaCZXS_f.js`中，Yh菜单随Fe切换Show/Hide并调用Ip；Ip(false)走Fp关闭drawer，Af/Mf单独控制评论模式并关闭card/draft。精确提取7个声明，REA parent：`ev_24b6acf605126069a7c61167ff248a6d1ac66619394eab4b963bdabd52f704cc`，1个JS解析成功，329 AST节点，64语义未知。宿主片段未绑定当前运行模块URL，只作为缓存静态参考，由上述实机交互核对；不把缓存mtime视为当前加载版本证明。
+- 研究资产在`work/claude-core/comments-current/manifest.json`、`comments-rea-scope/`和`comments-visibility-scope/`，后者manifest记录原始字符区间与SHA。隐藏列表、退出评论模式、解决评论是不同操作，不会因Hide写入resolved状态。
+
+### Aegis修复
+
+- 标题栏增加Comment / Done及More comment options组合控件，显示未解决数量。移除DesignPanel左工具栏重复入口，保留C快捷键、选中元素的Comment操作和独立DesignCanvas的兼容入口。
+- Show all comments恢复标记并打开列表；Hide统一关闭评论列表、活动线程和标记并退出放置模式。Done、画布Esc与⇧C复用对应处理。隐藏仅修改查看状态，不删除或解决评论；这是Aegis中清空评论覆盖层的适配，不能把它等同于Claude宿主的每个内部状态转换。
+- 原实现的隐藏例外会保留activeCommentId对应pin，导致当前线程仍显示；现已移除。关闭Comments面板也能完整收起，Properties自身的开关行为保持。
+- Show resolved可以查看已解决评论，Reopen恢复open状态；活动的已解决线程也有可定位pin。线程按id挂载，避免切换评论时沿用上一条的回复输入状态。
+- 打开线程时清空过时的layerTarget，修复resolve/reopen触发文档刷新后，旧图层请求把Comments切回Properties的问题。标题与列表数量按全设计未解决评论统计，避免跨页和活动已解决pin影响计数。
+
+### 验收
+
+在源码开发版的独立Design UI QA画板上新建一条不提及Agent的本地评论：保存→Hide→Show all→重新打开→Resolve→Show resolved→打开已解决线程→Reopen，全流程实机通过。额外验证Done提示条、⇧C双向切换、Esc退出；Hide后AX中线程、pin、列表与放置模式均消失，Show恢复原内容。Resolve/Reopen修复后Comments面板保持选中，未解决数量0/1同步。未向Agent发送测试请求，未修改用户播客画板。
+
+截图：`output/design-claude-parity/comment-hide-menu.png`、`comments-hidden.png`、`comments-resolved.png`。更新现有`design-comment-mode-electron.cjs`回归用例以覆盖新入口、隐藏不改数据、解决与重开保持面板；该脚本通过语法检查，本轮未运行其非CUA UI驱动，交互验收由CUA完成。TypeScript、图标/主题检查、Vite生产构建、diff检查通过；生产构建日志`comments-build.log`，仍有已有的chunk/KaTeX警告。底部Aegent输入条与Aegis其他功能保留，未提交或发布本轮改动。
+
+## 2026-10-12 — Comment edits without rebuilding the visible board
+
+**Cause confirmed in source:** `boardsWithDrafts` replaced an existing board's complete HTML with each partial `design_update/content` argument. `BoardFrame` derived its nonce and `srcDoc` from HTML/contentRevision, so each chunk navigated the affected iframe. Unchanged boards had stable sources; this was not evidence that every board was regenerated.
+
+**REA comparison:** exact AST scopes and source hashes are retained in `work/claude-core/comment-update-scope/manifest.json` in the investigation workspace. REA parent `ev_b490adda5d3777d8259b19b34dfeb392bacd47f28b3643e5f072039f9844ff9c`, summary `ev_5c162ec2a7090141d668e578a12c50b9b98fec052816b292b98b2e1685c159dd` (11 parsed JS scopes, 4938 AST nodes, 1032 semantic unknowns). Cached `desktop-auth-wait-juSiDdvX.js` SHA `73ef994d5fa5c73d4c3cf281facf135bf38bbac3cb6ae0e7450529555584581a`, range 1085828–1093777, defines `dc_html_str_replace`: replace against the baseline template, emit `dc-update` for that component, restore baseline on interrupted edits, and persist final source. Canvas SHA `1980f4c9bad2d948cebb13614aa73632edf715858e6bbb8cf12a788da2bdbd7b`, range 2937696–2938477, guards adoption on the live frame and unsaved local edits, then calls pushLive or emits a template update. These are static cache observations, not proof that every Claude edit uses this route or that no Claude interaction can reload a frame.
+
+**Implemented:**
+- Existing boards retain committed content while replacement arguments stream, including completed arguments that have not yet succeeded. Newly added boards still stream.
+- Canvas iframes retain their source/nonce. Committed HTML is reconciled inside the frame by stable layer IDs; text, attributes, CSS, insertions, deletion and reorder are supported. Unchanged DOM, form state, scroll, focus and input selection survive. The inspector's stylesheet cache resets and canvas measurements refresh after acknowledgement. A broken bridge can recover with a full sandboxed reload; explicit Reload and separate static preview remain reload paths.
+- HTML sanitization is shared by storage and frame input. Generated scripts/active content cannot enter the patch path. The existing opaque-origin sandbox, parent/source/nonce checks and CSP remain in force.
+- `design_update` now supports `patch{boardId,expectedRevision,find,replace}`. Exact unique nonempty matches are required; missing/ambiguous targets and stale revisions reject the entire transaction. Idempotency, sanitation, history and comment linkage use the existing repository path. Comment prompts ask for this operation and preserve unrelated markup and layer IDs.
+
+**Validation:** typecheck, Electron transpile, icon/theme checks, Vite build and diff whitespace check passed. Draft/comment prompt/history/layers/tools/diff tests passed. Repository tests passed, including unique patch, unrelated-board preservation, retry idempotency, stale revision, missing/ambiguous match, atomic rollback and script sanitation. `scripts/tests/design-live-update.html` was opened through CUA against the running Vite server and reported ALL CHECKS PASSED: actual BoardFrame updates/undo/rapid revert caused zero iframe load events and kept original srcDoc; detached/isolated DOM checks cover identity, CSS/reorder/deletion/tag change, input state, scroll/focus/selection and rejection of a wrong nonce. A deliberately broken test bridge recovered only its own frame.
+
+**Actual Aegis UI:** on the independent Design UI QA board, changed Heading from “Saved from Tweaks” to “Local comment update QA”, saved, reopened the existing QA comment, hid comments and used Cmd-Z to restore the original heading. Board zoom remained 73%; comment anchor remained usable. No test Agent messages were sent and original AI podcast content was not changed. Evidence: `output/design-claude-parity/comment-local-update-app.png` and `comment-local-update-regression.png`.
+
+**Runtime verification:** renderer changes were hot-loaded and verified. The backend `patch` implementation was tested in a fresh isolated Electron repository process and compiled. CUA denied Terminal access during automatic restart preparation, then the user restarted the dev instance. Process inspection confirmed the new main process started at 08:17:16, after backend compilation at 08:17:15; the QA saved title/comment and original AI podcast page were verified in the app afterward. A live Agent turn using the new patch tool was not sent or claimed as tested. Aegis-specific canvas/Agent controls were retained.
+
+## 2026-10-12 — White button labels disappear during inline editing
+
+User recording: `CleanShot 2026-10-12 at 08.42.09.mp4` (10.57 s). At roughly 2–3 s and 7–8 s, entering text edit on the purple “生成播客” CTA removes its entire colored surface; editing the dark “BubbleBrain” text at roughly 4–5 s appears normal. This is an inline-editor presentation defect, not a failed icon click or a board regeneration.
+
+Root cause: the `aegis-design-mask` handler set `visibility:hidden` on the whole selected layer. `InlineTextEditor` copied the white font color, but intentionally had a transparent background. This removed the button background and placed white text over the light board. The original editor also lacked flex/grid alignment and border insets, shifting text vertically in fixed-height CTAs.
+
+Fix: the trusted frame now masks glyph fill/stroke, text shadow and decoration via a temporary `data-aegis-masked` attribute. It leaves background, gradient, border (including currentColor), shadow, geometry and authored inline styles alone. Inspection supplies typography/layout details to the editor. The editor reproduces flex/grid alignment, native-button centering, transparent border insets, font style, text fill/stroke and text decoration without repainting the button surface. Removing the marker restores the original glyphs.
+
+Regression page: `scripts/tests/design-text-edit.html`, using production `designFrameHtml` and `InlineTextEditor`. Verified through CUA: purple CTA, plain paragraph, native button and gradient grid badge at 0.6 and 1.0 zoom; background/border remain, only glyphs are masked, original inline styles stay byte-identical, text positions stay within 1.5 CSS pixels, color is retained and leaving edit removes the temporary marker. All 40 assertions passed. No user project content was edited by these fixtures. Extracted recording contact sheets are under `output/design-icon-video/`.
+
+Desktop acceptance: after the user unlocked the Mac, verified the running Aegis development app on the original AI podcast design at 62% zoom. Selected Primary CTA and entered Edit text: the purple surface and centered white “生成播客” remained visible. Esc exited editing normally. Repeated entry/exit on the dark “BubbleBrain” label as the recording's comparison; text remained visible and aligned. No text was changed or Agent request sent. Closed the inspector and cleared selection afterward. Evidence: `output/design-icon-video/native-cta-edit.png` and `native-text-edit.png`. Typecheck, Electron transpile, Vite build, layers/draft tests and diff whitespace checks passed.
+
+## 2026-10-12 — Contextual selection toolbar
+
+The user approved removing non-reference toolbar actions. Replaced the selected-element Layers/name/Edit text/Duplicate/Quick edit/Comment strip with capability-specific controls. Removed its Quick edit input, state/handlers and unused CSS; retained the backend API and unrelated Agent/Styles functionality. Layer duplication remains in Properties. Board-level controls are unchanged.
+
+Reference: exact `fEt`, `Tdn`, `cCt` functions from captured Claude bundle SHA `1980f4c9bad2d948cebb13614aa73632edf715858e6bbb8cf12a788da2bdbd7b`, retained in the investigation workspace under `work/claude-core/selection-toolbar-audit/`. REA parent `ev_15b60239e39ba308a76949c3a96f8c805d48d87460900797d72a376f2183406b`; 3 fragments parsed, 4811 AST nodes, 865 semantic unknowns. This establishes conditional text/surface/image/vector strips and icon actions, not full runtime or pixel equivalence.
+
+Implemented:
+- Text: font family/size/weight/line height/letter spacing, color, bold/italic/underline, alignment. Existing strike-through survives toggling underline.
+- Decorated text/buttons: typography and text color plus fill, border and corner radius. Containers show surface controls. Images show object-fit and radius. SVG shapes show fill/stroke/width; line selections omit fill.
+- Edit text, Comment and Properties are compact icon actions with accessible names. No `p` label, constant Duplicate, or Quick edit entry. Controls remain stable while saves are pending.
+- Changes use the existing board revision, ancestor lock, CSS validation, saved history and undo path. Form popovers escape the scrollable toolbar; Enter or outside blur commits, Escape discards an uncommitted field. Unsupported link/list structure edits and image replacement/cropping are not advertised as implemented controls.
+
+Validation: `design-selection-tools.html` reports 26 checks passed, covering six selection types, obsolete actions, lock/stale revision/invalid CSS/missing-node rejection, stable IDs, and preservation of nested/unrelated content. CUA browser interactions verified bold, underline without losing strike-through, font size, Escape cancellation, outside-click commit, fill and image-fit persistence, and undo. In the actual running Aegis development app, the independent Design UI QA heading accepted Italic/Underline; Cmd-Z and Cmd-Shift-Z correctly toggled saved Underline state, finally restored. Original podcast content was only selected, not edited: BubbleBrain shows text controls, Primary CTA shows text/surface controls, Properties opens the actual inspector. The earlier native CTA text-edit fix remains intact.
+
+Evidence: `output/design-icon-video/selection-text-native.png`, `selection-button-native.png`, `selection-regression.png`. Typecheck, Vite build, layers tests, icon policy, theme variables and diff checks passed. No commit, package or publication performed. Aegis bottom Agent input and other explicit retained functions remain intact.

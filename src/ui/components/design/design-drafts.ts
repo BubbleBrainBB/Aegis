@@ -9,8 +9,8 @@ export const draftBoardId = (toolUseId: string, index: number) => `draft:${toolU
 export const isDraftBoardId = (id: string) => id.startsWith("draft:");
 
 /**
- * The canvas while the agent writes: boards it is rewriting show their new
- * HTML, and boards it is adding appear where the design will place them
+ * The canvas while the agent writes: existing boards keep their last committed
+ * HTML until the write succeeds; boards it is adding appear where the design will place them
  * (right of every other board, at the requested or default size).
  */
 export function boardsWithDrafts(boards: DesignBoard[], drafts: DesignDraftMessage[]): CanvasBoard[] {
@@ -20,7 +20,7 @@ export function boardsWithDrafts(boards: DesignBoard[], drafts: DesignDraftMessa
     for (const board of draft.boards) {
       if (board.op === "content") {
         const target = out.find((b) => b.id === board.boardId);
-        if (target) Object.assign(target, { html: board.html, draft: { toolUseId: draft.toolUseId, complete: board.complete } });
+        if (target) Object.assign(target, { draft: { toolUseId: draft.toolUseId, complete: board.complete } });
         continue;
       }
       out.push(addedBoard(out, draft.toolUseId, board));

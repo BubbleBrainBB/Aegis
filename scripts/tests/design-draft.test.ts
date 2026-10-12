@@ -90,7 +90,11 @@ async function main() {
     ],
   };
   const out = boardsWithDrafts(boards, [draft]);
-  assert.equal(out[1].html, '<p>calmer</p>');
+  assert.equal(out[1].html, '<p>pricing</p>', 'even complete arguments are not a committed write');
+  draft.boards[0].html = '<p>unfinished';
+  draft.boards[0].complete = false;
+  assert.equal(boardsWithDrafts(boards, [draft])[1].html, boards[1].html, 'partial replacement never erases existing content');
+  draft.boards[0].complete = true;
   assert.equal(boards[1].html, '<p>pricing</p>', 'the saved boards are not changed');
   assert.deepEqual([out[2].id, out[2].x, out[2].width, out[2].height, out[2].draft?.complete], ['draft:c1:1', 1520 + 1440 + 80, 880, 640, false]);
   assert.equal(draftStatus([draft]), 'Writing Stories');
