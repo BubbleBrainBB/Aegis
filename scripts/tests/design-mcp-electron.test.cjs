@@ -178,6 +178,38 @@ app.whenReady().then(async () => {
     assert.match(designContextText('session-ds'), /Template: start new boards from "Landing"/);
     assert.match((await call(info.url, b, 'design_resources', {})).result.content[0].text, /no design system/);
 
+    // Quick edits: one layer, a fast model, new markup or a handoff.
+    const { quickEditDesign, setQuickEditModel, cancelQuickEdit, quickEditReply } = require('../../dist-electron/electron/design/quick-edit.js');
+    assert.deepEqual(quickEditReply('```html\n<h1>x</h1>\n```'), { html: '<h1>x</h1>' });
+    assert.deepEqual(quickEditReply('Here you go: <p>y</p> done'), { html: '<p>y</p>' });
+    assert.deepEqual(quickEditReply('HANDOFF: needs a new board'), { handoff: 'needs a new board' });
+    const qeDoc = json(await call(info.url, a, 'design_update', { documentId: created.id, operationId: 'op-qe', operations: [{ type: 'add', name: 'Quick', width: 400, height: 300, html: '<style>:root{--accent:#4f5bd5}</style><main><h1 style="font-size: 48px">Notes</h1><p>Body</p></main>' }] }));
+    const quick = qeDoc.boards.find((x) => x.name === 'Quick');
+    const h1 = (getDesignRepository().read('session-a', created.id).boards.find((x) => x.id === quick.id).html.match(/<h1[^>]*data-aegis-node-id="([^"]+)"/) || [])[1];
+    assert.ok(h1, 'h1 has a layer id');
+    let seen = null;
+    setQuickEditModel(async (input) => { seen = input; return '```html\n<h1 style="font-size: 36px; color: var(--accent)">Notes</h1>\n```'; });
+    const req = (over) => ({ requestId: 'q-' + Math.random(), sessionId: 'session-a', documentId: created.id, boardId: quick.id, nodeId: h1, instruction: 'smaller, in the accent color', ...over });
+    const ok = await quickEditDesign(req());
+    assert.equal(ok.ok, true, JSON.stringify(ok));
+    assert.match(ok.html, new RegExp(`<h1 style="font-size: 36px; color: var\\(--accent\\)" data-aegis-node-id="${h1}">Notes</h1><p`));
+    assert.equal(ok.contentRevision, quick.contentRevision);
+    assert.match(seen.prompt, /--accent: #4f5bd5/);
+    assert.match(seen.prompt, /<h1 style="font-size: 48px"/);
+    assert.match(seen.system, /HANDOFF/);
+    setQuickEditModel(async () => 'HANDOFF: needs a second board');
+    assert.deepEqual(await quickEditDesign(req()), { ok: false, handoff: 'needs a second board' });
+    setQuickEditModel(async () => '<h1>A</h1><h2>B</h2>');
+    assert.match((await quickEditDesign(req())).handoff, /didn't fit the board/);
+    setQuickEditModel(async () => { throw new Error('not logged in'); });
+    assert.match((await quickEditDesign(req())).error, /needs Claude Code: not logged in/);
+    setQuickEditModel(({ signal }) => new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('aborted')))));
+    const pendingEdit = quickEditDesign(req({ requestId: 'q-cancel' }));
+    await new Promise((r) => setTimeout(r, 50));
+    cancelQuickEdit('q-cancel');
+    assert.match((await pendingEdit).error, /Cancelled/);
+    assert.match((await quickEditDesign(req({ sessionId: 'session-b' })).catch((e) => ({ error: e.message }))).error, /not found/i, 'only the session\'s own designs');
+
     console.log('PASS design MCP: listed, session-bound writes and previews, isolation, forged headers refused, meta and history attribution, Bubble and Pi tools');
   } catch (error) {
     console.error(error);

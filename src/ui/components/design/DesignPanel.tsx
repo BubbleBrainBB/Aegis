@@ -41,7 +41,7 @@ import {
   layerName,
   useDesignUser,
 } from "./design-ui";
-import { Eye, EyeOff, Layers, MoreHorizontal } from "../icons";
+import { Eye, EyeOff, Layers, MoreHorizontal, Sparkles, X } from "../icons";
 import { useAppStore } from "../../store/useAppStore";
 import { useDesignStore } from "../../store/useDesignStore";
 import { selectDesignDrafts, useDesignDraftStore } from "../../store/useDesignDraftStore";
@@ -198,6 +198,15 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
   }, [clearRequest, sessionId]);
   const [head, setHead] = useState(0);
   const [stylesOpen, setStylesOpen] = useState(false);
+  /** A quick edit of the selected layer: typing, running, or what came back. */
+  const [quick, setQuick] = useState<{
+    boardId: string;
+    nodeId: string;
+    text: string;
+    state: "input" | "running" | "handoff" | "error";
+    message?: string;
+    requestId?: string;
+  }>();
   const loadLayerStyles = useCallback(
     async (boardId: string, nodeId: string) => (await canvas.current?.styles(boardId, nodeId)) ?? null,
     [],
@@ -735,6 +744,41 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
     } catch (e) {
       setFailure(errorText(e));
     }
+  };
+  /**
+   * Quick edit: a fast model rewrites the selected layer from one short
+   * instruction. The result is saved as one version against the board's
+   * revision at the time of asking; anything bigger goes to the agent.
+   */
+  const runQuickEdit = async () => {
+    const q = quick;
+    if (!q || !sessionId || !doc || !q.text.trim()) return;
+    const requestId = uid();
+    setQuick({ ...q, state: "running", requestId, message: undefined });
+    try {
+      const result = await window.electron.design.quickEdit({
+        requestId, sessionId, documentId: doc.id, boardId: q.boardId, nodeId: q.nodeId, instruction: q.text,
+      });
+      if (!result.ok) {
+        setQuick((cur) => cur?.requestId === requestId
+          ? { ...cur, state: "handoff" in result ? "handoff" : "error", message: "handoff" in result ? result.handoff : result.error }
+          : cur);
+        return;
+      }
+      const board = doc.boards.find((b) => b.id === q.boardId);
+      if (!board) throw new Error("That board no longer exists.");
+      await changeLayer({ ...board, contentRevision: result.contentRevision }, result.html, `Quick edit · ${q.text.trim().slice(0, 80)}`);
+      setQuick(undefined);
+      toast.success("Quick edit applied", { action: { label: "Undo", onClick: () => stepRef.current("undo") } });
+    } catch (e) {
+      setQuick((cur) => (cur?.requestId === requestId ? { ...cur, state: "error", message: errorText(e) } : cur));
+    }
+  };
+  /** The same request, as a message to the design's agent (it sees the selection). */
+  const sendQuickToAgent = () => {
+    if (!quick || !sessionId) return;
+    useAppStore.getState().requestChatInjection({ sessionId, text: quick.text.trim(), mode: "append", submit: true, source: "design-quick-edit" });
+    setQuick(undefined);
   };
   /** Text and Frame tools: one write per new layer, which then becomes the selection. */
   const insertLayer = (
@@ -1460,6 +1504,20 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
                     style={{ left: r.x, top: Math.max(8, r.y - 40) }}
                     onPointerDown={(e) => e.stopPropagation()}
                   >
+                    {quick && quick.nodeId === selection.anchor.nodeId ? (
+                      <QuickEditBar
+                        quick={quick}
+                        onText={(text) => setQuick({ ...quick, text, state: "input", message: undefined })}
+                        onRun={() => void runQuickEdit()}
+                        onCancel={() => {
+                          if (quick.requestId) void window.electron.design.quickEditCancel({ requestId: quick.requestId });
+                          setQuick(undefined);
+                          canvas.current?.focus();
+                        }}
+                        onHandoff={sendQuickToAgent}
+                      />
+                    ) : (
+                    <>
                     <button
                       aria-label="Layers"
                       title="Layers (⌥L)"
@@ -1490,9 +1548,23 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
                         Duplicate
                       </button>
                     )}
+                    {selection.anchor.nodeId && !selection.anchor.area && sessionId && (
+                      <button
+                        disabled={!editable || busy}
+                        aria-label="Quick edit"
+                        title="Quick edit: describe a small change to this layer"
+                        onClick={() =>
+                          setQuick({ boardId: selection.boardId, nodeId: selection.anchor.nodeId!, text: "", state: "input" })
+                        }
+                      >
+                        <Sparkles size={13} /> Quick edit
+                      </button>
+                    )}
                     <button disabled={!editable} onClick={() => startComment()}>
                       Comment <kbd>C</kbd>
                     </button>
+                    </>
+                    )}
                   </div>,
                 );
               // The selection's size under it, like a design tool's dimension badge.
@@ -1971,4 +2043,56 @@ function placeBeside(
     top: Math.max(8, Math.min(r.y + r.height + 12, size.height - 220)),
     width,
   };
+}
+
+/** The element bar while a quick edit is typed, runs, or needs the agent. */
+function QuickEditBar({
+  quick,
+  onText,
+  onRun,
+  onCancel,
+  onHandoff,
+}: {
+  quick: { text: string; state: "input" | "running" | "handoff" | "error"; message?: string };
+  onText(text: string): void;
+  onRun(): void;
+  onCancel(): void;
+  onHandoff(): void;
+}) {
+  return (
+    <span className="design-quick-edit" data-quick-edit={quick.state}>
+      <Sparkles size={13} aria-hidden="true" />
+      {quick.state === "running" ? (
+        <span className="design-quick-status" role="status">
+          <span className="design-dock-spinner" aria-hidden="true" /> Editing…
+        </span>
+      ) : quick.state === "input" ? (
+        <input
+          autoFocus
+          aria-label="Quick edit instruction"
+          placeholder="Make it smaller, use the accent color…"
+          value={quick.text}
+          onChange={(e) => onText(e.target.value)}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === "Enter" && quick.text.trim()) onRun();
+            if (e.key === "Escape") onCancel();
+          }}
+        />
+      ) : (
+        <span className="design-quick-status" role="alert" title={quick.message}>
+          {quick.message}
+        </span>
+      )}
+      {(quick.state === "handoff" || quick.state === "error") && (
+        <button onClick={onHandoff} title="Send this request to the design's agent">
+          Send to agent
+        </button>
+      )}
+      {quick.state === "error" && <button onClick={onRun}>Try again</button>}
+      <button aria-label="Cancel quick edit" onClick={onCancel}>
+        <X size={12} />
+      </button>
+    </span>
+  );
 }

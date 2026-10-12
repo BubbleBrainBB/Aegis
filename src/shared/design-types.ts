@@ -234,6 +234,14 @@ export interface DesignAPI {
   }): Promise<{ saved: boolean; path?: string }>;
   /** Style guides to offer in a conversation: built in, then the project's DESIGN.md. */
   styles(input: { sessionId: string; cwd?: string | null }): Promise<DesignStyleSummary[]>;
+  /**
+   * A quick edit of one layer by a fast model: new board HTML to save as one
+   * version (against `contentRevision`), or a reason to hand it to the agent.
+   */
+  quickEdit(input: { requestId: string; sessionId: string; documentId: string; boardId: string; nodeId: string; instruction: string }): Promise<
+    { ok: true; html: string; contentRevision: number } | { ok: false; handoff: string } | { ok: false; error: string }
+  >;
+  quickEditCancel(input: { requestId: string }): Promise<void>;
   /** The project's templates (design-system/templates), sanitized for thumbnails. */
   templates(input: { sessionId: string; cwd?: string | null }): Promise<{ id: string; name: string; summary: string; html: string }[]>;
   /** The design composer's picks for a conversation: style guide, variations (1 = none) and a template. */

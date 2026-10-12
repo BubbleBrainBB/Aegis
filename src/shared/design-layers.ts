@@ -2,7 +2,9 @@ import {
   defaultTreeAdapter,
   html as parse5Html,
   parse,
+  parseFragment,
   serialize,
+  serializeOuter,
   type DefaultTreeAdapterMap,
 } from "parse5";
 
@@ -500,4 +502,47 @@ export function wrapInAutoLayout(
   if (!placedIn || !("tagName" in placedIn) || attr(placedIn, layerIdAttribute) !== wrapperId || !sameParent)
     throw new Error("This layer can't be wrapped here.");
   return { html: out, nodeId: wrapperId };
+}
+
+// ── One layer's markup (quick edits) ───────────────────────────────────────
+
+/** A layer's own HTML (the element and everything inside it). */
+export function readLayerHtml(html: string, nodeId: string): string {
+  const { elements } = documentModel(html);
+  const node = elements.find((e) => attr(e, layerIdAttribute) === nodeId);
+  if (!node) throw new Error("Layer no longer exists.");
+  return serializeOuter(node);
+}
+
+/**
+ * Replaces a layer with new markup for it: exactly one root element, which
+ * keeps the layer's id (so selection, comments and history still point at
+ * it). Refuses several roots, locked layers, and markup that HTML would move
+ * elsewhere (a div inside a p).
+ */
+export function replaceLayerHtml(html: string, nodeId: string, fragment: string): string {
+  const { doc, elements } = documentModel(html);
+  const node = elements.find((e) => attr(e, layerIdAttribute) === nodeId);
+  if (!node) throw new Error("Layer no longer exists.");
+  assertUnlocked(node);
+  const parent = node.parentNode as Element;
+  const parsed = parseFragment(parent, fragment, {});
+  const roots = parsed.childNodes.filter((n): n is Element => "tagName" in n);
+  const strayText = parsed.childNodes.some((n) => n.nodeName === "#text" && "value" in n && n.value.trim());
+  if (roots.length !== 1 || strayText) throw new Error("The edit must be exactly one element.");
+  const root = roots[0];
+  set(root, layerIdAttribute, nodeId);
+  const siblings = parent.childNodes;
+  siblings.splice(siblings.indexOf(node), 1, root);
+  root.parentNode = parent;
+  const out = normalizeDesignLayers(serialize(doc));
+  // HTML parsing must keep it where it was (no div inside a p): same tag, same parent.
+  const parentId = attr(parent, layerIdAttribute);
+  const placed = documentModel(out).elements.find((e) => attr(e, layerIdAttribute) === nodeId);
+  const placedIn = placed?.parentNode as Element | undefined;
+  const sameParent = parentId
+    ? !!placedIn && "tagName" in placedIn && attr(placedIn, layerIdAttribute) === parentId
+    : !!placedIn && "tagName" in placedIn && placedIn.tagName === parent.tagName;
+  if (!placed || placed.tagName !== root.tagName || !sameParent) throw new Error("That markup can't go here.");
+  return out;
 }

@@ -110,8 +110,17 @@ export async function runClaudeOneShot(params: {
   compatibleProviderId?: ClaudeCompatibleProviderId;
   betas?: string[];
   claudeReasoningEffort?: ClaudeReasoningEffort;
+  /** Replaces Claude Code's own system prompt (short tasks that need no agent). */
+  systemPrompt?: string;
+  /** Stops the call (the user cancelled). */
+  signal?: AbortSignal;
 }): Promise<{ text: string; sessionId?: string; model?: string }> {
   const sdk = await loadClaudeAgentSdk();
+  const abortController = new AbortController();
+  if (params.signal) {
+    if (params.signal.aborted) abortController.abort();
+    else params.signal.addEventListener('abort', () => abortController.abort(), { once: true });
+  }
   let env = {
     ...process.env,
     ...getClaudeEnv(),
@@ -134,10 +143,11 @@ export async function runClaudeOneShot(params: {
   const result = sdk.query({
     prompt: params.prompt,
     options: {
-      systemPrompt: {
+      systemPrompt: params.systemPrompt ?? {
         type: 'preset',
         preset: 'claude_code',
       },
+      abortController,
       maxTurns: 1,
       allowedTools: [],
       env,

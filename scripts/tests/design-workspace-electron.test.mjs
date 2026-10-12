@@ -48,6 +48,9 @@ app.whenReady().then(async()=>{
  const {createNativeDesignTools,setDesignPromptSource}=require(path.join(root,'dist-electron/electron/design/tools.js'));
  const {getDesignComposerPrefs}=require(path.join(root,'dist-electron/electron/design/focus.js'));
  registerDesignIpc();
+ // Quick edits answer from a stand-in model: a rewrite, or a handoff on request.
+ const {setQuickEditModel}=require(path.join(root,'dist-electron/electron/design/quick-edit.js'));
+ setQuickEditModel(async({prompt})=>/second board/.test(prompt)?'HANDOFF: needs a new board':prompt.replace(/[\s\S]*?(<h1[^>]*>)/,'$1').replace(/<\/h1>[\s\S]*/,'</h1>').replace('style="','style="letter-spacing: -1px; '));
  const sent=[];ipcMain.on('client-event',(_e,event)=>sent.push(typeof event==='string'?JSON.parse(event):event));
  setDesignPromptSource((sessionId)=>sessionId==='s1'?{prompt:'Design a landing page for Atlas',id:'s1:1'}:undefined);
  const repoRead=()=>require(path.join(root,'dist-electron/electron/design/service.js')).getDesignRepository().read('s1',atlasId());
@@ -169,6 +172,32 @@ app.whenReady().then(async()=>{
   await js('qa.app.setState(s=>({sessions:{...s.sessions,s1:{...s.sessions.s1,status:"idle",permissionRequests:[]}}}))');
   await until('document.querySelector("[data-design-dock]")?.dataset.designDock==="composer"&&!document.querySelector("[data-design-dock-attention]")','back to the composer');
   assert.equal(await js('localStorage.getItem("aegis.design.dock")'),prefBefore,'the dock preference is untouched');
+
+  // Quick edit: a short instruction rewrites the selected layer as one version; bigger asks go to the agent.
+  await (await homeFrame()).executeJavaScript('document.querySelector("h1").click()');
+  await until('document.querySelector(".design-float-name")?.textContent==="h1"','h1 for a quick edit');
+  await click('[aria-label="Quick edit"]');
+  await until('!!document.querySelector("[aria-label=\'Quick edit instruction\']")','quick edit input');
+  const typeQuick=(text)=>js('(()=>{const el=document.querySelector("[aria-label=\'Quick edit instruction\']");el.focus();Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set.call(el,'+JSON.stringify(text)+');el.dispatchEvent(new Event("input",{bubbles:true}))})()');
+  const enterQuick=()=>js('document.querySelector("[aria-label=\'Quick edit instruction\']").dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true}))');
+  await typeQuick('tighten the letter spacing');await enterQuick();
+  const atlasHome=()=>repoRead().boards.find(b=>b.name==='Home').html;
+  for(let i=0;i<80&&!/letter-spacing: -1px/.test(atlasHome());i++)await delay(75);
+  assert.match(atlasHome(),/<h1[^>]*style="letter-spacing: -1px;/,'the quick edit is saved');
+  assert.match(repoRead().boards.find(b=>b.name==='Home').html,/Notes that think along with you/,'the rest of the board is untouched');
+  await until('!document.querySelector("[data-quick-edit]")','bar back to normal');
+  await click('[aria-label="Quick edit"]');
+  await until('!!document.querySelector("[aria-label=\'Quick edit instruction\']")','quick edit input again');
+  await typeQuick('add a second board for pricing');await enterQuick();
+  await until('document.querySelector("[data-quick-edit]")?.dataset.quickEdit==="handoff"','handed off');
+  assert.match(await js('document.querySelector("[data-quick-edit]").textContent'),/needs a new board[\s\S]*Send to agent/);
+  await shot('design-quick-handoff');
+  const before=sent.length;
+  await js('[...document.querySelectorAll("[data-quick-edit] button")].find(b=>b.textContent==="Send to agent").click()');
+  for(let i=0;i<60&&sent.length===before;i++)await delay(75);
+  assert.equal(sent.at(-1)?.payload?.prompt,'add a second board for pricing','the request goes to the agent');
+  await js('document.querySelector("[data-design-section] .design-viewport").dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))');
+  await js('document.querySelector("[data-design-section] .design-viewport").dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))');
 
   // Value sources and tokens: a stylesheet value shows as such; a token pick writes var(); reset restores the rule.
   await call('s1','design_update',{documentId:atlas.id,operationId:'tok-1',operations:[{type:'add',name:'Tokens',width:600,height:300,html:'<style>:root{--accent:#4f5bd5;--ink:#23263a}.card{color:#222222;padding:24px}</style><div class="card" data-aegis-layer-name="Card">Card text</div><div data-aegis-layer-name="Row" style="position:relative;height:60px"><span style="position:absolute;left:0;top:0">Alpha</span><span style="position:absolute;left:140px;top:2px">Beta</span><span style="position:absolute;left:280px;top:0">Gamma</span></div>'}]});

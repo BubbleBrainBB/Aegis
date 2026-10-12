@@ -90,7 +90,18 @@ async function smoke(agent, info, repo, headersFor) {
   const after = repo.read(sessionId, doc.id);
   assert.ok(after.revision > doc.revision, `${agent} changed the design for the comment (exit ${second.code})\n${second.out.slice(-1500)}\n${second.err.slice(-1500)}`);
   assert.ok(thread.messages.some((m) => m.author.kind === 'agent'), `${agent} replied in the thread`);
-  return { agent, boards: after.boards.length, revision: after.revision, reply: thread.messages.at(-1).text };
+  // A real quick edit on the board's first layer (fast model through Claude Code).
+  let quick = 'skipped';
+  if (agent === 'claude') {
+    const { quickEditDesign } = require(`${dist}/design/quick-edit.js`);
+    const board2 = repo.read(sessionId, doc.id).boards[0];
+    const nodeId = /data-aegis-node-id="([^"]+)"/.exec(board2.html)[1];
+    const started = Date.now();
+    const result = await quickEditDesign({ requestId: 'smoke', sessionId, documentId: doc.id, boardId: board2.id, nodeId, instruction: 'Give this element a 1px solid border in its text color.' });
+    assert.ok(result.ok || result.handoff, `quick edit answered: ${JSON.stringify(result).slice(0, 300)}`);
+    quick = result.ok ? `edited in ${Date.now() - started}ms` : `handoff: ${result.handoff}`;
+  }
+  return { agent, boards: after.boards.length, revision: after.revision, reply: thread.messages.at(-1).text, quick };
 }
 
 app.whenReady().then(async () => {

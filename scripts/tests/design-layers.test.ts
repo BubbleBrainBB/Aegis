@@ -9,6 +9,8 @@ import {
   inferAutoLayout,
   setAutoLayout,
   wrapInAutoLayout,
+  readLayerHtml,
+  replaceLayerHtml,
   type DesignLayer,
 } from "../../src/shared/design-layers";
 import { sanitizeDesignHtml } from "../../src/electron/design/html";
@@ -172,4 +174,19 @@ console.log(
   assert.match(wrapped.html, new RegExp(`<div data-aegis-node-id="${wrapped.nodeId}" data-aegis-layer-name="Auto layout" style="position: absolute; top: 10px; display: flex !important; flex-direction: column !important; gap: 12px !important"><h1 data-aegis-node-id="h" style="color: blue">Hi</h1></div><p`), wrapped.html);
   assert.throws(() => wrapInAutoLayout('<p data-aegis-node-id="p"><span data-aegis-node-id="s">x</span></p>', "s", { kind: "row" }), /can't be wrapped here/);
   console.log("Design layers: auto layout inference, set and wrap passed");
+}
+
+// One layer's markup: read it, replace it keeping its id, refuse what can't fit.
+{
+  const page = '<main data-aegis-node-id="m"><h1 data-aegis-node-id="h" style="font-size: 48px">Notes</h1><p data-aegis-node-id="p">Body</p></main>';
+  assert.equal(readLayerHtml(page, "h"), '<h1 data-aegis-node-id="h" style="font-size: 48px">Notes</h1>');
+  const smaller = replaceLayerHtml(page, "h", '<h1 style="font-size: 36px">Notes</h1>');
+  assert.match(smaller, /<h1 style="font-size: 36px" data-aegis-node-id="h">Notes<\/h1><p data-aegis-node-id="p">/);
+  const nested = replaceLayerHtml(page, "h", '<div class="hero"><h1>Notes</h1><span>New</span></div>');
+  assert.match(nested, /<div class="hero" data-aegis-node-id="h"><h1 data-aegis-node-id="aegis-layer-\d+">Notes<\/h1>/, "new children get ids");
+  assert.throws(() => replaceLayerHtml(page, "h", "<h1>A</h1><h2>B</h2>"), /exactly one element/);
+  assert.throws(() => replaceLayerHtml(page, "h", "just text"), /exactly one element/);
+  assert.throws(() => replaceLayerHtml('<p data-aegis-node-id="p"><span data-aegis-node-id="s">x</span></p>', "s", "<div>block</div>"), /can't go here/);
+  assert.throws(() => readLayerHtml(page, "missing"), /no longer exists/);
+  console.log("Design layers: reading and replacing one layer's markup passed");
 }

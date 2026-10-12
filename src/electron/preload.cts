@@ -1060,6 +1060,8 @@ contextBridge.exposeInMainWorld('electron', {
     composer: (input?: unknown) => ipcRenderer.invoke('design:composer', input),
     styles: (input?: unknown) => ipcRenderer.invoke('design:styles', input),
     templates: (input?: unknown) => ipcRenderer.invoke('design:templates', input),
+    quickEdit: (input?: unknown) => ipcRenderer.invoke('design:quickEdit', input),
+    quickEditCancel: (input?: unknown) => ipcRenderer.invoke('design:quickEditCancel', input),
     preview: (input?: unknown) => ipcRenderer.invoke('design:preview', input),
     export: (input?: unknown) => ipcRenderer.invoke('design:export', input),
     onChanged: (callback: (event: unknown) => void) => {

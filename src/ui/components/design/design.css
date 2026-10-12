@@ -2645,3 +2645,34 @@ details.design-section > .design-grid {
   margin: 2px 0 0;
   font-size: 11px;
 }
+
+/* Quick edit inside the element bar. */
+.design-quick-edit {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 300px;
+  max-width: 460px;
+  padding-left: 6px;
+}
+.design-quick-edit input {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+.design-quick-status {
+  display: inline-flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}

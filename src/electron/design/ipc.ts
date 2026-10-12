@@ -7,6 +7,7 @@ import { ipcMainHandle } from "../util";
 import { getDesignRepository, previewDesign } from "./service";
 import { setDesignComposerPrefs, setDesignFocus } from "./focus";
 import { listDesignStyles, listProjectTemplates } from "./styles";
+import { cancelQuickEdit, quickEditDesign } from "./quick-edit";
 import { designFrameHtml } from "./html";
 import { getUserProfile } from "../libs/user-profile";
 import type { DesignAPI, DesignAuthor } from "../../shared/design-types";
@@ -112,6 +113,11 @@ export function registerDesignIpc() {
           ? listProjectTemplates(x.sessionId, typeof x.cwd === "string" && isAbsolute(x.cwd) ? x.cwd : undefined)
           : [],
       ),
+    quickEdit: (x) => quickEditDesign(x),
+    quickEditCancel: (x) => {
+      if (typeof x?.requestId === "string") cancelQuickEdit(x.requestId);
+      return Promise.resolve();
+    },
     composer: (x) => {
       if (typeof x?.sessionId === "string") setDesignComposerPrefs(x.sessionId, x);
       return Promise.resolve();
