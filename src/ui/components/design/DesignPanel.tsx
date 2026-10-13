@@ -1,3 +1,4 @@
+import type { DesignCanvasAwareness } from "../../../shared/design-types";
 import { nextBoardName } from "../../../shared/design-names";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
@@ -132,6 +133,10 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
   const [failure, setFailure] = useState("");
   const [busy, setBusy] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [awareness, setAwareness] = useState<{ key: string; value: DesignCanvasAwareness }>();
+  const awarenessKey = documentId + ":" + activePageId;
+  const reportAwareness = useCallback((value: DesignCanvasAwareness) => setAwareness({ key: awarenessKey, value }), [awarenessKey]);
+  const currentAwareness = awareness?.key === awarenessKey ? awareness.value : undefined;
   const selected = selectedIds.length === 1 ? selectedIds[0] : undefined;
   const [selection, setSelection] = useState<Selection>();
   const [layerTarget, setLayerTarget] = useState<{
@@ -178,12 +183,19 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
         pageId: open ? activePageId : undefined,
         boardId: open ? (selection?.boardId ?? selected) : undefined,
         nodeId: open ? selection?.anchor.nodeId : undefined,
+        selectedBoardIds: open ? (selection ? [selection.boardId] : selectedIds) : undefined,
+        visibleBoardIds: open ? currentAwareness?.visibleBoardIds : undefined,
+        focusedBoardId: open ? currentAwareness?.focusedBoardId : undefined,
       })
       ?.catch(() => {});
+  }, [sessionId, hidden, doc?.id, historical, activePageId, selected, selectedIds, selection?.boardId, selection?.anchor.nodeId, currentAwareness]);
+  // Close only on lifecycle changes, not between every selection/viewport report.
+  useEffect(() => {
+    const open = !hidden && !historical ? doc?.id : undefined;
     return () => {
-      if (open) void window.electron.design.focus?.({ sessionId, documentId: open, open: false })?.catch(() => {});
+      if (sessionId && open) void window.electron.design.focus?.({ sessionId, documentId: open, open: false })?.catch(() => {});
     };
-  }, [sessionId, hidden, doc?.id, historical, activePageId, selected, selection?.boardId, selection?.anchor.nodeId]);
+  }, [sessionId, hidden, doc?.id, historical]);
   // The chat composer shows what is selected here as a chip; dropping the
   // chip clears the selection.
   useEffect(() => {
@@ -1332,6 +1344,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
               : undefined
           }
           boards={canvasBoards}
+          onAwarenessChange={reportAwareness}
           marks={(doc?.marks ?? []).filter(mark => doc && designPageId(doc, mark) === activePageId)}
           selectedMarkIds={selectedMarkIds}
           onMarkSelectionChange={ids => { setSelectedMarkIds(ids); if (ids.length) { setSelectedIds([]); setSelection(undefined); } }}

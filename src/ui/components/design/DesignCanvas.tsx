@@ -1,3 +1,5 @@
+import { boardIdsInView } from "./canvas-geometry";
+import type { DesignCanvasAwareness } from "../../../shared/design-types";
 import { BoardNameInput } from "./BoardNameInput";
 import {
   useEffect,
@@ -149,6 +151,7 @@ type Props = {
   selection?: ElementSelection;
   editable: boolean;
   onSelectionChange(ids: string[]): void;
+  onAwarenessChange?(value: DesignCanvasAwareness): void;
   /** `comment`: picked in comment mode; `edit`: double-clicked to edit text. */
   onElementSelect(
     board: DesignBoard,
@@ -353,6 +356,29 @@ export function DesignCanvas(props: Props) {
   const selectedBoards = boards.filter((b) => selectedIds.includes(b.id));
   const selectedMarks = marks.filter(m => selectedMarkIds.includes(m.id));
   const previewBoard = boards.find((b) => b.id === previewId);
+  const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
+  const lastAwareness = useRef("");
+  useLayoutEffect(() => {
+    const el = viewport.current;
+    if (!el) return;
+    const measure = () => setViewportSize(old => old.width === el.clientWidth && old.height === el.clientHeight
+      ? old : { width: el.clientWidth, height: el.clientHeight });
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+  useEffect(() => {
+    const focusedBoardId = previewBoard?.id;
+    const visibleBoardIds = focusedBoardId ? [focusedBoardId]
+      : boardIdsInView(boards.map(b => ({ ...b, ...(patches[b.id] ?? {}) })), view, viewportSize);
+    const value = { visibleBoardIds, focusedBoardId };
+    const key = JSON.stringify([storageKey, value]);
+    if (key === lastAwareness.current) return;
+    lastAwareness.current = key;
+    latest.current.onAwarenessChange?.(value);
+  }, [boards, patches, view, viewportSize, previewBoard?.id, storageKey]);
+
 
   // The layer the panel last asked a frame to select (keyboard, layers list).
   // A frame's reply to an older request is stale: stepping quickly would

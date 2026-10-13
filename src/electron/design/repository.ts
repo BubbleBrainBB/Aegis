@@ -818,7 +818,7 @@ export class DesignRepository {
               ...(op.pageId !== undefined ? { pageId: op.pageId } : {}),
               // Each page has its own world: place after that page's boards.
               x: op.x ?? (siblings.length ? Math.max(...siblings.map((b) => b.x + b.width)) + 80 : 0),
-              y: op.y ?? 0,
+              y: op.y ?? (siblings.length ? Math.min(...siblings.map(b => b.y)) : 0),
               width: op.width ?? 880,
               height: op.height ?? 640,
               contentRevision: 1,

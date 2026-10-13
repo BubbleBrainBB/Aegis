@@ -120,3 +120,12 @@ export function snapMove(
   };
   return { dx: offset("x"), dy: offset("y"), guides };
 }
+
+/** Board intersections in canvas/world coordinates, independent of screen zoom. */
+export function boardIdsInView(boards: readonly (Rect & { id: string })[], view: CanvasView, size: { width: number; height: number }): string[] {
+  if (size.width <= 0 || size.height <= 0 || !Number.isFinite(view.zoom) || view.zoom <= 0) return [];
+  const topLeft = toWorld({ x: 0, y: 0 }, view);
+  const right = topLeft.x + size.width / view.zoom;
+  const bottom = topLeft.y + size.height / view.zoom;
+  return boards.filter(b => b.x < right && b.x + b.width > topLeft.x && b.y < bottom && b.y + b.height > topLeft.y).map(b => b.id);
+}

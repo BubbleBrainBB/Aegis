@@ -1,4 +1,4 @@
-import { designPages } from "../../shared/design-pages";
+import { designPages, designPageId } from "../../shared/design-pages";
 import { getDesignRepository } from "./service";
 import { findDesignLayer, readDesignLayers } from "../../shared/design-layers";
 import type { DesignSummary } from "../../shared/design-types";
@@ -9,6 +9,9 @@ export interface DesignFocus {
   boardId?: string;
   pageId?: string;
   nodeId?: string;
+  selectedBoardIds?: string[];
+  visibleBoardIds?: string[];
+  focusedBoardId?: string;
 }
 /** What the user asked for in the design composer: a style guide and how many directions. */
 export interface DesignComposerPrefs {
@@ -53,6 +56,8 @@ let templateName: (sessionId: string, templateId: string) => string | undefined 
 export function setDesignTemplateNamer(namer: (sessionId: string, templateId: string) => string | undefined) {
   templateName = namer;
 }
+const boardIds = (value: unknown): string[] | undefined => Array.isArray(value)
+  ? [...new Set(value.map(id).filter((v): v is string => !!v))].slice(0, 32) : undefined;
 const id = (v: unknown) => (typeof v === "string" && v.length > 0 && v.length <= 200 ? v : undefined);
 
 export function setDesignFocus(
@@ -78,7 +83,11 @@ export function setDesignFocus(
     focus.delete(sessionId);
     return;
   }
-  focus.set(sessionId, { documentId, pageId: id(value?.pageId), boardId: id(value?.boardId), nodeId: id(value?.nodeId) });
+  focus.set(sessionId, {
+    documentId, pageId: id(value?.pageId), boardId: id(value?.boardId), nodeId: id(value?.nodeId),
+    selectedBoardIds: boardIds(value?.selectedBoardIds), visibleBoardIds: boardIds(value?.visibleBoardIds),
+    focusedBoardId: id(value?.focusedBoardId),
+  });
 }
 
 // Titles and layer names are user content: one line, no markup, bounded.
@@ -120,15 +129,26 @@ export function designContextText(sessionId: string): string {
       const doc = getDesignRepository().read(sessionId, open.id);
       const page = designPages(doc).find(page => page.id === f.pageId) ?? designPages(doc)[0];
       lines.push(`Current page: ${label(page.name)} (pageId ${page.id}). Add boards to this page with pageId unless the user requests another page.`);
-      const board = f.boardId ? doc.boards.find((b) => b.id === f.boardId) : undefined;
+      const onPage = doc.boards.filter(b => designPageId(doc, b) === page.id);
+      const describe = (b: typeof doc.boards[number]) => `${label(b.name)} (boardId ${b.id}, x=${b.x}, y=${b.y}, width=${b.width}, height=${b.height})`;
+      if (f.visibleBoardIds !== undefined) {
+        const visible = onPage.filter(b => f.visibleBoardIds!.includes(b.id));
+        lines.push(`Visible boards: ${visible.length ? visible.map(describe).join("; ") : "none"}.`);
+      }
+      const selected = onPage.filter(b => f.selectedBoardIds?.includes(b.id));
+      if (selected.length > 1) lines.push(`Selected boards: ${selected.map(describe).join("; ")}.`);
+      const focused = onPage.find(b => b.id === f.focusedBoardId);
+      if (focused) lines.push(`Focused preview: ${describe(focused)}.`);
+      const board = onPage.find(b => b.id === f.boardId) ?? (selected.length === 1 ? selected[0] : undefined);
       if (board) {
         const node = f.nodeId ? findDesignLayer(readDesignLayers(board.html), f.nodeId) : undefined;
         lines.push(
-          `Selected: board ${label(board.name)} (boardId ${board.id})` +
+          `Selected: board ${describe(board)}` +
             (node ? `, layer ${label(node.name.split(" · ")[0])}${plainId(node.id) ? ` (nodeId ${node.id})` : ""}` : "") +
             ".",
         );
       }
+      lines.push("Positions are canvas coordinates, independent of pan and zoom. Read design_read for the latest complete layout before placing or moving boards.");
     } catch {}
   } else lines.push("No design is open.");
   const others = designs.filter((d) => d.id !== open?.id).slice(0, 8);

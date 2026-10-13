@@ -4,6 +4,11 @@ export interface DesignPage {
   id: string;
   name: string;
 }
+/** What the canvas currently displays; coordinates remain authoritative in the document. */
+export interface DesignCanvasAwareness {
+  visibleBoardIds: string[];
+  focusedBoardId?: string;
+}
 export interface DesignBoard {
   id: string;
   name: string;
@@ -247,6 +252,9 @@ export interface DesignAPI {
     pageId?: string;
     boardId?: string;
     nodeId?: string;
+    selectedBoardIds?: string[];
+    visibleBoardIds?: string[];
+    focusedBoardId?: string;
     /** false: this panel closed; clears the focus only if it is still this design. */
     open?: boolean;
   }): Promise<void>;
