@@ -71,7 +71,8 @@ import type {
 import type { Attachment } from "../../types";
 import { DesignUndo, blockedBy, touchedBoards, undoKey } from "./design-undo";
 import { summarizeOperations } from "../../../shared/design-history";
-import { DesignAgentName, useDesignAgentName } from "./design-ui";
+import { DesignAgentName, relativeTime, useDesignAgentName } from "./design-ui";
+import { DesignCover } from "./DesignCover";
 import { DesignStylesDialog } from "./DesignStylesDialog";
 import { PROVIDERS } from "../../utils/provider";
 import "./design.css";
@@ -1109,6 +1110,13 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
   const exportBoard = (boardId: string) => exportAs("png", boardId);
 
   if (hidden) return null;
+  // "Edited 3h ago", "Edited just now", or the date once it is a week old.
+  const editedAgo = (at: number) => {
+    const ago = relativeTime(at);
+    return ago === "now" ? "Edited just now" : /^\d+[mhd]$/.test(ago) ? `Edited ${ago} ago` : `Edited ${ago}`;
+  };
+  const projectPath = session?.projectCwd ?? session?.cwd ?? "";
+  const projectName = projectPath.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "";
   if (!documentId)
     return (
       <section
@@ -1117,11 +1125,11 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
       >
         <div className="design-library-heading">
           <div>
-            <span className="design-eyebrow">WORKSPACE</span>
-            <h2>Design</h2>
-            <p>Give your ideas room to take shape.</p>
+            <h2>Designs</h2>
+            <p>{projectName ? `In ${projectName}` : "In this conversation"}</p>
           </div>
           <button
+            className="design-library-new"
             disabled={!session || session.readOnly || busy || session.isDraft}
             onClick={() =>
               void run(async () => {
@@ -1136,7 +1144,8 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
               })
             }
           >
-            + New canvas
+            <Plus size={14} />
+            New design
           </button>
         </div>
         {failure && (
@@ -1149,17 +1158,20 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
             {list.map((d) => (
               <button
                 key={d.id}
+                className="design-document-card"
+                data-design-document-card={d.id}
                 onClick={() =>
                   useAppStore
                     .getState()
                     .setActiveRightUtilityTab(`design:${d.id}`)
                 }
               >
-                <span className="design-document-mark">▧</span>
-                <strong>{d.title}</strong>
-                <span>
-                  {d.boardCount} boards · v{d.revision}
+                <DesignCover sessionId={sessionId!} documentId={d.id} revision={d.revision} />
+                <span className="design-document-card-body">
+                  <strong title={d.title}>{d.title}</strong>
+                  <span>{editedAgo(d.updatedAt)}</span>
                 </span>
+                {d.member ? <span className="design-document-tag">This chat</span> : null}
               </button>
             ))}
           </div>

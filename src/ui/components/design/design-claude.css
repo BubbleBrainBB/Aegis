@@ -252,3 +252,21 @@
 .design-board-download { min-width: 248px; }
 .design-board-download button { flex-direction: column; align-items: flex-start; justify-content: flex-start; gap: 1px; padding: 5px 10px; }
 .design-board-download button span { font-size: 12px; }
+/* The design list (a chat's Design tab): file cards with a canvas cover, like a design tool's files. */
+.design-panel.design-library { padding: 24px 28px; background: var(--d-surface); }
+.design-library .design-library-heading { align-items: flex-end; }
+.design-library .design-library-heading h2 { margin: 0; font-size: 17px; font-weight: 600; line-height: 24px; }
+.design-library .design-library-heading p { margin: 2px 0 0; font-size: 12.5px; line-height: 18px; }
+.design-panel .design-library-heading > .design-library-new { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border: 1px solid var(--d-line); border-radius: 8px; background: var(--d-surface); color: var(--d-text); font-weight: 500; }
+.design-panel .design-library-heading > .design-library-new:hover:not(:disabled) { background: var(--d-fill); }
+.design-library .design-document-list { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 20px 16px; margin-top: 20px; }
+.design-panel .design-document-list .design-document-card { position: relative; display: flex; flex-direction: column; align-items: stretch; gap: 0; padding: 0; border: 0; border-radius: 10px; background: transparent; text-align: left; white-space: normal; }
+.design-panel .design-document-list .design-document-card:hover:not(:disabled) { background: transparent; }
+.design-cover { position: relative; aspect-ratio: 16 / 10; overflow: hidden; border-radius: 10px; background: var(--d-canvas); box-shadow: inset 0 0 0 1px var(--d-line); transition: box-shadow 120ms var(--d-ease); }
+.design-document-card:hover .design-cover, .design-document-card:focus-visible .design-cover { box-shadow: inset 0 0 0 1px var(--d-line), 0 0 0 2px color-mix(in srgb, var(--d-text) 14%, transparent); }
+.design-cover-board { border-radius: 2px; box-shadow: 0 0 0 1px var(--d-line), 0 1px 3px #0000000f; background: #fff; }
+.design-cover-empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--d-muted); font-size: 12px; }
+.design-document-card-body { display: flex; flex-direction: column; gap: 1px; padding: 8px 2px 0; min-width: 0; }
+.design-document-list .design-document-card-body strong { font-size: 13px; font-weight: 500; line-height: 19px; color: var(--d-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.design-document-list .design-document-card-body span { font-size: 12px; line-height: 17px; color: var(--d-muted); }
+.design-document-list .design-document-tag { position: absolute; top: 8px; left: 8px; padding: 1px 6px; border-radius: 5px; background: var(--d-popover); box-shadow: 0 0 0 1px var(--d-line); color: var(--d-secondary); font-size: 11px; line-height: 16px; }

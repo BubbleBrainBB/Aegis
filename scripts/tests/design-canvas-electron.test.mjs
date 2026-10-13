@@ -182,6 +182,9 @@ await text('Properties');
 await js('qa.store.getState().setActiveSession(qa.b);qa.store.getState().openRightUtilityTab("design")');await until('!!document.querySelector(".design-library")','session B library');
 // Designs belong to the project: chat B, in the same project, lists chat A's design too.
 assert.equal(await js('document.querySelectorAll(".design-document-list button").length'),1,'the project design is listed in another chat');
+await until('document.querySelectorAll(".design-document-list [data-design-cover] .design-cover-board").length>=1','the design card shows its boards');
+assert.equal(await js('!!document.querySelector(".design-document-list .design-document-tag")'),false,'not one of chat B\'s designs');
+await delay(400);fs.writeFileSync(path.join(process.env.QA_CAPTURE,'design-library.png'),(await w.webContents.capturePage()).toPNG());
 await js('qa.store.getState().setActiveSession(qa.a)');await until('document.querySelectorAll("iframe").length===2','session A restored');
 const first=repo.read(a,d.id).boards[0];
 await call('design_update',{documentId:d.id,operationId:'updated-headline',operations:[{type:'content',boardId:first.id,expectedRevision:first.contentRevision,html:html('Remember<br>the journey.','A revised headline.','#81977b')}]});await delay(220);
@@ -252,7 +255,7 @@ const homeNow=repo.read(a,d.id).boards[0];
 await click('[data-board-id="'+homeNow.id+'"] .design-board-label');
 let ctx='';for(let i=0;i<40&&!ctx.includes('Selected: board');i++){await delay(50);ctx=designContextText(a)}
 assert(ctx.startsWith('\n\n<design_context>')&&ctx.includes('Open: "Fieldnotes" (documentId '+d.id),ctx);
-assert(ctx.includes('Selected: board "'+homeNow.name+'" (boardId '+homeNow.id+')'),ctx);
+assert(ctx.includes('Selected: board "'+homeNow.name+'" (boardId '+homeNow.id+', x='),ctx);
 assert.equal(designContextText(b),'','no designs, no context');
 const blocked=await tools.find(t=>t.name==='design_create').execute({title:'Another',operationId:'second-design'},{});
 assert(blocked.isError&&blocked.content.includes('already has a design')&&blocked.content.includes(d.id),blocked.content);

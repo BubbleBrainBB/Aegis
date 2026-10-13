@@ -1,4 +1,4 @@
-import { memo, useMemo } from "react";
+import { memo, useMemo, type CSSProperties } from "react";
 import { designFrameHtml } from "../../../shared/design-frame";
 import type { DesignBoard } from "../../../shared/design-types";
 
@@ -11,11 +11,14 @@ export const BoardThumb = memo(function BoardThumb({
   width,
   height,
   className,
+  style,
 }: {
   board: Pick<DesignBoard, "id" | "html" | "width" | "height" | "contentRevision">;
   width: number;
   height: number;
   className?: string;
+  /** Extra placement, e.g. a position inside a design's cover. */
+  style?: CSSProperties;
 }) {
   const scale = Math.min(width / board.width, height / board.height);
   // Keyed by revision so a rewritten board repaints; no inspector script.
@@ -27,7 +30,7 @@ export const BoardThumb = memo(function BoardThumb({
     <div
       aria-hidden="true"
       className={className}
-      style={{ width, height, overflow: "hidden", position: "relative", pointerEvents: "none" }}
+      style={{ width, height, overflow: "hidden", position: "relative", pointerEvents: "none", ...style }}
     >
       <iframe
         title=""
