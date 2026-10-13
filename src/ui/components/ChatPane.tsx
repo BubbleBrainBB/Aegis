@@ -47,6 +47,8 @@ import { ComposerPendingPermissionPanel } from './ComposerPendingPermissionPanel
 import { ComputerUseGrantBadge, ComputerUseLiveHud } from './ComputerUseLiveHud';
 import { ErrorBoundary } from './ErrorBoundary';
 import { TurnChangesCard } from './TurnChangesCard';
+import { DesignChatCard } from './design/DesignChatCard';
+import { designDocumentIdsInMessages } from '../utils/design-entries';
 import { TurnDiffContext, type TurnDiffContextValue } from './TurnDiffContext';
 import { CodexActivePlanCard } from './CodexActivePlanCard';
 import { RewindDialog, type RewindTarget } from './ClaudeRewindDialog';
@@ -1285,9 +1287,27 @@ export function ChatPane({
     [session?.status, session?.messages]
   );
 
-  const turnCardByTimelineIndex = useMemo(() => {
-    const map = new Map<number, TurnChangeSummary>();
-    if (turns.length === 0 || timelineItems.length === 0) {
+  // Every turn's message range, one per user prompt (turns above only lists
+  // those that changed files).
+  const turnRanges = useMemo(() => {
+    const ranges: { firstMessageIndex: number; lastMessageIndex: number }[] = [];
+    const messages = session?.messages ?? [];
+    let start = 0;
+    messages.forEach((message, index) => {
+      if (message.type === 'user_prompt' && index > start) {
+        ranges.push({ firstMessageIndex: start, lastMessageIndex: index - 1 });
+        start = index;
+      }
+    });
+    if (messages.length > start) ranges.push({ firstMessageIndex: start, lastMessageIndex: messages.length - 1 });
+    return ranges;
+  }, [session?.messages]);
+
+  // Where each finished turn ends in the timeline: its result cards (files
+  // changed, designs written) go there, after the final reply.
+  const turnEndByTimelineIndex = useMemo(() => {
+    const map = new Map<number, { firstMessageIndex: number; lastMessageIndex: number }>();
+    if (turnRanges.length === 0 || timelineItems.length === 0) {
       return map;
     }
 
@@ -1307,8 +1327,7 @@ export function ChatPane({
       }
     }
 
-    for (const turn of turns) {
-      if (turn.totalFiles === 0) continue;
+    for (const turn of turnRanges) {
       if (activeTurnHasPendingTasks && turn.lastMessageIndex >= lastMessageIndex) {
         continue;
       }
@@ -1336,7 +1355,27 @@ export function ChatPane({
       }
     }
     return map;
-  }, [turns, timelineItems, activeTimelineWorkId, activeTurnHasPendingTasks, session?.messages.length]);
+  }, [turnRanges, timelineItems, activeTimelineWorkId, activeTurnHasPendingTasks, session?.messages.length]);
+  const turnCardByTimelineIndex = useMemo(() => {
+    const map = new Map<number, TurnChangeSummary>();
+    for (const [index, range] of turnEndByTimelineIndex) {
+      const turn = turns.find((t) => t.lastMessageIndex === range.lastMessageIndex);
+      if (turn && turn.totalFiles > 0) map.set(index, turn);
+    }
+    return map;
+  }, [turnEndByTimelineIndex, turns]);
+  const designCardsByTimelineIndex = useMemo(() => {
+    const map = new Map<number, string[]>();
+    if (!session) return map;
+    for (const [index, turn] of turnEndByTimelineIndex) {
+      const ids = designDocumentIdsInMessages(
+        session.messages.slice(turn.firstMessageIndex, turn.lastMessageIndex + 1),
+        toolResultsMap
+      );
+      if (ids.length) map.set(index, ids);
+    }
+    return map;
+  }, [turnEndByTimelineIndex, session?.messages, toolResultsMap]);
 
   const copyPlacementByTimelineIndex = useMemo(() => {
     const actionTextByCardIndex = new Map<number, string>();
@@ -1998,6 +2037,12 @@ export function ChatPane({
                     ? <GeneratedMediaGallery items={answerMedia} cwd={session.cwd ?? null} />
                     : null;
                   const turnCard = turnCardByTimelineIndex.get(idx);
+                  const designIds = designCardsByTimelineIndex.get(idx);
+                  const designCards = designIds && sessionId
+                    ? designIds.map((documentId) => (
+                        <DesignChatCard key={documentId} sessionId={sessionId} documentId={documentId} />
+                      ))
+                    : null;
                   if (item.type === 'work') {
                     const anchor = String(item.group.originalIndices[0]);
                     const highlighted = highlightedHistoryAnchor === anchor;
@@ -2037,6 +2082,7 @@ export function ChatPane({
                             mediaCwd={session.cwd ?? null}
                           />
                         </div>
+                        {designCards}
                         {copyActionText ? <AssistantCopyAction text={copyActionText} /> : null}
                       </div>
                     );
@@ -2159,6 +2205,7 @@ export function ChatPane({
                           </div>
                         ) : null}
                       </div>
+                      {designCards}
                       {showTurnChangesCard && turnCard ? <TurnChangesCard summary={turnCard} /> : null}
                       {copyActionText ? <AssistantCopyAction text={copyActionText} /> : null}
                     </div>

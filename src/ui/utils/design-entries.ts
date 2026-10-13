@@ -1,5 +1,7 @@
 import { DESIGN_CREATE_TOOL, DESIGN_UPDATE_TOOL, designToolNameOf } from '../../shared/design-tools';
-import type { WorkstreamEntry } from './workstream';
+import type { StreamMessage } from '../types';
+import { getMessageContentBlocks, normalizeToolUseBlock } from './message-content';
+import type { ToolResultBlock } from './workstream';
 
 function resultText(content: unknown): string {
   if (typeof content === 'string') return content;
@@ -9,17 +11,15 @@ function resultText(content: unknown): string {
     .join('');
 }
 
-/** The design a successful design_create / design_update call wrote, if any. */
-export function designDocumentIdOf(entry: WorkstreamEntry): string | null {
-  if (entry.type !== 'tool' || entry.status !== 'success' || entry.result?.is_error) return null;
-  const tool = designToolNameOf(entry.toolName);
+function designIdOfCall(toolName: string, input: unknown, resultContent: unknown): string | null {
+  const tool = designToolNameOf(toolName);
   if (tool === DESIGN_UPDATE_TOOL) {
-    const id = (entry.block.input as { documentId?: unknown } | undefined)?.documentId;
+    const id = (input as { documentId?: unknown } | undefined)?.documentId;
     return typeof id === 'string' && id ? id : null;
   }
   if (tool === DESIGN_CREATE_TOOL) {
     try {
-      const id = (JSON.parse(resultText(entry.result?.content)) as { id?: unknown }).id;
+      const id = (JSON.parse(resultText(resultContent)) as { id?: unknown }).id;
       return typeof id === 'string' && id ? id : null;
     } catch {
       return null;
@@ -28,15 +28,28 @@ export function designDocumentIdOf(entry: WorkstreamEntry): string | null {
   return null;
 }
 
-/** Designs a turn wrote, in the order it last touched them. */
-export function designDocumentIdsOf(entries: WorkstreamEntry[]): string[] {
+/**
+ * Designs written by the tool calls in a turn's messages, in the order it last
+ * touched them: the turn's result, shown at its end.
+ */
+export function designDocumentIdsInMessages(
+  messages: StreamMessage[],
+  results: Map<string, ToolResultBlock>,
+): string[] {
   const order: string[] = [];
-  for (const entry of entries) {
-    const id = designDocumentIdOf(entry);
-    if (!id) continue;
-    const at = order.indexOf(id);
-    if (at >= 0) order.splice(at, 1);
-    order.push(id);
+  for (const message of messages) {
+    if (message.type !== 'assistant') continue;
+    for (const block of getMessageContentBlocks(message)) {
+      const use = normalizeToolUseBlock(block);
+      if (!use || !designToolNameOf(use.name)) continue;
+      const result = results.get(use.id);
+      if (!result || result.is_error) continue;
+      const id = designIdOfCall(use.name, use.input, result.content);
+      if (!id) continue;
+      const at = order.indexOf(id);
+      if (at >= 0) order.splice(at, 1);
+      order.push(id);
+    }
   }
   return order;
 }

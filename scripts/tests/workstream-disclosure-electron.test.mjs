@@ -24,6 +24,7 @@ window.electron = {
  getSessionGoal:async()=>({goal:null,supported:false,revision:0}),onSessionGoalChanged:()=>()=>{},
  getClaudeCompatibleProviderConfig:async()=>({}),getBubbleProvidersConfig:async()=>({providers:[]}),
  getProjectFolders:async()=>[],getModels:async()=>[],
+ design:{read:async({documentId})=>({id:documentId,title:'Lift log',revision:3,boards:[]}),onChanged:()=>()=>{}},
  readProjectFilePreview:async()=>{const c=document.createElement('canvas');c.width=320;c.height=240;const x=c.getContext('2d');x.fillStyle='#c5d2bf';x.fillRect(0,0,320,240);return {kind:'image',dataUrl:c.toDataURL()}},
 };
 for(const p of ['Claude','Kimi','Grok','Opencode','Pi','Bubble','Qoder','Deepseek','Devin','Mimo','Codex'])window.electron['get'+p+'ModelConfig']=async()=>({defaultModel:null,options:[],availableModels:[]});
@@ -65,6 +66,13 @@ function App(){
    const imageResult={type:'user',uuid:'image-result',createdAt:1400,message:{content:[{type:'tool_result',tool_use_id:'image-edit',content:'/tmp/white-cat.png'}]}};
    const reply={type:'assistant',uuid:'image-reply',createdAt:1800,streaming:stage==='streaming',...(provider==='codex'?{phase:'final_answer'}:{}),message:{content:[{type:'text',text:'The cat is now white. The pose and background are unchanged.'}]}};
    const messages=[{...prompt,createdAt:provider==='grok'?1001:1002},{...thought,uuid:provider+'-image-thought'},imageTool,imageResult,...(stage==='generated'?[]:[reply]),...(stage==='completed'?[{type:'result',subtype:'success',duration_ms:19000,total_cost_usd:0,usage:{input_tokens:1,output_tokens:1}}]:[])];
+   store.setState(s=>({sessions:{...s.sessions,[chatId]:{...s.sessions[chatId],provider,status:stage==='completed'?'completed':'running',messages}}}));
+  },
+  designTurn:(provider,stage)=>{
+   const update={type:'assistant',uuid:'design-tool',createdAt:1200,message:{content:[{type:'tool_use',id:'design-edit',name:'mcp__aegis-sessions__design_update',input:{documentId:'doc-1',operationId:'op',operations:[]}}]}};
+   const done={type:'user',uuid:'design-result',createdAt:1400,message:{content:[{type:'tool_result',tool_use_id:'design-edit',content:'{"id":"doc-1"}'}]}};
+   const reply={type:'assistant',uuid:'design-reply',createdAt:1800,...(provider==='codex'?{phase:'final_answer'}:{}),message:{content:[{type:'text',text:'The home board is ready.'}]}};
+   const messages=[{...prompt,createdAt:provider==='grok'?1005:1006},{...thought,uuid:provider+'-design-thought'},update,done,...(stage==='running'?[]:[reply])];
    store.setState(s=>({sessions:{...s.sessions,[chatId]:{...s.sessions[chatId],provider,status:stage==='completed'?'completed':'running',messages}}}));
   },
   readingTurn:(resolved=false)=>store.setState(s=>({sessions:{...s.sessions,[chatId]:{...s.sessions[chatId],provider:'codex',status:'running',messages:[{...prompt,createdAt:1003},thought,read,...(resolved?[result]:[])]}}})),
@@ -245,6 +253,18 @@ app.whenReady().then(async()=>{
    assert.equal(await js('document.querySelector("#real-chat .workstream-toggle-row button").getAttribute("aria-expanded")'),'false','completed image turn collapses');
    await click('#real-chat .workstream-toggle-row button');
    assert.equal(await js('document.querySelectorAll("#real-chat img[alt=\\"white-cat.png\\"]").length'),1,'opening trace does not duplicate image');
+  }
+  // A design the turn wrote is its result: no card while it runs, then one after the reply, outside the collapsed trace.
+  for(const provider of ['grok','codex']){
+   await js('qa.designTurn('+JSON.stringify(provider)+',"running")');await delay(350);
+   assert.equal(await js('!!document.querySelector("#real-chat [data-design-card]")'),false,provider+': no design card while the turn runs');
+   await js('qa.designTurn('+JSON.stringify(provider)+',"completed")');
+   await until('document.querySelector("#real-chat [data-design-card=doc-1]")?.textContent.includes("Lift log")','design card when the turn ends');
+   assert.equal(await js('document.querySelector("#real-chat .workstream-toggle-row button")?.getAttribute("aria-expanded")'),'false',provider+': completed design turn collapses its trace');
+   assert(await js('(()=>{const card=document.querySelector("#real-chat [data-design-card]"),reply=[...document.querySelectorAll("#real-chat p")].find(p=>p.textContent.startsWith("The home board is ready."));const r=card.getBoundingClientRect();return !!reply&&r.height>0&&r.top>=reply.getBoundingClientRect().bottom})()'),provider+': design card shows after the reply, outside the collapsed trace');
+   await click('#real-chat .workstream-toggle-row button');
+   assert.equal(await js('document.querySelectorAll("#real-chat [data-design-card]").length'),1,provider+': opening the trace does not duplicate the card');
+   await shot('design-card-'+provider);
   }
   assert.deepEqual(errors,[],'renderer console errors');
   // Real ChatPane + real store: trace visibility must never suppress retry status.
