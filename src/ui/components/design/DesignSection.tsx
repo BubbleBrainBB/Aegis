@@ -1,8 +1,8 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { MainSheet } from "../MainSheet";
 import { DesignPanel } from "./DesignPanel";
 import { DesignAgentDock } from "./DesignAgentDock";
-import { startNewDesign, useDesignLibrary, useDesignStore } from "../../store/useDesignStore";
+import { liveDesignChat, startDesignChat, startNewDesign, useDesignLibrary, useDesignStore } from "../../store/useDesignStore";
 import { useAppStore } from "../../store/useAppStore";
 import { SquarePen } from "../icons";
 import type { CodexModelConfig } from "../../types";
@@ -18,7 +18,13 @@ export function DesignSection({ codexModelConfig }: { codexModelConfig: CodexMod
   const library = useDesignLibrary();
   const section = useDesignStore((s) => s.section);
   const newest = library[0];
-  const target = section ?? (newest ? { sessionId: newest.sessionId, documentId: newest.id } : null);
+  // With nothing picked, the newest design and its latest chat (a new chat if
+  // every chat that worked on it is gone).
+  const newestChat = useAppStore((s) => (newest ? liveDesignChat(newest) : undefined) ?? (newest && s.sessionsLoaded ? null : undefined));
+  const target = section ?? (newest && newestChat ? { sessionId: newestChat, documentId: newest.id } : null);
+  useEffect(() => {
+    if (!section && newest && newestChat === null) startDesignChat(newest);
+  }, [section, newest, newestChat]);
   const [toolbarHost, setToolbarHost] = useState<HTMLDivElement | null>(null);
   const stage = useRef<HTMLDivElement>(null);
   const project = useAppStore((s) => (target ? s.sessions[target.sessionId]?.projectCwd ?? s.sessions[target.sessionId]?.cwd : null));
@@ -38,10 +44,11 @@ export function DesignSection({ codexModelConfig }: { codexModelConfig: CodexMod
     >
       <div ref={stage} className="relative min-h-0 flex-1" data-design-section>
         {!target ? (
-          <DesignSectionEmpty />
+          newest ? null : <DesignSectionEmpty />
         ) : target.documentId ? (
           <DesignPanel
-            key={`${target.sessionId}:${target.documentId}`}
+            // One canvas per design: switching its chat keeps the view.
+            key={target.documentId}
             sessionId={target.sessionId}
             documentId={target.documentId}
             hidden={false}

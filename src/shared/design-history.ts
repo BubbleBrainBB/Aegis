@@ -10,7 +10,7 @@ export function summarizeOperations(
   const lines = ops.map((op) => {
     switch (op.type) {
       case "add":
-        return `Added ${op.name}`;
+        return `Added ${op.name ?? "artboard"}`;
       case "patch":
       case "content":
         return `Edited ${name(op.boardId)}`;
@@ -54,6 +54,8 @@ export interface DesignVersionGroup {
   first: number;
   title: string;
   author: DesignRevisionInfo["author"];
+  /** The chat that made it. */
+  sessionId?: string | null;
   createdAt: number;
   boardIds: string[];
 }
@@ -80,7 +82,7 @@ export function groupDesignVersions(versions: DesignRevisionInfo[]): DesignVersi
       : v.author?.kind === "agent"
         ? v.requestId
           ? `request:${v.requestId}`
-          : `agent:${v.author.name}`
+          : `agent:${v.author.name}:${v.sessionId ?? ""}`
         : "edits";
   let key = "";
   let lastAt = 0;
@@ -107,6 +109,7 @@ export function groupDesignVersions(versions: DesignRevisionInfo[]): DesignVersi
         last: v.revision,
         title: "",
         author: v.author,
+        sessionId: v.sessionId,
         createdAt: v.createdAt,
         boardIds: [...v.boardIds],
       });

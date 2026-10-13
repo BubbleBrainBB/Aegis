@@ -225,6 +225,18 @@ app.whenReady().then(async () => {
     assert.equal(slugOf('Café — Home!', 'x'), 'cafe-home');
     assert.equal(slugOf('***', 'board-1'), 'board-1');
 
+    // Designs belong to the project: another chat there lists and works on them.
+    setDesignProjectRoot((sessionId) => (sessionId === 'session-a' || sessionId === 'session-p' ? project : null));
+    const p = await scoped('session-p');
+    const inProject = json(await call(info.url, p, 'design_read', {}));
+    assert(inProject.some((d) => d.id === created.id && d.member === false), 'the project design is listed for another chat: ' + JSON.stringify(inProject));
+    const fresh = json(await call(info.url, p, 'design_read', { documentId: created.id }));
+    json(await call(info.url, p, 'design_update', { documentId: created.id, operationId: 'op-project', operations: [{ type: 'add', name: 'From another chat', html: '<main><h1>Hi</h1></main>' }] }));
+    assert.equal(getDesignRepository().chats(created.id)[0], 'session-p', 'the agent that changed it joined its chats');
+    assert(json(await call(info.url, p, 'design_read', {})).find((d) => d.id === created.id).member);
+    assert.equal(fresh.project, project);
+    assert.match((await call(info.url, b, 'design_read', { documentId: created.id })).result.content[0].text, /not found/i, 'other projects still cannot');
+
     console.log('PASS design MCP: listed, session-bound writes and previews, isolation, forged headers refused, meta and history attribution, Bubble and Pi tools, quick edits, handoff');
   } catch (error) {
     console.error(error);

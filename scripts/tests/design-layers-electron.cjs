@@ -42,14 +42,19 @@ exports.run = async ({ w, js, repo, sessionId, documentId, screenshotDir }) => {
       `document.querySelector(${JSON.stringify('[aria-label="' + label + '"]')}).${property}`,
     );
   const tree = '[data-layer-id="hero"]';
-  // The layer tree floats over the canvas on ⌥L.
-  await js('document.querySelector(".design-viewport").focus()');
-  w.webContents.sendInputEvent({ type: "keyDown", keyCode: "L", modifiers: ["alt"] });
-  w.webContents.sendInputEvent({ type: "keyUp", keyCode: "L", modifiers: ["alt"] });
-  await until(
-    () => js('!!document.querySelector(".design-layers-popover")'),
-    "Option-L opens layers",
-  );
+  // ⌥L toggles the layer tree (it shares the Properties panel).
+  const optionL = async () => {
+    await js('document.querySelector(".design-viewport").focus()');
+    w.webContents.sendInputEvent({ type: "keyDown", keyCode: "L", modifiers: ["alt"] });
+    w.webContents.sendInputEvent({ type: "keyUp", keyCode: "L", modifiers: ["alt"] });
+  };
+  const layersShown = () => js('!!document.querySelector(".design-layers-popover")');
+  if (await layersShown()) {
+    await optionL();
+    await until(async () => !(await layersShown()), "Option-L closes layers");
+  }
+  await optionL();
+  await until(layersShown, "Option-L opens layers");
   await click(tree + " .design-layer-name");
   await until(
     () => js('!!document.querySelector(".design-selection")'),
@@ -195,7 +200,8 @@ exports.run = async ({ w, js, repo, sessionId, documentId, screenshotDir }) => {
     () => js('!!document.querySelector(\'[aria-label="Color color picker"]\')'),
     "color picker beside the text color",
   );
-  await click('[aria-label="Close layers"]');
+  // The tree lives in the Properties panel now: hide the panel to get it out of the way.
+  await click('[aria-label="Hide inspector"]');
   await js('document.querySelector(".design-viewport").focus()');
   w.webContents.sendInputEvent({ type: "keyDown", keyCode: "Return" });
   w.webContents.sendInputEvent({ type: "keyUp", keyCode: "Return" });

@@ -1,3 +1,4 @@
+import { normalizeBoardName, nextBoardName, copyBoardName } from "../../shared/design-names";
 import Database from "better-sqlite3";
 import { createHash, randomUUID } from "crypto";
 import { mkdirSync } from "fs";
@@ -20,6 +21,7 @@ import { summarizeOperations } from "../../shared/design-history";
 import { validateDesignMarks, MAX_DESIGN_MARKS } from "../../shared/design-marks";
 import { sanitizeDesignHtml } from "./html";
 
+const boardName = z.string().transform(normalizeBoardName);
 const name = z.string().trim().min(1).max(160);
 const id = z.string().min(1).max(200);
 const revision = z.number().int().nonnegative();
@@ -34,7 +36,7 @@ const operations = z
       z
         .object({
           type: z.literal("add"),
-          name,
+          name: boardName.optional(),
           html: z.string().optional(),
           x: point.optional(),
           y: point.optional(),
@@ -63,7 +65,7 @@ const operations = z
           type: z.literal("placement"),
           boardId: id,
           expectedRevision: revision,
-          name: name.optional(),
+          name: boardName.optional(),
           x: point.optional(),
           y: point.optional(),
           width: size.optional(),
@@ -204,6 +206,8 @@ function canvasState(document?: DesignDocument) {
     (document?.boards ?? []).map((board) => [board.id, board.pageId ?? null]).sort(([a], [b]) => a!.localeCompare(b!)),
   ]);
 }
+type Head = { id: string; session_id: string; project: string | null; revision: number };
+const cleanProject = (path: string | null | undefined) => (path ? path.replace(/[\\/]+$/, "") || null : null);
 const conflict = () => {
   throw new Error(
     "REVISION_CONFLICT: read the latest design, merge your change, and retry. Nothing was saved.",
@@ -213,9 +217,22 @@ const conflict = () => {
 /** SQLite owns both immutable snapshots and content: one atomic commit. */
 export class DesignRepository {
   private db: Database.Database;
+  /**
+   * Designs the user opened in a chat's panel or dock this run: that chat's
+   * agent may work on them too (the panel tells it which one is open).
+   */
+  private opened = new Map<string, Set<string>>();
+  /** Strictly increasing activity times, so two chats active in one millisecond still order. */
+  private lastActive = 0;
+  private activeAt() {
+    this.lastActive = Math.max(Date.now(), this.lastActive + 1);
+    return this.lastActive;
+  }
   constructor(
     file: string,
     private notify: (event: DesignEvent) => void = () => {},
+    /** The project folder a chat works in; designs are shared within a project. */
+    private projectOf: (sessionId: string) => string | null | undefined = () => null,
   ) {
     mkdirSync(dirname(file), { recursive: true });
     this.db = new Database(file);
@@ -229,6 +246,28 @@ export class DesignRepository {
     this.migrate();
     this.migratePrompts();
     this.migrateCanvas();
+    this.migrateChats();
+  }
+  /**
+   * v5: a design is no longer one chat's. It keeps the project it was made in,
+   * and any number of chats work on it (design_chats); each existing design
+   * starts with the chat that made it.
+   */
+  private migrateChats() {
+    if ((this.db.pragma("user_version", { simple: true }) as number) >= 5) return;
+    this.db.transaction(() => {
+      const columns = this.db.prepare("PRAGMA table_info(design_documents)").all() as { name: string }[];
+      if (!columns.some((c) => c.name === "project"))
+        this.db.exec("ALTER TABLE design_documents ADD COLUMN project TEXT");
+      // Which chat made each version (history names it when it isn't the one on screen).
+      const revisionColumns = this.db.prepare("PRAGMA table_info(design_revisions)").all() as { name: string }[];
+      if (!revisionColumns.some((c) => c.name === "session_id"))
+        this.db.exec("ALTER TABLE design_revisions ADD COLUMN session_id TEXT");
+      this.db.exec(`CREATE TABLE IF NOT EXISTS design_chats(document_id TEXT NOT NULL, session_id TEXT NOT NULL, joined_at INTEGER NOT NULL, active_at INTEGER NOT NULL, PRIMARY KEY(document_id, session_id));
+        CREATE INDEX IF NOT EXISTS design_chats_by_session ON design_chats(session_id);
+        INSERT OR IGNORE INTO design_chats SELECT id, session_id, updated_at, updated_at FROM design_documents;`);
+      this.db.pragma("user_version = 5");
+    })();
   }
   /** v4 records canvas metadata edits separately from board content edits. */
   private migrateCanvas() {
@@ -361,61 +400,67 @@ export class DesignRepository {
   close() {
     this.db.close();
   }
+  /**
+   * The designs a chat can work on: its own first (the ones it has worked on
+   * or was opened in), then the others in its project, newest first.
+   */
   list(sessionId: string): DesignSummary[] {
     id.parse(sessionId);
-    return (
-      this.db
-        .prepare(
-          "SELECT id FROM design_documents WHERE session_id=? ORDER BY updated_at DESC",
-        )
-        .all(sessionId) as { id: string }[]
-    ).map((row) => {
-      const d = this.read(sessionId, row.id);
-      return {
-        id: d.id,
-        sessionId,
-        title: d.title,
-        revision: d.revision,
-        updatedAt: d.updatedAt,
-        boardCount: d.boards.length,
-      };
-    });
+    const project = cleanProject(this.projectOf(sessionId));
+    const rows = this.db
+      .prepare(
+        "SELECT d.id, d.session_id, d.project, d.revision, (c.session_id IS NOT NULL) AS member FROM design_documents d LEFT JOIN design_chats c ON c.document_id=d.id AND c.session_id=? ORDER BY member DESC, d.updated_at DESC",
+      )
+      .all(sessionId) as (Head & { member: number })[];
+    return rows
+      .filter((row) => row.member || this.opened.get(sessionId)?.has(row.id) || (!!project && this.projectFor(row) === project))
+      .map((row) => ({ ...this.summary(row), member: !!row.member }));
   }
-  /** Every conversation's designs, newest first: the Design section's library. */
+  /** Every design, newest first: the Design section's library. */
   listAll(limit = 200): DesignSummary[] {
     return (
       this.db
-        .prepare(
-          "SELECT id, session_id FROM design_documents ORDER BY updated_at DESC LIMIT ?",
-        )
-        .all(Math.max(1, Math.min(limit, 1000))) as { id: string; session_id: string }[]
-    ).map((row) => {
-      const d = this.read(row.session_id, row.id);
-      return {
-        id: d.id,
-        sessionId: row.session_id,
-        title: d.title,
-        revision: d.revision,
-        updatedAt: d.updatedAt,
-        boardCount: d.boards.length,
-      };
-    });
+        .prepare("SELECT id, session_id, project, revision FROM design_documents ORDER BY updated_at DESC LIMIT ?")
+        .all(Math.max(1, Math.min(limit, 1000))) as Head[]
+    ).map((row) => this.summary(row));
+  }
+  /** The chats working on a design, most recently active first. */
+  chats(documentId: string): string[] {
+    return (
+      this.db
+        .prepare("SELECT session_id FROM design_chats WHERE document_id=? ORDER BY active_at DESC, joined_at DESC")
+        .all(id.parse(documentId)) as { session_id: string }[]
+    ).map((row) => row.session_id);
+  }
+  /** A chat joins a design: its agent works on it, and it shows in the design's chats. */
+  join(sessionId: string, documentId: string) {
+    this.access(sessionId, documentId);
+    const now = this.activeAt();
+    const added =
+      this.db
+        .prepare("INSERT INTO design_chats VALUES(?,?,?,?) ON CONFLICT(document_id, session_id) DO UPDATE SET active_at=excluded.active_at")
+        .run(documentId, sessionId, now, now).changes > 0;
+    if (added) this.emit(sessionId, documentId, "chats");
+  }
+  /** The user opened this design in a chat's panel: that chat may use it this run. */
+  allow(sessionId: string, documentId: string) {
+    const ids = this.opened.get(sessionId) ?? new Set<string>();
+    ids.add(documentId);
+    this.opened.set(sessionId, ids);
   }
   read(sessionId: string, documentId: string, rev?: number): DesignDocument {
-    const owner = this.db
-      .prepare("SELECT session_id,revision FROM design_documents WHERE id=?")
-      .get(id.parse(documentId)) as
-      | { session_id: string; revision: number }
-      | undefined;
-    if (!owner || owner.session_id !== id.parse(sessionId))
-      throw new Error("Design not found in this conversation.");
+    const head = this.access(sessionId, documentId);
+    return this.load(head, rev);
+  }
+  private load(head: Head, rev?: number): DesignDocument {
+    const documentId = head.id;
     const row = this.db
       .prepare(
         "SELECT snapshot FROM design_revisions WHERE document_id=? AND revision=?",
       )
       .get(
         documentId,
-        rev === undefined ? owner.revision : revision.parse(rev),
+        rev === undefined ? head.revision : revision.parse(rev),
       ) as { snapshot: string } | undefined;
     if (!row) throw new Error("Design version not found.");
     const d = JSON.parse(row.snapshot);
@@ -429,17 +474,60 @@ export class DesignRepository {
     });
     d.comments = this.listComments(documentId);
     d.marks ??= [];
+    d.sessionId = head.session_id;
+    d.project = this.projectFor(head);
+    d.chats = this.chats(documentId);
     return d;
   }
+  private summary(head: Head): DesignSummary {
+    const d = this.load(head);
+    return {
+      id: d.id,
+      // The chat to open it with: the most recently active one.
+      sessionId: d.chats?.[0] ?? head.session_id,
+      title: d.title,
+      revision: d.revision,
+      updatedAt: d.updatedAt,
+      boardCount: d.boards.length,
+      project: d.project ?? null,
+      chats: d.chats ?? [],
+    };
+  }
+  private head(documentId: string) {
+    return this.db
+      .prepare("SELECT id, session_id, project, revision FROM design_documents WHERE id=?")
+      .get(id.parse(documentId)) as Head | undefined;
+  }
+  /**
+   * A chat can use a design it works on, one the user opened in it, or any
+   * design in its project. Anything else stays invisible to it.
+   */
+  private access(sessionId: string, documentId: string): Head {
+    id.parse(sessionId);
+    const head = this.head(documentId);
+    if (!head) throw new Error("Design not found.");
+    if (
+      head.session_id === sessionId ||
+      this.opened.get(sessionId)?.has(head.id) ||
+      this.db.prepare("SELECT 1 FROM design_chats WHERE document_id=? AND session_id=?").get(head.id, sessionId)
+    )
+      return head;
+    const project = this.projectFor(head);
+    if (project && cleanProject(this.projectOf(sessionId)) === project) return head;
+    throw new Error("Design not found in this conversation's project.");
+  }
+  /** The design's project; older designs learn it from the chat that made them. */
+  private projectFor(head: Head): string | null {
+    if (head.project) return head.project;
+    const project = cleanProject(this.projectOf(head.session_id));
+    if (project) {
+      this.db.prepare("UPDATE design_documents SET project=? WHERE id=?").run(project, head.id);
+      head.project = project;
+    }
+    return project;
+  }
   private owner(sessionId: string, documentId: string) {
-    const row = this.db
-      .prepare("SELECT session_id,revision FROM design_documents WHERE id=?")
-      .get(id.parse(documentId)) as
-      | { session_id: string; revision: number }
-      | undefined;
-    if (!row || row.session_id !== id.parse(sessionId))
-      throw new Error("Design not found in this conversation.");
-    return row.revision;
+    return this.access(sessionId, documentId).revision;
   }
   private listComments(documentId: string): DesignComment[] {
     const rows = this.db
@@ -511,7 +599,7 @@ export class DesignRepository {
   private emit(
     sessionId: string,
     documentId: string,
-    scope: "document" | "comments",
+    scope: "document" | "comments" | "chats",
     created = false,
   ) {
     try {
@@ -596,13 +684,21 @@ export class DesignRepository {
           return { ...b, contentHash };
         }),
       };
+      // The chat that made a design and its project stay; other chats only move it on.
       this.db
-        .prepare("INSERT OR REPLACE INTO design_documents VALUES(?,?,?,?,?)")
-        .run(next.id, sessionId, next.title, next.revision, next.updatedAt);
+        .prepare(
+          "INSERT INTO design_documents(id,session_id,title,revision,updated_at,project) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title, revision=excluded.revision, updated_at=excluded.updated_at",
+        )
+        .run(next.id, sessionId, next.title, next.revision, next.updatedAt, cleanProject(this.projectOf(sessionId)));
+      // Making a design, or an agent changing one, makes the chat one of its chats.
+      if (!head || meta.author.kind === "agent")
+        this.db
+          .prepare("INSERT INTO design_chats VALUES(?,?,?,?) ON CONFLICT(document_id, session_id) DO UPDATE SET active_at=excluded.active_at")
+          .run(next.id, sessionId, next.updatedAt, this.activeAt());
       const summary = meta.summary?.trim().slice(0, 160) || null;
       this.db
         .prepare(
-          "INSERT INTO design_revisions(document_id,revision,snapshot,created_at,author,summary,comment_id,board_ids,hidden,prompt,request_id,canvas_changed) VALUES(?,?,?,?,?,?,?,?,0,?,?,?)",
+          "INSERT INTO design_revisions(document_id,revision,snapshot,created_at,author,summary,comment_id,board_ids,hidden,prompt,request_id,canvas_changed,session_id) VALUES(?,?,?,?,?,?,?,?,0,?,?,?,?)",
         )
         .run(
           next.id,
@@ -616,6 +712,7 @@ export class DesignRepository {
           meta.prompt?.trim().slice(0, 2000) || null,
           meta.requestId?.slice(0, 200) || null,
           canvasState(before) !== canvasState(next) ? 1 : 0,
+          sessionId,
         );
       this.db
         .prepare("INSERT INTO design_receipts VALUES(?,?,?,?,?)")
@@ -645,7 +742,7 @@ export class DesignRepository {
         // create returns its document, and parallel creates can't both pass.
         if (options.exclusive) {
           const existing = this.db
-            .prepare("SELECT id, title FROM design_documents WHERE session_id=? ORDER BY updated_at DESC")
+            .prepare("SELECT d.id, d.title FROM design_documents d JOIN design_chats c ON c.document_id=d.id WHERE c.session_id=? ORDER BY d.updated_at DESC")
             .all(sessionId) as { id: string; title: string }[];
           if (existing.length)
             throw Object.assign(new Error("DESIGN_EXISTS"), { designs: existing });
@@ -666,11 +763,14 @@ export class DesignRepository {
       signal,
     );
   }
-  /** Whether a design belongs to this conversation, without reading its boards. */
+  /** Whether this conversation can use a design, without reading its boards. */
   owns(sessionId: string, documentId: string): boolean {
-    return !!this.db
-      .prepare("SELECT 1 FROM design_documents WHERE id=? AND session_id=?")
-      .get(documentId, sessionId);
+    try {
+      this.access(sessionId, documentId);
+      return true;
+    } catch {
+      return false;
+    }
   }
   update(
     sessionId: string,
@@ -714,7 +814,7 @@ export class DesignRepository {
             const siblings = d.boards.filter((board) => pageOf(board.pageId) === pageOf(op.pageId));
             d.boards.push({
               id: `brd_${randomUUID()}`,
-              name: op.name,
+              name: op.name ?? nextBoardName(d.boards),
               ...(op.pageId !== undefined ? { pageId: op.pageId } : {}),
               // Each page has its own world: place after that page's boards.
               x: op.x ?? (siblings.length ? Math.max(...siblings.map((b) => b.x + b.width)) + 80 : 0),
@@ -752,6 +852,7 @@ export class DesignRepository {
           }
           if (op.type === "placement") {
             const { type, boardId, expectedRevision, ...patch } = op;
+            if (patch.name === undefined) delete patch.name;
             Object.assign(b, patch);
             b.placementRevision++;
           }
@@ -761,7 +862,7 @@ export class DesignRepository {
             d.boards.push({
               ...b,
               id: `brd_${randomUUID()}`,
-              name: `${b.name} copy`,
+              name: copyBoardName(b.name, d.boards),
               x: b.x + b.width + 80,
               contentRevision: 1,
               placementRevision: 1,
@@ -796,7 +897,7 @@ export class DesignRepository {
     return (
       this.db
         .prepare(
-          "SELECT revision, created_at, author, summary, comment_id, board_ids, prompt, request_id, canvas_changed FROM design_revisions WHERE document_id=? AND hidden=0 ORDER BY revision DESC LIMIT 300",
+          "SELECT revision, created_at, author, summary, comment_id, board_ids, prompt, request_id, canvas_changed, session_id FROM design_revisions WHERE document_id=? AND hidden=0 ORDER BY revision DESC LIMIT 300",
         )
         .all(documentId) as {
         revision: number;
@@ -808,6 +909,7 @@ export class DesignRepository {
         prompt: string | null;
         request_id: string | null;
         canvas_changed: number;
+        session_id: string | null;
       }[]
     ).map((r) => ({
       revision: r.revision,
@@ -819,6 +921,7 @@ export class DesignRepository {
       prompt: r.prompt,
       requestId: r.request_id,
       canvasChanged: r.canvas_changed === 1,
+      sessionId: r.session_id,
     }));
   }
   restore(
@@ -1183,35 +1286,50 @@ export class DesignRepository {
       .run();
   }
   /**
-   * A deleted conversation takes its designs with it: documents, versions,
-   * comments, receipts, and board HTML no remaining version points at.
+   * A deleted conversation leaves its designs: they belong to their project
+   * and their other chats. Only its place among their chats goes.
    */
   deleteSession(sessionId: string): string[] {
     const ids = (
-      this.db
-        .prepare("SELECT id FROM design_documents WHERE session_id=?")
-        .all(sessionId) as { id: string }[]
-    ).map((r) => r.id);
+      this.db.prepare("SELECT document_id FROM design_chats WHERE session_id=?").all(sessionId) as { document_id: string }[]
+    ).map((r) => r.document_id);
     this.db.transaction(() => {
-      for (const id of ids) {
-        this.db
-          .prepare(
-            "DELETE FROM design_comment_messages WHERE comment_id IN (SELECT id FROM design_comments WHERE document_id=?)",
-          )
-          .run(id);
-        this.db.prepare("DELETE FROM design_comments WHERE document_id=?").run(id);
-        this.db.prepare("DELETE FROM design_revisions WHERE document_id=?").run(id);
-        this.db.prepare("DELETE FROM design_documents WHERE id=?").run(id);
-      }
+      this.db.prepare("DELETE FROM design_chats WHERE session_id=?").run(sessionId);
       this.db.prepare("DELETE FROM design_receipts WHERE session_id=?").run(sessionId);
-      if (ids.length)
-        this.db
-          .prepare(
-            "DELETE FROM design_content WHERE hash NOT IN (SELECT json_extract(b.value,'$.contentHash') FROM design_revisions r, json_each(r.snapshot,'$.boards') b)",
-          )
-          .run();
     })();
+    this.opened.delete(sessionId);
+    for (const documentId of ids) this.emit(sessionId, documentId, "chats");
     return ids;
+  }
+  /**
+   * Deleting a design: its versions, comments and chat links, and board HTML
+   * no remaining version points at. The chats themselves stay.
+   */
+  deleteDocument(documentId: string) {
+    const head = this.head(documentId);
+    if (!head) return false;
+    this.db.transaction(() => {
+      this.db
+        .prepare("DELETE FROM design_comment_messages WHERE comment_id IN (SELECT id FROM design_comments WHERE document_id=?)")
+        .run(documentId);
+      this.db.prepare("DELETE FROM design_comments WHERE document_id=?").run(documentId);
+      this.db.prepare("DELETE FROM design_revisions WHERE document_id=?").run(documentId);
+      this.db.prepare("DELETE FROM design_receipts WHERE document_id=?").run(documentId);
+      this.db.prepare("DELETE FROM design_chats WHERE document_id=?").run(documentId);
+      this.db.prepare("DELETE FROM design_documents WHERE id=?").run(documentId);
+      this.db
+        .prepare(
+          "DELETE FROM design_content WHERE hash NOT IN (SELECT json_extract(b.value,'$.contentHash') FROM design_revisions r, json_each(r.snapshot,'$.boards') b)",
+        )
+        .run();
+    })();
+    for (const ids of this.opened.values()) ids.delete(documentId);
+    try {
+      this.notify({ sessionId: head.session_id, documentId, title: "", revision: head.revision, created: false, scope: "document", deleted: true });
+    } catch (error) {
+      console.warn("[design] Change notification failed", error);
+    }
+    return true;
   }
   /** A draft chat became a real session: its designs move to the new id. */
   moveSession(from: string, to: string): number {
@@ -1220,6 +1338,13 @@ export class DesignRepository {
       const moved = this.db
         .prepare("UPDATE design_documents SET session_id=? WHERE session_id=?")
         .run(to, from).changes;
+      this.db.prepare("UPDATE OR IGNORE design_chats SET session_id=? WHERE session_id=?").run(to, from);
+      this.db.prepare("DELETE FROM design_chats WHERE session_id=?").run(from);
+      const opened = this.opened.get(from);
+      if (opened) {
+        this.opened.set(to, new Set([...(this.opened.get(to) ?? []), ...opened]));
+        this.opened.delete(from);
+      }
       this.db.prepare("UPDATE design_comments SET session_id=? WHERE session_id=?").run(to, from);
       this.db.prepare("UPDATE design_receipts SET session_id=? WHERE session_id=?").run(to, from);
       return moved;

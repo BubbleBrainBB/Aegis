@@ -1,22 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { Search, SquarePen, X } from "../icons";
+import { Search, SquarePen, Trash2, X } from "../icons";
 import { BoardThumb } from "./BoardThumb";
 import { relativeTime } from "./design-ui";
 import { useAppStore } from "../../store/useAppStore";
-import { startNewDesign, useDesignLibrary, useDesignStore } from "../../store/useDesignStore";
+import { deleteDesign, openDesignInSection, startNewDesign, useDesignLibrary, useDesignStore } from "../../store/useDesignStore";
 import type { DesignDocument, DesignSummary } from "../../../shared/design-types";
 
 const leaf = (path: string | null | undefined) => (path ? path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path : "");
 
-/** The Design section's sidebar: every design, grouped by the project its chat belongs to. */
+/** The Design section's sidebar: every design, grouped by its project. */
 export function DesignSidebarPanel() {
   const designs = useDesignLibrary();
   const section = useDesignStore((s) => s.section);
   const projects = useAppStore(
     useShallow((s) =>
       Object.fromEntries(
-        designs.map((d) => [d.sessionId, s.sessions[d.sessionId]?.projectCwd ?? s.sessions[d.sessionId]?.cwd ?? ""]),
+        designs.map((d) => [d.id, d.project ?? s.sessions[d.sessionId]?.projectCwd ?? s.sessions[d.sessionId]?.cwd ?? ""]),
       ),
     ),
   );
@@ -26,7 +26,7 @@ export function DesignSidebarPanel() {
     const shown = q ? designs.filter((d) => d.title.toLowerCase().includes(q)) : designs;
     const byProject = new Map<string, DesignSummary[]>();
     for (const d of shown) {
-      const key = projects[d.sessionId] || "";
+      const key = projects[d.id] || "";
       byProject.set(key, [...(byProject.get(key) ?? []), d]);
     }
     return [...byProject.entries()];
@@ -102,26 +102,39 @@ function DesignRow({ design, active }: { design: DesignSummary; active: boolean 
   }, [design.sessionId, design.id, design.revision]);
   const cover = doc?.boards[0];
   return (
-    <button
-      type="button"
-      data-design-row={design.id}
-      aria-current={active ? "true" : undefined}
-      onClick={() => useDesignStore.getState().setSection({ sessionId: design.sessionId, documentId: design.id })}
-      className={`flex w-full items-center gap-2.5 rounded-[9px] px-2 py-1.5 text-left ${
-        active ? "bg-[var(--sidebar-item-active)]" : "hover:bg-[var(--sidebar-item-hover)]"
-      }`}
-    >
-      {cover ? (
-        <BoardThumb board={cover} width={42} height={28} className="flex-shrink-0 rounded-[5px] border border-[var(--border)] bg-white" />
-      ) : (
-        <span className="h-[28px] w-[42px] flex-shrink-0 rounded-[5px] border border-dashed border-[var(--border)]" />
-      )}
-      <span className="flex min-w-0 flex-col">
-        <span className="truncate text-[13.5px] text-[var(--text-primary)]">{design.title}</span>
-        <span className="truncate text-[12px] text-[var(--text-muted)]">
-          {design.boardCount} {design.boardCount === 1 ? "board" : "boards"} · {relativeTime(design.updatedAt)}
+    <div className="group relative">
+      <button
+        type="button"
+        data-design-row={design.id}
+        aria-current={active ? "true" : undefined}
+        onClick={() => openDesignInSection(design)}
+        className={`flex w-full items-center gap-2.5 rounded-[9px] px-2 py-1.5 pr-8 text-left ${
+          active ? "bg-[var(--sidebar-item-active)]" : "hover:bg-[var(--sidebar-item-hover)]"
+        }`}
+      >
+        {cover ? (
+          <BoardThumb board={cover} width={42} height={28} className="flex-shrink-0 rounded-[5px] border border-[var(--border)] bg-white" />
+        ) : (
+          <span className="h-[28px] w-[42px] flex-shrink-0 rounded-[5px] border border-dashed border-[var(--border)]" />
+        )}
+        <span className="flex min-w-0 flex-col">
+          <span className="truncate text-[13.5px] text-[var(--text-primary)]">{design.title}</span>
+          <span className="truncate text-[12px] text-[var(--text-muted)]">
+            {design.boardCount} {design.boardCount === 1 ? "board" : "boards"}
+            {design.chats.length > 1 ? ` · ${design.chats.length} chats` : ""} · {relativeTime(design.updatedAt)}
+          </span>
         </span>
-      </span>
-    </button>
+      </button>
+      <button
+        type="button"
+        aria-label={`Delete ${design.title}`}
+        title="Delete design"
+        data-design-delete={design.id}
+        onClick={() => void deleteDesign(design)}
+        className="absolute right-1.5 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-[6px] text-[var(--text-muted)] opacity-0 hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)] focus-visible:opacity-100 group-hover:opacity-100"
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+      </button>
+    </div>
   );
 }

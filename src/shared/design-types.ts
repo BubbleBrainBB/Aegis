@@ -75,6 +75,8 @@ export interface DesignRevisionInfo {
   /** The message an agent version answered, and that message's id (one request, many saves). */
   prompt?: string | null;
   requestId?: string | null;
+  /** The chat that made this version (designs have several chats). */
+  sessionId?: string | null;
 }
 export interface DesignDocument {
   id: string;
@@ -88,15 +90,25 @@ export interface DesignDocument {
   comments: DesignComment[];
   createdAt: number;
   updatedAt: number;
+  /** The project folder the design belongs to; chats in it can work on it. */
+  project?: string | null;
+  /** The chats working on this design, most recently active first. */
+  chats?: string[];
 }
 export type DesignSummary = Pick<
   DesignDocument,
   "id" | "sessionId" | "title" | "revision" | "updatedAt"
-> & { boardCount: number };
+> & {
+  boardCount: number;
+  project: string | null;
+  chats: string[];
+  /** In list(): whether the asking chat is one of the design's chats. */
+  member?: boolean;
+};
 export type DesignOperation =
   | {
       type: "add";
-      name: string;
+      name?: string;
       html?: string;
       /** Canvas position; defaults to the right of the existing boards. */
       x?: number;
@@ -136,8 +148,10 @@ export interface DesignEvent {
   title: string;
   revision: number;
   created: boolean;
-  /** "comments" changes never mint a document version. */
-  scope?: "document" | "comments";
+  /** "comments" and "chats" changes never mint a document version. */
+  scope?: "document" | "comments" | "chats";
+  /** The design was deleted. */
+  deleted?: boolean;
 }
 export interface DesignPreview {
   dataUrl: string;
@@ -248,7 +262,10 @@ export interface DesignAPI {
     revision: number;
     format: "html" | "png" | "pdf";
     pageId?: string;
+    /** PNG: the board to render. PDF and HTML: only this board. */
     boardId?: string;
+    /** PDF and HTML: only these boards. */
+    boardIds?: string[];
     /** PNG pixel ratio; defaults to 1. */
     scale?: number;
   }): Promise<{ saved: boolean; path?: string }>;
@@ -262,6 +279,10 @@ export interface DesignAPI {
     { ok: true; html: string; contentRevision: number } | { ok: false; handoff: string } | { ok: false; error: string }
   >;
   quickEditCancel(input: { requestId: string }): Promise<void>;
+  /** A chat joins a design (a new chat started on it). */
+  join(input: { sessionId: string; documentId: string }): Promise<void>;
+  /** Deletes a design for good; its chats stay. */
+  remove(input: { documentId: string }): Promise<boolean>;
   /** Writes chosen boards and a README into the project (.aegis/design/<design>/) for implementing. */
   handoff(input: { sessionId: string; documentId: string; boardIds?: string[] }): Promise<{
     folder: string;

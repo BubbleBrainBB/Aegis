@@ -5,6 +5,7 @@ import { DesignRepository } from "./repository";
 import { designFrameHtml } from "./html";
 import { renderChecksScript } from "./render-checks";
 import { moveDesignFocus } from "./focus";
+import { designProjectRoot } from "./styles";
 import type { DesignPreview } from "../../shared/design-types";
 
 let repository: DesignRepository | undefined;
@@ -17,6 +18,7 @@ export function getDesignRepository() {
         if (!w.isDestroyed())
           w.webContents.send("design:changed", event);
     },
+    (sessionId) => designProjectRoot(sessionId),
   );
   // No turn survives a restart, so nothing can still be working on a comment.
   repository.resetWorking();
@@ -28,7 +30,7 @@ export function deleteSessionDesigns(sessionId: string) {
   try {
     getDesignRepository().deleteSession(sessionId);
   } catch (error) {
-    console.warn("Failed to delete the session's designs:", error);
+    console.warn("Failed to remove the session from its designs:", error);
   }
 }
 

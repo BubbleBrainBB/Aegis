@@ -166,8 +166,15 @@
   white-space: nowrap;
 }
 .design-panel .design-board-preview {
-  padding: 2px 4px;
-  font-size: 13px;
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  color: var(--text-muted);
+}
+.design-panel .design-board-preview:hover:not(:disabled) {
+  color: var(--text-primary);
 }
 .design-selection {
   position: absolute;
@@ -2693,4 +2700,18 @@ details.design-section > .design-grid {
 }
 .design-export-menu span {
   color: var(--text-muted);
+}
+
+.design-panel .design-board-name-input {
+  flex: 1;
+  min-width: 0;
+  width: 0;
+  height: 24px;
+  padding: 2px 4px;
+  font: inherit;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--d-select);
+  border-radius: 4px;
+  outline: none;
 }

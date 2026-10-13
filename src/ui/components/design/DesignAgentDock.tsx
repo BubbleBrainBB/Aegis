@@ -7,6 +7,7 @@ import { openDesign } from "../../store/useDesignStore";
 import { PROVIDERS } from "../../utils/provider";
 import { useDesignDraftStatus } from "./design-draft-status";
 import { DesignComposerControls } from "./DesignComposerControls";
+import { DesignChatSwitcher } from "./DesignChatSwitcher";
 import type { CodexModelConfig } from "../../types";
 
 type DockMode = "composer" | "chat" | "pill";
@@ -115,7 +116,7 @@ export function DesignAgentDock({
     <span className="flex min-w-0 flex-1 items-center gap-1.5 text-[12.5px] text-[var(--text-muted)]" data-design-dock-status>
       {running ? <span aria-hidden="true" className="design-dock-spinner" /> : null}
       <span className="truncate">
-        {waiting ? "Waiting for your approval" : status ?? (running ? "Working…" : shownMode === "pill" ? "Ready" : isDraft ? "New design" : agent)}
+        {waiting ? "Waiting for your approval" : status ?? (running ? "Working…" : shownMode === "pill" ? "Ready" : isDraft && !documentId ? "New design" : agent)}
       </span>
     </span>
   );
@@ -157,6 +158,7 @@ export function DesignAgentDock({
               <span className={`${iconButton} cursor-grab`} {...dragHandlers} aria-label="Move" role="button" tabIndex={-1}>
                 <GripVertical className="h-3.5 w-3.5" />
               </span>
+              {documentId ? <DesignChatSwitcher sessionId={sessionId} documentId={documentId} /> : null}
               {statusLine}
               {!isDraft && documentId ? (
                 <button type="button" className={iconButton} onClick={openAsChat} aria-label="Open as a chat" title="Open as a chat">

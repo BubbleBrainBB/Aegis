@@ -1,3 +1,4 @@
+import { nextBoardName } from "../../../shared/design-names";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
@@ -217,6 +218,8 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
   const [exporting, setExporting] = useState(false);
   const [exportAllPages, setExportAllPages] = useState(false);
   const [exportScale, setExportScale] = useState<1 | 2>(2);
+  /** A board's download menu, opened from the download icon on its heading. */
+  const [boardDownload, setBoardDownload] = useState<{ boardId: string; trigger: { current: HTMLElement | null } }>();
   const [exportMenu, setExportMenu] = useState<true>();
   const exportTrigger = useRef<HTMLButtonElement>(null);
   /** Title: one click opens the design menu, a double click renames in place. */
@@ -282,8 +285,10 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
     if (latest) setFocusTarget({ boardId: latest.id, nonce: Date.now() });
   }, [canvasBoards, hidden]);
   // Hand edits wait while the agent writes, so neither overwrites the other.
+  // A new chat on an existing design is still a draft; the design is already
+  // there to edit by hand.
   const editable =
-    !!session && !session.readOnly && !session.isDraft && !historical && !writing;
+    !!session && !session.readOnly && !historical && !writing;
   const canMention = canSendDesignComment(sessionId);
   const activeBoard = doc?.boards.find((b) => b.id === selected);
   const queue = useComposerQueueStore((s) =>
@@ -546,7 +551,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
     const page = { id: "page-" + uid(), name: `Page ${pages.length + 1}` };
     await writeDesign([
       { type: "canvas", expectedRevision: doc.revision, pages: [...pages, page] },
-      { type: "add", name: "Board 1", html: BLANK_BOARD, x: 0, y: 0, pageId: page.id },
+      { type: "add", name: nextBoardName(doc.boards), html: BLANK_BOARD, x: 0, y: 0, pageId: page.id },
     ], `Added ${page.name}`);
     await reload(); selectPage(page.id);
   });
@@ -880,7 +885,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
   const createBoard = (rect: Rect) =>
     run(async () => {
       if (!doc) return;
-      const name = `Board ${doc.boards.length + 1}`;
+      const name = nextBoardName(doc.boards);
       const result = await writeDesign(
         [{ type: "add", pageId: activePageId, name, html: BLANK_BOARD, x: Math.round(rect.x), y: Math.round(rect.y), width: rect.width, height: rect.height }],
         `Added ${name}`,
@@ -1061,7 +1066,11 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
    * Export, then say where it went: a save dialog can be cancelled, and a
    * file ready is not a file saved until the user picked where.
    */
-  const exportAs = (format: "pdf" | "html" | "png", boardId?: string) =>
+  const exportAs = (
+    format: "pdf" | "html" | "png",
+    boardId?: string,
+    only?: { boardIds?: string[]; scale?: 1 | 2 },
+  ) =>
     run(async () => {
       const what = format === "pdf" ? "PDF" : format === "html" ? "HTML bundle" : "PNG";
       setExporting(true);
@@ -1072,8 +1081,10 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
         revision: doc!.revision,
         format,
         ...(boardId ? { boardId } : {}),
-        ...(!exportAllPages ? { pageId: activePageId } : {}),
-        ...(format === "png" ? { scale: exportScale } : {}),
+        ...(only?.boardIds ? { boardIds: only.boardIds } : {}),
+        // A board's own download is about that board, wherever its page is.
+        ...(!exportAllPages && !boardId && !only?.boardIds ? { pageId: activePageId } : {}),
+        ...(format === "png" ? { scale: only?.scale ?? exportScale } : {}),
       });
       if (r.saved && r.path) {
         const saved = r.path;
@@ -1326,6 +1337,9 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
           onMarkSelectionChange={ids => { setSelectedMarkIds(ids); if (ids.length) { setSelectedIds([]); setSelection(undefined); } }}
           onMarksChange={changeMarks}
           onMarksDelete={ids => { if (doc) void update([{ type: "canvas", expectedRevision: doc.revision, marks: (doc.marks ?? []).filter(mark => !ids.includes(mark.id)) }], "Deleted canvas annotations"); setSelectedMarkIds([]); }}
+          onBoardDownload={(boardId, button) =>
+            setBoardDownload(boardDownload?.boardId === boardId ? undefined : { boardId, trigger: { current: button } })
+          }
           onCreateMark={mark => { if (doc) { void update([{ type: "canvas", expectedRevision: doc.revision, marks: [...(doc.marks ?? []), { ...mark, pageId: activePageId }] }], `Added ${mark.type}`); setSelectedMarkIds([mark.id]); setSelectedIds([]); setSelection(undefined); } }}
           storageKey={"aegis.design.view:" + sessionId + ":" + documentId + ":" + activePageId}
           selectedIds={selectedIds}
@@ -1844,7 +1858,8 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
             head={head}
             selected={historical}
             user={user}
-            editable={!!session && !session.readOnly && !session.isDraft}
+            currentSessionId={sessionId ?? undefined}
+            editable={!!session && !session.readOnly}
             busy={busy}
             boardName={(id) => doc.boards.find((b) => b.id === id)?.name}
             onSelect={(revision) => {
@@ -2010,7 +2025,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
             info={versions.find((v) => v.revision === compare.to)}
             comment={compareComment}
             user={user}
-            editable={!!session && !session.readOnly && !session.isDraft}
+            editable={!!session && !session.readOnly}
             onClose={() => setCompare(undefined)}
             onResolve={(id) => {
               void resolve(id);
@@ -2030,7 +2045,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
       doc &&
       <DesignActionMenu trigger={exportTrigger} onClose={() => setExportMenu(undefined)} label="Design actions" align="start" className="design-export-actions">
             {editable && <button role="menuitem" disabled={busy} onClick={startRename}>Rename <span>Double-click the title</span></button>}
-            <button className="design-menu-icon-action" role="menuitem" disabled={!editable || busy} onClick={() => { setExportMenu(undefined); void update([{ type: "add", pageId: activePageId, name: `Board ${(doc?.boards.length ?? 0) + 1}` }]); }}><Plus size={16} />New artboard</button>
+            <button className="design-menu-icon-action" role="menuitem" disabled={!editable || busy} onClick={() => { setExportMenu(undefined); void update([{ type: "add", pageId: activePageId, name: nextBoardName(doc?.boards ?? []) }]); }}><Plus size={16} />New artboard</button>
             <button className="design-menu-icon-action" role="menuitem" onClick={() => { setExportMenu(undefined); setHistoryOpen(v => !v); setHistorical(undefined); }}><History size={16} />{historyOpen ? "Close history" : "History"}</button>
             {sessionId && <button className="design-menu-icon-action" role="menuitem" onClick={() => { setExportMenu(undefined); setStylesOpen(true); }}><Sparkles size={16} />{composerChoice?.styleName ? `Style · ${composerChoice.styleName}` : "Styles"}</button>}
             <div className="design-menu-divider" role="separator" />
@@ -2054,6 +2069,35 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
             <div className="design-menu-divider" role="separator" />
             <button role="menuitem" disabled={busy || !!session?.readOnly} onClick={() => { setExportMenu(undefined); void implement(); }}>Hand off to project <span>Build with {agentName}</span></button>
       </DesignActionMenu>}
+    {boardDownload && doc && (() => {
+      const board = doc.boards.find((b) => b.id === boardDownload.boardId);
+      if (!board) return null;
+      const close = () => setBoardDownload(undefined);
+      const selected = selectedIds.filter((id) => canvasBoards.some((b) => b.id === id));
+      return (
+        <DesignActionMenu trigger={boardDownload.trigger} onClose={close} label={`Download ${board.name}`} align="end" className="design-export-actions design-board-download">
+          <button role="menuitem" onClick={() => (close(), void exportAs("png", board.id, { scale: 1 }))}>
+            PNG 1× <span>{board.width} × {board.height} px</span>
+          </button>
+          <button role="menuitem" onClick={() => (close(), void exportAs("png", board.id, { scale: 2 }))}>
+            PNG 2× <span>{board.width * 2} × {board.height * 2} px</span>
+          </button>
+          <button role="menuitem" onClick={() => (close(), void exportAs("pdf", board.id))}>
+            PDF (.pdf) <span>One page at this board's size</span>
+          </button>
+          <button role="menuitem" onClick={() => (close(), void exportAs("html", board.id))}>
+            HTML (.zip) <span>This board as a web page</span>
+          </button>
+          <div className="design-menu-divider" role="separator" />
+          <button role="menuitem" disabled={!canvasBoards.length} onClick={() => (close(), void exportAs("pdf", undefined, { boardIds: canvasBoards.map((b) => b.id) }))}>
+            All boards (.pdf) <span>{canvasBoards.length} on this page, in canvas order</span>
+          </button>
+          <button role="menuitem" disabled={selected.length < 2} onClick={() => (close(), void exportAs("pdf", undefined, { boardIds: selected }))}>
+            Selected boards (.pdf) <span>{selected.length < 2 ? "Select two or more" : `${selected.length} boards`}</span>
+          </button>
+        </DesignActionMenu>
+      );
+    })()}
     {stylesOpen && sessionId && (
       <DesignStylesDialog
         sessionId={sessionId}

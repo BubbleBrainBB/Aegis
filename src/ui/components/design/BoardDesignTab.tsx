@@ -1,3 +1,4 @@
+import { BoardNameInput } from "./BoardNameInput";
 import { useMemo } from "react";
 import type { DesignBoard, DesignOperation } from "../../../shared/design-types";
 import { readBoardBackground, setBoardBackground } from "../../../shared/design-layers";
@@ -36,18 +37,7 @@ export function BoardDesignTab({
   return (
     <div className="design-tab-body" key={`${board.id}:${board.placementRevision}:${board.contentRevision}`}>
       <div className="design-board-title">
-        <input
-          aria-label="Board name"
-          defaultValue={board.name}
-          disabled={!can}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") e.currentTarget.blur();
-          }}
-          onBlur={(e) => {
-            const name = e.target.value.trim();
-            if (name && name !== board.name) place({ name });
-          }}
-        />
+        <BoardNameInput name={board.name} disabled={!can} onSave={name => place({ name })} />
         <span>Board · v{revision}</span>
       </div>
       <section className="design-section">

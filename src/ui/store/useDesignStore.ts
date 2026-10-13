@@ -141,6 +141,48 @@ export function useDesignLibrary(): DesignSummary[] {
   return library ?? EMPTY_LIBRARY;
 }
 
+/** The design's most recent chat that still exists here, if any. */
+export function liveDesignChat(design: Pick<DesignSummary, "chats" | "sessionId">): string | undefined {
+  const sessions = useAppStore.getState().sessions;
+  return [...design.chats, design.sessionId].find((id) => !!sessions[id]);
+}
+
+/**
+ * A new chat on an existing design: a draft in the design's project that is
+ * one of the design's chats from the start, so its agent works on this design.
+ */
+export function startDesignChat(design: Pick<DesignSummary, "id" | "project">) {
+  const app = useAppStore.getState();
+  const sessionId = app.createDetachedDraftSession(design.project ?? app.projectCwd, "New chat");
+  void window.electron.design?.join({ sessionId, documentId: design.id }).catch(() => {});
+  useDesignStore.getState().setSection({ sessionId, documentId: design.id });
+  if (app.activeWorkspace !== "design") app.setActiveWorkspace("design");
+  return sessionId;
+}
+
+/** Open a design in the Design section with its latest chat, or a new one. */
+export function openDesignInSection(design: DesignSummary) {
+  const sessionId = liveDesignChat(design);
+  if (!sessionId) return startDesignChat(design);
+  useDesignStore.getState().setSection({ sessionId, documentId: design.id });
+  const app = useAppStore.getState();
+  if (app.activeWorkspace !== "design") app.setActiveWorkspace("design");
+  return sessionId;
+}
+
+/** Deletes a design after asking; its chats stay. */
+export async function deleteDesign(design: Pick<DesignSummary, "id" | "title">) {
+  const { confirmDialog } = await import("../components/ui/confirm-dialog");
+  const ok = await confirmDialog({
+    title: `Delete "${design.title}"?`,
+    description: "Its boards, comments and history are deleted. The chats that worked on it stay.",
+    confirmLabel: "Delete design",
+    tone: "danger",
+  });
+  if (!ok) return false;
+  return (await window.electron.design?.remove({ documentId: design.id })) ?? false;
+}
+
 /** A new design in the Design section: an empty canvas whose chat starts with the first message. */
 export function startNewDesign(cwd?: string | null) {
   const app = useAppStore.getState();
@@ -162,7 +204,18 @@ export function subscribeDesignChanges() {
   });
   const offChanges = window.electron.design?.onChanged((event) => {
     const design = useDesignStore.getState();
+    if (event.deleted) {
+      void design.refreshLibrary();
+      if (design.section?.documentId === event.documentId) design.setSection(null);
+      const store = useAppStore.getState();
+      if (store.rightUtilityTabs.includes(`design:${event.documentId}`)) store.closeRightUtilityTab(`design:${event.documentId}`);
+      return;
+    }
     design.remember({ id: event.documentId, title: event.title });
+    if (event.scope === "chats") {
+      void design.refreshLibrary();
+      return;
+    }
     if (event.scope !== "comments") {
       void design.refreshLibrary();
       // The saved version replaces the boards drawn while it was written.

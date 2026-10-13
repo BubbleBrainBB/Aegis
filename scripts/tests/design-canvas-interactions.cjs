@@ -105,7 +105,8 @@ exports.run = async ({ w, js, repo, sessionId, documentId, screenshotDir }) => {
   await until(()=>js('!document.querySelector(".design-board-preview-overlay")'),'return from preview');
   assert.deepEqual(await view(),saved,'preview never destroys canvas position');
   // Use the actual host -> sandbox hit-test bridge, with canvas-owned pointers.
-  await fit();await click('[aria-label="Comment mode"]');
+  // Comment mode lives in the title bar's comment control.
+  await fit();await click('.design-comment-controls [aria-label="Comment"]');
   const htmlFrame=w.webContents.mainFrame.framesInSubtree.find(f=>f.url==='about:srcdoc');
   const h=await htmlFrame.executeJavaScript('(()=>{const r=document.querySelector("h1").getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()');
   const brect=await box(boardSelector(first.id));const z=(await view()).zoom;

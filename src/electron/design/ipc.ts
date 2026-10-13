@@ -33,6 +33,8 @@ export function registerDesignIpc() {
   const handlers: Omit<DesignAPI, "onChanged"> = {
     list: (sessionId) => Promise.resolve(getDesignRepository().list(sessionId)),
     listAll: () => Promise.resolve(getDesignRepository().listAll()),
+    join: (x) => Promise.resolve(getDesignRepository().join(x.sessionId, x.documentId)),
+    remove: (x) => Promise.resolve(getDesignRepository().deleteDocument(x.documentId)),
     create: async (x) =>
       getDesignRepository().create(
         x.sessionId,
@@ -138,6 +140,13 @@ export function registerDesignIpc() {
         d = designForPage(d, x.pageId);
         if (x.boardId && !d.boards.some(board => board.id === x.boardId)) throw new Error("Board does not belong to this page.");
       }
+      // PDF and HTML can be one board or a chosen few; a PDF goes in canvas order.
+      const only = x.format === "png" ? [] : Array.isArray(x.boardIds) && x.boardIds.length ? x.boardIds : x.boardId ? [x.boardId] : [];
+      if (only.length) {
+        d = { ...d, boards: d.boards.filter((board) => only.includes(board.id)) };
+        if (!d.boards.length) throw new Error("Those boards are not in this design.");
+      }
+      if (x.format === "pdf") d = { ...d, boards: [...d.boards].sort((a, b) => a.y - b.y || a.x - b.x) };
       if (!d.boards.length && x.format !== "html") throw new Error("This page has no boards to export.");
       if (x.format !== "png" && x.format !== "html" && x.format !== "pdf")
         throw new Error("Unsupported export format");
@@ -181,7 +190,7 @@ export function registerDesignIpc() {
       }
       const extension = x.format === "png" ? "png" : x.format === "pdf" ? "pdf" : "zip";
       const options: SaveDialogOptions = {
-        defaultPath: `${d.title.replace(/[^\p{L}\p{N} _-]/gu, "").slice(0, 80) || "Design"}.${extension}`,
+        defaultPath: `${(only.length === 1 ? `${d.title} - ${d.boards[0].name}` : d.title).replace(/[^\p{L}\p{N} _-]/gu, "").slice(0, 80) || "Design"}.${extension}`,
         filters: [
           {
             name: x.format === "png" ? "PNG image" : x.format === "pdf" ? "PDF, a page per board" : "HTML design bundle",
@@ -198,8 +207,12 @@ export function registerDesignIpc() {
     },
   };
   for (const [method, handler] of Object.entries(handlers)) {
-    ipcMainHandle(`design:${method}`, (event, input) =>
-      (handler as (input: unknown, owner?: BrowserWindow) => unknown)(input, BrowserWindow.fromWebContents(event.sender) ?? undefined),
-    );
+    ipcMainHandle(`design:${method}`, (event, input) => {
+      // The user opened this design in this chat: its agent may use it too.
+      const x = input as { sessionId?: unknown; documentId?: unknown } | undefined;
+      if (typeof x?.sessionId === "string" && typeof x.documentId === "string" && method !== "remove")
+        getDesignRepository().allow(x.sessionId, x.documentId);
+      return (handler as (input: unknown, owner?: BrowserWindow) => unknown)(input, BrowserWindow.fromWebContents(event.sender) ?? undefined);
+    });
   }
 }

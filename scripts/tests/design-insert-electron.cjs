@@ -49,7 +49,8 @@ exports.run = async ({ w, js, repo, sessionId, documentId, screenshotDir }) => {
   const selectMode = () => js('document.querySelector(\'[aria-label="Select and move"]\').getAttribute("aria-pressed")==="true"');
   await js('document.querySelector(".design-viewport").dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))');
   // Earlier steps leave the view zoomed on a comment; start from all boards in view.
-  await js('[...document.querySelectorAll(".design-canvas-tools button")].find(b=>b.textContent.trim()==="Fit").click()');
+  // Fit canvas (⌘0; the zoom menu has it too).
+  await js('document.querySelector(".design-viewport").dispatchEvent(new KeyboardEvent("keydown",{key:"0",code:"Digit0",metaKey:true,bubbles:true,cancelable:true}))');
   await wait(200);
 
   // Text: hovering below the paragraph previews the slot; a click opens an empty editor.
@@ -80,7 +81,7 @@ exports.run = async ({ w, js, repo, sessionId, documentId, screenshotDir }) => {
   await until(() => doc().revision === rev0 + 1, "text saved");
   const html = home().html;
   assert(/<\/p>\s*<p data-aegis-node-id="aegis-layer-\d+">Free to start<\/p>\s*<button/.test(html), "new paragraph between the intro and the button: " + html.slice(Math.max(0, html.indexOf("Free to start") - 300), html.indexOf("Free to start") + 200));
-  await until(() => js('document.querySelector(".design-float-name")?.textContent.startsWith("p")'), "new text selected");
+  await until(() => js('(Object.values(qa.design.getState().selections).find(Boolean)?.label??"").split(" · ")[0].startsWith("p")'), "new text selected");
   assert.equal(repo.history(sessionId, documentId)[0].summary, "Added text to Home");
 
   // Frame inside a board: lands in the layout after the drop point, at the drawn size.
@@ -94,8 +95,10 @@ exports.run = async ({ w, js, repo, sessionId, documentId, screenshotDir }) => {
   await until(() => /data-aegis-layer-name="Frame"/.test(home().html), "frame saved");
   const style = /data-aegis-layer-name="Frame" style="([^"]+)"/.exec(home().html)[1];
   assert(/display: flex; flex-direction: column; gap: 12px; padding: 16px; width: 1[34]\dpx; height: [89]\dpx/.test(style), style);
-  await until(() => js('document.querySelector(".design-float-name")?.textContent==="Frame"'), "frame selected");
-  await until(() => js('[...document.querySelectorAll(".iv-sec h4")].some(h=>h.textContent==="Flex layout")'), "the new frame shows its auto layout");
+  await until(() => js('(Object.values(qa.design.getState().selections).find(Boolean)?.label??"").split(" · ")[0]==="Frame"'), "frame selected");
+  // Properties may be closed by now; the element bar opens them.
+  if (!(await js('!!document.querySelector(".design-inspector")'))) await js('document.querySelector(\'.design-float-bar [aria-label="Properties"]\').click()');
+  await until(() => js('[...document.querySelectorAll(".design-inspector .iv-sec h4")].some(h=>h.textContent==="Layout")'), "the new frame shows its auto layout");
   assert(await selectMode(), "back to Select after the frame tool");
   fs.writeFileSync(path.join(screenshotDir, "design-insert.png"), (await w.webContents.capturePage()).toPNG());
 
@@ -107,7 +110,8 @@ exports.run = async ({ w, js, repo, sessionId, documentId, screenshotDir }) => {
     const zz = await zoom();
     spot = await js(`(()=>{const v=document.querySelector(".design-viewport").getBoundingClientRect();const bs=[...document.querySelectorAll(".design-board")].map(b=>b.getBoundingClientRect());const right=Math.max(...bs.map(b=>b.right)),bottom=Math.max(...bs.map(b=>b.bottom));const w=${400 * zz},h=${300 * zz};if(bottom+30+h<v.bottom-30)return {x:v.left+60,y:bottom+30};if(right+30+w<v.right-320)return {x:right+30,y:v.top+90};return null})()`);
     if (!spot) {
-      await js('document.querySelector(\'[aria-label="Zoom out"]\').click()');
+      // Zoom out (⌘−; the zoom menu has it too).
+      await js('document.querySelector(".design-viewport").dispatchEvent(new KeyboardEvent("keydown",{key:"-",code:"Minus",metaKey:true,bubbles:true,cancelable:true}))');
       await wait(150);
     }
   }

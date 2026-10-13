@@ -1,3 +1,4 @@
+import { BoardNameInput } from "./BoardNameInput";
 import {
   useEffect,
   useLayoutEffect,
@@ -15,7 +16,7 @@ import type {
 } from "../../../shared/design-types";
 import { rendererStateStorage } from "../../utils/renderer-state-storage";
 import { findDesignLayer, readDesignLayers } from "../../../shared/design-layers";
-import { ChevronDown, Check, Hand, Hash, MessageCircle, MousePointer, PanelRight, Play, Type } from "../icons";
+import { ArrowsDiagonal, ChevronDown, Check, Download, Hand, Hash, MessageCircle, MousePointer, PanelRight, Play, Type } from "../icons";
 import { DesignActionMenu, DesignToolButton, useDesignMenu } from "./DesignChrome";
 import { BoardFrame, type BoardInspector, type DragState, type DropTarget } from "./BoardFrame";
 import { FRAME_SIZE, snapBoard, textTagFor } from "./design-insert";
@@ -141,6 +142,8 @@ type Props = {
   onMarksChange?(changed: DesignMark[], reason: MarkChangeReason): void | Promise<unknown>;
   onMarksDelete?(ids: string[]): void;
   onCreateMark?(mark: DesignMark): void;
+  /** The download button on a board's heading: the host shows the export menu. */
+  onBoardDownload?(boardId: string, button: HTMLElement): void;
   storageKey: string;
   selectedIds: string[];
   selection?: ElementSelection;
@@ -303,6 +306,7 @@ export function DesignCanvas(props: Props) {
   const [insertHint, setInsertHint] = useState<{ boardId: string; target: DropTarget }>();
   /** Frame tool drag, in world coordinates; no board means a new board. */
   const [draw, setDraw] = useState<{ rect: Rect; boardId?: string; label: string }>();
+  const [renamingBoard, setRenamingBoard] = useState<string>();
   const hintQuery = useRef<{ busy: boolean; next?: [DesignBoard, Point]; board?: string }>({ busy: false });
   // Pointer capture retargets dblclick, so remember the handle that was pressed.
   const lastHandle = useRef<{ edge: string; at: number } | undefined>(undefined);
@@ -1542,6 +1546,13 @@ export function DesignCanvas(props: Props) {
       onKeyDown={key}
       onDoubleClick={(e) => {
         if (mode !== "select") return;
+        // Pointer capture can retarget the second click to the viewport.
+        const label = Array.from(viewport.current?.querySelectorAll<HTMLElement>("[data-rename-board]") ?? [])
+          .find(el => { const r = el.getBoundingClientRect(); return e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom; });
+        if (label) {
+          if (editable) setRenamingBoard(label.dataset.renameBoard);
+          return;
+        }
         const edge =
           (e.target instanceof Element &&
             e.target.closest("[data-element-resize]")?.getAttribute("data-element-resize")) ||
@@ -1723,18 +1734,18 @@ export function DesignCanvas(props: Props) {
               style={{ left: p.x, top: p.y, width: p.width, height: p.height }}
             >
               <div className="design-board-heading">
-                <button
-                  className="design-board-label"
+                {renamingBoard === b.id && editable ? (
+                  <BoardNameInput key={b.id} name={b.name} autoFocus className="design-board-name-input"
+                    onDone={() => setRenamingBoard(undefined)}
+                    onSave={name => { void onChange([{ type: "placement", boardId: b.id, expectedRevision: b.placementRevision, name }]); }} />
+                ) : <button
+                  className="design-board-label" data-rename-board={b.id}
                   title={b.name}
-                  onClick={(e) => {
-                    if (e.detail === 0) onSelectionChange([b.id]);
-                  }}
-                >
-                  {b.name}
-                </button>
-                <span>
-                  {writingBoard(b) ? "Writing…" : `${p.width} × ${p.height}`}
-                </span>
+                  onDoubleClick={e => { e.stopPropagation(); if (editable) setRenamingBoard(b.id); }}
+                  onKeyDown={e => { if (editable && (e.key === "Enter" || e.key === "F2")) { e.preventDefault(); e.stopPropagation(); setRenamingBoard(b.id); } }}
+                  onClick={e => { if (e.detail === 0) onSelectionChange([b.id]); }}
+                >{b.name}</button>}
+                {writingBoard(b) ? <span>Writing…</span> : null}
                 <button
                   data-canvas-ui
                   className="design-board-preview"
@@ -1742,8 +1753,20 @@ export function DesignCanvas(props: Props) {
                   aria-label={"Preview " + b.name}
                   onClick={() => preview(b.id)}
                 >
-                  ↗
+                  <ArrowsDiagonal size={14} stroke={1.6} />
                 </button>
+                {props.onBoardDownload ? (
+                  <button
+                    data-canvas-ui
+                    className="design-board-preview"
+                    title="Download"
+                    aria-label={"Download " + b.name}
+                    aria-haspopup="menu"
+                    onClick={(e) => props.onBoardDownload?.(b.id, e.currentTarget)}
+                  >
+                    <Download size={14} stroke={1.6} />
+                  </button>
+                ) : null}
               </div>
               <BoardFrame
                 key={frameEpochs[b.id] ?? 0}

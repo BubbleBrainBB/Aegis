@@ -69,7 +69,7 @@ export function setDesignFocus(
     focus.delete(sessionId);
     return;
   }
-  // Only a design that belongs to this conversation can be focused.
+  // Only a design this conversation can use (its own, or its project's) can be focused.
   let owned = false;
   try {
     owned = getDesignRepository().owns(sessionId, documentId);
@@ -91,12 +91,14 @@ const plainId = (v: string) => /^[\w:.-]{1,200}$/.test(v);
  * and the other designs in this conversation. Facts only; the tools carry the rules.
  */
 export function designContextText(sessionId: string): string {
-  let designs: DesignSummary[];
+  let all: DesignSummary[];
   try {
-    designs = getDesignRepository().list(sessionId);
+    all = getDesignRepository().list(sessionId);
   } catch {
-    designs = [];
+    all = [];
   }
+  // The designs this conversation works on; the open one may be another of its project's.
+  const designs = all.filter((d) => d.member);
   const prefs = composer.get(sessionId) ?? {};
   // The project's design system applies by default, but only to design work:
   // a picked style, or a conversation that already has designs.
@@ -107,10 +109,10 @@ export function designContextText(sessionId: string): string {
   if (template && prefs.templateId)
     asks.push(`Template: start new boards from ${label(template)} (design_resources kind "template", name "${prefs.templateId}").`);
   if (prefs.variants) asks.push(`Variations: make ${prefs.variants} distinct directions for each new board, side by side.`);
-  if (!designs.length)
-    return asks.length ? `\n\n<design_context>\n${asks.join("\n")}\n</design_context>` : "";
   const f = focus.get(sessionId);
-  const open = f && designs.find((d) => d.id === f.documentId);
+  const open = f && all.find((d) => d.id === f.documentId);
+  if (!designs.length && !open)
+    return asks.length ? `\n\n<design_context>\n${asks.join("\n")}\n</design_context>` : "";
   const lines: string[] = [];
   if (open && f) {
     lines.push(`Open: ${label(open.title)} (documentId ${open.id}, ${open.boardCount} board${open.boardCount === 1 ? "" : "s"}).`);

@@ -373,7 +373,7 @@ try {
     assert.throws(() => pr.boardPrompts("other", d1.id), /not found/i);
     pr.close();
     const raw = new (require("better-sqlite3"))(join(root, "prompts.db"));
-    assert.equal(raw.pragma("user_version", { simple: true }), 4);
+    assert.equal(raw.pragma("user_version", { simple: true }), 5);
     raw.close();
   }
 
@@ -462,6 +462,16 @@ try {
     assert.deepEqual(cr.read("c", c.id).marks, [mark]);
     assert.equal(cr.history("c", c.id)[0].canvasChanged, false, "legacy history gets conservative default");
     cr.close();
+    // Reopening a v4 database (designs owned by one chat) gives each design its chat.
+    const v4 = new (require("better-sqlite3"))(canvasFile);
+    v4.exec("DROP TABLE design_chats; ALTER TABLE design_documents DROP COLUMN project");
+    v4.pragma("user_version = 4");
+    v4.close();
+    cr = new DesignRepository(canvasFile, () => {}, (s) => (s === "c" ? "/projects/canvas" : null));
+    assert.deepEqual(cr.chats(c.id), ["c"]);
+    assert.deepEqual(cr.list("c").map((d) => [d.id, d.member]), [[c.id, true]], "another chat's design without a known project stays out");
+    assert.equal(cr.read("c", c.id).project, "/projects/canvas", "the project is learned from the chat that made it");
+    cr.close();
   }
 
   // Exact local edits preserve other boards, links and revision/idempotency semantics.
@@ -493,7 +503,8 @@ try {
     assert(!local.boards[0].html.includes('script'), "patches pass through the same HTML sanitizer");
   }
 
-  // Session lifecycle: a draft's designs follow it, a delete takes them along.
+  // Session lifecycle: a draft's designs follow it; deleting a chat leaves its
+  // designs, and only deleting a design removes it.
   {
     const lifeFile = join(root, "life.db");
     const life = new DesignRepository(lifeFile);
@@ -505,9 +516,14 @@ try {
     assert.equal(life.moveSession("draft-1", "real-1"), 1);
     assert.equal(life.list("draft-1").length, 0);
     assert.equal(life.list("real-1")[0].boardCount, 2);
+    assert.deepEqual(life.chats(drawn.id), ["real-1"]);
     assert.throws(() => life.read("draft-1", drawn.id), /not found/i);
     assert.deepEqual(life.deleteSession("real-1"), [drawn.id]);
-    assert.equal(life.list("real-1").length, 0);
+    assert.equal(life.list("real-1").length, 0, "the deleted chat no longer works on it");
+    assert.deepEqual(life.listAll().map((d) => d.title).sort(), ["Drafted", "Kept"], "the design outlives its chat");
+    assert.deepEqual(life.chats(drawn.id), []);
+    assert.equal(life.deleteDocument(drawn.id), true);
+    assert.equal(life.deleteDocument(drawn.id), false);
     assert.deepEqual(life.listAll().map((d) => d.title), ["Kept"]);
     // Shared board HTML survives; HTML only the deleted design used is gone.
     assert.equal(life.read("other", kept.id).boards[0].html.includes("same"), true);
@@ -516,6 +532,64 @@ try {
     const html = raw.prepare("SELECT html FROM design_content").all().map((r) => r.html).join("\n");
     raw.close();
     assert(!html.includes("only here"), "orphaned board HTML is removed");
+  }
+  // A design belongs to its project: any chat there can find and change it,
+  // an agent's change makes its chat one of the design's chats, and chats in
+  // other projects never see it unless the user opens it there.
+  {
+    const projects = { a1: "/p/one", a2: "/p/one/", a3: "/p/one", b1: "/p/two" };
+    const events = [];
+    const shared = new DesignRepository(join(root, "shared.db"), (e) => events.push(e), (s) => projects[s]);
+    const doc = shared.create("a1", "Podcast", "", "p1");
+    assert.deepEqual(shared.list("a2").map((d) => [d.title, d.member]), [["Podcast", false]], "listed for the project's other chats");
+    assert.equal(shared.read("a2", doc.id).project, "/p/one");
+    const drew = shared.update("a2", { documentId: doc.id, operationId: "p2", operations: [{ type: "add", name: "Diet", html: "<p>x</p>" }] });
+    assert.equal(drew.boards.length, 1);
+    assert.deepEqual(shared.chats(doc.id), ["a2", "a1"], "the agent's chat joined, most recent first");
+    assert.equal(shared.list("a2")[0].member, true);
+    assert.equal(shared.read("a1", doc.id).sessionId, "a1", "the chat that made it stays its home");
+    assert.equal(shared.listAll()[0].sessionId, "a2", "the library opens it with the latest chat");
+    shared.update("a3", { documentId: doc.id, operationId: "p3", operations: [{ type: "title", title: "Podcast app", expectedRevision: 2 }] }, undefined, { kind: "user" });
+    assert.deepEqual(shared.chats(doc.id), ["a2", "a1"], "a hand edit from a chat's panel does not join it");
+    assert.throws(() => shared.create("a2", "Second", "", "p4", undefined, undefined, { exclusive: true }), /DESIGN_EXISTS/);
+    assert.equal(shared.create("a3", "Own", "", "p5", undefined, undefined, { exclusive: true }).title, "Own", "a3 only looked at the other one");
+    assert.equal(shared.list("b1").length, 0, "another project's chats don't see it");
+    assert.throws(() => shared.read("b1", doc.id), /not found/i);
+    shared.allow("b1", doc.id);
+    assert.equal(shared.read("b1", doc.id).title, "Podcast app", "opened in that chat's panel");
+    shared.join("b1", doc.id);
+    assert.deepEqual(shared.chats(doc.id).slice(0, 1), ["b1"]);
+    assert(events.some((e) => e.scope === "chats" && e.documentId === doc.id), "joining tells the windows");
+    assert.equal(shared.deleteDocument(doc.id), true);
+    assert(events.some((e) => e.deleted && e.documentId === doc.id), "deleting tells the windows");
+    shared.close();
+  }
+  {
+    let names = repo.create("naming-qa", "Naming QA", "", "naming-create");
+    let seq = 0;
+    const write = operations => names = repo.update("naming-qa", {
+      documentId: names.id, operationId: `naming-${++seq}`, operations,
+    });
+    write([{type:"add", name:"Artboard 1"}, {type:"add", name:"Artboard 3"}, {type:"add"}, {type:"add", name:" \u0000 "}]);
+    assert.deepEqual(names.boards.map(b => b.name), ["Artboard 1", "Artboard 3", "Artboard 4", "Artboard 5"]);
+    write([{type:"remove", boardId:names.boards[1].id, expectedRevision:1}, {type:"add"}]);
+    assert.equal(names.boards.at(-1).name, "Artboard 6", "deletion does not reuse an occupied number");
+    const original = names.boards[0];
+    write([{type:"duplicate", boardId:original.id, expectedRevision:1}, {type:"duplicate", boardId:original.id, expectedRevision:1}]);
+    assert.deepEqual(names.boards.slice(-2).map(b => b.name), ["Artboard 1 copy", "Artboard 1 copy 2"]);
+    write([{type:"duplicate", boardId:names.boards.at(-1).id, expectedRevision:1}]);
+    assert.equal(names.boards.at(-1).name, "Artboard 1 copy 3");
+    write([{type:"placement", boardId:original.id, expectedRevision:1, name:"  播客\u0000首页  "}]);
+    assert.equal(names.boards[0].name, "播客首页");
+    assert.equal(names.boards[0].id, original.id);
+    assert.equal(names.boards[0].html, original.html);
+    assert.equal(names.boards[0].contentRevision, original.contentRevision);
+    write([{type:"placement", boardId:original.id, expectedRevision:2, name:" \u0000 "}]);
+    assert.equal(names.boards[0].name, "播客首页", "empty rename keeps the existing name");
+    write([{type:"add", name:"x".repeat(140)}]);
+    assert.equal(names.boards.at(-1).name.length, 120);
+    assert.deepEqual(repo.read("naming-qa", names.id).boards, names.boards, "names persist");
+    console.log("Artboard naming: defaults, gaps, copies, sanitization, identity and persistence passed.");
   }
   console.log(
     "Design repository: persistence, atomicity, idempotency, ownership, conflict, cancellation, threads, history metadata, board restore, migration, HTML isolation and session lifecycle passed.",

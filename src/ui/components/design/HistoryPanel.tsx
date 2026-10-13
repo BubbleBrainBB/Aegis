@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, X } from "../icons";
 import { DesignAvatar, authorName, relativeTime } from "./design-ui";
+import { useAppStore } from "../../store/useAppStore";
 import { groupDesignVersions, type DesignVersionGroup } from "../../../shared/design-history";
 import type { DesignRevisionInfo } from "../../../shared/design-types";
 
@@ -15,6 +16,7 @@ export function HistoryPanel({
   head,
   selected,
   user,
+  currentSessionId,
   editable,
   busy,
   boardName,
@@ -27,6 +29,8 @@ export function HistoryPanel({
   head: number;
   selected?: number;
   user: string;
+  /** The chat on screen; versions another chat made name it. */
+  currentSessionId?: string;
   editable: boolean;
   busy: boolean;
   boardName(id: string): string | undefined;
@@ -84,7 +88,11 @@ export function HistoryPanel({
                     </strong>
                   </div>
                   <span className="design-version-meta">
-                    {authorName(group.author, user)} · {relativeTime(group.createdAt)}
+                    {authorName(group.author, user)}
+                    {group.author?.kind === "agent" && group.sessionId && group.sessionId !== currentSessionId ? (
+                      <ChatName sessionId={group.sessionId} />
+                    ) : null}
+                    {" · "}{relativeTime(group.createdAt)}
                     {isHead ? " · Latest" : ""}
                   </span>
                   {active && (
@@ -179,4 +187,10 @@ function SaveList({
       })}
     </div>
   );
+}
+
+/** " in “Plan the diet app”": another chat on this design made the version. */
+function ChatName({ sessionId }: { sessionId: string }) {
+  const title = useAppStore((s) => s.sessions[sessionId]?.title?.trim());
+  return <span data-version-chat={sessionId}>{` in “${title || "another chat"}”`}</span>;
 }

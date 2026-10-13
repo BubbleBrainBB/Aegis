@@ -88,7 +88,7 @@ const object = (properties: Record<string, unknown>, required: string[]) => ({
 const specs: DesignToolSpec[] = [
   {
     name: DESIGN_CREATE_TOOL,
-    description: `Create a new design: a canvas of HTML boards the user sees in Aegis's Design view. Create one only when this conversation has no design yet, or the user explicitly asks for a separate design or an unrelated subject; otherwise continue in the open design with design_update (add a board for a new page or screen, edit a board for changes). When designs already exist this fails unless separate is true. ${rules}`,
+    description: `Create a new design on the Aegis design canvas (画布 / 设计稿): HTML boards the user sees in Aegis's Design view. These are the design tools for any canvas, mockup or design the user mentions; other canvas or design-file tools are not Aegis's. If the user names an existing design (call design_read to list this project's designs), work in it with design_update instead. Create one only when there is no fitting design, or the user explicitly asks for a separate design or an unrelated subject; otherwise continue in the open design with design_update (add a board for a new page or screen, edit a board for changes). When this conversation already works on designs this fails unless separate is true. ${rules}`,
     readOnly: false,
     shape: {
       title: z.string().describe('Short name of the design, e.g. "Atlas website".'),
@@ -120,7 +120,7 @@ const specs: DesignToolSpec[] = [
   },
   {
     name: DESIGN_READ_TOOL,
-    description: 'List this conversation’s designs when documentId is omitted. Otherwise read the design: boards with HTML, contentRevision and placementRevision, and comments. Pass boardId to read one board’s HTML when there are several.',
+    description: 'Aegis design canvas (画布 / 设计稿). Without documentId: list the designs in this project — the ones this conversation works on first (member: true), then the project’s other designs, which you may also open and change when the user names one. With documentId: read the design: boards with HTML, contentRevision and placementRevision, pages, and comments. Pass boardId to read one board’s HTML when there are several.',
     readOnly: true,
     shape: { documentId: z.string().optional(), boardId: z.string().optional() },
     jsonSchema: object({ documentId: string, boardId: string }, []),
@@ -138,7 +138,7 @@ const specs: DesignToolSpec[] = [
   },
   {
     name: DESIGN_UPDATE_TOOL,
-    description: 'Atomically update a design; this is how a design continues. Use the open design from <design_context> unless the user names another. Operations: add{name,html,width?,height?,pageId?}; patch{boardId,expectedRevision,find,replace} replaces one exact unique nonempty HTML substring (use for comments and local changes, preserve node ids and unrelated markup); content{boardId,expectedRevision,html} replaces the entire board (only for broad redesigns); placement{boardId,expectedRevision,name?,x?,y?,width?,height?,pageId?}; duplicate/remove{boardId,expectedRevision}; title{title,expectedRevision}; canvas{expectedRevision,pages?,marks?} atomically replaces provided page/annotation arrays (read and preserve existing entries). Page IDs group boards independently of screen names; missing pageId belongs to the first page. Use pageId from design_context for new boards. patch/content/duplicate/remove use the board’s contentRevision, placement its placementRevision, title/canvas the document revision. After REVISION_CONFLICT, read, merge and retry.',
+    description: 'Atomically update a design on the Aegis design canvas; this is how a design continues. Use the open design from <design_context> unless the user names another. Operations: add{name?,html,width?,height?,pageId?}; patch{boardId,expectedRevision,find,replace} replaces one exact unique nonempty HTML substring (use for comments and local changes, preserve node ids and unrelated markup); content{boardId,expectedRevision,html} replaces the entire board (only for broad redesigns); placement{boardId,expectedRevision,name?,x?,y?,width?,height?,pageId?}; duplicate/remove{boardId,expectedRevision}; title{title,expectedRevision}; canvas{expectedRevision,pages?,marks?} atomically replaces provided page/annotation arrays (read and preserve existing entries). Use a short descriptive name for each screen (up to 120 characters); omitted or empty names default to Artboard N. Page IDs group boards independently of screen names; missing pageId belongs to the first page. Use pageId from design_context for new boards. patch/content/duplicate/remove use the board’s contentRevision, placement its placementRevision, title/canvas the document revision. After REVISION_CONFLICT, read, merge and retry.',
     readOnly: false,
     shape: {
       documentId: z.string(),

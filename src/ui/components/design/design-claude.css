@@ -242,3 +242,13 @@
 .design-comment-options > button > :is(span,kbd) { margin-left: auto; color: var(--d-muted); }
 .design-comments-filter { display: flex; align-items: center; gap: 6px; padding: 8px 12px; font-size: 12px; color: var(--d-muted); }
 .design-comments-filter input { margin: 0; }
+/* The dock's chat switcher: title, then agent and last activity. */
+.design-chat-menu { min-width: 260px; max-width: 340px; }
+.design-chat-menu button { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: 6px; }
+.design-chat-check { display: inline-grid; place-items: center; color: var(--d-muted); }
+.design-chat-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.design-chat-meta { color: var(--d-muted); font-size: 12px; white-space: nowrap; }
+/* A board's download menu: each format with what it gives, one under the other. */
+.design-board-download { min-width: 248px; }
+.design-board-download button { flex-direction: column; align-items: flex-start; justify-content: flex-start; gap: 1px; padding: 5px 10px; }
+.design-board-download button span { font-size: 12px; }

@@ -68,6 +68,8 @@ exports.run = async ({ w, js, repo, sessionId, documentId, screenshotDir }) => {
     await until(() => board().contentRevision > revision, "saved " + selector);
   };
   await select("nav");
+  // Properties are closed by default; the element bar opens them.
+  if (!(await js('!!document.querySelector(".design-inspector")'))) await js('document.querySelector(\'.design-float-bar [aria-label="Properties"]\').click()');
   await until(() => js('!!document.querySelector(".design-inspector [aria-label=Direction]")'), "Layout section for a flex container");
   await pick('.design-inspector [aria-label=Direction] button[aria-label=Column]');
   await until(async () => /flex-direction:\s*column/.test(await styleOf("nav")), "direction written");

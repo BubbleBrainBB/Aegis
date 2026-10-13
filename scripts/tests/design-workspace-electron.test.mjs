@@ -69,6 +69,9 @@ app.whenReady().then(async()=>{
  const shot=async name=>{fs.mkdirSync(process.env.QA_CAPTURE,{recursive:true});fs.writeFileSync(path.join(process.env.QA_CAPTURE,name+'.png'),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG())};
  try{
   await win.loadURL(process.env.QA_URL);
+  // Another app may be in front while this runs: keep the page focused so real keys arrive.
+  try{win.webContents.debugger.attach('1.3')}catch{}
+  await win.webContents.debugger.sendCommand('Emulation.setFocusEmulationEnabled',{enabled:true});
   await until('!!window.qa','renderer');await delay(800);await js('qa.seed()');await delay(400);
   await js('localStorage.removeItem("aegis.design.dock")');
   // A pane left fullscreen in Home must not hide the Design section.
@@ -91,7 +94,12 @@ app.whenReady().then(async()=>{
   mouse(1);mouse(2);await until('document.activeElement?.matches("[data-design-titlebar] input.design-title")','double click renames in place');
   await delay(350);assert.equal(await js('!!document.querySelector(".design-export-actions")'),false,'a double click never opens the menu');
   const key=(keyCode)=>{win.webContents.sendInputEvent({type:'keyDown',keyCode});win.webContents.sendInputEvent({type:'keyUp',keyCode})};
-  const renameTo=async(title)=>{await js('document.execCommand("selectAll")');win.webContents.insertText(title);await delay(100);key('Return')};
+  // Waits for the text to land, and presses Return again only if nothing happened (keys can drop on a busy runner).
+  const renameTo=async(title)=>{
+    await js('document.execCommand("selectAll")');win.webContents.insertText(title);
+    await until('document.activeElement?.value==='+JSON.stringify(title),'typed '+title);
+    for(let i=0;i<3&&await js('!!document.querySelector("[data-design-titlebar] input.design-title")');i++){key('Return');await delay(600)}
+  };
   await renameTo('Atlas site');await until('document.querySelector("[data-design-titlebar] .design-title-text")?.textContent==="Atlas site"','renamed');
   assert.equal(repoRead().title,'Atlas site');
   mouse(1);mouse(2);await until('document.activeElement?.matches("[data-design-titlebar] input.design-title")','rename again');
@@ -108,16 +116,16 @@ app.whenReady().then(async()=>{
   // Probing every srcdoc frame also tries the script-free thumbnails, which log a blocked-script notice.
   const homeFrame=async()=>{for(const f of win.webContents.mainFrame.framesInSubtree.filter(f=>f.url==='about:srcdoc'))if(await f.executeJavaScript('document.body.textContent.includes("Notes that think")').catch(()=>false))return f};
   await (await homeFrame()).executeJavaScript('document.querySelector("h1").click()');
-  await until('document.querySelector(".design-float-name")?.textContent==="h1"','h1 selected');
+  await until('(Object.values(qa.design.getState().selections).find(Boolean)?.label??"").split(" · ")[0]==="h1"','h1 selected');
   const press=(key,shift=false)=>js('document.querySelector("[data-design-section] .design-viewport").dispatchEvent(new KeyboardEvent("keydown",{key:'+JSON.stringify(key)+',shiftKey:'+shift+',bubbles:true,cancelable:true}))');
   await press('Tab');
-  await until('document.querySelector(".design-float-name")?.textContent==="p"','Tab: next sibling');
+  await until('(Object.values(qa.design.getState().selections).find(Boolean)?.label??"").split(" · ")[0]==="p"','Tab: next sibling');
   await press('Tab',true);
-  await until('document.querySelector(".design-float-name")?.textContent==="h1"','Shift+Tab: previous sibling');
+  await until('(Object.values(qa.design.getState().selections).find(Boolean)?.label??"").split(" · ")[0]==="h1"','Shift+Tab: previous sibling');
   await press('Enter',true);
-  await until('document.querySelector(".design-float-name")?.textContent==="main"','Shift+Enter: parent');
+  await until('(Object.values(qa.design.getState().selections).find(Boolean)?.label??"").split(" · ")[0]==="main"','Shift+Enter: parent');
   await press('Escape');
-  await until('document.querySelector(".design-float-name")?.textContent==="Home"','Escape: out to the board');
+  await until('(Object.values(qa.design.getState().selections).find(Boolean)?.label??"").split(" · ")[0]==="Home"','Escape: out to the board');
   // Preview a board and come back: the canvas view is where it was.
   const view=()=>js('(()=>{const v=document.querySelector("[data-design-section] .design-viewport");const w=v.querySelector(".design-world");return v.dataset.viewZoom+"|"+w.style.transform})()');
   const viewBefore=await view();
@@ -127,7 +135,7 @@ app.whenReady().then(async()=>{
   await until('!document.querySelector(".design-board-preview-overlay")','preview closed');
   assert.equal(await view(),viewBefore,'the canvas view is kept across a preview');
   await press('Escape');
-  await until('!document.querySelector(".design-float-name")','Escape: nothing selected');
+  await until('!Object.values(qa.design.getState().selections).find(Boolean)','Escape: nothing selected');
 
   // Prompt cards: the message behind each board, under it, with Re-run.
   await until('document.querySelectorAll(".design-prompt-card").length===2','a prompt card under each board');
@@ -164,17 +172,18 @@ app.whenReady().then(async()=>{
   for(let i=0;i<40&&getDesignComposerPrefs('s1').templateId!=='landing';i++)await delay(50);
   assert.equal(getDesignComposerPrefs('s1').templateId,'landing');
 
-  // Layers panel: Layers, Components and History tabs.
-  await js('document.querySelector(".design-viewport").dispatchEvent(new KeyboardEvent("keydown",{key:"l",code:"KeyL",altKey:true,bubbles:true}))');
-  await until('!!document.querySelector(".design-layers-popover [role=tab][aria-selected=true]")','layers panel');
-  await js('[...document.querySelectorAll(".design-layers-popover [role=tab]")].find(b=>b.textContent==="Components").click()');
-  await until('document.querySelector(".design-layers-popover")?.textContent.includes("show up here as components")','components tab');
-  await js('[...document.querySelectorAll(".design-layers-popover [role=tab]")].find(b=>b.textContent==="History").click()');
-  await until('!!document.querySelector(".design-history")&&!document.querySelector(".design-layers-popover")','history opens from its tab');
+  // History, from the design menu under the title.
+  await js('document.querySelector("[data-design-titlebar] .design-title-button").click()');
+  await until('!!document.querySelector(".design-export-actions")','design menu');
+  await js('[...document.querySelectorAll(".design-export-actions button")].find(b=>b.textContent.trim()==="History").click()');
+  await until('!!document.querySelector(".design-history")','history opens from the design menu');
   // One request, one version: the create and the boards it drew fold together.
-  await until('document.querySelectorAll(".design-version-group").length===1','one version for one request');
-  assert.match(await js('document.querySelector(".design-version-group").textContent'),/“Design a landing page for Atlas”[\s\S]*2 saves/);
-  await js('document.querySelector(".design-version-saves").click()');
+  // (The renames above are hand edits: a version of their own.)
+  const requestVersion='[...document.querySelectorAll(".design-version-group")].find(g=>g.textContent.includes("Design a landing page for Atlas"))';
+  await until('!!'+requestVersion,'one version for one request');
+  assert.match(await js(requestVersion+'.textContent'),/“Design a landing page for Atlas”[\s\S]*2 saves/);
+  assert.equal(await js('document.querySelectorAll(".design-version-group").length'),2,'the request and the hand edits');
+  await js(requestVersion+'.querySelector(".design-version-saves").click()');
   await until('document.querySelectorAll(".design-version-step").length===2','its saves');
   await shot('design-history');
   await click('[aria-label="Close history"]');
@@ -190,39 +199,15 @@ app.whenReady().then(async()=>{
   await until('document.querySelector("[data-design-dock]")?.dataset.designDock==="composer"&&!document.querySelector("[data-design-dock-attention]")','back to the composer');
   assert.equal(await js('localStorage.getItem("aegis.design.dock")'),prefBefore,'the dock preference is untouched');
 
-  // Quick edit: a short instruction rewrites the selected layer as one version; bigger asks go to the agent.
-  await (await homeFrame()).executeJavaScript('document.querySelector("h1").click()');
-  await until('document.querySelector(".design-float-name")?.textContent==="h1"','h1 for a quick edit');
-  await click('[aria-label="Quick edit"]');
-  await until('!!document.querySelector("[aria-label=\'Quick edit instruction\']")','quick edit input');
-  const typeQuick=(text)=>js('(()=>{const el=document.querySelector("[aria-label=\'Quick edit instruction\']");el.focus();Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set.call(el,'+JSON.stringify(text)+');el.dispatchEvent(new Event("input",{bubbles:true}))})()');
-  const enterQuick=()=>js('document.querySelector("[aria-label=\'Quick edit instruction\']").dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true}))');
-  await typeQuick('tighten the letter spacing');await enterQuick();
-  const atlasHome=()=>repoRead().boards.find(b=>b.name==='Home').html;
-  for(let i=0;i<80&&!/letter-spacing: -1px/.test(atlasHome());i++)await delay(75);
-  assert.match(atlasHome(),/<h1[^>]*style="letter-spacing: -1px;/,'the quick edit is saved');
-  assert.match(repoRead().boards.find(b=>b.name==='Home').html,/Notes that think along with you/,'the rest of the board is untouched');
-  await until('!document.querySelector("[data-quick-edit]")','bar back to normal');
-  await click('[aria-label="Quick edit"]');
-  await until('!!document.querySelector("[aria-label=\'Quick edit instruction\']")','quick edit input again');
-  await typeQuick('add a second board for pricing');await enterQuick();
-  await until('document.querySelector("[data-quick-edit]")?.dataset.quickEdit==="handoff"','handed off');
-  assert.match(await js('document.querySelector("[data-quick-edit]").textContent'),/needs a new board[\s\S]*Send to agent/);
-  await shot('design-quick-handoff');
-  const before=sent.length;
-  await js('[...document.querySelectorAll("[data-quick-edit] button")].find(b=>b.textContent==="Send to agent").click()');
-  for(let i=0;i<60&&sent.length===before;i++)await delay(75);
-  assert.equal(sent.at(-1)?.payload?.prompt,'add a second board for pricing','the request goes to the agent');
-  await js('document.querySelector("[data-design-section] .design-viewport").dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))');
-  await js('document.querySelector("[data-design-section] .design-viewport").dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))');
-
   // Value sources and tokens: a stylesheet value shows as such; a token pick writes var(); reset restores the rule.
   await call('s1','design_update',{documentId:atlas.id,operationId:'tok-1',operations:[{type:'add',name:'Tokens',width:600,height:300,html:'<style>:root{--accent:#4f5bd5;--ink:#23263a}.card{color:#222222;padding:24px}</style><div class="card" data-aegis-layer-name="Card">Card text</div><div data-aegis-layer-name="Row" style="position:relative;height:60px"><span style="position:absolute;left:0;top:0">Alpha</span><span style="position:absolute;left:140px;top:2px">Beta</span><span style="position:absolute;left:280px;top:0">Gamma</span></div>'}]});
   const tokensFrame=async()=>{for(const f of win.webContents.mainFrame.framesInSubtree.filter(f=>f.url==='about:srcdoc'))if(await f.executeJavaScript('document.body.textContent.includes("Card text")').catch(()=>false))return f};
   await until('document.querySelectorAll("[data-design-section] .design-board").length===3','token board');
   for(let i=0;i<40&&!(await tokensFrame());i++)await delay(75);
   await (await tokensFrame()).executeJavaScript('document.querySelector(".card").click()');
-  await until('document.querySelector(".design-float-name")?.textContent==="Card"','card selected');
+  await until('(Object.values(qa.design.getState().selections).find(Boolean)?.label??"").split(" · ")[0]==="Card"','card selected');
+  // Properties are closed by default.
+  if(await js('!!document.querySelector("[data-design-section] [aria-label=\'Show inspector\']")'))await click('[data-design-section] [aria-label="Show inspector"]');
   await until('document.querySelector(".design-inspector [aria-label=\'Layer color\']")?.closest(".iv-in")?.dataset.source==="rule"','color comes from the stylesheet');
   await js('document.querySelector(".design-inspector [aria-label=\'Use --accent\']").click()');
   const tokenHtml=()=>repoRead().boards.find(b=>b.name==='Tokens').html;
@@ -237,19 +222,19 @@ app.whenReady().then(async()=>{
   // Auto layout: Shift+A on a container reads its children's arrangement; on a leaf it wraps it.
   const shiftA=()=>js('document.querySelector("[data-design-section] .design-viewport").dispatchEvent(new KeyboardEvent("keydown",{key:"A",code:"KeyA",shiftKey:true,bubbles:true,cancelable:true}))');
   await (await tokensFrame()).executeJavaScript('[...document.querySelectorAll("[data-aegis-layer-name=Row]")][0].dispatchEvent(new MouseEvent("click",{bubbles:true}))');
-  await until('document.querySelector(".design-float-name")?.textContent==="Row"','row selected');
+  await until('(Object.values(qa.design.getState().selections).find(Boolean)?.label??"").split(" · ")[0]==="Row"','row selected');
   await until('[...document.querySelectorAll(".design-inspector .iv-sec h4")].some(h=>h.textContent==="Auto layout")','auto layout offered');
   await shiftA();
   for(let i=0;i<60&&!/data-aegis-layer-name="Row" style="[^"]*display: flex !important; flex-direction: row !important/.test(tokenHtml());i++)await delay(75);
   assert.match(tokenHtml(),/data-aegis-layer-name="Row" style="[^"]*display: flex !important; flex-direction: row !important; gap: 12px !important"/,'laid out as a row');
   assert.doesNotMatch(tokenHtml(),/<span[^>]*position: ?absolute/,'children follow the layout');
-  await until('[...document.querySelectorAll(".design-inspector .iv-sec h4")].some(h=>h.textContent==="Flex layout")','now a flex layout');
+  await until('[...document.querySelectorAll(".design-inspector .iv-sec h4")].some(h=>h.textContent==="Layout")&&![...document.querySelectorAll(".design-inspector .iv-sec h4")].some(h=>h.textContent==="Auto layout")','now laid out (Layout, no longer offered)');
   await (await tokensFrame()).executeJavaScript('document.querySelector(".card").click()');
-  await until('document.querySelector(".design-float-name")?.textContent==="Card"','card selected again');
+  await until('(Object.values(qa.design.getState().selections).find(Boolean)?.label??"").split(" · ")[0]==="Card"','card selected again');
   await shiftA();
   for(let i=0;i<60&&!/data-aegis-layer-name="Auto layout"[^>]*><div class="card"/.test(tokenHtml());i++)await delay(75);
   assert.match(tokenHtml(),/data-aegis-layer-name="Auto layout" style="display: flex !important; flex-direction: column !important; gap: 12px !important"><div class="card"/,'a leaf is wrapped');
-  await until('document.querySelector(".design-float-name")?.textContent==="Auto layout"','the wrapper is selected');
+  await until('(Object.values(qa.design.getState().selections).find(Boolean)?.label??"").split(" · ")[0]==="Auto layout"','the wrapper is selected');
   await js('document.querySelector("[data-design-section] .design-viewport").dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))');
   await js('document.querySelector("[data-design-section] .design-viewport").dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))');
 
@@ -307,6 +292,51 @@ app.whenReady().then(async()=>{
   await js('qa.app.setState(s=>({sessions:{...s.sessions,s9:{...s.sessions.s9,status:"idle"}}}))');
   await until('!!document.querySelector("[data-design-row='+created.id+'][aria-current=true]")','listed and current');
 
+  // A design has several chats: each keeps its conversation and works on the same canvas.
+  const designRepo=()=>require(path.join(root,'dist-electron/electron/design/service.js')).getDesignRepository();
+  await click('[data-design-row="'+atlas.id+'"]');
+  await until('qa.design.getState().section?.documentId==='+JSON.stringify(atlas.id)+'&&qa.design.getState().section.sessionId==="s1"','Atlas opens with its latest chat');
+  await until('document.querySelectorAll("[data-design-section] .design-board").length===3','Atlas canvas');
+  await click('[data-design-chat-switcher]');
+  await until('!!document.querySelector(".design-chat-menu [data-design-new-chat]")','the design\'s chats');
+  assert.deepEqual(JSON.parse(await js('JSON.stringify([...document.querySelectorAll(".design-chat-menu [data-design-chat]")].map(b=>[b.dataset.designChat,b.getAttribute("aria-checked")]))')),[['s1','true']]);
+  await shot('design-chats');
+  await click('.design-chat-menu [data-design-new-chat]');
+  await until('qa.design.getState().section.sessionId!=="s1"&&qa.design.getState().section.documentId==='+JSON.stringify(atlas.id),'a new chat on the same design');
+  const newChat=await js('qa.design.getState().section.sessionId');
+  assert.equal(await js('qa.app.getState().sessions['+JSON.stringify(newChat)+'].isDraft'),true);
+  for(let i=0;i<40&&!designRepo().chats(atlas.id).includes(newChat);i++)await delay(50);
+  assert(designRepo().chats(atlas.id).includes(newChat),'the new chat is one of the design\'s chats from the start');
+  assert.match(await js('document.querySelector("[data-design-chat-switcher]").textContent'),/New chat/);
+  assert.equal(await js('document.querySelectorAll("[data-design-section] .design-board").length'),3,'the canvas stays');
+  // Its first message makes it a real chat (the design link moves along), and its agent draws on the same canvas.
+  designRepo().moveSession(newChat,'s11');
+  await js('(()=>{const s=qa.app.getState();const d=s.sessions['+JSON.stringify(newChat)+'];qa.app.setState({sessions:{...s.sessions,s11:{...d,id:"s11",isDraft:false,title:"Plan the diet app",status:"idle"}},draftPromotion:{from:'+JSON.stringify(newChat)+',to:"s11"}})})()');
+  await until('qa.design.getState().section.sessionId==="s11"','the section follows the started chat');
+  await call('s11','design_update',{documentId:atlas.id,operationId:'u11',operations:[{type:'add',name:'Diet',width:390,height:844,html:page('Eat well, slowly','#eef6ee')}]});
+  await until('document.querySelectorAll("[data-design-section] .design-board").length===4','the new chat drew on the same canvas');
+  assert.deepEqual(designRepo().chats(atlas.id),['s11','s1']);
+  await until('document.querySelector("[data-design-row=\\"'+atlas.id+'\\"]")?.textContent.includes("2 chats")','the library counts its chats');
+  // Back to the first chat: its conversation, and History says which chat made the new version.
+  await click('[data-design-chat-switcher]');
+  await until('document.querySelectorAll(".design-chat-menu [data-design-chat]").length===2','both chats listed');
+  await click('.design-chat-menu [data-design-chat="s1"]');
+  await until('qa.design.getState().section.sessionId==="s1"','back to the first chat');
+  await js('document.querySelector("[data-design-titlebar] .design-title-button").click()');
+  await until('!!document.querySelector(".design-export-actions")','design menu');
+  await js('[...document.querySelectorAll(".design-export-actions button")].find(b=>b.textContent.trim()==="History").click()');
+  await until('document.querySelector(".design-history [data-version-chat=s11]")?.textContent.includes("Plan the diet app")','History names the other chat');
+  await shot('design-history-chats');
+  await click('[aria-label="Close history"]');
+  // Deleting a design asks first, then removes it; the chat that made it stays.
+  await js('document.querySelector("[data-design-delete=\\"'+created.id+'\\"]").click()');
+  await until('[...document.querySelectorAll("[role=dialog] button, [role=alertdialog] button")].some(b=>b.textContent.trim()==="Delete design")','asks before deleting');
+  await js('[...document.querySelectorAll("[role=dialog] button, [role=alertdialog] button")].find(b=>b.textContent.trim()==="Delete design").click()');
+  await until('!document.querySelector("[data-design-row=\\"'+created.id+'\\"]")','gone from the library');
+  assert.throws(()=>designRepo().read('s9',created.id),/not found/i);
+  assert.equal(await js('!!qa.app.getState().sessions.s9'),true,'its chat stays');
+  assert.equal(await js('qa.design.getState().section?.documentId'),atlas.id,'the open design is untouched');
+
   // Dark theme: the canvas, dock and library follow the theme's tokens.
   nativeTheme.themeSource='dark';
   await until('document.documentElement.classList.contains("dark")','dark theme');
@@ -323,7 +353,7 @@ app.whenReady().then(async()=>{
   await js('qa.openDesign({sessionId:"s1",documentId:'+JSON.stringify(atlas.id)+',where:"pane"})');
   await until('qa.app.getState().activeWorkspace==="chat"&&qa.app.getState().activeSessionId==="s1"','Home with the design chat');
   await until('qa.app.getState().activeRightUtilityTab==="design:'+atlas.id+'"','design tab beside it');
-  await until('document.querySelectorAll(".design-panel .design-board").length===3','design tab canvas');
+  await until('document.querySelectorAll(".design-panel .design-board").length===4','design tab canvas');
   await shot('design-pane');
 
   console.log(JSON.stringify({ok:true,errors:errors.filter(e=>!/No handler registered|Failed to load resource|Blocked script execution in 'about:srcdoc'/.test(e)).slice(0,6)}));app.exit(0);
