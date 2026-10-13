@@ -1939,14 +1939,15 @@ button.md-inline-file-code:hover .md-inline-file-code-label {
 
 .aegis-markdown-source-toggle {
   display: inline-flex;
-  height: 30px;
+  height: 28px;
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
   padding: 0 12px;
-  border: 1px solid transparent;
-  border-radius: 7px;
-  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
   font-size: calc(12px * var(--ui-font-scale, 1));
   font-weight: 500;
   white-space: nowrap;
@@ -1955,9 +1956,7 @@ button.md-inline-file-code:hover .md-inline-file-code-label {
 
 .aegis-markdown-source-toggle:hover,
 .aegis-markdown-source-toggle.is-active {
-  border-color: var(--border);
   background: var(--bg-tertiary);
-  color: var(--text-primary);
 }
 
 .aegis-markdown-source-shell {

@@ -3194,7 +3194,12 @@ export function ProjectTreePanel({
                 tooltip={filesRailCollapsed ? 'Show file tree' : 'Hide file tree'}
                 label={filesRailCollapsed ? 'Show file tree' : 'Hide file tree'}
                 aria-pressed={!filesRailCollapsed}
-                className={!filesRailCollapsed ? 'bg-[var(--bg-tertiary)] text-[var(--text-primary)]' : undefined}
+                size="sm"
+                className={
+                  !filesRailCollapsed
+                    ? 'rounded-full bg-[var(--bg-tertiary)] text-[var(--text-primary)]'
+                    : 'rounded-full'
+                }
               >
                 <Folders className="h-4 w-4" />
               </IconButton>
@@ -3660,7 +3665,7 @@ const OPEN_WITH_MAX_APPS = 5;
 // re-rendering the header) doesn't re-spawn osascript. Keyed per file.
 const openWithAppsCache = new Map<string, OpenWithApp[]>();
 
-// Header "打开 ∨" split-button. The primary side shows the DEFAULT app's icon
+// Header "Open ∨" split-button. The primary side shows the DEFAULT app's icon
 // and opens the file with it; the chevron opens a short menu — the top apps
 // that can open the file (Launch Services order, capped) plus
 // "Show in Finder". The app list (and thus the default-app icon) is fetched
@@ -3732,11 +3737,11 @@ function OpenWithButton({
   const menuApps = apps.slice(0, OPEN_WITH_MAX_APPS);
 
   return (
-    <div className="inline-flex items-stretch overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-primary)]">
+    <div className="inline-flex h-7 items-stretch overflow-hidden rounded-full border border-[var(--border)] bg-[var(--bg-primary)]">
       <button
         type="button"
         onClick={() => void openWith(defaultApp.appPath)}
-        className="inline-flex h-7 items-center gap-1.5 pl-1.5 pr-2 text-xs text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
+        className="inline-flex items-center gap-1.5 pl-2 pr-1 text-xs font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--bg-tertiary)]"
         title={`Open with ${defaultApp.name}`}
         aria-label={`Open with ${defaultApp.name}`}
       >
@@ -3750,13 +3755,13 @@ function OpenWithButton({
         ) : (
           <FolderOpen className="h-3.5 w-3.5 flex-shrink-0" aria-hidden="true" />
         )}
-        <span>打开</span>
+        <span>Open</span>
       </button>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <button
             type="button"
-            className="inline-flex h-7 items-center px-1 text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
+            className="inline-flex items-center pl-1 pr-2 text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
             title="Open with…"
             aria-label="Open with…"
           >
