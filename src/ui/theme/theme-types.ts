@@ -38,6 +38,8 @@ export interface ThemeRecipe {
   fonts: ThemeTypefaces;
   /** Solid sidebar instead of the translucent material. */
   opaqueWindows: boolean;
+  /** macOS: the window chrome and sidebar are frosted glass over whatever is behind the window. */
+  glassWindow: boolean;
   semanticColors: ThemeSignals;
 }
 

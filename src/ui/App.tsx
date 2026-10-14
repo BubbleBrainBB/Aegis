@@ -1088,7 +1088,7 @@ export function App() {
       <div className={rightPanelFullscreen && activeWorkspace === 'chat' && !showSettings ? 'hidden' : 'contents'}>
       {!showSettings && activeWorkspace === 'chat' && !sessionsLoaded ? (
         <MainSheet>
-          <div className="flex-1 min-w-0 bg-[var(--bg-primary)]" />
+          <div className="flex-1 min-w-0 bg-[var(--chat-pane-surface)]" />
         </MainSheet>
       ) : showSettings ? (
         <div className="flex-1 min-w-0 flex flex-col">
@@ -1098,7 +1098,7 @@ export function App() {
         </div>
       ) : activeWorkspace === 'skills' ? (
         <MainSheet>
-        <div className="flex-1 min-w-0 min-h-0 flex flex-col bg-[var(--bg-primary)]">
+        <div className="flex-1 min-w-0 min-h-0 flex flex-col bg-[var(--chat-pane-surface)]">
           <main className="min-w-0 flex-1 overflow-y-auto">
             <div className="mx-auto max-w-[1360px] px-8 py-8">
               <SkillMarketSettingsContent />

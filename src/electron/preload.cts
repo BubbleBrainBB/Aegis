@@ -363,9 +363,15 @@ contextBridge.exposeInMainWorld('electron', {
     return ipcRenderer.invoke('get-window-shell-state');
   },
 
-  setTheme: (theme: 'light' | 'dark' | 'system', look?: { variant: 'light' | 'dark'; background: string }) => {
+  setTheme: (theme: 'light' | 'dark' | 'system', look?: { variant: 'light' | 'dark'; background: string; material?: 'glass' | 'solid' }) => {
     return ipcRenderer.invoke('set-theme', theme, look);
   },
+
+  // Fixed for the window's lifetime: glass needs a window created transparent.
+  getWindowGlassSync: (() => {
+    let cached: { supported: boolean; active: boolean } | null = null;
+    return () => (cached ??= ipcRenderer.sendSync('get-window-glass-sync') ?? { supported: false, active: false });
+  })(),
 
   getUiResumeState: (): Promise<UiResumeState | null> => {
     return ipcRenderer.invoke('get-ui-resume-state');

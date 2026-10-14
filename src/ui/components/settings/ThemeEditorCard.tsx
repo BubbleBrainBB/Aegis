@@ -7,7 +7,7 @@ import { PreferenceSelect } from './GeneralSettingsContent';
 import { FontFamilySelect } from './FontFamilySelect';
 import { SettingsToggle } from './SettingsPrimitives';
 import type { ThemeRecipe, Theme, ThemeChoice, AppearanceState, ThemeVariant } from '../../types';
-import { availablePresets, exportTheme, importTheme, presetRecipe } from '../../theme/themes';
+import { availablePresets, exportTheme, importTheme, presetRecipe, windowGlassState } from '../../theme/themes';
 import type { ThemePreset } from '../../theme/theme-types';
 import * as DropdownMenu from '../ui/dropdown-menu';
 import { Check, ChevronDown } from '../icons';
@@ -35,6 +35,7 @@ export function ThemeEditorCard({ variant, pack, themeState, onReset, onCodeThem
     const families: Array<[ThemePreset['family'], string]> = [['aegis', ''], ['brand', 'Brand'], ['editor', 'Editor']];
     return families.map(([family, label]) => ({ label, items: presets.filter(item => item.family === family) })).filter(group => group.items.length);
   }, [presets]);
+  const glass = useMemo(() => windowGlassState(), []);
   const title = variant === 'dark' ? 'Dark Theme' : 'Light Theme';
   const visibleTitle = variant === 'dark' ? 'Dark theme' : 'Light theme';
   const handleCopy = async () => {
@@ -100,6 +101,12 @@ export function ThemeEditorCard({ variant, pack, themeState, onReset, onCodeThem
         const faceKey = `${key}Face` as const;
         return <ThemePackRow key={key} label={label}><FontFamilySelect label={`${title} ${label}`} value={pack.recipe.fonts[key] ?? null} face={pack.recipe.fonts[faceKey]} defaultLabel={key === 'content' ? 'Same as UI font' : 'System default'} onChange={(value, face) => onFontPatch({ [key]: value, [faceKey]: face })} /></ThemePackRow>;
       })}
+      {glass.supported && <ThemePackRow label="Frosted glass window">
+        <div className="flex items-center gap-2">
+          {pack.recipe.glassWindow && !glass.active && <span className="text-[12px] text-[var(--text-muted)]">Restart Aegis to apply</span>}
+          <SettingsToggle checked={pack.recipe.glassWindow} onChange={checked => onThemePatch({ glassWindow: checked })} ariaLabel={`${title} frosted glass window`} />
+        </div>
+      </ThemePackRow>}
       <ThemePackRow label="Translucent sidebar"><SettingsToggle checked={!pack.recipe.opaqueWindows} onChange={checked => onThemePatch({ opaqueWindows: !checked })} ariaLabel={`${title} translucent sidebar`} /></ThemePackRow>
       <ThemePackRow label="Contrast">
         <div className="theme-contrast-control">

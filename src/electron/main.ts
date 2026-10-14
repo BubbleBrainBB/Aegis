@@ -1,6 +1,15 @@
 import { setupSessionWindowsIPC, sessionWindows } from './ipc/session-windows';
 import { app, BrowserWindow, Menu, dialog, shell, ipcMain, nativeTheme, session } from 'electron';
 import { queueSessionLink } from './ipc/session-links';
+import {
+  applyWindowMaterial,
+  glassSupported,
+  glassWindowOptions,
+  isGlassWindow,
+  registerGlassWindow,
+  savedAppearanceWantsGlass,
+  setThemedMaterial,
+} from './window-glass';
 import { autoUpdater } from 'electron-updater';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -606,6 +615,7 @@ function startDevFileReloadWatcher(win: BrowserWindow): void {
 
 function createWindow(): void {
   const windowState = loadWindowState();
+  const glassOptions = glassWindowOptions(savedAppearanceWantsGlass(loadRendererState()));
 
   mainWindow = new BrowserWindow({
     x: windowState.x,
@@ -619,6 +629,8 @@ function createWindow(): void {
     trafficLightPosition: { x: 15, y: 15 },
     ...(process.platform === 'darwin' ? { roundedCorners: true } : {}),
     backgroundColor: getMainWindowBackgroundColor(),
+    // Transparent only when the saved theme is glass (see window-glass.ts).
+    ...glassOptions,
     webPreferences: {
       preload: getPreloadPath(),
       contextIsolation: true,
@@ -658,6 +670,7 @@ function createWindow(): void {
   registerBrowserIpc(mainWindow);
   registerDesignModeIpc(mainWindow);
   registerWindowShellState(mainWindow);
+  registerGlassWindow(mainWindow, glassOptions);
 
   // 后台预热 Claude 运行时状态缓存，避免首次发消息时等待 1-5 秒
   import('./libs/claude-runtime-status.js').then((m) => m.prefetchClaudeRuntimeStatus());
@@ -1141,20 +1154,33 @@ app.whenReady().then(() => {
     const win = BrowserWindow.fromWebContents(event.sender);
     return win ? getWindowShellState(win) : { rounded: process.platform === 'darwin' };
   });
-  ipcMainHandle('set-theme', async (_event, theme: 'light' | 'dark' | 'system', look?: { variant?: unknown; background?: unknown }) => {
+  ipcMainHandle('set-theme', async (_event, theme: 'light' | 'dark' | 'system', look?: { variant?: unknown; background?: unknown; material?: unknown }) => {
     nativeTheme.themeSource = theme;
     const background = typeof look?.background === 'string' && /^#[0-9a-f]{6}$/i.test(look.background) ? look.background : null;
-    if (background && (look?.variant === 'light' || look?.variant === 'dark')) themedBackgrounds[look.variant] = background;
+    if (look?.variant === 'light' || look?.variant === 'dark') {
+      if (background) themedBackgrounds[look.variant] = background;
+      setThemedMaterial(look.variant, look.material === 'glass' ? 'glass' : 'solid');
+    }
     setPageBackgrounds(themedBackgrounds);
-    mainWindow?.setBackgroundColor(getMainWindowBackgroundColor());
+    for (const win of [mainWindow, ...[...sessionWindows.values()].map(entry => entry.window)]) {
+      if (win) applyWindowMaterial(win, getMainWindowBackgroundColor());
+    }
     browserManager.applyThemeBackground();
     return { ok: true };
   });
+  // Whether this window can show glass now, or only after it is reopened.
+  ipcMainOn('get-window-glass-sync', event => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    event.returnValue = { supported: glassSupported(), active: Boolean(win && isGlassWindow(win)) };
+  });
   setupSessionWindowsIPC({
     backgroundColor: getMainWindowBackgroundColor,
+    windowOptions: () => glassWindowOptions(savedAppearanceWantsGlass(loadRendererState())),
     rendererState: loadRendererState,
-    onCreate: win => {
+    onCreate: (win, options) => {
       registerWindowShellState(win);
+      registerGlassWindow(win, options);
+      applyWindowMaterial(win, getMainWindowBackgroundColor());
       let closing = false;
       let flushed = false;
       win.on('close', event => {

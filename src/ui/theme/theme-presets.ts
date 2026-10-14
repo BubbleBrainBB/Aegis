@@ -18,6 +18,7 @@ interface Look {
   accent: string;
   contrast?: number;
   opaque?: boolean;
+  glass?: boolean;
   fonts?: Partial<ThemeTypefaces>;
   signals?: Partial<ThemeSignals>;
 }
@@ -31,6 +32,7 @@ function look(variant: ThemeVariant, spec: Look): ThemeRecipe {
     contrast: spec.contrast ?? BASE_CONTRAST[variant],
     fonts: { ui: null, code: null, ...spec.fonts },
     opaqueWindows: spec.opaque ?? false,
+    glassWindow: spec.glass ?? false,
     semanticColors: { ...SIGNALS[variant], ...spec.signals },
   };
 }
@@ -63,6 +65,15 @@ export const THEME_PRESETS: readonly ThemePreset[] = [
     // Cool slate light look: tinted grey sheets on a slightly deeper chrome,
     // slate ink instead of near-black.
     { surface: '#eff1f4', ink: '#2f3244', accent: '#2563eb' }
+  ),
+  // Pure white (or graphite) sheets on a frosted window: the title bar and
+  // sidebar show the desktop through macOS vibrancy.
+  preset(
+    'glass',
+    'Glass',
+    'aegis',
+    { surface: '#1c1c1e', ink: '#f5f5f7', accent: '#0a84ff', glass: true },
+    { surface: '#ffffff', ink: '#1d1d1f', accent: '#007aff', glass: true }
   ),
   // Brand looks
   preset(

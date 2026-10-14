@@ -132,4 +132,16 @@ for (const surface of ['#f0f1f5', '#f4f1ea', '#eef3ee']) {
 // A grey surface still takes a colored target's hue.
 assert.ok(hexToOklch(shade('#f5f5f5', '#3b82f6', 0.3)).c > 0.02);
 
+// Glass is a preset of its own: a pure white light sheet, frosted window in both variants.
+for (const variant of ['light', 'dark'] as const) {
+  assert.equal(presetRecipe('glass', variant).glassWindow, true, `glass/${variant} asks for the frosted window`);
+  assert.equal(presetRecipe('aegis', variant).glassWindow, false, `aegis/${variant} stays solid`);
+  const glassed = applyPreset(DEFAULT_APPEARANCE, variant, 'glass');
+  assert.equal(choiceFor(glassed, variant).recipe.glassWindow, true);
+  assert.equal(choiceFor(normalizeAppearance(JSON.parse(JSON.stringify(glassed))), variant).recipe.glassWindow, true, 'glass survives saving');
+  assert.equal(importTheme(DEFAULT_APPEARANCE, variant, exportTheme(variant, choiceFor(glassed, variant))).chromeThemes[variant].glassWindow, true, 'glass survives sharing');
+  assert.ok(alphaOf(tokens('glass', variant)['--app-glass-chrome']) < 1, `glass/${variant} chrome tint is see-through`);
+}
+assert.equal(tokens('glass', 'light')['--bg-primary'], '#ffffff', 'glass light sheet is pure white');
+
 console.log('theme variables: checks passed');

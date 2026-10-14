@@ -104,6 +104,14 @@ export function deriveThemeTokens(recipe: ThemeRecipe, variant: ThemeVariant, ov
     '--app-shell-background': shell,
     '--app-sidebar-surface': opaque ? chrome : `color-mix(in srgb, ${chrome} 74%, transparent)`,
     '--app-sidebar-backdrop-filter': opaque ? 'none' : 'blur(10px) saturate(140%)',
+    // Tints laid over the native window material when the recipe is glass.
+    // The sidebar sits on the chrome, so the two stack: keep both thin or
+    // the material underneath disappears behind solid white.
+    // Liquid Glass already frosts, so these stay a whisper.
+    '--app-glass-chrome': withAlpha(surface, (dark ? 0.04 : 0.02) + 0.04 * depth),
+    '--app-glass-sidebar': withAlpha(surface, (dark ? 0.04 : 0.03) + 0.04 * depth),
+    // Content sheets keep enough of the surface for long text to stay easy to read.
+    '--app-glass-sheet': withAlpha(canvas, (dark ? 0.42 : 0.46) + 0.16 * depth),
     '--panel-soft-divider': inkAt(dark ? 0.07 : 0.06),
     // Text
     '--text-primary': ink,

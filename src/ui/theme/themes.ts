@@ -101,6 +101,7 @@ export function normalizeRecipe(value: unknown, variant: ThemeVariant, fallback 
     contrast: Math.round(Math.min(100, Math.max(0, contrast))),
     fonts: normalizeTypefaces(input.fonts),
     opaqueWindows: typeof input.opaqueWindows === 'boolean' ? input.opaqueWindows : fallback.opaqueWindows,
+    glassWindow: typeof input.glassWindow === 'boolean' ? input.glassWindow : fallback.glassWindow,
     semanticColors: normalizeSignals(input.semanticColors, fallback.semanticColors),
   };
 }
@@ -249,11 +250,27 @@ export const THEME_APPLIED_EVENT = 'aegis:theme-applied';
 let lastApplied = '';
 let lastSentToMain = '';
 
+/**
+ * Glass needs Liquid Glass (macOS 26+) and a window opened transparent, which
+ * the main process decides from the saved theme when the window is created.
+ */
+export function windowGlassState(): { supported: boolean; active: boolean } {
+  try {
+    return window.electron?.getWindowGlassSync?.() ?? { supported: false, active: false };
+  } catch {
+    return { supported: false, active: false };
+  }
+}
+
 export function renderAppearance(input: { mode: ThemeMode; state: AppearanceState; uiFontFamily?: string; codeFontFamily?: string }): void {
   const variant = resolveThemeMode(input.mode);
   const choice = choiceFor(input.state, variant);
   const variables = themeVariables(choice, variant, { ui: input.uiFontFamily, code: input.codeFontFamily });
-  const signature = JSON.stringify([input.mode, variant, variables]);
+  // What the theme asks for goes to the main process; the page only turns
+  // transparent when this window can actually show glass.
+  const wanted = choice.recipe.glassWindow ? 'glass' : 'solid';
+  const material = wanted === 'glass' && windowGlassState().active ? 'glass' : 'solid';
+  const signature = JSON.stringify([input.mode, variant, wanted, material, variables]);
   if (signature === lastApplied) return;
   lastApplied = signature;
 
@@ -264,15 +281,16 @@ export function renderAppearance(input: { mode: ThemeMode; state: AppearanceStat
   root.classList.toggle('dark', variant === 'dark');
   root.dataset.themeMode = input.mode;
   root.dataset.themeVariant = variant;
+  root.dataset.windowMaterial = material;
   for (const [name, value] of Object.entries(variables)) root.style.setProperty(name, value);
   void root.offsetHeight;
   requestAnimationFrame(() => root.classList.remove('no-transitions'));
   window.dispatchEvent(new Event(THEME_APPLIED_EVENT));
 
   const background = variables['--bg-primary'];
-  const forMain = `${input.mode}:${variant}:${background}`;
+  const forMain = `${input.mode}:${variant}:${background}:${wanted}`;
   if (forMain !== lastSentToMain && typeof window.electron?.setTheme === 'function') {
     lastSentToMain = forMain;
-    void window.electron.setTheme(input.mode, { variant, background }).catch(() => undefined);
+    void window.electron.setTheme(input.mode, { variant, background, material: wanted }).catch(() => undefined);
   }
 }

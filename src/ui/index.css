@@ -540,6 +540,47 @@ body {
   background-color: var(--app-sidebar-surface);
 }
 
+/* Glass: the window itself is macOS vibrancy. The page lets it through, the
+   chrome and sidebar only tint it, and the content sheets stay solid. */
+html[data-window-material='glass'],
+html[data-window-material='glass'] body,
+html[data-window-material='glass'] #root {
+  background-color: transparent;
+}
+
+html[data-window-material='glass'] .aegis-window-shell {
+  background-color: var(--app-glass-chrome);
+}
+
+/* Content sheets are glass too, lighter than solid but still a sheet; the
+   chat and utility surfaces inside them go see-through like a skin's. The
+   native glass does the blurring, so the CSS backdrops are off. */
+html[data-window-material='glass'] {
+  --chat-pane-surface: transparent;
+  --chat-pane-surface-muted: color-mix(in srgb, var(--bg-secondary) 24%, transparent);
+  --utility-pane-surface: transparent;
+  --utility-pane-surface-strong: color-mix(in srgb, var(--bg-primary) 40%, transparent);
+  --utility-pane-backdrop: none;
+  --chat-chrome-chip-surface: color-mix(in srgb, var(--bg-primary) 55%, transparent);
+  --chat-chrome-chip-backdrop: none;
+}
+
+html[data-window-material='glass'] .aegis-sheet {
+  background-color: var(--app-glass-sheet);
+}
+
+html[data-window-material='glass'] [data-right-utility-workspace] [class~="bg-[var(--bg-primary)]"] {
+  background-color: var(--utility-pane-surface);
+}
+
+html[data-window-material='glass'] .aegis-sidebar-panel,
+html[data-window-material='glass'] .aegis-window-left-surface,
+html[data-window-material='glass'] .aegis-settings-sidebar-surface {
+  background-color: var(--app-glass-sidebar);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
 /* Skin (wallpaper) — a user-picked image layered under the chat workspace.
    Chat and utility surfaces paint through these vars so the wallpaper shows only while
    a skin is active; without one they resolve to the normal opaque colors. */

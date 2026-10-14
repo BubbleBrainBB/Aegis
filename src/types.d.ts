@@ -183,7 +183,9 @@ declare global {
     remoteCompanion: (action: string, payload?: unknown) => Promise<any>;
     getAppVersion: () => Promise<string>;
     getWindowShellState: () => Promise<{ rounded: boolean }>;
-    setTheme: (theme: 'light' | 'dark' | 'system', look?: { variant: 'light' | 'dark'; background: string }) => Promise<{ ok: boolean }>;
+    setTheme: (theme: 'light' | 'dark' | 'system', look?: { variant: 'light' | 'dark'; background: string; material?: 'glass' | 'solid' }) => Promise<{ ok: boolean }>;
+    /** supported: this Mac can show glass; active: this window was opened able to show it. */
+    getWindowGlassSync?: () => { supported: boolean; active: boolean };
     getUiResumeState: () => Promise<UiResumeState | null>;
     getUiResumeStateSync: () => UiResumeState | null;
     saveUiResumeState: (state: UiResumeState) => Promise<{ ok: boolean }>;

@@ -14,7 +14,7 @@
     "dev": "concurrently --kill-others-on-fail \"npm run dev:react\" \"npm run dev:electron\"",
     "dev:react": "node scripts/dev-react.mjs",
     "dev:electron": "npm run transpile:electron && node scripts/prepare-electron-native-deps.mjs && node scripts/launch-electron.mjs",
-    "transpile:electron": "node scripts/patch-bubble-sdk.mjs && tsc -p src/electron/tsconfig.json && node scripts/remote/build-crypto.mjs",
+    "transpile:electron": "node scripts/patch-bubble-sdk.mjs && tsc -p src/electron/tsconfig.json && node scripts/remote/build-crypto.mjs && node scripts/build-liquid-glass.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "npm run typecheck && npm run transpile:electron && vite build",
     "pretest": "npm run prepare:deepseek-runtime",

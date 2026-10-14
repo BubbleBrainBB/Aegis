@@ -1,4 +1,4 @@
-import { BrowserWindow, shell } from 'electron';
+import { BrowserWindow, shell, type BrowserWindowConstructorOptions } from 'electron';
 import { getSession } from '../libs/session-store';
 import { DEV_SERVER_URL, getPreloadPath, getUIPath, ipcMainHandle, isDev } from '../util';
 import type { ServerEvent } from '../../shared/types';
@@ -15,16 +15,20 @@ export function broadcastSessionEvent(primary: BrowserWindow, event: ServerEvent
 
 export function setupSessionWindowsIPC(options: {
   backgroundColor: () => string;
+  /** Extra constructor options (glass windows are transparent). */
+  windowOptions: () => Partial<BrowserWindowConstructorOptions>;
   rendererState: () => Record<string, string>;
-  onCreate: (win: BrowserWindow) => void;
+  onCreate: (win: BrowserWindow, options: Partial<BrowserWindowConstructorOptions>) => void;
 }) {
   ipcMainHandle('open-session-window', async (_, sessionId: string) => {
     const task = typeof sessionId === 'string' ? getSession(sessionId) : undefined;
     if (!task || task.hidden_from_threads) throw new Error('This conversation is no longer available.');
+    const extraOptions = options.windowOptions();
     const win = new BrowserWindow({
       width: 1100, height: 800, minWidth: 560, minHeight: 600, show: false,
       title: task.title, titleBarStyle: 'hidden', trafficLightPosition: { x: 15, y: 15 },
       backgroundColor: options.backgroundColor(),
+      ...extraOptions,
       webPreferences: { preload: getPreloadPath(), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
     });
     const rendererState = { ...options.rendererState() };
@@ -53,7 +57,7 @@ export function setupSessionWindowsIPC(options: {
         if (/^https?:/i.test(url)) void shell.openExternal(url);
       }
     });
-    options.onCreate(win);
+    options.onCreate(win, extraOptions);
     try {
       if (isDev()) {
         const url = new URL(DEV_SERVER_URL);
