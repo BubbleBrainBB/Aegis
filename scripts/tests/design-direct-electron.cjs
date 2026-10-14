@@ -110,14 +110,25 @@ exports.run = async ({ w, js, repo, sessionId, documentId, screenshotDir }) => {
   const mod = process.platform === "darwin" ? "metaKey" : "ctrlKey";
   const press = (shift) =>
     js(`document.querySelector(".design-viewport").dispatchEvent(new KeyboardEvent("keydown",{key:"z",${mod}:true,shiftKey:${shift},bubbles:true,cancelable:true}))`);
-  revision = board().contentRevision;
-  await js('document.querySelector(".design-viewport").focus()');
-  await press(false);
-  await until(() => board().contentRevision > revision && !order(), "undo restores the previous order");
+  // On the slower CI runner an edit can still be saving when the shortcut
+  // lands, or the shortcut can miss: let the revision settle, press, and press
+  // once more if nothing changed, then wait for the expected board.
+  const pressUntil = async (shift, done, label) => {
+    for (let stable = 0, last = board().contentRevision; stable < 600; stable += 100) {
+      await wait(100);
+      if (board().contentRevision !== last) { last = board().contentRevision; stable = -100; }
+    }
+    const before = board().contentRevision;
+    const changed = () => board().contentRevision > before && done();
+    await js('document.querySelector(".design-viewport").focus()');
+    await press(shift);
+    for (let i = 0; i < 40 && !changed(); i++) await wait(50);
+    if (!changed() && board().contentRevision === before) await press(shift);
+    await until(changed, label);
+  };
+  await pressUntil(false, () => !order(), "undo restores the previous order");
   assert(repo.history(sessionId, documentId)[0].summary.startsWith("Undo · Reordered"), repo.history(sessionId, documentId)[0].summary);
-  revision = board().contentRevision;
-  await press(true);
-  await until(() => board().contentRevision > revision && order(), "redo reapplies it");
+  await pressUntil(true, () => order(), "redo reapplies it");
   assert(repo.history(sessionId, documentId)[0].summary.startsWith("Redo · "));
 
   // A plain-flow child moves freely like in a Figma frame: no reorder, siblings stay put.
@@ -143,19 +154,7 @@ exports.run = async ({ w, js, repo, sessionId, documentId, screenshotDir }) => {
   assert(repo.history(sessionId, documentId)[0].summary.startsWith("Made "), repo.history(sessionId, documentId)[0].summary);
   // The freed paragraph leaves flow; following siblings close the gap but never swap order.
   assert.equal(html.replace(/\s*style="[^"]*"/g, "").replace(/<p[^>]*>.*?<\/p>/, ""), board().html.replace(/\s*style="[^"]*"/g, "").replace(/<p[^>]*>.*?<\/p>/, ""), "no layers reordered");
-  // A slow runner can still be saving the move: let the revision settle, so
-  // the undo lands on the finished edit, and press again if it was missed.
-  for (let stable = 0, last = board().contentRevision; stable < 600; stable += 100) {
-    await wait(100);
-    if (board().contentRevision !== last) { last = board().contentRevision; stable = -100; }
-  }
-  revision = board().contentRevision;
-  const restored = () => board().contentRevision > revision && !/position:\s*absolute/.test(board().html.match(/<p[^>]*>/)?.[0] ?? "");
-  await js('document.querySelector(".design-viewport").focus()');
-  await press(false);
-  for (let i = 0; i < 40 && !restored(); i++) await wait(50);
-  if (!restored() && board().contentRevision === revision) await press(false);
-  await until(restored, "undo restores flow");
+  await pressUntil(false, () => !/position:\s*absolute/.test(board().html.match(/<p[^>]*>/)?.[0] ?? ""), "undo restores flow");
   assert.equal(await siblings(), pinned, "undo puts the siblings back");
   console.log("PASS: undo/redo of canvas edits, element resize handles, Hug on double-click, auto-layout drag reorder with drop indicator, Esc cancel, and free move in plain flow");
 };
