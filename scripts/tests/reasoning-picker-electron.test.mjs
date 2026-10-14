@@ -69,6 +69,9 @@ app.whenReady().then(async()=>{
  const activeElement=()=>js('(()=>{const a=document.activeElement;return a?a.tagName+(a.getAttribute("aria-label")?"["+a.getAttribute("aria-label")+"]":"")+(a.type?"("+a.type+")":""):"none"})()');
  const press=async(keyCode,expr,expected,message,refocus=true)=>{let focused='';for(let attempt=0;attempt<3;attempt++){if(attempt>0&&refocus)await focusSlider();focused=await activeElement();await key(keyCode);for(let i=0;i<20;i++){if(await js(expr)===expected)return;await delay(50);}}assert.equal(await js(expr),expected,(message||keyCode)+' (focus was on '+focused+')');};
  const settle=async(expr,expected,message)=>{let value;for(let i=0;i<60;i++){value=await js(expr);if(value===expected)break;await delay(50);}assert.equal(value,expected,message);};
+ // Menu items on the CI runner sometimes miss a press even after a hover:
+ // retry the click like press(), then fall back to a DOM click.
+ const clickUntil=async(selector,expr,expected,message)=>{for(let attempt=0;attempt<4&&await js(expr)!==expected;attempt++){if(attempt<3)await click(selector);else await js('document.querySelector('+JSON.stringify(selector)+').click()');for(let i=0;i<20&&await js(expr)!==expected;i++)await delay(50);}await settle(expr,expected,message);};
  const slider='.effort-model-view:not([inert]) input[type=range]';
  // The click can land while the menu is still settling (seen on CI); keys must go to the slider.
  const focusSlider=()=>js('document.querySelector('+JSON.stringify(slider)+').focus()');
@@ -126,16 +129,8 @@ app.whenReady().then(async()=>{
   await settle('document.querySelector('+JSON.stringify(slider)+').getAttribute("aria-valuetext")','High');
   win.webContents.sendInputEvent({type:'mouseUp',x:Math.round(r.x+14),y:Math.round(r.y+r.h/2),button:'left',clickCount:1});await delay(100);
   await click(slider);await focusSlider();await press('Home','qa.efforts.codex','low');
-  // On the CI runner a menu item can still miss a press (click() hovers first):
-  // retry like press(), then fall back to a DOM click.
-  const resetButton='[aria-label="Reset reasoning to default"]';
-  for(let attempt=0;attempt<4&&await js('qa.efforts.codex')!=='high';attempt++){
-    if(attempt<3)await click(resetButton);
-    else await js('document.querySelector('+JSON.stringify(resetButton)+').click()');
-    for(let i=0;i<20&&await js('qa.efforts.codex')!=='high';i++)await delay(50);
-  }
-  await settle('qa.efforts.codex','high','reset returns to the default effort');
-  await click('[aria-label="Fast mode"]');await settle('qa.fast',true);
+  await clickUntil('[aria-label="Reset reasoning to default"]','qa.efforts.codex','high','reset returns to the default effort');
+  await clickUntil('[aria-label="Fast mode"]','qa.fast',true,'fast mode turns on');
   assert.equal(await js('document.querySelector(\'[aria-label="Fast mode"]\').getAttribute("aria-checked")'),'true');
   await assertStable(closedTrigger);
   const initialHeight=await js('document.querySelector(".effort-model-views").getBoundingClientRect().height');
