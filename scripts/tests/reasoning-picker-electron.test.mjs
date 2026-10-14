@@ -126,8 +126,14 @@ app.whenReady().then(async()=>{
   await settle('document.querySelector('+JSON.stringify(slider)+').getAttribute("aria-valuetext")','High');
   win.webContents.sendInputEvent({type:'mouseUp',x:Math.round(r.x+14),y:Math.round(r.y+r.h/2),button:'left',clickCount:1});await delay(100);
   await click(slider);await focusSlider();await press('Home','qa.efforts.codex','low');
-  // The slow CI runner can take the click before Home's change has settled: retry like press().
-  for(let attempt=0;attempt<3&&await js('qa.efforts.codex')!=='high';attempt++){await click('[aria-label="Reset reasoning to default"]');for(let i=0;i<20&&await js('qa.efforts.codex')!=='high';i++)await delay(50);}
+  // Reset is a menu item: on the CI runner a press with no hover before it is
+  // sometimes ignored. Hover first, retry like press(), and fall back to a DOM click.
+  const resetButton='[aria-label="Reset reasoning to default"]';
+  for(let attempt=0;attempt<4&&await js('qa.efforts.codex')!=='high';attempt++){
+    if(attempt<3){const at=await js('(()=>{const r=document.querySelector('+JSON.stringify(resetButton)+').getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)};})()');win.webContents.sendInputEvent({type:'mouseMove',x:at.x,y:at.y});await delay(80);await click(resetButton);}
+    else await js('document.querySelector('+JSON.stringify(resetButton)+').click()');
+    for(let i=0;i<20&&await js('qa.efforts.codex')!=='high';i++)await delay(50);
+  }
   await settle('qa.efforts.codex','high','reset returns to the default effort');
   await click('[aria-label="Fast mode"]');await settle('qa.fast',true);
   assert.equal(await js('document.querySelector(\'[aria-label="Fast mode"]\').getAttribute("aria-checked")'),'true');
