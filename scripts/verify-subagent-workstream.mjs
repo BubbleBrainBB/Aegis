@@ -38,9 +38,16 @@ assert.equal(
   'the feishu bridge must not render subagent internal messages as replies'
 );
 assert.equal(
-  (ipcSourceForGuards.match(/if \(message\.parentToolUseId\) continue;/g) || []).length >= 3,
+  (ipcSourceForGuards.match(/if \(message\.parentToolUseId\) continue;/g) || []).length >= 2,
   true,
-  'history transcript builders must skip subagent messages'
+  'history transcript builders (buildHistoryTranscript, buildRecentConversationContext) must skip subagent messages'
+);
+assert.equal(
+  /export function collectHandoffTurns[\s\S]*?if \(message\.parentToolUseId\) continue;/.test(
+    fs.readFileSync(path.join(root, 'src', 'electron', 'libs', 'session-handoff.ts'), 'utf8')
+  ),
+  true,
+  'the handoff brief transcript builder must skip subagent messages'
 );
 assert.equal(
   ipcSourceForGuards.includes('if (!attributedMessage.parentToolUseId) {'),
