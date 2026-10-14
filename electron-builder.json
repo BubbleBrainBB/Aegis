@@ -21,6 +21,11 @@
     "!node_modules/@qoder-ai/qoder-agent-sdk/dist/_bundled",
     "!node_modules/@qoder-ai/qoder-agent-sdk/dist/_bundled/**/*",
     "!node_modules/**/@qoder-ai/qoder-agent-sdk/dist/_bundled/**/*",
+    // Since 1.0.5x the SDK's fallback runtime (58M) lives in dist/_worker. It
+    // only runs when no machine qodercli is found, which packaged builds require.
+    "!node_modules/@qoder-ai/qoder-agent-sdk/dist/_worker",
+    "!node_modules/@qoder-ai/qoder-agent-sdk/dist/_worker/**/*",
+    "!node_modules/**/@qoder-ai/qoder-agent-sdk/dist/_worker/**/*",
     // Render-only icon set (133M): Vite already bundles the used icons into
     // dist-react — the main process never requires @tabler.
     "!node_modules/@tabler",

@@ -1,6 +1,7 @@
 // Aegis host compatibility for the pinned Bubble SDK. Re-run on install/build;
 // fail on upstream drift rather than silently shipping an unpatched runtime.
-// Host tools are upstream since 0.0.60 (turn-scoped `hostTools` on runTurn).
+// Host tools are upstream since 0.0.60 (turn-scoped `hostTools` on runTurn);
+// 0.0.61 left dist/sdk/index.js unchanged, so the seams below are the same.
 // Patched here: repeatable, serialized project trust; explicit deny rules for
 // read-only host tools; and a host tool shadowing a same-named MCP tool
 // instead of failing the turn.
@@ -10,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 
 export async function patchBubbleSdk(root) {
   const pkg = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
-  if (pkg.version !== '0.0.60') throw new Error(`Review Bubble host patch for SDK ${pkg.version}`);
+  if (pkg.version !== '0.0.61') throw new Error(`Review Bubble host patch for SDK ${pkg.version}`);
   const jsPath = path.join(root, 'dist/sdk/index.js');
   const typesPath = path.join(root, 'dist/sdk/index.d.ts');
   let js = await readFile(jsPath, 'utf8');
