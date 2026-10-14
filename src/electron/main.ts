@@ -1075,9 +1075,11 @@ app.whenReady().then(() => {
           ...details.responseHeaders,
           'Content-Security-Policy': [
             // http://127.0.0.1:* covers the per-project local preview servers
-            // (markdown images, PDF preview iframes); requests are still gated
-            // by each server's per-instance random token.
-            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data: blob: http://127.0.0.1:*; font-src 'self' data:; frame-src 'self' blob: data: http://127.0.0.1:* aegis-widget:; object-src 'self' blob: data:; connect-src 'self'",
+            // (markdown images and videos, file preview videos, PDF preview
+            // iframes); requests are still gated by each server's per-instance
+            // random token. Without media-src, videos fell back to
+            // default-src 'self' and never loaded in packaged builds.
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data: blob: http://127.0.0.1:*; media-src 'self' https: data: blob: http://127.0.0.1:*; font-src 'self' data:; frame-src 'self' blob: data: http://127.0.0.1:* aegis-widget:; object-src 'self' blob: data:; connect-src 'self'",
           ],
         },
       });

@@ -1195,6 +1195,24 @@ async function createMarkdownImageAsset(
     return { ok: false, message: 'Only image files can be inserted.' };
   }
 
+  return writeMarkdownAsset(cwd, markdownFilePath, sourceFileName, ext, 'image', (target) =>
+    fsPromises.writeFile(target, buffer)
+  );
+}
+
+/**
+ * Writes a pasted or dropped file into the Markdown file's `<name>.assets/`
+ * folder under a safe, unused name and returns its path relative to the file.
+ */
+async function writeMarkdownAsset(
+  cwd: string,
+  markdownFilePath: string,
+  sourceFileName: string,
+  ext: string,
+  kind: 'image' | 'video',
+  write: (targetPath: string) => Promise<void>
+): Promise<{ ok: true; relativePath: string; name: string } | { ok: false; message: string }> {
+  const label = kind === 'image' ? 'Image' : 'Video';
   const resolvedMarkdown = resolve(cwd || '.', markdownFilePath || '');
   const markdownValidation = await validateProjectFilePath(cwd, resolvedMarkdown);
   if (!markdownValidation.ok) {
@@ -1205,14 +1223,14 @@ async function createMarkdownImageAsset(
   const markdownBase = basename(markdownValidation.targetReal).replace(/\.(md|markdown)$/i, '') || 'document';
   const assetDir = resolve(markdownDir, `${markdownBase}.assets`);
   if (!isPathWithinRoot(cwd, assetDir)) {
-    return { ok: false, message: 'Image asset directory is outside the project.' };
+    return { ok: false, message: `${label} asset directory is outside the project.` };
   }
 
-  const safeBaseName = basename(sourceFileName || 'image', ext)
+  const safeBaseName = basename(sourceFileName || kind, ext)
     .replace(/[^\w.-]+/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '')
-    .slice(0, 72) || 'image';
+    .slice(0, 72) || kind;
 
   let fileName = `${safeBaseName}${ext}`;
   let targetPath = resolve(assetDir, fileName);
@@ -1224,18 +1242,69 @@ async function createMarkdownImageAsset(
   }
 
   if (!isPathWithinRoot(cwd, targetPath)) {
-    return { ok: false, message: 'Image asset target is outside the project.' };
+    return { ok: false, message: `${label} asset target is outside the project.` };
   }
 
   try {
     await fsPromises.mkdir(assetDir, { recursive: true });
-    await fsPromises.writeFile(targetPath, buffer);
+    await write(targetPath);
   } catch (error) {
-    return { ok: false, message: `Failed to write image: ${String(error)}` };
+    return { ok: false, message: `Failed to write ${kind}: ${String(error)}` };
   }
 
   const relativePath = relative(markdownDir, targetPath).replace(/\\/g, '/');
   return { ok: true, relativePath, name: fileName };
+}
+
+const MARKDOWN_VIDEO_MIME_EXTENSIONS: Record<string, string> = {
+  'video/mp4': '.mp4',
+  'video/webm': '.webm',
+  'video/quicktime': '.mov',
+};
+
+/**
+ * A pasted or dropped video. A file from disk (Finder, screen recorders) is
+ * copied by path, so a large video never crosses IPC; raw clipboard video
+ * data is written from bytes within the attachment size limit.
+ */
+async function createMarkdownVideoAsset(
+  cwd: string,
+  markdownFilePath: string,
+  sourceFileName: string,
+  mimeType: string | undefined,
+  sourcePath: string | undefined,
+  data: unknown
+): Promise<{ ok: true; relativePath: string; name: string } | { ok: false; message: string }> {
+  if (!cwd || !markdownFilePath) {
+    return { ok: false, message: 'Missing project or Markdown file path.' };
+  }
+  const nameExt = extname(sourceFileName || sourcePath || '').toLowerCase();
+  const ext = ['.mp4', '.webm', '.mov'].includes(nameExt)
+    ? nameExt
+    : MARKDOWN_VIDEO_MIME_EXTENSIONS[(mimeType || '').toLowerCase()];
+  if (!ext) {
+    return { ok: false, message: 'Only MP4, WebM and MOV videos can be inserted.' };
+  }
+  if (sourcePath) {
+    try {
+      if (!(await fsPromises.stat(sourcePath)).isFile()) return { ok: false, message: 'The video is not a file.' };
+    } catch {
+      return { ok: false, message: 'The video file could not be found.' };
+    }
+    return writeMarkdownAsset(cwd, markdownFilePath, sourceFileName || basename(sourcePath), ext, 'video', (target) =>
+      fsPromises.copyFile(sourcePath, target)
+    );
+  }
+  const buffer = toIpcBuffer(data);
+  if (!buffer || buffer.length === 0) {
+    return { ok: false, message: 'Missing video data.' };
+  }
+  if (buffer.length > MAX_ATTACHMENT_BYTES) {
+    return { ok: false, message: 'This video is too large to paste as data; drop or paste the video file instead.' };
+  }
+  return writeMarkdownAsset(cwd, markdownFilePath, sourceFileName, ext, 'video', (target) =>
+    fsPromises.writeFile(target, buffer)
+  );
 }
 
 async function readMarkdownImageAsset(
@@ -7136,6 +7205,21 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
       data: unknown
     ): Promise<{ ok: true; relativePath: string; name: string } | { ok: false; message: string }> => {
       return createMarkdownImageAsset(cwd, markdownFilePath, fileName, mimeType, data);
+    }
+  );
+
+  ipcMainHandle(
+    'create-markdown-video-asset',
+    async (
+      _event,
+      cwd: string,
+      markdownFilePath: string,
+      fileName: string,
+      mimeType: string | undefined,
+      sourcePath: string | undefined,
+      data: unknown
+    ): Promise<{ ok: true; relativePath: string; name: string } | { ok: false; message: string }> => {
+      return createMarkdownVideoAsset(cwd, markdownFilePath, fileName, mimeType, sourcePath || undefined, data);
     }
   );
 

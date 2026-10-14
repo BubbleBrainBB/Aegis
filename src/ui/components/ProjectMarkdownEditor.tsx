@@ -682,16 +682,29 @@ function isSupportedMarkdownImageFile(file: File): boolean {
   return MARKDOWN_IMAGE_EXTENSIONS.has(getFileExtension(file.name));
 }
 
-function getImageFilesFromTransfer(dataTransfer: DataTransfer | null): File[] {
+const MARKDOWN_VIDEO_MIME_TYPES = new Set(['video/mp4', 'video/webm', 'video/quicktime']);
+const MARKDOWN_VIDEO_EXTENSIONS = new Set(['.mp4', '.webm', '.mov']);
+
+function isSupportedMarkdownVideoFile(file: File): boolean {
+  const mimeType = file.type.toLowerCase();
+  if (mimeType && MARKDOWN_VIDEO_MIME_TYPES.has(mimeType)) return true;
+  return MARKDOWN_VIDEO_EXTENSIONS.has(getFileExtension(file.name));
+}
+
+const isSupportedMarkdownMediaFile = (file: File) =>
+  isSupportedMarkdownImageFile(file) || isSupportedMarkdownVideoFile(file);
+
+/** Images and videos the editor can save next to the document and embed. */
+function getMediaFilesFromTransfer(dataTransfer: DataTransfer | null): File[] {
   if (!dataTransfer) return [];
 
-  const files = Array.from(dataTransfer.files || []).filter(isSupportedMarkdownImageFile);
+  const files = Array.from(dataTransfer.files || []).filter(isSupportedMarkdownMediaFile);
   if (files.length > 0) return files;
 
   return Array.from(dataTransfer.items || [])
     .filter((item) => item.kind === 'file')
     .map((item) => item.getAsFile())
-    .filter((file): file is File => Boolean(file && isSupportedMarkdownImageFile(file)));
+    .filter((file): file is File => Boolean(file && isSupportedMarkdownMediaFile(file)));
 }
 
 function trimMatchedUrl(rawUrl: string): string {
@@ -1077,7 +1090,10 @@ function insertLink(view: EditorView, href: string) {
 
 function insertImageMarkdown(view: EditorView, src: string, alt: string) {
   const selection = view.state.selection.main;
-  const insert = `![${alt || 'Image'}](${src})`;
+  // Asset folders are named after the document, which may hold spaces or
+  // parentheses; such a destination needs angle brackets to stay one link.
+  const destination = /[\s()<>]/.test(src) ? `<${src.replace(/[<>]/g, encodeURIComponent)}>` : src;
+  const insert = `![${(alt || 'Image').replace(/[[\]]/g, '')}](${destination})`;
   replaceRange(view, selection.from, selection.to, insert);
 }
 
@@ -2148,14 +2164,14 @@ function createImageInputExtension(
 ): Extension {
   return EditorView.domEventHandlers({
     paste: (event, view) => {
-      const files = getImageFilesFromTransfer(event.clipboardData);
+      const files = getMediaFilesFromTransfer(event.clipboardData);
       if (files.length === 0) return false;
       event.preventDefault();
       void insertFiles(view, files);
       return true;
     },
     drop: (event, view) => {
-      const files = getImageFilesFromTransfer(event.dataTransfer);
+      const files = getMediaFilesFromTransfer(event.dataTransfer);
       if (files.length === 0) return false;
       event.preventDefault();
       const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
@@ -2602,12 +2618,32 @@ export function ProjectMarkdownEditor({
 
       for (const file of files) {
         try {
-          const data = new Uint8Array(await file.arrayBuffer());
-          const result = await createAsset(cwd, filePath, file.name || 'image', file.type, data);
-          if (!result?.ok || !result.relativePath) continue;
-          insertImageMarkdown(view, result.relativePath, result.name || file.name || 'Image');
+          let result: { ok: boolean; relativePath?: string; name?: string; message?: string } | undefined;
+          if (isSupportedMarkdownVideoFile(file)) {
+            // A video from disk is copied by path, so a large file never
+            // crosses IPC; only raw clipboard video data is sent as bytes.
+            const createVideo = window.electron.createMarkdownVideoAsset;
+            if (typeof createVideo !== 'function') continue;
+            const sourcePath = window.electron.getPathForFile?.(file) || '';
+            result = await createVideo(
+              cwd,
+              filePath,
+              file.name || 'video',
+              file.type,
+              sourcePath || undefined,
+              sourcePath ? undefined : new Uint8Array(await file.arrayBuffer())
+            );
+          } else {
+            const data = new Uint8Array(await file.arrayBuffer());
+            result = await createAsset(cwd, filePath, file.name || 'image', file.type, data);
+          }
+          if (!result?.ok || !result.relativePath) {
+            if (result?.message) toast.error(result.message);
+            continue;
+          }
+          insertImageMarkdown(view, result.relativePath, result.name || file.name || 'Media');
         } catch (error) {
-          console.warn('Failed to insert Markdown image asset:', error);
+          console.warn('Failed to insert Markdown media asset:', error);
         }
       }
       refreshDerivedUi(view);

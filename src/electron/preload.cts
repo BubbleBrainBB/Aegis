@@ -1037,6 +1037,17 @@ contextBridge.exposeInMainWorld('electron', {
   ) => {
     return ipcRenderer.invoke('create-markdown-image-asset', cwd, markdownFilePath, fileName, mimeType, data);
   },
+  // A video file from disk is copied by path; data is only for raw clipboard video.
+  createMarkdownVideoAsset: (
+    cwd: string,
+    markdownFilePath: string,
+    fileName: string,
+    mimeType: string | undefined,
+    sourcePath: string | undefined,
+    data?: Uint8Array
+  ) => {
+    return ipcRenderer.invoke('create-markdown-video-asset', cwd, markdownFilePath, fileName, mimeType, sourcePath, data);
+  },
 
   createInlineImageAttachment: (mimeType: string, data: Uint8Array) => {
     return ipcRenderer.invoke('create-inline-image-attachment', mimeType, data);
