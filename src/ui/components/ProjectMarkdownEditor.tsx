@@ -15,10 +15,11 @@ import {
   syntaxTree,
   ensureSyntaxTree,
   bracketMatching,
-  defaultHighlightStyle,
+  HighlightStyle,
   indentOnInput,
   syntaxHighlighting,
 } from '@codemirror/language';
+import { tags } from '@lezer/highlight';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { languages } from '@codemirror/language-data';
 import {
@@ -177,6 +178,30 @@ type MarkdownImageSourceCacheEntry = {
 const updateListenerFacet = EditorView.updateListener;
 const markdownFocusEffect = StateEffect.define<boolean>();
 const markdownFocusField = StateField.define<boolean>({ create: () => false, update: (value, tr) => tr.effects.find(e => e.is(markdownFocusEffect))?.value ?? value });
+// Media source shows under the caret only after the editor has been focused:
+// a freshly opened file has its caret at 0, which would otherwise reveal the
+// source of a leading image. It stays true on blur so a player taking focus
+// does not collapse the source.
+const markdownEngagedField = StateField.define<boolean>({ create: () => false, update: (value, tr) => value || tr.effects.some(e => e.is(markdownFocusEffect) && e.value) });
+
+// Source-mode colors from the theme's code tokens (CodeMirror's default style
+// hardcodes light-only colors): Markdown marks and URLs recede, links take the
+// accent, code fences follow the theme.
+const markdownHighlightStyle = HighlightStyle.define([
+  { tag: [tags.processingInstruction, tags.meta, tags.contentSeparator, tags.url], color: 'var(--text-muted)' },
+  { tag: tags.link, color: 'var(--accent)' },
+  { tag: tags.heading, fontWeight: '600' },
+  { tag: tags.emphasis, fontStyle: 'italic' },
+  { tag: tags.strong, fontWeight: '600' },
+  { tag: tags.strikethrough, textDecoration: 'line-through' },
+  { tag: [tags.keyword, tags.modifier, tags.operatorKeyword, tags.controlKeyword], color: 'var(--code-token-keyword)' },
+  { tag: [tags.string, tags.special(tags.string), tags.regexp, tags.inserted], color: 'var(--code-token-string)' },
+  { tag: [tags.number, tags.bool, tags.atom, tags.literal, tags.labelName], color: 'var(--code-token-number)' },
+  { tag: [tags.function(tags.variableName), tags.function(tags.propertyName), tags.definition(tags.variableName), tags.className, tags.typeName, tags.namespace], color: 'var(--code-token-function)' },
+  { tag: [tags.comment, tags.lineComment, tags.blockComment, tags.docComment], color: 'var(--code-token-comment)', fontStyle: 'italic' },
+  { tag: [tags.operator, tags.punctuation, tags.bracket], color: 'var(--code-token-operator)' },
+  { tag: [tags.deleted, tags.invalid], color: 'var(--error)' },
+]);
 const markdownHeadingFlashEffect = StateEffect.define<number | null>();
 const markdownPointerSelectingEffect = StateEffect.define<boolean>();
 const METADATA_VISIBLE_ROWS = 8;
@@ -1644,7 +1669,7 @@ function buildLivePreviewDecorations(state: EditorState, cwd: string, filePath: 
     // Reuse the preview at the end of its source in both modes. Only the source
     // text toggles, so editing cannot collapse or reload the media.
     const mediaSource = block ? { from, to } : undefined;
-    if (mediaSourceIsActive(state, from, to)) {
+    if (state.field(markdownEngagedField, false) && mediaSourceIsActive(state, from, to)) {
       decorations.push(Decoration.widget({ block, side: 1, widget, mediaSource }).range(to));
     } else {
       decorations.push(Decoration.replace({ block, widget, mediaSource }).range(from, to));
@@ -2081,6 +2106,7 @@ function createLivePreviewExtension(cwd: string, filePath: string): Extension {
   return [
     headingFlashField,
     markdownFocusField,
+    markdownEngagedField,
     EditorView.focusChangeEffect.of((_view, focused) => markdownFocusEffect.of(focused)),
     previews,
     Prec.high(keymap.of([
@@ -2631,7 +2657,7 @@ export function ProjectMarkdownEditor({
       bracketMatching(),
       indentOnInput(),
       history(),
-      syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+      syntaxHighlighting(markdownHighlightStyle, { fallback: true }),
       markdown({ base: markdownLanguage, codeLanguages: languages, extensions: [livePreviewMath, markdownWikiEmbeds, markdownWikiLinks, markdownHighlight] }),
       createMarkdownShortcuts(() => onSaveRef.current()),
       createMarkdownInputPairsExtension(),

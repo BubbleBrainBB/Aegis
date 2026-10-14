@@ -220,6 +220,7 @@
     "@jvmr/pptx-to-html": "^1.0.0",
     "@larksuite/channel": "^0.7.1",
     "@larksuiteoapi/node-sdk": "^1.74.0",
+    "@lezer/highlight": "^1.2.5",
     "@lezer/markdown": "^1.6.4",
     "@libp2p/crypto": "5.0.15",
     "@libp2p/logger": "5.2.0",
