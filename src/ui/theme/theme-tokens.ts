@@ -107,11 +107,13 @@ export function deriveThemeTokens(recipe: ThemeRecipe, variant: ThemeVariant, ov
     // Tints laid over the native window material when the recipe is glass.
     // The sidebar sits on the chrome, so the two stack: keep both thin or
     // the material underneath disappears behind solid white.
-    // Liquid Glass already frosts, so these stay a whisper.
-    '--app-glass-chrome': withAlpha(surface, (dark ? 0.04 : 0.02) + 0.04 * depth),
-    '--app-glass-sidebar': withAlpha(surface, (dark ? 0.04 : 0.03) + 0.04 * depth),
+    // Light: Liquid Glass already frosts, so the tints stay a whisper. Dark:
+    // the glass turns mid-grey over light windows behind it, so it takes a
+    // real tint to read as a dark material next to solid controls.
+    '--app-glass-chrome': withAlpha(surface, (dark ? 0.42 : 0.02) + 0.04 * depth),
+    '--app-glass-sidebar': withAlpha(surface, (dark ? 0.08 : 0.03) + 0.04 * depth),
     // Content sheets keep enough of the surface for long text to stay easy to read.
-    '--app-glass-sheet': withAlpha(canvas, (dark ? 0.42 : 0.46) + 0.16 * depth),
+    '--app-glass-sheet': withAlpha(canvas, (dark ? 0.66 : 0.46) + 0.16 * depth),
     '--panel-soft-divider': inkAt(dark ? 0.07 : 0.06),
     // Text
     '--text-primary': ink,

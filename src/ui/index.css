@@ -573,6 +573,25 @@ html[data-window-material='glass'] [data-right-utility-workspace] [class~="bg-[v
   background-color: var(--utility-pane-surface);
 }
 
+/* File previews and the Markdown editor paint their own page color. */
+html[data-window-material='glass'] [data-right-utility-workspace] {
+  --preview-surface: transparent;
+}
+
+html[data-window-material='glass'] [data-right-utility-workspace] .aegis-md-editor {
+  --aegis-md-editor-surface: transparent;
+  --aegis-md-editor-chrome-surface: transparent;
+}
+
+/* Settings paints its own chrome and card instead of the app shell's. */
+html[data-window-material='glass'] .aegis-settings {
+  background-color: transparent;
+}
+
+html[data-window-material='glass'] .aegis-content-card {
+  background-color: var(--app-glass-sheet);
+}
+
 html[data-window-material='glass'] .aegis-sidebar-panel,
 html[data-window-material='glass'] .aegis-window-left-surface,
 html[data-window-material='glass'] .aegis-settings-sidebar-surface {
