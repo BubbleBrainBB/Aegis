@@ -100,7 +100,10 @@ exports.run = async ({ w, js, repo, sessionId, documentId, screenshotDir }) => {
   await until(() => board().contentRevision > revision, "absolute saved");
   let style = await styleOf("main .land");
   assert(/position:\s*absolute/.test(style), "⌘ drag makes it absolute: " + style);
-  assert(/(left|right):\s*-?\d+px/.test(style) && /(top|bottom):\s*-?\d+px/.test(style), "constraints written: " + style);
+  // Anchored right/bottom (smaller windows, as on CI), the four offsets serialize as the `inset` shorthand.
+  const longhands = /(left|right):\s*-?\d+px/.test(style) && /(top|bottom):\s*-?\d+px/.test(style);
+  const inset = /inset:\s*(?:auto|-?\d+px)(?:\s+(?:auto|-?\d+px)){3}/.exec(style);
+  assert(longhands || (inset && (inset[0].match(/-?\d+px/g) || []).length >= 2), "constraints written: " + style);
   assert(history()[0].summary.startsWith("Made "), history()[0].summary);
   // Without a positioned ancestor the board itself is the containing block.
   const placed = await (await frame()).executeJavaScript('(()=>{const r=document.querySelector("main .land").getBoundingClientRect();return {top:r.top,bottom:r.bottom,h:innerHeight}})()');
