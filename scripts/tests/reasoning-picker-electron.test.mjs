@@ -60,7 +60,7 @@ app.whenReady().then(async()=>{
  const errors=[];
  win.webContents.on('console-message',event=>{if(event.level==='error')errors.push(event.message);});
  const js=async code=>{try{return await win.webContents.executeJavaScript(code,true);}catch(e){throw new Error(code+' :: '+e.message);}};
- const click=async selector=>{const rect=await js('(()=>{const r=document.querySelector('+JSON.stringify(selector)+').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()');win.webContents.sendInputEvent({type:'mouseDown',x:Math.round(rect.x),y:Math.round(rect.y),button:'left',clickCount:1});win.webContents.sendInputEvent({type:'mouseUp',x:Math.round(rect.x),y:Math.round(rect.y),button:'left',clickCount:1});await delay(150);};
+ const click=async selector=>{const rect=await js('(()=>{const r=document.querySelector('+JSON.stringify(selector)+').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()');win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(rect.x),y:Math.round(rect.y)});await delay(60);win.webContents.sendInputEvent({type:'mouseDown',x:Math.round(rect.x),y:Math.round(rect.y),button:'left',clickCount:1});win.webContents.sendInputEvent({type:'mouseUp',x:Math.round(rect.x),y:Math.round(rect.y),button:'left',clickCount:1});await delay(150);};
  const key=async keyCode=>{win.webContents.sendInputEvent({type:'keyDown',keyCode});win.webContents.sendInputEvent({type:'keyUp',keyCode});await delay(80);};
  // Store updates land a few frames after input; CI runners are slow, so poll instead of a fixed delay.
  // The CI runner sometimes drops a key press. A key is sent again only after a full second with no
@@ -126,11 +126,11 @@ app.whenReady().then(async()=>{
   await settle('document.querySelector('+JSON.stringify(slider)+').getAttribute("aria-valuetext")','High');
   win.webContents.sendInputEvent({type:'mouseUp',x:Math.round(r.x+14),y:Math.round(r.y+r.h/2),button:'left',clickCount:1});await delay(100);
   await click(slider);await focusSlider();await press('Home','qa.efforts.codex','low');
-  // Reset is a menu item: on the CI runner a press with no hover before it is
-  // sometimes ignored. Hover first, retry like press(), and fall back to a DOM click.
+  // On the CI runner a menu item can still miss a press (click() hovers first):
+  // retry like press(), then fall back to a DOM click.
   const resetButton='[aria-label="Reset reasoning to default"]';
   for(let attempt=0;attempt<4&&await js('qa.efforts.codex')!=='high';attempt++){
-    if(attempt<3){const at=await js('(()=>{const r=document.querySelector('+JSON.stringify(resetButton)+').getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)};})()');win.webContents.sendInputEvent({type:'mouseMove',x:at.x,y:at.y});await delay(80);await click(resetButton);}
+    if(attempt<3)await click(resetButton);
     else await js('document.querySelector('+JSON.stringify(resetButton)+').click()');
     for(let i=0;i<20&&await js('qa.efforts.codex')!=='high';i++)await delay(50);
   }
