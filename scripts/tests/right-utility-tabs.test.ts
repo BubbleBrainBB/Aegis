@@ -104,7 +104,9 @@ async function main() {
   );
   assert.match(
     panelSource,
-    /nativeViewHidden = collapsed \|\| overlayOpen/,
+    // App dialogs draw in an overlay window above the page; the page view
+    // hides only once that window is ready, so the dialog never flashes blank.
+    /nativeViewHidden = collapsed \|\| pageOverlay !== null \|\| \(overlayOpen && overlayFrame\?\.ready === true\)/,
     'BrowserPanel must hide the WebContentsView while an HTML overlay is open'
   );
   assert.match(
