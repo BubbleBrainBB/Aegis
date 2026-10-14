@@ -1,4 +1,5 @@
 import path from 'path';
+import { CLAUDE_TASK_WRITE_TOOLS, replayClaudeTaskCalls, toolResultText, type ClaudeTaskToolCall } from '../../shared/claude-task-tools';
 import { collectChangedFilePaths } from '../../shared/outline-summary';
 import type { StreamMessage } from '../../shared/types';
 import { getCurrentBranch, getShortStatus } from './git-service';
@@ -170,6 +171,35 @@ function formatWorkspace(workspace: HandoffWorkspace | null | undefined): string
 }
 
 function extractLatestTodos(history: StreamMessage[]): Array<{ content: string; status: string }> {
+  return latestClaudeTasks(history) ?? latestTodoWrite(history);
+}
+
+/**
+ * Claude's TaskCreate / TaskUpdate list, when a task call came after the last
+ * TodoWrite (Claude Code no longer offers TodoWrite; see claude-task-tools).
+ */
+function latestClaudeTasks(history: StreamMessage[]): Array<{ content: string; status: string }> | null {
+  const calls: ClaudeTaskToolCall[] = [];
+  const results = new Map<string, string>();
+  let lastTodoWrite = -1;
+  for (const message of history) {
+    const content = (message as { message?: { content?: unknown } }).message?.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content as Array<{ type?: string; id?: string; name?: string; input?: unknown; tool_use_id?: string; content?: unknown }>) {
+      if (message.type === 'assistant' && block.type === 'tool_use') {
+        if (block.name === 'TodoWrite') lastTodoWrite = calls.length;
+        else if (block.name && CLAUDE_TASK_WRITE_TOOLS.has(block.name)) calls.push({ id: block.id, name: block.name, input: block.input });
+      } else if (block.type === 'tool_result' && block.tool_use_id) {
+        results.set(block.tool_use_id, toolResultText(block.content));
+      }
+    }
+  }
+  if (calls.length <= lastTodoWrite) return null;
+  const replayed = replayClaudeTaskCalls(calls, (id) => results.get(id));
+  return replayed ? replayed.tasks.map(({ content, status }) => ({ content, status })) : null;
+}
+
+function latestTodoWrite(history: StreamMessage[]): Array<{ content: string; status: string }> {
   for (let index = history.length - 1; index >= 0; index -= 1) {
     const message = history[index];
     if (message.type !== 'assistant' || !Array.isArray(message.message?.content)) continue;

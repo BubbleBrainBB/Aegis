@@ -10,6 +10,7 @@ import {
   type WorkstreamModel,
 } from '../utils/workstream';
 import { TodoProgressCard } from './TodoProgressCard';
+import type { ClaudeTaskToolCall } from '../../shared/claude-task-tools';
 import { WorkstreamDisclosureState, useWorkstreamDisclosure, useWorkstreamWasInspected, useWorkstreamDisclosureActions } from './WorkstreamDisclosureState';
 import { GeneratedMediaGallery } from './GeneratedMediaGallery';
 import { WorkstreamCollapse, formatWorkstreamElapsed } from './WorkstreamPrimitives';
@@ -40,6 +41,8 @@ interface ToolExecutionBatchProps {
   };
   /** Streamed stdout/stderr tails keyed by tool_use id (running tools only). */
   toolLiveOutputMap?: Map<string, string>;
+  /** The session's Claude task calls, so a later turn's updates find earlier tasks. */
+  sessionTaskCalls?: ClaudeTaskToolCall[];
   expanded?: boolean;
   defaultExpanded?: boolean;
   canCollapse?: boolean;
@@ -61,6 +64,7 @@ export function ToolExecutionBatch({
   subagentMessagesByParent,
   liveTrace,
   toolLiveOutputMap,
+  sessionTaskCalls,
   expanded,
   defaultExpanded,
   canCollapse,
@@ -82,8 +86,9 @@ export function ToolExecutionBatch({
         subagentMessagesByParent,
         liveTrace: batchIsRunning ? liveTrace : undefined,
         toolLiveOutputMap: batchIsRunning ? toolLiveOutputMap : undefined,
+        sessionTaskCalls,
       }),
-    [messages, toolResultsMap, toolStatusMap, batchIsRunning, startedAt, durationMs, subagentMessagesByParent, liveTrace, toolLiveOutputMap]
+    [messages, toolResultsMap, toolStatusMap, batchIsRunning, startedAt, durationMs, subagentMessagesByParent, liveTrace, toolLiveOutputMap, sessionTaskCalls]
   );
 
   const disclosureResetKey = resetKey ?? messages[0]?.uuid;

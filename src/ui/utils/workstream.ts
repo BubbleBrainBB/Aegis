@@ -25,6 +25,23 @@ import {
   safeJsonStringify,
 } from './tool-summary';
 import { extractLatestTodoProgress } from './todo-progress';
+import { CLAUDE_TASK_WRITE_TOOLS, type ClaudeTaskToolCall } from '../../shared/claude-task-tools';
+
+/** The session's task calls before this batch's first one. */
+function priorTaskCalls(sessionCalls: ClaudeTaskToolCall[] | undefined, batchBlocks: Array<{ id?: string }>): ClaudeTaskToolCall[] {
+  if (!sessionCalls?.length) return [];
+  const batchIds = new Set(batchBlocks.map((block) => block.id).filter(Boolean));
+  const first = sessionCalls.findIndex((call) => call.id !== undefined && batchIds.has(call.id));
+  return first > 0 ? sessionCalls.slice(0, first) : [];
+}
+
+/** TaskCreate / TaskUpdate calls across a session's messages, in order. */
+export function sessionTaskCalls(messages: WorkstreamMessage[]): ClaudeTaskToolCall[] {
+  return extractToolBlocks(messages).filter((block) => CLAUDE_TASK_WRITE_TOOLS.has(block.name));
+}
+
+/** Todo list writes render as the progress card, not as trace rows. */
+const isTodoListWrite = (name: string) => name === 'TodoWrite' || CLAUDE_TASK_WRITE_TOOLS.has(name);
 
 export type ToolUseBlock = ContentBlock & { type: 'tool_use' };
 export type ToolResultBlock = ContentBlock & { type: 'tool_result' };
@@ -663,7 +680,7 @@ function buildSubagentTrace(
   const entries =
     context.depth < MAX_SUBAGENT_TRACE_DEPTH
       ? extractTraceEntries(assistantMessages)
-          .filter((entry) => !(entry.type === 'tool' && entry.block.name === 'TodoWrite'))
+          .filter((entry) => !(entry.type === 'tool' && isTodoListWrite(entry.block.name)))
           .map((entry) =>
             createEntryFromTrace(
               entry,
@@ -983,6 +1000,8 @@ export function createBatchWorkstreamModel(params: {
   };
   /** Streamed stdout/stderr tails keyed by tool_use id (running tools only). */
   toolLiveOutputMap?: Map<string, string>;
+  /** The session's TaskCreate / TaskUpdate calls in order (see sessionTaskCalls). */
+  sessionTaskCalls?: ClaudeTaskToolCall[];
 }): WorkstreamModel {
   // Render the work group in chronological (createdAt) order. Providers can
   // commit a message to the store out of emission order — e.g. a preamble text
@@ -1027,7 +1046,7 @@ export function createBatchWorkstreamModel(params: {
       }
     : undefined;
   const entries = traceEntries
-    .filter((entry) => !(entry.type === 'tool' && entry.block.name === 'TodoWrite'))
+    .filter((entry) => !(entry.type === 'tool' && isTodoListWrite(entry.block.name)))
     .map((entry) =>
       createEntryFromTrace(
         entry,
@@ -1074,7 +1093,11 @@ export function createBatchWorkstreamModel(params: {
     hiddenEntryCount: Math.max(allEntries.length - previewEntries.length, 0),
     startedAt,
     durationMs,
-    todoProgress: extractLatestTodoProgress(allBlocks),
+    todoProgress: extractLatestTodoProgress(
+      allBlocks,
+      params.toolResultsMap,
+      priorTaskCalls(params.sessionTaskCalls, allBlocks)
+    ),
     retrying: params.liveTrace?.retrying,
   };
 }

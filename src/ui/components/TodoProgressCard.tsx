@@ -30,19 +30,12 @@ export function TodoProgressCard({
     <div
       className={`rounded-xl border border-[var(--border)] bg-[var(--bg-primary)]/90 px-3 py-3 ${className}`.trim()}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <ListTodo className="h-4 w-4 text-[var(--text-secondary)]" />
-          <div>
-            <div className="text-sm font-medium text-[var(--text-primary)]">Todo progress</div>
-            <div className="text-xs text-[var(--text-muted)]">{summaryParts.join(' · ')}</div>
-          </div>
+      <div className="flex items-center gap-2">
+        <ListTodo className="h-4 w-4 text-[var(--text-secondary)]" />
+        <div>
+          <div className="text-sm font-medium text-[var(--text-primary)]">Todo progress</div>
+          <div className="text-xs text-[var(--text-muted)]">{summaryParts.join(' · ')}</div>
         </div>
-        {state.updateCount > 1 && (
-          <div className="text-[10px] text-[var(--text-muted)]">
-            updated {state.updateCount}x
-          </div>
-        )}
       </div>
 
       <div className="mt-3 space-y-2">

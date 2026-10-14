@@ -524,7 +524,11 @@ const WORKFLOW_READ_ONLY_TOOLS = ['Read', 'Glob', 'Grep'];
  * CronCreate, ScheduleWakeup, RemoteTrigger, REPL, …) and a denylist would
  * silently let each new one through.
  */
-const WORKFLOW_IMPLEMENTER_TOOLS = ['Read', 'Glob', 'Grep', 'Edit', 'MultiEdit', 'Write', 'NotebookEdit', 'Bash', 'TodoWrite'];
+// Claude Code's task list tools: TodoWrite on older CLIs, TaskCreate / Get /
+// Update / List since. Opus 4.8, Sonnet 5, Fable 5 and newer leave them out
+// of the default tools, so sessions name them to keep the todo progress card.
+const CLAUDE_TASK_LIST_TOOLS = ['TodoWrite', 'TaskCreate', 'TaskGet', 'TaskUpdate', 'TaskList'];
+const WORKFLOW_IMPLEMENTER_TOOLS = ['Read', 'Glob', 'Grep', 'Edit', 'MultiEdit', 'Write', 'NotebookEdit', 'Bash', ...CLAUDE_TASK_LIST_TOOLS];
 
 function workflowToolDenial(
   policy: import('../../shared/workflow').WorkflowSessionPolicy,
@@ -905,7 +909,11 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
                 tools: workflowPolicy.readOnly ? WORKFLOW_READ_ONLY_TOOLS : WORKFLOW_IMPLEMENTER_TOOLS,
                 strictMcpConfig: true,
               }
-            : {}),
+            : {
+                // Naming them turns the task list tools on for every model;
+                // they only record a list, so they need no approval either way.
+                allowedTools: CLAUDE_TASK_LIST_TOOLS,
+              }),
           mcpServers: mcpServers as Record<string, SDKMcpServerConfig>,
           // Compaction runs silently (no stream messages until the boundary),
           // so surface its start to the UI for a live "Compacting…" status.

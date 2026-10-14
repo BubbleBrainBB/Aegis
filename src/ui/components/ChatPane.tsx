@@ -16,6 +16,7 @@ import {
   createStreamingWorkstreamModel,
   groupSubagentMessagesByParent,
   hasUnresolvedActiveTurnTasks,
+  sessionTaskCalls as collectSessionTaskCalls,
 } from '../utils/workstream';
 import { evaluateAutoFill, initialAutoFillState } from '../../shared/history-autofill';
 import { deriveTurnPhase, hasRunningToolInMessages } from '../utils/turn-utils';
@@ -1108,6 +1109,18 @@ export function ChatPane({
     [session?.messages]
   );
 
+  // Claude's task calls across the main thread, so a turn that only updates
+  // tasks created earlier still shows the whole list.
+  const sessionTaskCalls = useMemo(
+    () => (session ? collectSessionTaskCalls(
+            session.messages.filter(
+              (message): message is Extract<StreamMessage, { type: 'assistant' }> =>
+                message.type === 'assistant' && !message.parentToolUseId
+            )
+          ) : []),
+    [session?.messages]
+  );
+
   const hasRunningTool = useMemo(
     () => (session ? hasRunningToolInMessages(session.messages, toolStatusMap) : false),
     [session?.messages, toolStatusMap]
@@ -2074,6 +2087,7 @@ export function ChatPane({
                             subagentMessagesByParent={subagentMessagesByParent}
                             liveTrace={item.group.id === activeTimelineWorkId ? activeLiveTrace : undefined}
                             toolLiveOutputMap={item.active ? toolLiveOutputMap : undefined}
+                            sessionTaskCalls={sessionTaskCalls}
                             defaultExpanded={item.defaultExpanded}
                             canCollapse={item.canCollapse}
                             isStopped={session.status !== 'running' && session.status !== 'stopping' && session.status !== 'error' && !item.canCollapse}
@@ -2200,6 +2214,7 @@ export function ChatPane({
                               isSessionRunning={false}
                               durationMs={item.inlineWorkGroup.durationMs}
                               subagentMessagesByParent={subagentMessagesByParent}
+                              sessionTaskCalls={sessionTaskCalls}
                               defaultExpanded={false}
                             />
                           </div>
