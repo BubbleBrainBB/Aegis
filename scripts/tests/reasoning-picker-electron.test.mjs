@@ -60,7 +60,7 @@ app.whenReady().then(async()=>{
  const errors=[];
  win.webContents.on('console-message',event=>{if(event.level==='error')errors.push(event.message);});
  const js=async code=>{try{return await win.webContents.executeJavaScript(code,true);}catch(e){throw new Error(code+' :: '+e.message);}};
- const click=async selector=>{const rect=await js('(()=>{const r=document.querySelector('+JSON.stringify(selector)+').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()');win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(rect.x),y:Math.round(rect.y)});await delay(60);win.webContents.sendInputEvent({type:'mouseDown',x:Math.round(rect.x),y:Math.round(rect.y),button:'left',clickCount:1});win.webContents.sendInputEvent({type:'mouseUp',x:Math.round(rect.x),y:Math.round(rect.y),button:'left',clickCount:1});await delay(150);};
+ const click=async selector=>{const rect=await js('(()=>{const r=document.querySelector('+JSON.stringify(selector)+').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()');win.webContents.sendInputEvent({type:'mouseDown',x:Math.round(rect.x),y:Math.round(rect.y),button:'left',clickCount:1});win.webContents.sendInputEvent({type:'mouseUp',x:Math.round(rect.x),y:Math.round(rect.y),button:'left',clickCount:1});await delay(150);};
  const key=async keyCode=>{win.webContents.sendInputEvent({type:'keyDown',keyCode});win.webContents.sendInputEvent({type:'keyUp',keyCode});await delay(80);};
  // Store updates land a few frames after input; CI runners are slow, so poll instead of a fixed delay.
  // The CI runner sometimes drops a key press. A key is sent again only after a full second with no
@@ -69,8 +69,9 @@ app.whenReady().then(async()=>{
  const activeElement=()=>js('(()=>{const a=document.activeElement;return a?a.tagName+(a.getAttribute("aria-label")?"["+a.getAttribute("aria-label")+"]":"")+(a.type?"("+a.type+")":""):"none"})()');
  const press=async(keyCode,expr,expected,message,refocus=true)=>{let focused='';for(let attempt=0;attempt<3;attempt++){if(attempt>0&&refocus)await focusSlider();focused=await activeElement();await key(keyCode);for(let i=0;i<20;i++){if(await js(expr)===expected)return;await delay(50);}}assert.equal(await js(expr),expected,(message||keyCode)+' (focus was on '+focused+')');};
  const settle=async(expr,expected,message)=>{let value;for(let i=0;i<60;i++){value=await js(expr);if(value===expected)break;await delay(50);}assert.equal(value,expected,message);};
- // Menu items on the CI runner sometimes miss a press even after a hover:
- // retry the click like press(), then fall back to a DOM click.
+ // Menu items on the CI runner sometimes miss a press: retry the click like
+ // press(), then fall back to a DOM click. (No hover first: hovering a menu
+ // item takes focus, which the slider checks rely on.)
  const clickUntil=async(selector,expr,expected,message)=>{for(let attempt=0;attempt<4&&await js(expr)!==expected;attempt++){if(attempt<3)await click(selector);else await js('document.querySelector('+JSON.stringify(selector)+').click()');for(let i=0;i<20&&await js(expr)!==expected;i++)await delay(50);}await settle(expr,expected,message);};
  const slider='.effort-model-view:not([inert]) input[type=range]';
  // The click can land while the menu is still settling (seen on CI); keys must go to the slider.
