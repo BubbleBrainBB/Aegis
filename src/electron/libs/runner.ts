@@ -590,6 +590,10 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
   // Uuids of the prompts this runner sent for the host, until a result names
   // them in user_message_uuids (hidden goal sends are not among them).
   const pendingPromptUuids = new Set<string>();
+  // task_id -> the tool call that started it (task_started carries it; the
+  // background_tasks_changed snapshot does not).
+  const taskToolUseIds = new Map<string, string>();
+  let backgroundTasksShown = false;
   const sessionApprovedExternalAccess = new Set<string>();
   const sessionApprovedToolAccess = new Set<string>();
   let currentPermissionMode: ClaudeSdkPermissionMode = workflowPolicy?.readOnly
@@ -903,6 +907,10 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
           // itself, the CLI stops forwarding its messages entirely — traces
           // for backgrounded subagents freeze at that point.
           forwardSubagentText: true,
+          // Aegis shows each background task with its own Stop (the composer's
+          // background task list, wired to stopTask), so the session's Stop
+          // ends only the turn and spares running background tasks.
+          perTaskStopAffordance: true,
           // Snapshot files before edits so /rewind can restore them to their
           // state at any user message via RunnerHandle.rewindFiles.
           enableFileCheckpointing: true,
@@ -1285,6 +1293,40 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
 
         trackClaudeWidgetDraft(message as SDKMessage, widgetDrafts, widgetDraftBlocks);
 
+        // Background tasks: the composer lists the running ones, each with
+        // its own Stop. The snapshot replaces the list whole on every change.
+        const system = message as {
+          type?: string;
+          subtype?: string;
+          task_id?: string;
+          tool_use_id?: string;
+          tasks?: Array<{ task_id: string; task_type: string; description: string; subagent_type?: string; ambient?: boolean }>;
+        };
+        if (system.type === 'system' && system.subtype === 'task_started' && system.task_id && system.tool_use_id) {
+          taskToolUseIds.set(system.task_id, system.tool_use_id);
+        }
+        if (system.type === 'system' && system.subtype === 'background_tasks_changed' && Array.isArray(system.tasks)) {
+          const running = system.tasks.filter((task) => !task.ambient);
+          backgroundTasksShown = running.length > 0;
+          for (const id of [...taskToolUseIds.keys()]) {
+            if (!system.tasks.some((task) => task.task_id === id)) taskToolUseIds.delete(id);
+          }
+          onMessage({
+            type: 'system',
+            subtype: 'background_tasks',
+            uuid: uuidv4(),
+            session_id: currentSessionId,
+            tasks: running.map((task) => ({
+              taskId: task.task_id,
+              toolUseId: taskToolUseIds.get(task.task_id),
+              description: task.description,
+              taskType: task.task_type,
+              subagentType: task.subagent_type,
+            })),
+          });
+          continue;
+        }
+
         // 转换 SDK 消息为内部格式并发送
         const streamMessage = convertSDKMessage(message as SDKMessage);
         if (streamMessage?.type === 'result') {
@@ -1493,6 +1535,10 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
     } finally {
       releaseClaudeGoalController(session.id, goalController);
       inputQueue.close();
+      // Background tasks end with the process.
+      if (taskToolUseIds.size > 0 || backgroundTasksShown) {
+        onMessage({ type: 'system', subtype: 'background_tasks', uuid: uuidv4(), session_id: currentSessionId, tasks: [] });
+      }
     }
   })();
 
@@ -1511,6 +1557,12 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
       if (goalController.snapshot.goal && goalController.snapshot.goal?.status !== 'complete')
         await goalController.interrupt();
       else await activeQuery.interrupt();
+    },
+    stopTask: async (taskId: string) => {
+      if (!activeQuery) {
+        throw new Error('Session is not active.');
+      }
+      await activeQuery.stopTask(taskId);
     },
     cancelPendingPrompts: () => {
       // Everything issued so far that has not settled is dropped before it

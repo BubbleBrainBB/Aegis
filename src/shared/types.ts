@@ -952,6 +952,7 @@ export type ClientEvent =
   | { type: 'session.editLatestPrompt'; payload: SessionContinuePayload }
   | { type: 'session.history'; payload: { sessionId: string } }
   | { type: 'session.stop'; payload: { sessionId: string } }
+  | { type: 'session.stopBackgroundTask'; payload: { sessionId: string; taskId: string } }
   | { type: 'runner.prewarm'; payload: RunnerPrewarmPayload }
   | { type: 'session.delete'; payload: { sessionId: string } }
   | { type: 'session.togglePin'; payload: { sessionId: string } }
@@ -1652,6 +1653,16 @@ export interface ExternalFilePermissionInput {
 
 export type CodexApprovalKind = 'command' | 'file-change' | 'permissions' | 'tool';
 
+export interface BackgroundTaskInfo {
+  taskId: string;
+  /** The tool call that started it, when there is one. */
+  toolUseId?: string;
+  description: string;
+  /** e.g. local_agent, local_bash, local_workflow. */
+  taskType: string;
+  subagentType?: string;
+}
+
 export interface ClaudeContextUsage {
   model: string;
   totalTokens: number;
@@ -1832,6 +1843,16 @@ export type StreamMessage =
       status: 'started' | 'interrupted';
       compactionId?: string;
       trigger: 'manual' | 'auto';
+    })
+  // The Claude session's running background tasks (subagents, workflows,
+  // commands), replaced whole on every change. Live state for the composer's
+  // background task list: never persisted, only the app's windows get it.
+  | (StreamMessageBase & {
+      type: 'system';
+      subtype: 'background_tasks';
+      uuid: string;
+      session_id: string;
+      tasks: BackgroundTaskInfo[];
     })
   // Claude Code's own context window usage after a turn (getContextUsage,
   // summary detail). Live state for the composer's context ring: never

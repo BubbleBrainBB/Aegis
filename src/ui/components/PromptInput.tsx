@@ -51,6 +51,7 @@ import {
   type PromptHistoryNav,
   type PromptHistoryStep,
 } from '../utils/prompt-history';
+import { BackgroundTasksControl } from './BackgroundTasksControl';
 import { ClaudeContextIndicator } from './ClaudeContextIndicator';
 import { CodexContextIndicator } from './CodexContextIndicator';
 import { OpenCodeContextIndicator } from './OpenCodeContextIndicator';
@@ -1806,6 +1807,13 @@ export function PromptInput({
             </div>
 
             <div className="aegis-composer-trailing-controls flex shrink-0 items-center gap-2">
+              {activeSession?.backgroundTasks?.length ? (
+                <BackgroundTasksControl
+                  sessionId={activeSession.id}
+                  tasks={activeSession.backgroundTasks}
+                  menuSide={menuSide}
+                />
+              ) : null}
               {preferences.showContextUsage && claudeContextSnapshot ? (
                 <ClaudeContextIndicator
                   snapshot={claudeContextSnapshot}

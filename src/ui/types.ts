@@ -389,6 +389,8 @@ export interface SessionView {
   latestClaudeModelUsage?: import('../shared/types').LatestClaudeModelUsage;
   /** Claude Code's own context window usage after the latest turn (live only). */
   claudeContextUsage?: import('../shared/types').ClaudeContextUsage;
+  /** Claude's running background tasks, each stoppable on its own (live only). */
+  backgroundTasks?: import('../shared/types').BackgroundTaskInfo[];
   messages: import('../shared/types').StreamMessage[];
   hydrated: boolean;
   historyCursor?: string | null;

@@ -4,7 +4,9 @@
 // - getContextUsage({ detail: 'summary' }) answers without model or
 //   count_tokens requests (the composer's context ring asks after every turn);
 // - prompts queued while a turn runs are folded into one later turn whose
-//   result names every one of them in user_message_uuids (turn accounting).
+//   result names every one of them in user_message_uuids (turn accounting);
+// - with perTaskStopAffordance, interrupt() spares a background task, which
+//   background_tasks_changed lists until stopTask() stops it.
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { execSync } from 'node:child_process';
@@ -28,7 +30,7 @@ const root = await mkdtemp(join(tmpdir(), 'aegis-claude-sdk-native-'));
 const home = join(root, 'home'), cwd = join(root, 'project');
 await mkdir(home);
 await mkdir(cwd);
-let modelRequests = 0, countRequests = 0, responseDelay = 0;
+let modelRequests = 0, countRequests = 0, responseDelay = 0, backgroundCommand = false;
 const server = createServer(async (req, res) => {
   let raw = '';
   for await (const chunk of req) raw += chunk;
@@ -41,6 +43,22 @@ const server = createServer(async (req, res) => {
   else modelRequests++;
   const body = JSON.parse(raw);
   if (responseDelay) await new Promise((r) => setTimeout(r, responseDelay));
+  if (backgroundCommand && body.stream && !JSON.stringify(body.messages).includes('tool_result')) {
+    // Start a background command, as a model would with run_in_background.
+    const call = { id: `msg_${modelRequests}`, type: 'message', role: 'assistant', model: body.model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1 } };
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    for (const [event, data] of [
+      ['message_start', { type: 'message_start', message: call }],
+      ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_background', name: 'Bash', input: {} } }],
+      ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ command: 'sleep 30', description: 'Sleep in the background', run_in_background: true }) } }],
+      ['content_block_stop', { type: 'content_block_stop', index: 0 }],
+      ['message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 1 } }],
+      ['message_stop', { type: 'message_stop' }],
+    ])
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    res.end();
+    return;
+  }
   const message = { id: `msg_${modelRequests}`, type: 'message', role: 'assistant', model: body.model, content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1 } };
   if (!body.stream) {
     res.writeHead(200, { 'content-type': 'application/json' });
@@ -70,7 +88,7 @@ Object.assign(env, {
 });
 
 // A streaming-input session, as Aegis runs them.
-function session() {
+function session(extra = {}) {
   const queue = [];
   let wake;
   const input = {
@@ -83,7 +101,7 @@ function session() {
       };
     },
   };
-  const q = query({ prompt: input, options: { cwd, env, model: 'claude-opus-5-5', permissionMode: 'default', pathToClaudeCodeExecutable: claudePath, settingSources: [] } });
+  const q = query({ prompt: input, options: { cwd, env, model: 'claude-opus-5-5', permissionMode: 'default', pathToClaudeCodeExecutable: claudePath, settingSources: [], ...extra } });
   const send = (text, uuid) => {
     queue.push({ type: 'user', uuid, message: { role: 'user', content: text }, parent_tool_use_id: null, session_id: '' });
     wake?.();
@@ -135,7 +153,43 @@ try {
     assert.ok(results < ids.length, `queued prompts were folded into fewer results (${results})`);
     q.close?.();
   }
-  console.log('claude-sdk-native: summary context usage is local; queued prompts fold into one result naming each');
+
+  // Background tasks under perTaskStopAffordance: interrupt spares them, stopTask stops one.
+  {
+    responseDelay = 0;
+    backgroundCommand = true;
+    const { q, send } = session({ permissionMode: 'bypassPermissions', allowDangerouslySkipPermissions: true, perTaskStopAffordance: true });
+    send('run it', '44444444-4444-4444-8444-444444444444');
+    let taskId = null, stage = 'running', notifications = [];
+    const deadline = setTimeout(() => {
+      throw new Error(`background task timed out in stage ${stage}`);
+    }, 30000);
+    for await (const message of q) {
+      if (message.type === 'system' && message.subtype === 'background_tasks_changed') {
+        if (stage === 'running' && message.tasks.length === 1) {
+          taskId = message.tasks[0].task_id;
+          assert.equal(message.tasks[0].task_type, 'local_bash');
+          assert.equal(message.tasks[0].description, 'Sleep in the background');
+        }
+        if (stage === 'stopping' && message.tasks.length === 0) break;
+      }
+      if (message.type === 'system' && message.subtype === 'task_notification') notifications.push(message.status);
+      if (message.type === 'result' && stage === 'running' && taskId) {
+        stage = 'interrupted';
+        send('again', '55555555-5555-4555-8555-555555555555');
+        await q.interrupt().catch(() => undefined);
+        await new Promise((r) => setTimeout(r, 1500));
+        assert.deepEqual(notifications, [], 'interrupt spares the background task');
+        stage = 'stopping';
+        await q.stopTask(taskId);
+      }
+    }
+    clearTimeout(deadline);
+    assert.deepEqual(notifications, ['stopped'], 'stopTask stops it');
+    backgroundCommand = false;
+    q.close?.();
+  }
+  console.log('claude-sdk-native: summary context usage is local; queued prompts fold into one result naming each; interrupt spares background tasks and stopTask stops one');
 } finally {
   server.close();
   await rm(root, { recursive: true, force: true });

@@ -232,6 +232,13 @@ export interface RunnerHandle {
    */
   cancelPendingPrompts?: () => number;
   /**
+   * Stop one background task (a backgrounded subagent, workflow or command)
+   * while the turn and every other task keep running. Only the Claude runner
+   * provides this; it declares perTaskStopAffordance, so the session's Stop
+   * spares background tasks and this is how the user stops one.
+   */
+  stopTask?: (taskId: string) => Promise<void>;
+  /**
    * Rewind checkpointed files to their state at a specific SDK user message.
    * Only available while the underlying SDK query is alive (Claude runner with
    * file checkpointing enabled); absent on other providers.

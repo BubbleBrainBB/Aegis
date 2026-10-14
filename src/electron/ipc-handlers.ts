@@ -1822,8 +1822,9 @@ function shouldPersistProviderMessage(message: StreamMessage): boolean {
   if (message.type === 'turn_started') {
     return false;
   }
-  // Live context-window state for the composer; the next turn replaces it.
-  if (message.type === 'system' && message.subtype === 'context_usage') {
+  // Live state for the composer (context window, background tasks); the
+  // next report replaces it.
+  if (message.type === 'system' && (message.subtype === 'context_usage' || message.subtype === 'background_tasks')) {
     return false;
   }
   if (message.type === 'assistant' && message.streaming === true) {
@@ -8903,6 +8904,15 @@ async function handleClientEvent(
       handleSessionStop(mainWindow, event.payload.sessionId);
       break;
 
+    case 'session.stopBackgroundTask': {
+      // One background task; the turn and other tasks keep running.
+      const entry = runnerHandles.get(event.payload.sessionId);
+      void entry?.handle.stopTask?.(event.payload.taskId).catch((error: unknown) => {
+        console.warn('[Background task] stop failed:', error);
+      });
+      break;
+    }
+
     case 'runner.prewarm':
       // Fire-and-forget speculation; failures must never surface to the user.
       void handleRunnerPrewarm(mainWindow, event.payload).catch((error) => {
@@ -10888,7 +10898,8 @@ function startRunner(
           // remote and Feishu mirrors would treat each as a history change.
           (attributedMessage.type === 'widget_draft' ||
           attributedMessage.type === 'design_draft' ||
-          (attributedMessage.type === 'system' && attributedMessage.subtype === 'context_usage')
+          (attributedMessage.type === 'system' &&
+            (attributedMessage.subtype === 'context_usage' || attributedMessage.subtype === 'background_tasks'))
             ? broadcastSessionEvent
             : broadcast)(mainWindow, {
             type: 'stream.message',
