@@ -25,11 +25,11 @@ try {
   delete require.cache[preferencePath]; prefs = require(preferencePath);
   assert.equal(prefs.getAppPreferences().enterBehavior, 'modifier');
   assert.equal(prefs.getAppPreferences().showContextUsage, false);
-  prefs.setAppPreferences({keyboardShortcuts:{newTab:['Mod+Shift+KeyJ'],search:[]}});
-  const snapshot=prefs.getAppPreferences();snapshot.keyboardShortcuts.newTab.push('Mod+KeyQ');
-  assert.deepEqual(prefs.getAppPreferences().keyboardShortcuts.newTab,['Mod+Shift+KeyJ']);
+  prefs.setAppPreferences({keyboardShortcuts:{newTask:['Mod+Shift+KeyJ'],search:[]}});
+  const snapshot=prefs.getAppPreferences();snapshot.keyboardShortcuts.newTask.push('Mod+KeyQ');
+  assert.deepEqual(prefs.getAppPreferences().keyboardShortcuts.newTask,['Mod+Shift+KeyJ']);
   delete require.cache[preferencePath];prefs=require(preferencePath);
-  assert.deepEqual(prefs.getAppPreferences().keyboardShortcuts,{newTab:['Mod+Shift+KeyJ'],search:[]});
+  assert.deepEqual(prefs.getAppPreferences().keyboardShortcuts,{newTask:['Mod+Shift+KeyJ'],search:[]});
   prefs.setAppPreferences({keyboardShortcuts:{}});
   prefs.setAppPreferences({uiFontSize:16,codeFontSize:17,reduceMotion:'on',fontSmoothing:false,pointerCursors:false,diffMarkers:'signs'});
   delete require.cache[preferencePath]; prefs = require(preferencePath);

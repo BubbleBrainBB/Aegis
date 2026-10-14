@@ -139,7 +139,8 @@ app.whenReady().then(async()=>{
   const {BubbleSdk}=await import('@bubblebrain-ai/bubble');
   const cwd=path.join(__dirname,'bubble-cwd');fs.mkdirSync(cwd,{recursive:true});
   const sdk=new BubbleSdk({defaultCwd:cwd,mcp:false});
-  bubbleReader.installBubbleSessionReader(sdk);bubbleReader.installBubbleSessionReader(sdk);
+  // Since Bubble 0.0.60 Aegis tools are turn-scoped host tools, not registered on the SDK.
+  const hostTools=bubbleReader.bubbleHostTools();
   let steps=0;let olderRead=false;
   const fakeProvider={async *streamChat(messages,options){
     assert.ok(options.tools.some(t=>t.name==='read_session'));
@@ -157,7 +158,7 @@ app.whenReady().then(async()=>{
   }};
   sdk.resolveProvider=()=>({provider:fakeProvider,providerId:'test',model:'test:fixture'});
   const id=sdk.createSession({cwd}).id;let catalog;const events=[];
-  for await(const e of sdk.runTurn(id,{prompt:refs.appendSessionReferences('',url,target.id,'bubble'),mode:'plan',onApproval:async request=>{
+  for await(const e of sdk.runTurn(id,{prompt:refs.appendSessionReferences('',url,target.id,'bubble'),mode:'plan',hostTools,onApproval:async request=>{
     assert.fail('Native read_session must not require MCP approval in Plan mode');
   },onStart:info=>{
     catalog=info.tools;bubbleReader.assertBubbleSessionReader(url,info.tools,target.id);
@@ -169,7 +170,6 @@ app.whenReady().then(async()=>{
   assert.throws(()=>bubbleReader.assertBubbleSessionReader(url,[],target.id),/Conversation reader is unavailable/);
   bubbleReader.assertBubbleSessionReader(url,[],source.id);
   bubbleReader.assertBubbleSessionReader('ordinary prompt',[],target.id);
-  assert.throws(()=>bubbleReader.installBubbleSessionReader({}),/cannot register/);
   // Pi's explicit allowlist must include the custom tool as well as registering it.
   const pi=await import('@earendil-works/pi-coding-agent');
   const {createPiSessionReader}=require(path.join(root,'dist-electron/electron/libs/session-native-tool.js'));

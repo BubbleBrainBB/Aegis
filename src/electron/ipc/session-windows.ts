@@ -16,14 +16,14 @@ export function broadcastSessionEvent(primary: BrowserWindow, event: ServerEvent
 export function setupSessionWindowsIPC(options: {
   backgroundColor: () => string;
   /** Extra constructor options (glass windows are transparent). */
-  windowOptions: () => Partial<BrowserWindowConstructorOptions>;
+  windowOptions?: () => Partial<BrowserWindowConstructorOptions>;
   rendererState: () => Record<string, string>;
   onCreate: (win: BrowserWindow, options: Partial<BrowserWindowConstructorOptions>) => void;
 }) {
   ipcMainHandle('open-session-window', async (_, sessionId: string) => {
     const task = typeof sessionId === 'string' ? getSession(sessionId) : undefined;
     if (!task || task.hidden_from_threads) throw new Error('This conversation is no longer available.');
-    const extraOptions = options.windowOptions();
+    const extraOptions = options.windowOptions?.() ?? {};
     const win = new BrowserWindow({
       width: 1100, height: 800, minWidth: 560, minHeight: 600, show: false,
       title: task.title, titleBarStyle: 'hidden', trafficLightPosition: { x: 15, y: 15 },
