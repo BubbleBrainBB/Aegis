@@ -1652,6 +1652,15 @@ export interface ExternalFilePermissionInput {
 
 export type CodexApprovalKind = 'command' | 'file-change' | 'permissions' | 'tool';
 
+export interface ClaudeContextUsage {
+  model: string;
+  totalTokens: number;
+  maxTokens: number;
+  percentage: number;
+  /** Used rows (system prompt, tools, messages, …) and the compaction buffer. */
+  categories: Array<{ name: string; tokens: number; kind: 'used' | 'buffer' }>;
+}
+
 export interface CodexApprovalPermissionInput {
   kind: 'codex-approval';
   approvalKind: CodexApprovalKind;
@@ -1667,6 +1676,8 @@ export interface CodexApprovalPermissionInput {
   grantRoot?: string | null;
   permissionSummary?: string[];
   canAllowForSession?: boolean;
+  /** Open on the decline option: approving takes a deliberate choice. */
+  defaultToNo?: boolean;
 }
 
 export interface AcpPermissionOption {
@@ -1822,6 +1833,16 @@ export type StreamMessage =
       compactionId?: string;
       trigger: 'manual' | 'auto';
     })
+  // Claude Code's own context window usage after a turn (getContextUsage,
+  // summary detail). Live state for the composer's context ring: never
+  // persisted, and only the app's windows receive it.
+  | (StreamMessageBase & {
+      type: 'system';
+      subtype: 'context_usage';
+      uuid: string;
+      session_id: string;
+      contextUsage: ClaudeContextUsage;
+    })
   // Emitted when an API request failed with a retryable error and the runtime
   // will retry after a delay. Displayed independently of the work trace.
   // A persisted api_retry_resolved marker records recovery even when only
@@ -1887,6 +1908,12 @@ export type StreamMessage =
       costEstimate?: ProviderCostEstimate;
       /** Allows reports to preserve request-time estimates across rate boundaries. */
       costAccounting?: string;
+      /**
+       * Claude: how many of the host's queued prompts this result answers.
+       * Claude Code folds prompts that queue up during a turn into one turn
+       * with one result, so a result can settle several sends. Absent means 1.
+       */
+      answeredPrompts?: number;
     })
   | (StreamMessageBase & {
       type: 'plan_update';

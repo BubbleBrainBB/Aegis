@@ -387,6 +387,8 @@ export interface SessionView {
   draftTitleEdited?: boolean;
   handoffSourceProvider?: AgentProvider | null;
   latestClaudeModelUsage?: import('../shared/types').LatestClaudeModelUsage;
+  /** Claude Code's own context window usage after the latest turn (live only). */
+  claudeContextUsage?: import('../shared/types').ClaudeContextUsage;
   messages: import('../shared/types').StreamMessage[];
   hydrated: boolean;
   historyCursor?: string | null;

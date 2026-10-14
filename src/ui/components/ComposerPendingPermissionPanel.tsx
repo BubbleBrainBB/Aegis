@@ -30,6 +30,8 @@ type ParsedPermission = {
   command: string | null;
   fallback: string | null;
   canAllowForSession: boolean;
+  /** Decline is the default choice (focused and emphasized). */
+  defaultToNo?: boolean;
   mode: 'approval' | 'question' | 'acp' | 'computer-use';
 };
 
@@ -168,13 +170,14 @@ export const ComposerPendingPermissionActions = memo(function ComposerPendingPer
       ) : null}
       <button
         type="button"
+        autoFocus={parsed.defaultToNo}
         onClick={() =>
           onSubmit(request.toolUseId, {
             behavior: 'deny',
             message: 'User declined tool execution.',
           })
         }
-        className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-sm font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
+        className={parsed.defaultToNo ? PRIMARY_ACTION_CLASS : SECONDARY_ACTION_CLASS}
       >
         Decline
       </button>
@@ -217,7 +220,7 @@ export const ComposerPendingPermissionActions = memo(function ComposerPendingPer
             scope: 'once',
           })
         }
-        className="rounded-lg bg-[var(--text-primary)] px-3 py-1.5 text-sm font-medium text-[var(--bg-primary)] transition-colors hover:opacity-90"
+        className={parsed.defaultToNo ? SECONDARY_ACTION_CLASS : PRIMARY_ACTION_CLASS}
       >
         Approve once
       </button>
@@ -276,6 +279,11 @@ function ApprovalSummary({ parsed }: { parsed: ParsedPermission }) {
   );
 }
 
+const PRIMARY_ACTION_CLASS =
+  'rounded-lg bg-[var(--text-primary)] px-3 py-1.5 text-sm font-medium text-[var(--bg-primary)] transition-colors hover:opacity-90';
+const SECONDARY_ACTION_CLASS =
+  'rounded-lg border border-[var(--border)] px-3 py-1.5 text-sm font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]';
+
 function parsePermissionRequest(request: PermissionRequestPayload): ParsedPermission {
   const input = request.input;
   if (isExternalFilePermissionInput(input)) {
@@ -304,6 +312,7 @@ function parsePermissionRequest(request: PermissionRequestPayload): ParsedPermis
           ? input.permissionSummary.join(' ')
           : input.question || input.title,
       canAllowForSession: input.canAllowForSession !== false,
+      defaultToNo: input.defaultToNo === true,
       mode: 'approval',
     };
   }

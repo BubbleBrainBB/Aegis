@@ -214,10 +214,21 @@ function buildClaudeToolApprovalKey(toolName: string, input: Record<string, unkn
   return `${toolName}:${command || filePath || '*'}`;
 }
 
+/** What Claude Code says about an ask (CanUseTool options): its own prompt text and guards. */
+type ClaudeAskHints = {
+  title?: string;
+  description?: string;
+  /** Open on the decline option; no one-key approval. */
+  defaultToNo?: boolean;
+  /** Offer no persistent "always allow": the rule would grant more than this ask. */
+  suppressAlwaysAllowRule?: boolean;
+};
+
 function buildClaudeToolApprovalInput(
   toolName: string,
   input: Record<string, unknown>,
-  cwd?: string | null
+  cwd?: string | null,
+  hints: ClaudeAskHints = {}
 ): Record<string, unknown> {
   const command = typeof input.command === 'string' ? input.command : null;
   const filePath = typeof input.file_path === 'string' ? input.file_path : null;
@@ -230,17 +241,19 @@ function buildClaudeToolApprovalInput(
     kind: 'codex-approval',
     approvalKind,
     method: 'claude.canUseTool',
-    question: command
+    question: hints.title?.trim() || (command
       ? `Allow Claude to run this command?`
       : filePath
         ? `Allow Claude to use ${toolName} on this file?`
-        : `Allow Claude to use ${toolName}?`,
+        : `Allow Claude to use ${toolName}?`),
     title: `Claude ${toolName} approval`,
     toolName,
     command,
     cwd: cwd || null,
     filePath,
-    canAllowForSession: true,
+    ...(hints.description?.trim() ? { permissionSummary: [hints.description.trim()] } : {}),
+    canAllowForSession: !hints.suppressAlwaysAllowRule,
+    ...(hints.defaultToNo ? { defaultToNo: true } : {}),
   };
 }
 
@@ -574,6 +587,9 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
   let currentRuntimeModel = toClaudeCodeRuntimeModel(currentModel, betas);
   let compatibleProviderMatched = false;
   let activeQuery: ClaudeQuery | null = null;
+  // Uuids of the prompts this runner sent for the host, until a result names
+  // them in user_message_uuids (hidden goal sends are not among them).
+  const pendingPromptUuids = new Set<string>();
   const sessionApprovedExternalAccess = new Set<string>();
   const sessionApprovedToolAccess = new Set<string>();
   let currentPermissionMode: ClaudeSdkPermissionMode = workflowPolicy?.readOnly
@@ -737,6 +753,7 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
         if (prepared === null || abortController.signal.aborted || promptCancellation.isCancelled(seq)) return;
         if (/^\s*\/goal(?:\s|$)/i.test(trimmed)) message.message.content = [{ type: 'text', text: prepared }];
         goalController.submitted(prepared);
+        if (message.uuid) pendingPromptUuids.add(message.uuid as string);
         inputQueue.push(message);
 
         // The SDK does not echo streaming-input user prompts back on the
@@ -969,7 +986,7 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
             ],
           },
           // 自定义工具权限处理
-          canUseTool: async (toolName: string, input: Record<string, unknown>) => {
+          canUseTool: async (toolName: string, input: Record<string, unknown>, askOptions?: ClaudeAskHints) => {
             const memoryTools = ['remember_search', 'remember_get', 'remember_write', 'remember_recent'];
             const isMemoryTool = memoryTools.some(t => toolName === t || toolName.endsWith(`__${t}`));
 
@@ -1173,7 +1190,9 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
             }
 
             const approvalKey = buildClaudeToolApprovalKey(toolName, updatedInput);
-            if (sessionApprovedToolAccess.has(approvalKey)) {
+            // An ask that may not be always-allowed is never answered from an
+            // earlier session approval either.
+            if (!askOptions?.suppressAlwaysAllowRule && sessionApprovedToolAccess.has(approvalKey)) {
               return {
                 behavior: 'allow' as const,
                 updatedInput,
@@ -1185,11 +1204,11 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
               const permResult = await onPermissionRequest(
                 toolUseId,
                 toolName,
-                buildClaudeToolApprovalInput(toolName, updatedInput, session.cwd)
+                buildClaudeToolApprovalInput(toolName, updatedInput, session.cwd, askOptions)
               );
 
               if (permResult.behavior === 'allow') {
-                if (permResult.scope === 'session') {
+                if (permResult.scope === 'session' && !askOptions?.suppressAlwaysAllowRule) {
                   sessionApprovedToolAccess.add(approvalKey);
                 }
                 return {
@@ -1268,6 +1287,16 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
 
         // 转换 SDK 消息为内部格式并发送
         const streamMessage = convertSDKMessage(message as SDKMessage);
+        if (streamMessage?.type === 'result') {
+          // A turn that picked up prompts queued while it ran answers all of
+          // them with this one result; count the host's own prompts it names
+          // so the host settles each send. CLIs without the field answer one.
+          const answeredUuids = (message as { user_message_uuids?: unknown }).user_message_uuids;
+          const answered = Array.isArray(answeredUuids)
+            ? answeredUuids.filter((uuid) => typeof uuid === 'string' && pendingPromptUuids.delete(uuid)).length
+            : 0;
+          if (answered > 1) streamMessage.answeredPrompts = answered;
+        }
         if (streamMessage) {
           // Subagent (Task) activity streams interleaved with the top-level
           // turn. Keep the thinking-duration bookkeeping scoped to the main
@@ -1414,6 +1443,34 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
                 });
               }
             }
+          }
+
+          // Claude Code's own view of the context window, for the composer's
+          // context ring. 'summary' answers from the last response's usage and
+          // local estimates: no extra API calls. Not awaited, so the stream
+          // keeps flowing; an older CLI without the request is ignored.
+          if (streamMessage.type === 'result' && !isSubagentMessage) {
+            void result
+              .getContextUsage({ detail: 'summary' })
+              .then((usage) => {
+                if (abortController.signal.aborted || !usage || !(usage.maxTokens > 0)) return;
+                onMessage({
+                  type: 'system',
+                  subtype: 'context_usage',
+                  uuid: uuidv4(),
+                  session_id: currentSessionId,
+                  contextUsage: {
+                    model: usage.model,
+                    totalTokens: usage.totalTokens,
+                    maxTokens: usage.maxTokens,
+                    percentage: usage.percentage,
+                    categories: usage.categories.flatMap(({ name, tokens, kind }) =>
+                      kind === 'used' || kind === 'buffer' ? [{ name, tokens, kind }] : []
+                    ),
+                  },
+                });
+              })
+              .catch(() => undefined);
           }
         }
       }

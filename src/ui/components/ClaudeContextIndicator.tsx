@@ -97,6 +97,20 @@ export function ClaudeContextIndicator({
               <MetricRow label="Cost" value={formatCurrency(snapshot.costUSD)} />
               <MetricRow label="Used" value={formatCompact(snapshot.used)} />
               {snapshot.total > 0 ? <MetricRow label="Limit" value={formatCompact(snapshot.total)} /> : null}
+              {snapshot.categories?.length ? (
+                <>
+                  <Divider />
+                  {snapshot.categories
+                    .filter((category) => category.tokens > 0)
+                    .map((category) => (
+                      <MetricRow
+                        key={`${category.kind}:${category.name}`}
+                        label={category.name}
+                        value={formatCompact(category.tokens)}
+                      />
+                    ))}
+                </>
+              ) : null}
               {nearLimit ? (
                 <div
                   className="mt-1.5 rounded-[6px] px-2 py-1.5 text-[11px] leading-4"

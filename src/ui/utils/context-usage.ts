@@ -1,4 +1,5 @@
 import type { ClaudeModelUsage, StreamMessage } from '../types';
+import type { ClaudeContextUsage } from '../../shared/types';
 
 export type ClaudeContextSnapshot = {
   model: string;
@@ -12,6 +13,8 @@ export type ClaudeContextSnapshot = {
   cacheCreationTokens: number;
   maxOutputTokens: number;
   webSearchRequests: number;
+  /** Claude Code's own breakdown of what fills the window, when it reported one. */
+  categories?: ClaudeContextUsage['categories'];
 };
 
 export type CodexContextSnapshot = {
@@ -245,6 +248,41 @@ export function buildClaudeContextSnapshot(
     cacheCreationTokens,
     maxOutputTokens: usage.maxOutputTokens || 0,
     webSearchRequests: usage.webSearchRequests || 0,
+  };
+}
+
+/**
+ * Prefers Claude Code's own context figures (getContextUsage) over the
+ * estimate from the last turn's token usage, when they are for this model.
+ * Cost and per-turn token rows still come from the estimate.
+ */
+export function withClaudeContextUsage(
+  snapshot: ClaudeContextSnapshot | null,
+  contextUsage: ClaudeContextUsage | undefined,
+  preferredModel?: string | null
+): ClaudeContextSnapshot | null {
+  if (!contextUsage || !(contextUsage.maxTokens > 0)) return snapshot;
+  if (preferredModel && !isClaudeUsageModelMatch(contextUsage.model, preferredModel)) return snapshot;
+  const base: ClaudeContextSnapshot = snapshot ?? {
+    model: contextUsage.model,
+    used: 0,
+    total: 0,
+    percent: 0,
+    costUSD: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    maxOutputTokens: 0,
+    webSearchRequests: 0,
+  };
+  const used = Math.max(0, contextUsage.totalTokens);
+  return {
+    ...base,
+    used,
+    total: contextUsage.maxTokens,
+    percent: Math.min(100, Math.max(0, Math.round((used / contextUsage.maxTokens) * 100))),
+    categories: contextUsage.categories,
   };
 }
 

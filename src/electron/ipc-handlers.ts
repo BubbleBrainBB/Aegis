@@ -1822,6 +1822,10 @@ function shouldPersistProviderMessage(message: StreamMessage): boolean {
   if (message.type === 'turn_started') {
     return false;
   }
+  // Live context-window state for the composer; the next turn replaces it.
+  if (message.type === 'system' && message.subtype === 'context_usage') {
+    return false;
+  }
   if (message.type === 'assistant' && message.streaming === true) {
     return false;
   }
@@ -3475,8 +3479,10 @@ const runnerHandles = new Map<
      * (FIFO — results come back in dispatch order on the single CLI stream).
      * Feeds the slash-command failure check for the turn each result closes;
      * a single shared slot would misattribute queued prompts. Kept aligned
-     * with inFlightTurns: every result shifts one entry (stopped and
-     * suppressed results included), and prompts cancelled before dispatch
+     * with inFlightTurns: every result shifts one entry per prompt it
+     * answers — Claude folds prompts queued mid-turn into that turn
+     * (answeredPrompts) — stopped and suppressed results included, and
+     * prompts cancelled before dispatch
      * are trimmed from the tail alongside their in-flight count.
      */
     pendingTurnPrompts?: string[];
@@ -10880,7 +10886,11 @@ function startRunner(
           // 广播消息. Widget drafts (a show_widget call's HTML while it is
           // written, several per second) go to the app's windows only: the
           // remote and Feishu mirrors would treat each as a history change.
-          (attributedMessage.type === 'widget_draft' || attributedMessage.type === 'design_draft' ? broadcastSessionEvent : broadcast)(mainWindow, {
+          (attributedMessage.type === 'widget_draft' ||
+          attributedMessage.type === 'design_draft' ||
+          (attributedMessage.type === 'system' && attributedMessage.subtype === 'context_usage')
+            ? broadcastSessionEvent
+            : broadcast)(mainWindow, {
             type: 'stream.message',
             payload: { sessionId: session.id, message: attributedMessage },
           });
@@ -10894,11 +10904,17 @@ function startRunner(
         // the runner was created with. A queued second prompt must never be
         // checked against the first turn's result.
         const entryForPrompt = runnerHandles.get(session.id);
-        // Shift exactly once per result — stopped and suppressed results
+        // Claude Code folds prompts queued during a turn into that turn, so
+        // one result can answer several sends; it says how many.
+        const answeredPrompts = Math.max(1, message.answeredPrompts ?? 1);
+        // Shift once per answered prompt — stopped and suppressed results
         // included — or the FIFO skews against inFlightTurns. A stale
         // handle's result must NOT shift the replacement entry's queue.
         const queuedTurnPrompt =
           entryForPrompt?.handle === handle ? entryForPrompt.pendingTurnPrompts?.shift() : undefined;
+        if (entryForPrompt?.handle === handle) {
+          for (let extra = 1; extra < answeredPrompts; extra += 1) entryForPrompt.pendingTurnPrompts?.shift();
+        }
         const turnPrompt = queuedTurnPrompt || prompt;
         const stoppedByUser = stopClassification.stoppedByUser;
         const slashFailureMessage =
@@ -10944,7 +10960,7 @@ function startRunner(
         const hasQueuedTurns =
           provider === 'claude' &&
           entryForPrompt?.handle === handle &&
-          (entryForPrompt.inFlightTurns ?? 1) > 1;
+          (entryForPrompt.inFlightTurns ?? 1) > answeredPrompts;
         const pursuingGoal = provider === 'codex' && turnStatus === 'completed' && getCachedSessionGoal(session.id)?.goal?.status === 'active';
         const liveStatus: SessionStatus = hasQueuedTurns || pursuingGoal ? 'running' : turnStatus;
         const status: SessionStatus = stoppedByUser ? 'idle' : liveStatus;
@@ -11075,7 +11091,7 @@ function startRunner(
             // running here, and aborting then would kill that follow-up. The
             // reuse guard already refuses to dispatch new turns into a
             // doomed entry, so deferring loses nothing.
-            currentEntry.inFlightTurns = Math.max(0, (currentEntry.inFlightTurns ?? 1) - 1);
+            currentEntry.inFlightTurns = Math.max(0, (currentEntry.inFlightTurns ?? 1) - answeredPrompts);
             const drained = (currentEntry.inFlightTurns ?? 0) === 0;
             if (drained && (currentEntry.doomed || currentEntry.autoApprove)) {
               // Retire only once every queued turn has produced its result:

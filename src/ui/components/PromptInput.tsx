@@ -96,6 +96,7 @@ import {
   getLatestBubbleContextSnapshot,
   getLatestOpenCodeContextSnapshot,
   isClaudeUsageModelMatch,
+  withClaudeContextUsage,
 } from '../utils/context-usage';
 
 function isImeComposingEvent(
@@ -525,21 +526,21 @@ export function PromptInput({
     if (!isClaudeContextVisible) {
       return null;
     }
-    const latestFromMessages = getLatestClaudeContextSnapshot(activeSession.messages, claudeContextModel);
-    if (latestFromMessages) {
-      return latestFromMessages;
-    }
     const latestUsage = activeSession.latestClaudeModelUsage;
-    return latestUsage && isClaudeUsageModelMatch(latestUsage.model, claudeContextModel)
-      ? buildClaudeContextSnapshot(
-          latestUsage.model,
-          latestUsage.usage,
-          getLatestClaudeTurnUsage(activeSession.messages, latestUsage.model)
-        )
-      : null;
+    const estimated =
+      getLatestClaudeContextSnapshot(activeSession.messages, claudeContextModel) ??
+      (latestUsage && isClaudeUsageModelMatch(latestUsage.model, claudeContextModel)
+        ? buildClaudeContextSnapshot(
+            latestUsage.model,
+            latestUsage.usage,
+            getLatestClaudeTurnUsage(activeSession.messages, latestUsage.model)
+          )
+        : null);
+    return withClaudeContextUsage(estimated, activeSession.claudeContextUsage, claudeContextModel);
   }, [
     claudeContextModel,
     activeSession?.latestClaudeModelUsage,
+    activeSession?.claudeContextUsage,
     activeSession?.messages,
     isClaudeContextVisible,
   ]);

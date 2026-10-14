@@ -1142,6 +1142,19 @@ export const useAppStore = create<Store>()(
           useDesignDraftStore.getState().put(event.payload.sessionId, event.payload.message);
           break;
         }
+        if (event.payload.message.type === 'system' && event.payload.message.subtype === 'context_usage') {
+          // Claude Code's own context window figures: live state, not transcript.
+          const { sessionId, message } = event.payload;
+          set((state) => {
+            const session = state.sessions[sessionId];
+            if (!session) return state;
+            return {
+              ...state,
+              sessions: { ...state.sessions, [sessionId]: { ...session, claudeContextUsage: message.contextUsage } },
+            };
+          });
+          break;
+        }
         if (!streamDeltaCoalescer.push(event.payload)) {
           handleStreamMessage(event.payload, set, get);
         }
