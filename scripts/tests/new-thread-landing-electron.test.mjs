@@ -104,7 +104,8 @@ const win=new BrowserWindow({width:1124,height:879,show:true,webPreferences:{bac
   assert((await js('document.querySelector("[role=textbox]").textContent')).includes('Keep this draft'));
   assert.equal(await js('document.querySelectorAll("[aria-label=\\"Remove attachment\\"]").length'),1);
   await select('[aria-label="Project folder"]','Notes');
-  assert((await js('document.querySelector("h1").innerText')).includes('work on in'));
+  // The heading fills in once the project resolves; the CI runner can read it first.
+  await until('(document.querySelector("h1")?.innerText||"").includes("work on in")','landing heading names the project');
   assert.equal(await js('!!document.querySelector("button[title=\\"Switch branch\\"]")'),false);
   // No stale Git controls from the previous project while new metadata loads.
   await select('[aria-label^="Switch project:"]','Long');
