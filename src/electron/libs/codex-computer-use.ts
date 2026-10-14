@@ -81,8 +81,12 @@ export function buildComputerUseMcpOverrideArgs(input: {
   };
 
   // The bundled plugin also registers `computer-use`. Keep that name disabled
-  // so Aegis can own a non-colliding structured server.
+  // so Aegis can own a non-colliding structured server. Codex 0.162+ rejects
+  // the whole config when an entry has no transport, which a bare `enabled`
+  // override is when the plugin is not installed, so the disabled entry
+  // carries an inert command of its own.
   push(`mcp_servers.${CODEX_COMPUTER_USE_SERVER_NAME}.enabled=false`);
+  push(`mcp_servers.${CODEX_COMPUTER_USE_SERVER_NAME}.command="true"`);
 
   if (input.clientPath) {
     const prefix = `mcp_servers.${AEGIS_COMPUTER_USE_SERVER_NAME}`;

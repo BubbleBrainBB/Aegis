@@ -393,8 +393,17 @@ export function buildCodexMcpConfigOverrideArgs(options?: {
     const sourceSections = findMcpSections(splitLines(sourceText));
     for (const sourceSection of sourceSections) {
       if (privateNames.has(sourceSection.name)) continue;
+      // Codex 0.162+ rejects the whole config when an entry has no transport,
+      // which a bare `enabled` override is whenever the app-server's
+      // CODEX_HOME is not ~/.codex. Repeat the entry's own transport so the
+      // disabled entry stands on its own.
+      const { config: sourceConfig } = parseSectionBody(sourceSection.body);
+      const url = typeof sourceConfig.url === 'string' ? sourceConfig.url.trim() : '';
+      const command = typeof sourceConfig.command === 'string' ? sourceConfig.command.trim() : '';
+      if (!url && !command) continue;
       const prefix = `mcp_servers.${formatDottedSegment(sourceSection.name)}`;
       args.push('-c', `${prefix}.enabled=false`);
+      args.push('-c', url ? `${prefix}.url="${escapeString(url)}"` : `${prefix}.command="${escapeString(command)}"`);
     }
   } catch (error) {
     console.warn('Failed to build Codex MCP disables from the user config:', error);
