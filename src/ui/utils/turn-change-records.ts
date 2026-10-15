@@ -33,12 +33,51 @@ export interface TurnChangeContext {
   changeRecordsByToolUseId: Map<string, ChangeRecord[]>;
 }
 
+/** Forward slashes, `.`/`..` collapsed; null when `..` climbs above the start. */
+function normalizePath(path: string): string | null {
+  const parts: string[] = [];
+  for (const part of path.replaceAll('\\', '/').split('/')) {
+    if (part === '..') {
+      if (parts.length === 0 || parts[parts.length - 1] === '') return null;
+      parts.pop();
+    } else if (part !== '.' && (part || parts.length === 0)) {
+      parts.push(part);
+    }
+  }
+  return parts.join('/');
+}
+
+/**
+ * Whether a change record's path lies inside the session cwd. Relative paths
+ * are cwd-relative unless they climb out with `..`; `~` paths are treated as
+ * outside (the renderer doesn't know the home directory, and agents address
+ * project files by cwd-relative or absolute paths).
+ */
+export function isPathInsideCwd(filePath: string, cwd: string): boolean {
+  const path = normalizePath(filePath);
+  if (path === null || path.startsWith('~')) return false;
+  if (!path.startsWith('/') && !/^[A-Za-z]:\//.test(path)) return true;
+  const root = normalizePath(cwd);
+  if (!root) return false;
+  const caseFold = /^[A-Za-z]:\//.test(root);
+  const [p, r] = caseFold ? [path.toLowerCase(), root.toLowerCase()] : [path, root];
+  return p === r || p.startsWith(`${r}/`);
+}
+
 /**
  * Walks messages and groups tool-induced change records by "turn", where a turn
  * is every message between two consecutive `user_prompt` entries (including the
  * leading prompt of each segment).
+ *
+ * With `cwd`, tool records outside it are left out of the turn summaries: the
+ * card and review describe what the turn did to the project, and the git
+ * snapshot that normally wins already ignores files outside the repo. The
+ * per-tool maps keep every record for trace-row hints.
  */
-export function buildTurnChangeContext(messages: StreamMessage[]): TurnChangeContext {
+export function buildTurnChangeContext(
+  messages: StreamMessage[],
+  cwd?: string | null
+): TurnChangeContext {
   const turns: TurnChangeSummary[] = [];
   const changeRecordByToolUseId = new Map<string, ChangeRecord>();
   const changeRecordsByToolUseId = new Map<string, ChangeRecord[]>();
@@ -70,7 +109,9 @@ export function buildTurnChangeContext(messages: StreamMessage[]): TurnChangeCon
       }
     }
 
-    const merged = mergeRecordsByPath(mainRecords);
+    const merged = mergeRecordsByPath(
+      cwd ? mainRecords.filter((record) => isPathInsideCwd(record.filePath, cwd)) : mainRecords
+    );
 
     // The runner emits one `turn_changes` message per completed turn (git
     // tree-snapshot diff); take the last one in this segment. A turn with a
@@ -95,7 +136,7 @@ export function buildTurnChangeContext(messages: StreamMessage[]): TurnChangeCon
     // but they can miss apply_patch/exec_command edits or infer false paths
     // from shell syntax such as >/dev/null.
     const finalRecords = patchRecords.length > 0 ? patchRecords : merged;
-    if (finalRecords.length > 0 || mainRecords.length > 0 || (gitPatch && !hasSubagentRecords)) {
+    if (finalRecords.length > 0 || (gitPatch && !hasSubagentRecords)) {
       turns.push({
         turnIndex: pendingTurnIndex,
         firstMessageIndex: turnStart,
@@ -129,9 +170,14 @@ export function buildTurnChangeContext(messages: StreamMessage[]): TurnChangeCon
  * message indices are slice-local and only satisfy the summary shape; they
  * are meaningless against `session.messages`.
  */
-export function buildSubagentChangeSummary(messages: StreamMessage[]): TurnChangeSummary | null {
+export function buildSubagentChangeSummary(
+  messages: StreamMessage[],
+  cwd?: string | null
+): TurnChangeSummary | null {
   if (messages.length === 0) return null;
-  const records = extractToolChangeRecords(messages);
+  const records = extractToolChangeRecords(messages).filter(
+    (record) => !cwd || isPathInsideCwd(record.filePath, cwd)
+  );
   if (records.length === 0) return null;
   const merged = mergeRecordsByPath(records);
   return {

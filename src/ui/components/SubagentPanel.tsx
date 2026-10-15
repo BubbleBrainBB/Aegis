@@ -139,8 +139,8 @@ export function SubagentPanel({
   const selectedFinished = selected?.status === 'success' || selected?.status === 'error';
   const changeSummary = useMemo(() => {
     if (!selectedId || !selectedFinished) return null;
-    return buildSubagentChangeSummary(subagentMessagesByParent.get(selectedId) ?? []);
-  }, [selectedId, selectedFinished, subagentMessagesByParent]);
+    return buildSubagentChangeSummary(subagentMessagesByParent.get(selectedId) ?? [], session?.cwd);
+  }, [selectedId, selectedFinished, subagentMessagesByParent, session?.cwd]);
 
   // Live only while THIS subagent's spawn call is unresolved — the session
   // may stay busy on other lanes long after this trace finished.

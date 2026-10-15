@@ -495,6 +495,41 @@ function makeToolRecord(
   };
 }
 
+function isAbsoluteOrHomePath(path: string): boolean {
+  return path.startsWith('/') || path.startsWith('~') || /^[A-Za-z]:[\\/]/.test(path);
+}
+
+function joinShellPath(dir: string, path: string): string {
+  return `${dir.replace(/[\\/]+$/, '')}/${path.replace(/^\.\//, '')}`;
+}
+
+function resolveAgainstDir(path: string, dir: string | null | undefined): string {
+  if (!dir || isAbsoluteOrHomePath(path)) return path;
+  return joinShellPath(dir, path);
+}
+
+/**
+ * For each segment, the directory set by preceding `cd`s (null = the session
+ * cwd). Relative `cd` targets stack; a bare `cd` goes home. `cd -` and
+ * targets with shell expansion are unknowable and leave the directory as is.
+ */
+function trackCdDirectories(segments: string[][]): Array<string | null> {
+  const dirs: Array<string | null> = [];
+  let current: string | null = null;
+  for (const segment of segments) {
+    dirs.push(current);
+    if (segment[0] !== 'cd') continue;
+    const target = segment.slice(1).find((token) => !token.startsWith('-'));
+    if (segment.length === 1) {
+      current = '~';
+    } else if (target && !/[\s$`*?]/.test(target)) {
+      const cleaned = target.replace(/^["']+|["']+$/g, '');
+      current = resolveAgainstDir(cleaned, current);
+    }
+  }
+  return dirs;
+}
+
 function parseBashChangeSpecs(command: string): Array<{
   filePath: string;
   status: string;
@@ -504,16 +539,23 @@ function parseBashChangeSpecs(command: string): Array<{
   const seen = new Set<string>();
   const tokens = tokenizeShell(command);
   const segments = splitCommandSegments(tokens);
+  // Directory each segment runs in, following earlier `cd`s in the same
+  // command: `cd ~/notes && cat >> todo.md` writes ~/notes/todo.md, not a
+  // todo.md in the session cwd.
+  const segmentDirs = trackCdDirectories(segments);
+  let segmentIndex = 0;
 
-  const pushSpec = (filePath: string | null, status: string, operation: ChangeOperation) => {
-    if (!filePath) return;
+  const pushSpec = (rawPath: string | null, status: string, operation: ChangeOperation) => {
+    if (!rawPath) return;
+    const filePath = resolveAgainstDir(rawPath, segmentDirs[segmentIndex]);
     const key = `${operation}:${status}:${filePath}`;
     if (seen.has(key)) return;
     seen.add(key);
     specs.push({ filePath, status, operation });
   };
 
-  for (const segment of segments) {
+  for (const [position, segment] of segments.entries()) {
+    segmentIndex = position;
     if (segment.length === 0) continue;
 
     if (segment[0] === 'cd') {
@@ -566,7 +608,8 @@ function parseBashChangeSpecs(command: string): Array<{
     }
   }
 
-  for (const segment of segments) {
+  for (const [position, segment] of segments.entries()) {
+    segmentIndex = position;
     for (let index = 0; index < segment.length; index += 1) {
       if (!isOutputRedirection(segment[index])) continue;
       pushSpec(cleanCommandPath(segment[index + 1]), 'A', 'write');

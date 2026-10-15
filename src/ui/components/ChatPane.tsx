@@ -1279,13 +1279,13 @@ export function ChatPane({
   const { turns, changeRecordByToolUseId, changeRecordsByToolUseId } = useMemo(
     () =>
       session
-        ? buildTurnChangeContext(session.messages)
+        ? buildTurnChangeContext(session.messages, session.cwd)
         : {
             turns: [] as TurnChangeSummary[],
             changeRecordByToolUseId: new Map<string, ChangeRecord>(),
             changeRecordsByToolUseId: new Map<string, ChangeRecord[]>(),
           },
-    [session?.messages]
+    [session?.messages, session?.cwd]
   );
 
   // Defer the ACTIVE turn's changes card while a background subagent Task from

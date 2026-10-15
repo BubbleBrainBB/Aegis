@@ -78,7 +78,7 @@ export function useAegisDiffPanelData({
   });
 
   const turnOptions = useMemo<AegisDiffTurnOption[]>(() => {
-    const context = buildTurnChangeContext(session?.messages || []);
+    const context = buildTurnChangeContext(session?.messages || [], session?.cwd);
     const currentKey = context.turns.length > 0
       ? getTurnDiffKey(context.turns[context.turns.length - 1])
       : null;
@@ -88,7 +88,7 @@ export function useAegisDiffPanelData({
       summary,
       current: getTurnDiffKey(summary) === currentKey,
     }));
-  }, [session?.messages]);
+  }, [session?.messages, session?.cwd]);
 
   // Until the user picks a source explicitly, default to the last captured
   // turn's diff (what the agent just changed); fall back to Uncommitted when

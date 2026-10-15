@@ -473,6 +473,73 @@ assert.equal(
   'JSX tokens and implausible path shapes must not appear as inferred files'
 );
 
+const outsideCwdMessages = [
+  { type: 'user_prompt', prompt: 'commit and note it' },
+  {
+    type: 'assistant',
+    uuid: 'assistant-outside-cwd',
+    message: {
+      content: [
+        {
+          type: 'tool_use',
+          id: 'outside-cwd-bash',
+          name: 'Bash',
+          input: {
+            command: `cd /Users/me/.claude/memory && cat >> notes.md <<'EOF'
+remember this
+EOF
+cd /Users/me/repo && sed -i '' 's/a/b/' src/inside.ts
+cd ../sibling && touch stray.txt`,
+          },
+        },
+        { type: 'tool_result', tool_use_id: 'outside-cwd-bash', content: 'ok' },
+        {
+          type: 'tool_use',
+          id: 'outside-cwd-write',
+          name: 'Write',
+          input: { file_path: '/Users/me/.claude/memory/MEMORY.md', content: '- note\n' },
+        },
+        { type: 'tool_result', tool_use_id: 'outside-cwd-write', content: 'ok' },
+      ],
+    },
+  },
+] as Parameters<typeof buildTurnChangeContext>[0];
+
+assert.deepEqual(
+  buildTurnChangeContext(outsideCwdMessages).turns[0].records.map((record) => record.filePath).sort(),
+  [
+    '/Users/me/.claude/memory/MEMORY.md',
+    '/Users/me/.claude/memory/notes.md',
+    '/Users/me/repo/src/inside.ts',
+    '/Users/me/repo/../sibling/stray.txt',
+  ].sort(),
+  'bash file paths must resolve against earlier cd targets in the same command'
+);
+assert.deepEqual(
+  buildTurnChangeContext(outsideCwdMessages, '/Users/me/repo/').turns[0].records.map((record) => record.filePath),
+  ['/Users/me/repo/src/inside.ts'],
+  'turn cards must leave out files written outside the session cwd'
+);
+const outsideOnlyContext = buildTurnChangeContext(
+  [
+    outsideCwdMessages[0],
+    {
+      type: 'assistant',
+      uuid: 'assistant-outside-only',
+      message: {
+        content: (outsideCwdMessages[1] as { message: { content: unknown[] } }).message.content.slice(2),
+      },
+    },
+  ] as Parameters<typeof buildTurnChangeContext>[0],
+  '/Users/me/repo'
+);
+assert.equal(outsideOnlyContext.turns.length, 0, 'a turn that only touched files outside the cwd has no changes card');
+assert.equal(
+  outsideOnlyContext.changeRecordByToolUseId.has('outside-cwd-write'),
+  true,
+  'trace rows keep their per-tool change hints for outside files'
+);
+
 const subagentOwnedContext = buildTurnChangeContext([
   { type: 'user_prompt', prompt: 'change a main-agent and subagent file' },
   {
