@@ -259,7 +259,7 @@ export function Settings() {
 
       <main className="aegis-content-card aegis-settings-panel min-h-0 min-w-0 flex-1 overflow-y-auto select-none [&_input]:select-text [&_textarea]:select-text [&_[contenteditable]]:select-text">
         <div
-          className={`aegis-settings-content ${['mcp', 'browser', 'bridge', 'usage', 'profile'].includes(resolvedActiveSettingsTab) ? 'settings-standard' : ''} mx-auto w-full px-8 py-8 ${resolvedActiveSettingsTab === 'appearance' ? 'max-w-[832px]' : 'max-w-3xl'}`}
+          className={`aegis-settings-content ${['mcp', 'browser', 'bridge', 'usage', 'profile'].includes(resolvedActiveSettingsTab) ? 'settings-standard' : ''} mx-auto w-full px-8 py-8 ${resolvedActiveSettingsTab === 'appearance' ? 'max-w-[832px]' : resolvedActiveSettingsTab === 'usage' ? 'max-w-[1000px]' : 'max-w-3xl'}`}
         >
           {/* The MCP page renders its own header (runtime name). */}
           {resolvedActiveSettingsTab !== 'mcp' ? (

@@ -12,11 +12,13 @@ import devinLogo from '../../assets/devin-color.svg';
 import mimoLogo from '../../assets/xiaomimimo.svg';
 import zhipuLogo from '../../assets/zhipu-color.svg';
 import { OpenCodeLogo } from '../OpenCodeLogo';
+import { ChevronDown } from '../icons';
 import type {
   AgentProvider,
   ClaudePlanUsageReport,
   ClaudePlanUsageWindow,
   ClaudeUsageDailyPoint,
+  ClaudeUsageRangeDays,
   ClaudeUsageReport,
   CodexRateLimitReport,
   CodexRateLimitSnapshot,
@@ -29,10 +31,9 @@ import { usePlanUsage } from '../../hooks/usePlanUsage';
 import { useAgentUsageReport } from '../../hooks/useAgentUsageReport';
 import { useAppStore } from '../../store/useAppStore';
 import { PreferenceSelect } from './GeneralSettingsContent';
-import { SettingsGroup } from './SettingsPrimitives';
 
-const MODEL_COLORS = ['#315EFB', '#0F9D90', '#D97757', '#7C3AED', '#F59E0B', '#E11D48'];
-const HEATMAP_LEVEL_COLORS = ['#d3e5fa', '#a8cbf6', '#6ba5ec', '#3b82d8', '#1d5fb8'];
+// Steps of the theme's accent, so the heatmap follows light, dark and custom themes.
+const HEATMAP_LEVEL_COLORS = [22, 40, 58, 78, 100].map((p) => `color-mix(in srgb, var(--accent) ${p}%, transparent)`);
 
 type UsageProviderCard = {
   id: AgentProvider;
@@ -68,7 +69,10 @@ type ActivityViewMode = 'daily' | 'weekly' | 'cumulative';
 export function ClaudeUsageSettingsContent() {
   const activeProvider = useAppStore((state) => state.usageSettingsProvider);
   const setActiveProvider = useAppStore((state) => state.setUsageSettingsProvider);
+  // The year feeds the activity heatmap and streaks; the model table follows the picked range.
+  const [rangeDays, setRangeDays] = useState<ClaudeUsageRangeDays>(365);
   const usage = useAgentUsageReport(activeProvider, 365);
+  const rangeUsage = useAgentUsageReport(activeProvider, rangeDays, rangeDays !== 365);
   const { report: codexRateLimits, loading: codexRateLimitsLoading, error: codexRateLimitsError } =
     usePlanUsage('codex', activeProvider === 'codex');
   const { report: claudePlanUsage, loading: claudePlanUsageLoading, error: claudePlanUsageError } =
@@ -118,76 +122,65 @@ export function ClaudeUsageSettingsContent() {
   const activeProviderCard = providers.find((provider) => provider.id === activeProvider) || providers[0];
   const activeReport = activeProviderCard.report;
   const stats = useMemo(() => (activeReport ? computeUsageStats(activeReport) : null), [activeReport]);
+  // The picked range's report (the year's when "1 year" is picked, or until the range loads).
+  const rangeReport = useMemo(() => {
+    const raw = rangeDays === 365 ? null : rangeUsage.report?.usage ?? null;
+    if (!raw) return activeReport;
+    return activeProvider === 'kimi' ? relabelUsageReportModels(raw, kimiModelLabels) : raw;
+  }, [rangeDays, rangeUsage.report, activeReport, activeProvider, kimiModelLabels]);
   // Sessions ran but every result summed to zero tokens: the provider's CLI
   // does not report token counts (qodercli through 1.1.1 only exposes a
   // context ratio). Hide the token report entirely instead of showing a
   // misleading empty state — the plan-limits panel moves up in its place.
+  // The agent's plan limits as one strip of chips (Claude, Codex, Grok, Qoder).
+  const planLimits =
+    activeProvider === 'claude' ? claudePlanLimits(claudePlanUsage, claudePlanUsageLoading, claudePlanUsageError)
+      : activeProvider === 'codex' ? codexPlanLimits(codexRateLimits, codexRateLimitsLoading, codexRateLimitsError)
+        : activeProvider === 'grok' ? grokPlanLimits(grokPlanUsage, grokPlanUsageLoading, grokPlanUsageError)
+          : activeProvider === 'qoder' ? qoderPlanLimits(qoderPlanUsage, qoderPlanUsageLoading, qoderPlanUsageError)
+            : null;
   const tokenReportHidden = Boolean(
     activeReport && activeReport.totals.totalTokens <= 0 && activeReport.totals.sessionCount > 0
   );
 
   return (
-    <div className="space-y-8 pb-10">
-      <div className="space-y-2">
-        <UsageProviderPicker
-          provider={activeProviderCard}
-          providers={providers}
-          onSelectProvider={setActiveProvider}
-        />
-        <div className="h-4 truncate text-[11px] leading-4 text-[var(--text-muted)]" role="status" data-usage-report-status="">
+    <div className="space-y-6 pb-10">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <div className="min-w-0 truncate text-[12px] leading-4 text-[var(--text-muted)]" role="status" data-usage-report-status="">
           {usage.report ? <>
             Updated {formatLocalTime(usage.report.fetchedAt)}
-            {usage.loading ? ' · Refreshing…' : usage.error ? ' · Update failed; showing saved data' : ''}
+            {usage.loading || rangeUsage.loading ? ' · Refreshing…' : usage.error ? ' · Update failed; showing saved data' : ''}
           </> : null}
         </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {tokenReportHidden ? null : <UsageRangeSwitch value={rangeDays} onChange={setRangeDays} />}
+          <UsageProviderPicker
+            provider={activeProviderCard}
+            providers={providers}
+            onSelectProvider={setActiveProvider}
+          />
+        </div>
       </div>
+
+      {planLimits ? <PlanLimitStrip limits={planLimits} /> : null}
 
       {tokenReportHidden
         ? null
         : renderUsageState(activeProviderCard) || (
             <>
-              <UsageStatStrip stats={stats!} costMode={activeReport?.costMode} costBasis={activeReport?.costBasis} note={activeReport?.note} />
-
-              <TokenActivitySection daily={activeReport!.daily} />
-
-              <div className="grid grid-cols-1 gap-x-12 gap-y-8 md:grid-cols-2">
-                <ActivityInsights report={activeReport!} stats={stats!} />
-                <TopModels report={activeReport!} />
+              <div className="flex items-baseline gap-2" data-usage-total>
+                <span className="text-[32px] font-semibold leading-none tracking-[-0.02em] tabular-nums text-[var(--text-primary)]">
+                  {formatCompactNumber(ledgerTotalTokens(rangeReport!))}
+                </span>
+                <span className="text-[17px] font-medium text-[var(--text-secondary)]">tokens</span>
               </div>
+
+              <ModelLedger report={rangeReport!} yearDaily={activeReport!.daily} />
+
+              <TokenActivitySection daily={activeReport!.daily} stats={stats!} />
             </>
           )}
 
-      {activeProviderCard.id === 'claude' ? (
-        <ClaudePlanUsagePanel
-          report={claudePlanUsage}
-          loading={claudePlanUsageLoading}
-          error={claudePlanUsageError}
-        />
-      ) : null}
-
-      {activeProviderCard.id === 'codex' ? (
-        <CodexRateLimitsPanel
-          report={codexRateLimits}
-          loading={codexRateLimitsLoading}
-          error={codexRateLimitsError}
-        />
-      ) : null}
-
-      {activeProviderCard.id === 'grok' ? (
-        <GrokPlanUsagePanel
-          report={grokPlanUsage}
-          loading={grokPlanUsageLoading}
-          error={grokPlanUsageError}
-        />
-      ) : null}
-
-      {activeProviderCard.id === 'qoder' ? (
-        <QoderPlanUsagePanel
-          report={qoderPlanUsage}
-          loading={qoderPlanUsageLoading}
-          error={qoderPlanUsageError}
-        />
-      ) : null}
     </div>
   );
 }
@@ -197,13 +190,12 @@ function UsageProviderPicker({ provider, providers, onSelectProvider }: {
   providers: UsageProviderCard[];
   onSelectProvider: (id: AgentProvider) => void;
 }) {
-  return <div className="usage-provider-picker flex items-center justify-between gap-4" data-settings-label="Usage provider">
-    <span className="text-[var(--text-secondary)]">Agent</span>
+  return <div className="usage-provider-picker flex items-center" data-settings-label="Usage provider">
     <PreferenceSelect label="Usage provider" value={provider.id} options={providers.map(entry => ({value: entry.id, label: entry.title, icon: entry.logo}))} onChange={value => onSelectProvider(value as AgentProvider)} />
   </div>;
 }
 
-/* ---------- Stat strip ---------- */
+/* ---------- Stats ---------- */
 
 interface UsageStats {
   totalTokens: number;
@@ -264,48 +256,15 @@ function computeUsageStats(report: ClaudeUsageReport): UsageStats {
   };
 }
 
-function UsageStatStrip({ stats, costMode, costBasis, note }: {
-  stats: UsageStats;
-  costMode: ClaudeUsageReport['costMode'];
-  costBasis?: ClaudeUsageReport['costBasis'];
-  note?: string;
-}) {
-  const estimatedCost = costMode === 'estimated' || costMode === 'partial';
-  const cells = [
-    { value: formatCompactNumber(stats.totalTokens), label: 'Total tokens' },
-    { value: formatCompactNumber(stats.peakDayTokens), label: 'Peak day tokens' },
-    {
-      value: costMode === 'unavailable' ? 'Unavailable' : formatCurrency(stats.totalCostUsd, estimatedCost),
-      label: costMode === 'partial' ? 'Priced usage only' : costBasis === 'api-standard' ? 'API equivalent cost' : costMode === 'unavailable' || estimatedCost ? 'Estimated cost' : 'Total cost',
-      note,
-    },
-    { value: `${stats.currentStreak}d`, label: 'Current streak' },
-    { value: `${stats.longestStreak}d`, label: 'Longest streak' },
-  ];
-
-  return (
-    <div className="grid grid-cols-2 overflow-hidden rounded-2xl border border-[var(--border)] sm:grid-cols-3 lg:grid-cols-5 lg:divide-x lg:divide-[var(--border)]">
-      {cells.map((cell) => (
-        <div key={cell.label} title={cell.note} className="px-4 py-4 text-center">
-          <div className="text-[17px] font-semibold tracking-[-0.01em] text-[var(--text-primary)]">
-            {cell.value}
-          </div>
-          <div className="mt-1 text-[12px] text-[var(--text-muted)]">{cell.label}</div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 /* ---------- Token activity ---------- */
 
-function TokenActivitySection({ daily }: { daily: ClaudeUsageDailyPoint[] }) {
+function TokenActivitySection({ daily, stats }: { daily: ClaudeUsageDailyPoint[]; stats: UsageStats }) {
   const [mode, setMode] = useState<ActivityViewMode>('daily');
 
   return (
-    <div>
+    <div className="rounded-2xl border border-[var(--border)] bg-[var(--bg-primary)] px-5 py-4" data-usage-activity>
       <div className="flex items-center justify-between">
-        <div className="text-[13.5px] font-semibold text-[var(--text-primary)]">Token activity</div>
+        <div className="text-[13.5px] font-semibold text-[var(--text-primary)]">Activity</div>
         <div className="flex items-center gap-4 text-[12.5px]">
           {(
             [
@@ -333,6 +292,276 @@ function TokenActivitySection({ daily }: { daily: ClaudeUsageDailyPoint[] }) {
       <div className="mt-4">
         <ActivityHeatmap daily={daily} mode={mode} />
       </div>
+      <div className="mt-3 flex flex-wrap gap-x-6 gap-y-1 text-[12.5px] text-[var(--text-muted)]" data-usage-activity-stats>
+        {stats.peakDayDate ? (
+          <span>
+            Busiest day{' '}
+            <span className="font-medium text-[var(--text-primary)]">
+              {formatShortDate(stats.peakDayDate)} · {formatCompactNumber(stats.peakDayTokens)}
+            </span>
+          </span>
+        ) : null}
+        <span>
+          Current streak <span className="font-medium text-[var(--text-primary)]">{formatDays(stats.currentStreak)}</span>
+        </span>
+        <span>
+          Longest <span className="font-medium text-[var(--text-primary)]">{formatDays(stats.longestStreak)}</span>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function formatDays(days: number): string {
+  return `${days} ${days === 1 ? 'day' : 'days'}`;
+}
+
+/* ---------- Range switch ---------- */
+
+const RANGE_OPTIONS: Array<[ClaudeUsageRangeDays, string]> = [
+  [7, '7 days'],
+  [30, '30 days'],
+  [90, '90 days'],
+  [365, '1 year'],
+];
+
+function UsageRangeSwitch({ value, onChange }: { value: ClaudeUsageRangeDays; onChange(value: ClaudeUsageRangeDays): void }) {
+  return (
+    <div role="radiogroup" aria-label="Usage range" className="inline-flex items-center gap-0.5 rounded-[9px] bg-[var(--bg-tertiary)] p-[3px]" data-usage-range>
+      {RANGE_OPTIONS.map(([days, label]) => (
+        <button
+          key={days}
+          type="button"
+          role="radio"
+          aria-checked={value === days}
+          onClick={() => onChange(days)}
+          className={`h-[26px] whitespace-nowrap rounded-[7px] px-2.5 text-[12.5px] transition-colors ${
+            value === days
+              ? 'bg-[var(--bg-primary)] font-medium text-[var(--text-primary)] shadow-[0_0_0_1px_var(--border),0_1px_2px_rgba(0,0,0,0.04)]'
+              : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
+          }`}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/* ---------- Model ledger ---------- */
+
+/** The range's tokens as the table adds them up, so the headline and its Total row agree. */
+function ledgerTotalTokens(report: ClaudeUsageReport): number {
+  const sum = report.models.reduce((total, model) => total + model.totalTokens, 0);
+  return sum > 0 ? sum : report.totals.totalTokens;
+}
+
+const LEDGER_VISIBLE_MODELS = 5;
+
+/** The cost column says what the figures are: billed, API-equivalent, estimated or partial. */
+function costColumnLabel(report: ClaudeUsageReport): string {
+  if (report.costMode === 'partial') return 'Priced usage only';
+  if (report.costBasis === 'api-standard') return 'API equivalent cost';
+  if (report.costMode === 'unavailable' || report.costMode === 'estimated') return 'Estimated cost';
+  return 'Total cost';
+}
+
+function formatPerMillion(value: number): string {
+  if (value >= 100) return `$${Math.round(value).toLocaleString('en-US')}`;
+  if (value >= 1) return `$${value.toFixed(2)}`;
+  return `$${value.toFixed(3)}`;
+}
+
+/** Tokens per bucket for a sparkline: days for short ranges, weeks (13) otherwise. */
+function trendSeries(daily: ClaudeUsageDailyPoint[], rangeDays: number, pick: (point: ClaudeUsageDailyPoint) => number): number[] {
+  if (rangeDays <= 30) return daily.slice(-rangeDays).map(pick);
+  const days = daily.slice(-91);
+  const weeks: number[] = [];
+  for (let index = 0; index < days.length; index += 7) {
+    weeks.push(days.slice(index, index + 7).reduce((sum, point) => sum + pick(point), 0));
+  }
+  return weeks;
+}
+
+function Sparkline({ values }: { values: number[] }) {
+  const width = 84;
+  const height = 20;
+  const max = Math.max(...values, 0);
+  if (values.length < 2 || max <= 0) return <span className="text-[var(--text-muted)]">—</span>;
+  const points = values.map((value, index) => [
+    (index / (values.length - 1)) * (width - 3) + 1.5,
+    height - 2 - (value / max) * (height - 5),
+  ]);
+  const line = points.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
+  const [lastX, lastY] = points[points.length - 1];
+  return (
+    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} aria-hidden="true" className="block text-[var(--accent)]">
+      <polygon points={`1.5,${height - 2} ${line} ${lastX.toFixed(1)},${height - 2}`} style={{ fill: 'color-mix(in srgb, currentColor 10%, transparent)' }} />
+      <polyline points={line} fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinejoin="round" strokeLinecap="round" />
+      <circle cx={lastX} cy={lastY} r="1.75" fill="currentColor" />
+    </svg>
+  );
+}
+
+function lastUsedLabel(daily: ClaudeUsageDailyPoint[], used: (point: ClaudeUsageDailyPoint) => boolean): string {
+  for (let index = daily.length - 1; index >= 0; index -= 1) {
+    if (!used(daily[index])) continue;
+    if (index === daily.length - 1) return 'Today';
+    const date = parseDateKey(daily[index].date);
+    const sameYear = date.getFullYear() === new Date().getFullYear();
+    return date.toLocaleDateString('en-US', sameYear ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: 'numeric' });
+  }
+  return '—';
+}
+
+type LedgerRow = {
+  key: string;
+  label: string;
+  tokens: number;
+  cost: number | null;
+  sessions: number | null;
+  cacheHit: number | null;
+  models: string[];
+};
+
+/**
+ * One table compares every model in the range: tokens with a share bar,
+ * share, cost, cost per 1M tokens, sessions, cache hit, a trend and when it
+ * was last used. The busiest models show; the rest fold into one row.
+ */
+function ModelLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDaily: ClaudeUsageDailyPoint[] }) {
+  const [othersOpen, setOthersOpen] = useState(false);
+  const estimated = report.costMode === 'estimated' || report.costMode === 'partial';
+  const costKnown = report.costMode !== 'unavailable';
+  const unpriced = new Set(report.costCoverage?.unpricedModels ?? []);
+  const models = [...report.models]
+    .filter((model) => model.totalTokens > 0 || model.totalCostUsd > 0)
+    .sort((a, b) => b.totalTokens - a.totalTokens);
+  // Shares and the total row add up the rows themselves, so they always reach 100%.
+  const totalTokens = ledgerTotalTokens(report);
+  const rowOf = (model: ClaudeUsageReport['models'][number]): LedgerRow => ({
+    key: model.model,
+    label: model.model,
+    tokens: model.totalTokens,
+    cost: costKnown && !(unpriced.has(model.model) && model.totalCostUsd <= 0) ? model.totalCostUsd : null,
+    sessions: model.sessionCount,
+    cacheHit: model.inputTokens + model.cacheReadTokens > 0 ? model.cacheReadTokens / (model.inputTokens + model.cacheReadTokens) : null,
+    models: [model.model],
+  });
+  const visible = models.length > LEDGER_VISIBLE_MODELS + 1 ? models.slice(0, LEDGER_VISIBLE_MODELS) : models;
+  const rest = models.slice(visible.length);
+  const restRow: LedgerRow | null = rest.length
+    ? {
+        key: 'others',
+        label: `${rest.length} other models`,
+        tokens: rest.reduce((sum, model) => sum + model.totalTokens, 0),
+        cost: costKnown ? rest.reduce((sum, model) => sum + model.totalCostUsd, 0) : null,
+        sessions: null,
+        cacheHit: (() => {
+          const input = rest.reduce((sum, model) => sum + model.inputTokens + model.cacheReadTokens, 0);
+          return input > 0 ? rest.reduce((sum, model) => sum + model.cacheReadTokens, 0) / input : null;
+        })(),
+        models: rest.map((model) => model.model),
+      }
+    : null;
+  const trendLabel = report.rangeDays <= 30 ? `Last ${report.rangeDays} days` : 'Last 13 weeks';
+  const used = (row: LedgerRow) => (point: ClaudeUsageDailyPoint) => row.models.some((model) => (point.byModel[model] ?? 0) > 0);
+  const tokensOf = (row: LedgerRow) => (point: ClaudeUsageDailyPoint) => row.models.reduce((sum, model) => sum + (point.byModel[model] ?? 0), 0);
+  const header = 'px-3 pb-2 pt-3 align-bottom text-[11.5px] font-normal leading-[15px] text-[var(--text-muted)]';
+  const cell = 'px-3 py-2.5 whitespace-nowrap tabular-nums';
+
+  const renderRow = (row: LedgerRow, kind: 'model' | 'others' | 'nested') => (
+    <tr key={row.key} className="border-t border-[var(--border)]" data-usage-model-row={kind === 'others' ? 'others' : row.label}>
+      <td className={`${cell} overflow-hidden`}>
+        {kind === 'others' ? (
+          <button
+            type="button"
+            onClick={() => setOthersOpen(!othersOpen)}
+            aria-expanded={othersOpen}
+            className="inline-flex items-center gap-1 pl-[26px] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+          >
+            {row.label}
+            <ChevronDown className={`h-3.5 w-3.5 transition-transform ${othersOpen ? 'rotate-180' : ''}`} />
+          </button>
+        ) : (
+          <div className={`flex min-w-0 items-center gap-2.5 ${kind === 'nested' ? 'pl-[26px]' : ''}`}>
+            {kind === 'model' ? <ModelProviderLogo model={row.label} color="var(--text-muted)" /> : null}
+            <span className="min-w-0 truncate font-medium text-[var(--text-primary)]" title={row.label}>{row.label}</span>
+          </div>
+        )}
+      </td>
+      <td className={`${cell} text-right`}>
+        <div className="flex items-center justify-end gap-2">
+          <span className="h-[3px] w-10 flex-shrink-0 overflow-hidden rounded-full bg-[var(--bg-tertiary)]" aria-hidden="true">
+            <span className="block h-full rounded-full bg-[var(--accent)]" style={{ width: `${totalTokens > 0 ? Math.max(2, (row.tokens / totalTokens) * 100) : 0}%` }} />
+          </span>
+          <span className="min-w-[48px] text-[var(--text-primary)]">{formatCompactNumber(row.tokens)}</span>
+        </div>
+      </td>
+      <td className={`${cell} text-right text-[var(--text-secondary)]`}>{totalTokens > 0 ? `${Math.round((row.tokens / totalTokens) * 100)}%` : '—'}</td>
+      <td className={`${cell} text-right text-[var(--text-primary)]`}>{row.cost === null ? '—' : formatCurrency(row.cost, estimated)}</td>
+      <td className={`${cell} text-right text-[var(--text-secondary)]`}>{row.cost && row.tokens > 0 ? formatPerMillion((row.cost / row.tokens) * 1_000_000) : '—'}</td>
+      <td className={`${cell} text-right text-[var(--text-secondary)]`}>{row.sessions === null ? '—' : row.sessions.toLocaleString('en-US')}</td>
+      <td className={`${cell} text-right text-[var(--text-secondary)]`}>{row.cacheHit === null ? '—' : formatPercent(row.cacheHit)}</td>
+      <td className={cell}>{kind === 'others' ? null : <Sparkline values={trendSeries(yearDaily, report.rangeDays, tokensOf(row))} />}</td>
+      <td className={`${cell} text-right text-[var(--text-secondary)]`}>{lastUsedLabel(yearDaily, used(row))}</td>
+    </tr>
+  );
+
+  return (
+    <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--bg-primary)]" data-usage-ledger>
+      <div className="px-5 pt-4 text-[13.5px] font-semibold text-[var(--text-primary)]">By model</div>
+      {models.length === 0 ? (
+        <div className="px-5 py-5 text-[13px] text-[var(--text-muted)]">No model activity in this range.</div>
+      ) : (
+        <div className="overflow-x-auto px-2 pb-1">
+          <table className="w-full min-w-[880px] table-fixed border-collapse text-[13px]">
+            {/* Fixed numeric columns; the model column takes the rest, one line, cut with an ellipsis. */}
+            <colgroup>
+              <col />
+              <col className="w-[124px]" />
+              <col className="w-[60px]" />
+              <col className="w-[104px]" />
+              <col className="w-[68px]" />
+              <col className="w-[72px]" />
+              <col className="w-[76px]" />
+              <col className="w-[104px]" />
+              <col className="w-[80px]" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th className={`${header} text-left`}>Model</th>
+                <th className={`${header} text-right`}>Tokens</th>
+                <th className={`${header} text-right`}>Share</th>
+                <th className={`${header} text-right`} data-usage-cost-label>{costColumnLabel(report)}</th>
+                <th className={`${header} text-right`}>Per 1M</th>
+                <th className={`${header} text-right`}>Sessions</th>
+                <th className={`${header} text-right`}>Cache hit</th>
+                <th className={`${header} text-left`}>{trendLabel}</th>
+                <th className={`${header} text-right`}>Last used</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map((model) => renderRow(rowOf(model), 'model'))}
+              {restRow ? renderRow(restRow, 'others') : null}
+              {restRow && othersOpen ? rest.map((model) => renderRow(rowOf(model), 'nested')) : null}
+            </tbody>
+            <tfoot>
+              <tr className="border-t border-[var(--text-primary)]/60 font-semibold text-[var(--text-primary)]" data-usage-model-row="total">
+                <td className={cell}>Total</td>
+                <td className={`${cell} text-right`}>{formatCompactNumber(totalTokens)}</td>
+                <td className={`${cell} text-right`}>100%</td>
+                <td className={`${cell} text-right`}>{costKnown ? formatCurrency(report.totals.totalCostUsd, estimated) : 'Unavailable'}</td>
+                <td className={`${cell} text-right`}>{costKnown && report.totals.totalCostUsd > 0 && totalTokens > 0 ? formatPerMillion((report.totals.totalCostUsd / totalTokens) * 1_000_000) : '—'}</td>
+                <td className={`${cell} text-right`}>{report.totals.sessionCount.toLocaleString('en-US')}</td>
+                <td className={`${cell} text-right`}>{formatPercent(report.totals.cacheHitRate)}</td>
+                <td className={cell} />
+                <td className={`${cell} text-right`}>{lastUsedLabel(yearDaily, (point) => point.totalTokens > 0)}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
@@ -523,7 +752,7 @@ function ActivityHeatmap({ daily, mode }: { daily: ClaudeUsageDailyPoint[]; mode
                 width={cell}
                 height={cell}
                 rx={2.5}
-                fill={heatFill(level)}
+                style={{ fill: heatFill(level) }}
                 onMouseEnter={() => setTip(cellTip(point, weekIndex, dayIndex, width, height))}
               />
             );
@@ -543,83 +772,6 @@ function ActivityHeatmap({ daily, mode }: { daily: ClaudeUsageDailyPoint[]; mode
       </svg>
     </div>
   );
-}
-/* ---------- Insight columns ---------- */
-
-function InsightRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-center justify-between gap-4 py-2.5">
-      <span className="text-[13px] text-[var(--text-secondary)]">{label}</span>
-      <span className="text-[13px] font-medium text-[var(--text-primary)]">{value}</span>
-    </div>
-  );
-}
-
-function ActivityInsights({ report, stats }: { report: ClaudeUsageReport; stats: UsageStats }) {
-  const topModel = report.models[0] || null;
-  const modelTokenSum = report.models.reduce((sum, model) => sum + model.totalTokens, 0);
-  const topModelShare =
-    topModel && modelTokenSum > 0 ? Math.round((topModel.totalTokens / modelTokenSum) * 100) : 0;
-
-  return (
-    <div>
-      <div className="text-[13.5px] font-semibold text-[var(--text-primary)]">Activity insights</div>
-      <div className="mt-2">
-        <InsightRow label="Cache hit rate" value={formatPercent(report.totals.cacheHitRate)} />
-        {topModel ? (
-          <InsightRow label="Most used model" value={`${shortModelName(topModel.model)} · ${topModelShare}%`} />
-        ) : null}
-        <InsightRow label="Sessions" value={report.totals.sessionCount.toLocaleString('en-US')} />
-        <InsightRow label="Active days" value={`${stats.activeDays} / ${report.rangeDays}`} />
-        <InsightRow
-          label="Busiest day"
-          value={stats.peakDayDate ? formatLongDate(stats.peakDayDate) : '—'}
-        />
-      </div>
-    </div>
-  );
-}
-
-function TopModels({ report }: { report: ClaudeUsageReport }) {
-  const modelColors = useMemo(
-    () =>
-      Object.fromEntries(
-        report.models.map((model, index) => [model.model, MODEL_COLORS[index % MODEL_COLORS.length]])
-      ) as Record<string, string>,
-    [report.models]
-  );
-  const top = report.models
-    .filter((model) => model.totalTokens > 0 || model.totalCostUsd > 0)
-    .slice(0, 5);
-
-  return (
-    <div>
-      <div className="text-[13.5px] font-semibold text-[var(--text-primary)]">Top models</div>
-      <div className="mt-2">
-        {top.length > 0 ? (
-          top.map((model) => (
-            <div key={model.model} className="flex items-center justify-between gap-4 py-2.5">
-              <div className="flex min-w-0 items-center gap-2.5">
-                <ModelProviderLogo model={model.model} color={modelColors[model.model]} />
-                <span className="truncate text-[13px] font-medium text-[var(--text-primary)]">
-                  {model.model}
-                </span>
-              </div>
-              <span className="shrink-0 text-[13px] text-[var(--text-muted)]">
-                {formatCompactNumber(model.totalTokens)} tokens
-              </span>
-            </div>
-          ))
-        ) : (
-          <div className="py-2.5 text-[13px] text-[var(--text-muted)]">No model activity yet.</div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function shortModelName(model: string): string {
-  return model.length > 26 ? `${model.slice(0, 24)}…` : model;
 }
 
 /**
@@ -666,6 +818,287 @@ function relabelUsageReportModels(
       return { ...day, byModel, byModelCostUsd };
     }),
   };
+}
+
+/* ---------- Plan limits ---------- */
+
+/** One limit: a window with a share left and a reset, or a plain value (credits, extra usage). */
+type PlanLimitChip = {
+  key: string;
+  label: string;
+  window?: CodexRateLimitWindow | null;
+  value?: string;
+  detail?: string;
+  alert?: boolean;
+};
+
+/** An agent's plan limits, ready for the strip under the toolbar. */
+type PlanLimits = {
+  /** The old panel title, kept as the strip's label (tests and screen readers find it by this). */
+  title: string;
+  plan: string | null;
+  chips: PlanLimitChip[];
+  loading: boolean;
+  error: string | null;
+  /** Shown instead of chips when there is nothing to show. */
+  empty: string | null;
+};
+
+function planLimitsBase(title: string, loading: boolean, error: string | null, hasReport: boolean, noun: string): Pick<PlanLimits, 'title' | 'loading' | 'error' | 'empty'> | null {
+  if (hasReport) return null;
+  return {
+    title,
+    loading,
+    error,
+    empty: loading ? `Loading ${noun}…` : error ? `Couldn't load ${noun}.` : `No ${noun} data available.`,
+  };
+}
+
+function claudePlanLimits(report: ClaudePlanUsageReport | null, loading: boolean, error: string | null): PlanLimits {
+  const title = 'Claude plan limits';
+  const base = planLimitsBase(title, loading, error, Boolean(report), 'Claude plan usage');
+  if (base) return { ...base, plan: null, chips: [] };
+  const r = report!;
+  if (!r.rateLimitsAvailable) {
+    return { title, plan: null, chips: [], loading, error, empty: 'Plan limits do not apply to this account (API key or third-party provider session).' };
+  }
+  const chips: PlanLimitChip[] = [
+    { key: 'five-hour', label: '5-hour', window: claudePlanWindowToTile(r.fiveHour, 300) },
+    { key: 'weekly', label: 'Weekly', window: claudePlanWindowToTile(r.sevenDay, 10_080) },
+  ];
+  if (r.sevenDayOpus) chips.push({ key: 'opus', label: 'Opus weekly', window: claudePlanWindowToTile(r.sevenDayOpus, 10_080) });
+  if (r.sevenDaySonnet) chips.push({ key: 'sonnet', label: 'Sonnet weekly', window: claudePlanWindowToTile(r.sevenDaySonnet, 10_080) });
+  for (const entry of r.modelScoped) {
+    chips.push({ key: `model-${entry.displayName}`, label: `${entry.displayName} weekly`, window: claudePlanWindowToTile(entry, 10_080) });
+  }
+  if (r.extraUsage?.isEnabled) {
+    chips.push({
+      key: 'extra',
+      label: 'Extra usage',
+      value: r.extraUsage.utilization === null ? '—' : `${Math.round(r.extraUsage.utilization)}%`,
+      detail: formatClaudeExtraUsage(r.extraUsage),
+    });
+  }
+  return { title, plan: r.subscriptionType ? `Claude ${formatPlanName(r.subscriptionType)}` : null, chips: chips.filter((chip) => chip.window !== null || chip.value), loading, error, empty: null };
+}
+
+function codexPlanLimits(report: CodexRateLimitReport | null, loading: boolean, error: string | null): PlanLimits {
+  const title = 'Codex limits';
+  const entries = getCodexRateLimitEntries(report);
+  const base = planLimitsBase(title, loading, error, entries.length > 0, 'Codex limit');
+  if (base) return { ...base, plan: null, chips: [] };
+  const main = entries.find((entry) => entry.id === 'codex') || entries[0];
+  const snapshot = main.snapshot;
+  const chips: PlanLimitChip[] = [];
+  if (snapshot.primary) chips.push({ key: 'primary', label: formatRateLimitWindowName(snapshot.primary, 'Primary'), window: snapshot.primary });
+  if (snapshot.secondary) chips.push({ key: 'secondary', label: formatRateLimitWindowName(snapshot.secondary, 'Secondary'), window: snapshot.secondary });
+  if (snapshot.credits) {
+    chips.push({
+      key: 'credits',
+      label: 'Credits',
+      value: snapshot.credits.unlimited ? 'Unlimited' : snapshot.credits.balance || '0',
+      detail: snapshot.credits.unlimited ? 'Unlimited credits' : snapshot.credits.hasCredits ? 'Credits available' : 'No credits balance',
+    });
+  }
+  if (snapshot.rateLimitReachedType) {
+    chips.push({ key: 'status', label: 'Status', value: 'Limited', detail: formatRateLimitReachedType(snapshot.rateLimitReachedType), alert: true });
+  }
+  for (const entry of entries) {
+    if (entry.id === main.id) continue;
+    const window = entry.snapshot.primary || entry.snapshot.secondary;
+    if (window) chips.push({ key: `bucket-${entry.id}`, label: getCodexRateLimitName(entry.id, entry.snapshot), window });
+  }
+  return { title, plan: snapshot.planType ? formatPlanName(snapshot.planType) : null, chips, loading, error, empty: chips.length ? null : 'No Codex limit data available.' };
+}
+
+function grokPlanLimits(report: GrokPlanUsageReport | null, loading: boolean, error: string | null): PlanLimits {
+  const title = 'Grok plan limits';
+  const base = planLimitsBase(title, loading, error, Boolean(report), 'Grok plan usage');
+  if (base) return { ...base, plan: null, chips: [] };
+  const r = report!;
+  const chips: PlanLimitChip[] = [];
+  const window = grokPlanWindowToTile(r);
+  if (window) chips.push({ key: 'period', label: grokPeriodLabel(r.currentPeriod), window });
+  if (r.onDemandCap && r.onDemandCap > 0) {
+    chips.push({ key: 'on-demand', label: 'On-demand', value: `${formatCurrency(r.onDemandUsed ?? 0)} of ${formatCurrency(r.onDemandCap)}` });
+  }
+  if (r.prepaidBalance !== null) chips.push({ key: 'prepaid', label: 'Prepaid', value: formatCurrency(r.prepaidBalance), detail: 'Prepaid credits balance' });
+  return { title, plan: r.subscriptionTier, chips, loading, error, empty: chips.length ? null : 'No Grok plan usage data available.' };
+}
+
+function qoderPlanLimits(report: QoderPlanUsageReport | null, loading: boolean, error: string | null): PlanLimits {
+  const title = 'Qoder plan limits';
+  const base = planLimitsBase(title, loading, error, Boolean(report), 'Qoder plan usage');
+  if (base) return { ...base, plan: null, chips: [], empty: base.empty === 'No Qoder plan usage data available.' ? 'No Qoder plan usage data available. Sign in to qodercli first.' : base.empty };
+  const r = report!;
+  const chips: PlanLimitChip[] = [];
+  const window = qoderPlanWindowToTile(r);
+  if (window) chips.push({ key: 'plan', label: 'Plan quota', window, detail: r.userQuota ? formatQoderQuotaSubtitle(r.userQuota) : undefined });
+  if (r.addOnQuota) chips.push({ key: 'add-on', label: 'Add-on pack', value: formatQoderQuotaValue(r.addOnQuota), detail: formatQoderQuotaSubtitle(r.addOnQuota) });
+  if (r.orgResourcePackage) chips.push({ key: 'org', label: 'Org package', value: formatQoderQuotaValue(r.orgResourcePackage), detail: formatQoderQuotaSubtitle(r.orgResourcePackage) });
+  return { title, plan: null, chips, loading, error, empty: chips.length ? null : 'No Qoder plan usage data available.' };
+}
+
+/** Low is yellow below 20% left, red below 5%; otherwise the theme accent. */
+function limitTone(remaining: number): string {
+  return remaining < 5 ? 'var(--error)' : remaining < 20 ? 'var(--warning)' : 'var(--accent)';
+}
+
+/** "2h 25m", "2d 6h", "35m": time until a window resets. */
+function formatResetIn(resetsAt: number | null | undefined, now = Date.now()): string | null {
+  if (!resetsAt) return null;
+  const ms = normalizeTimestampMs(resetsAt) - now;
+  if (ms <= 0) return 'now';
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ${minutes % 60}m`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+}
+
+/** How far through its window the clock is (0–1), when the window says how long it is. */
+function windowElapsed(window: CodexRateLimitWindow, now = Date.now()): number | null {
+  if (!window.resetsAt || !window.windowDurationMins) return null;
+  const left = normalizeTimestampMs(window.resetsAt) - now;
+  return Math.max(0, Math.min(1, 1 - left / (window.windowDurationMins * 60_000)));
+}
+
+function LimitRing({ remaining }: { remaining: number }) {
+  const r = 5.25;
+  const length = 2 * Math.PI * r;
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" className="flex-shrink-0 -rotate-90">
+      <circle cx="7" cy="7" r={r} fill="none" strokeWidth="2" style={{ stroke: 'var(--bg-tertiary)' }} />
+      <circle
+        cx="7" cy="7" r={r} fill="none" strokeWidth="2" strokeLinecap="round"
+        strokeDasharray={`${(Math.max(0, Math.min(100, remaining)) / 100) * length} ${length}`}
+        style={{ stroke: limitTone(remaining) }}
+      />
+    </svg>
+  );
+}
+
+/** The detail behind a chip: the bar with a pace tick, used vs time gone, and when it resets. */
+function PlanLimitDetail({ chip }: { chip: PlanLimitChip }) {
+  const window = chip.window;
+  if (!window) {
+    return (
+      <div className="space-y-1">
+        <div className="flex items-center justify-between gap-4 text-[13px] font-semibold text-[var(--text-primary)]">
+          <span>{chip.label}</span>
+          <span className="tabular-nums">{chip.value}</span>
+        </div>
+        {chip.detail ? <div className="text-[12.5px] leading-[18px] text-[var(--text-secondary)]">{chip.detail}</div> : null}
+      </div>
+    );
+  }
+  const remaining = Math.round(window.remainingPercent);
+  const used = Math.round(window.usedPercent);
+  const elapsed = windowElapsed(window);
+  const resetsAt = window.resetsAt ? new Date(normalizeTimestampMs(window.resetsAt)) : null;
+  let pace: string | null = null;
+  if (elapsed !== null && elapsed > 0.05 && window.usedPercent > 0) {
+    const projected = window.usedPercent / elapsed;
+    if (projected <= 100) pace = `At this pace you'll have about ${Math.max(0, Math.round(100 - projected))}% left.`;
+    else {
+      // The rest of the window's share goes at the same rate: (left ÷ used) × time so far.
+      const hitAt = Date.now() + ((100 - window.usedPercent) / window.usedPercent) * elapsed * window.windowDurationMins! * 60_000;
+      pace = `At this pace you'll reach the limit ${new Date(hitAt).toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' })}.`;
+    }
+  }
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-4 text-[13px] font-semibold text-[var(--text-primary)]">
+        <span>{chip.label}</span>
+        <span className="tabular-nums">{remaining}% left</span>
+      </div>
+      <div className="relative h-1.5 rounded-full bg-[var(--bg-tertiary)]">
+        <div className="h-full rounded-full" style={{ width: `${Math.max(0, Math.min(100, remaining))}%`, backgroundColor: limitTone(remaining) }} />
+        {elapsed !== null ? (
+          // The share of the window still to run: a fill past it is on pace.
+          <span className="absolute -top-[3px] h-3 w-px bg-[var(--text-secondary)]" style={{ left: `${(1 - elapsed) * 100}%` }} aria-hidden="true" />
+        ) : null}
+      </div>
+      <div className="flex items-center justify-between gap-4 text-[12px] text-[var(--text-muted)]">
+        <span>{used}% used</span>
+        {elapsed !== null ? <span>{Math.round(elapsed * 100)}% of the window gone</span> : null}
+      </div>
+      <div className="text-[12.5px] leading-[18px] text-[var(--text-secondary)]">
+        {resetsAt
+          ? `Resets ${resetsAt.toLocaleString(undefined, { weekday: 'long', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}.`
+          : 'No reset time reported.'}
+        {pace ? ` ${pace}` : ''}
+        {chip.detail ? ` ${chip.detail}` : ''}
+      </div>
+    </div>
+  );
+}
+
+function PlanLimitChipView({ chip }: { chip: PlanLimitChip }) {
+  const [open, setOpen] = useState(false);
+  const remaining = chip.window ? Math.round(chip.window.remainingPercent) : null;
+  const resetIn = chip.window ? formatResetIn(chip.window.resetsAt) : null;
+  return (
+    <span
+      className="relative"
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+      onFocus={() => setOpen(true)}
+      onBlur={() => setOpen(false)}
+    >
+      <button
+        type="button"
+        data-plan-limit={chip.key}
+        aria-expanded={open}
+        // The app's usual hover: a gray fill, not a darker outline.
+        className={`inline-flex h-[28px] items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 text-[12.5px] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40 ${
+          open ? 'border-transparent bg-[var(--sidebar-item-hover)]' : 'border-[var(--border)] bg-[var(--bg-primary)] hover:border-transparent hover:bg-[var(--sidebar-item-hover)]'
+        }`}
+      >
+        {remaining !== null ? <LimitRing remaining={remaining} /> : null}
+        <span className="text-[var(--text-secondary)]">{chip.label}</span>
+        <span className="font-semibold tabular-nums" style={chip.alert ? { color: 'var(--error)' } : remaining !== null && remaining < 20 ? { color: limitTone(remaining) } : { color: 'var(--text-primary)' }}>
+          {remaining !== null ? `${remaining}%` : chip.value}
+        </span>
+        {resetIn ? <span className="text-[var(--text-muted)]">· {resetIn}</span> : null}
+      </button>
+      {open ? (
+        <div role="tooltip" className="absolute right-0 top-[calc(100%+6px)] z-20 w-[300px] max-w-[calc(100vw-32px)] rounded-xl border border-[var(--border)] bg-[var(--popover-bg,var(--bg-primary))] p-3.5 shadow-[0_8px_24px_rgba(0,0,0,0.12),0_2px_6px_rgba(0,0,0,0.08)]">
+          <PlanLimitDetail chip={chip} />
+        </div>
+      ) : null}
+    </span>
+  );
+}
+
+/**
+ * The agent's plan limits on one slim line under the toolbar: the plan, then a
+ * chip per limit (share left and time to reset). Hovering a chip shows its
+ * detail; refresh and failure notes sit at the start of the line.
+ */
+function PlanLimitStrip({ limits }: { limits: PlanLimits }) {
+  return (
+    <div
+      className="flex flex-wrap items-center justify-end gap-x-2 gap-y-2"
+      role="group"
+      aria-label={limits.title}
+      data-settings-label={limits.title}
+      data-plan-limits
+    >
+      {limits.chips.length && (limits.loading || limits.error) ? (
+        // Saved limits stay on screen while they refresh or after a failed update.
+        <span role="status" title={limits.error || undefined} className="mr-1 text-[12px] text-[var(--text-muted)]">
+          {limits.loading ? 'Refreshing…' : 'Update failed; showing saved data'}
+        </span>
+      ) : null}
+      {limits.plan ? <span className="mr-1 text-[12.5px] text-[var(--text-secondary)]">{limits.plan}</span> : null}
+      {limits.chips.length ? (
+        limits.chips.map((chip) => <PlanLimitChipView key={chip.key} chip={chip} />)
+      ) : limits.empty ? (
+        <span role="status" title={limits.error || undefined} className="text-[12.5px] text-[var(--text-muted)]">{limits.empty}</span>
+      ) : null}
+    </div>
+  );
 }
 
 /* ---------- States ---------- */
@@ -715,192 +1148,7 @@ function normalizeUsageLoadError(error: unknown, channel: string): string {
     : rawMessage;
 }
 
-function MetricTile({
-  title,
-  value,
-  subtitle,
-}: {
-  title: string;
-  value: string;
-  subtitle?: string;
-}) {
-  return (
-    <div className="bg-[var(--bg-primary)] px-4 py-3">
-      <div className="truncate text-[11.5px] font-medium uppercase tracking-[0.08em] text-[var(--text-muted)]" title={title}>
-        {title}
-      </div>
-      <div className="mt-1 text-[20px] font-semibold tracking-[-0.02em] text-[var(--text-primary)]">
-        {value}
-      </div>
-      {subtitle ? (
-        <div className="mt-0.5 truncate text-[11.5px] text-[var(--text-muted)]">{subtitle}</div>
-      ) : null}
-    </div>
-  );
-}
-
 /* ---------- Codex limits ---------- */
-
-function ClaudePlanUsagePanel({
-  report,
-  loading,
-  error,
-}: {
-  report: ClaudePlanUsageReport | null;
-  loading: boolean;
-  error: string | null;
-}) {
-  return (
-    <SettingsGroup title="Claude plan limits">
-      {renderClaudePlanUsageState(report, loading, error) || (
-        <div>
-          <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <img src={claudeLogo} alt="" className="h-4 w-4 flex-shrink-0" aria-hidden="true" />
-                <span className="truncate text-[13px] font-medium text-[var(--text-primary)]">
-                  Claude Code
-                </span>
-              </div>
-              <div className="mt-0.5 text-[11.5px] text-[var(--text-muted)]">
-                Updated {formatLocalTime(report!.fetchedAt)}
-                <span role="status" title={error || undefined}>
-                  {loading ? ' · Refreshing…' : error ? ' · Update failed; showing saved data' : ''}
-                </span>
-              </div>
-            </div>
-            {report!.subscriptionType ? (
-              <span className="rounded-[6px] border border-[var(--border)] px-2 py-1 text-[11.5px] font-medium text-[var(--text-secondary)]">
-                {`Claude ${formatPlanName(report!.subscriptionType)}`}
-              </span>
-            ) : null}
-          </div>
-
-          <ClaudePlanTileGrid report={report!} />
-        </div>
-      )}
-    </SettingsGroup>
-  );
-}
-
-function ClaudePlanTileGrid({ report }: { report: ClaudePlanUsageReport }) {
-  const tiles: ReactNode[] = [
-    <CodexRateLimitWindowTile
-      key="five-hour"
-      title="5-hour remaining"
-      window={claudePlanWindowToTile(report.fiveHour, 300)}
-    />,
-    <CodexRateLimitWindowTile
-      key="weekly"
-      title="Weekly remaining"
-      window={claudePlanWindowToTile(report.sevenDay, 10_080)}
-    />,
-  ];
-  if (report.sevenDayOpus) {
-    tiles.push(
-      <CodexRateLimitWindowTile
-        key="opus-weekly"
-        title="Opus weekly remaining"
-        window={claudePlanWindowToTile(report.sevenDayOpus, 10_080)}
-      />
-    );
-  }
-  if (report.sevenDaySonnet) {
-    tiles.push(
-      <CodexRateLimitWindowTile
-        key="sonnet-weekly"
-        title="Sonnet weekly remaining"
-        window={claudePlanWindowToTile(report.sevenDaySonnet, 10_080)}
-      />
-    );
-  }
-  for (const entry of report.modelScoped) {
-    tiles.push(
-      <CodexRateLimitWindowTile
-        key={`model-${entry.displayName}`}
-        title={`${entry.displayName} weekly remaining`}
-        window={claudePlanWindowToTile(entry, 10_080)}
-      />
-    );
-  }
-  if (report.extraUsage?.isEnabled) {
-    tiles.push(
-      <MetricTile
-        key="extra-usage"
-        title="Extra usage"
-        value={
-          report.extraUsage.utilization === null
-            ? '—'
-            : `${Math.round(report.extraUsage.utilization)}%`
-        }
-        subtitle={formatClaudeExtraUsage(report.extraUsage)}
-      />
-    );
-  }
-
-  // Up to four tiles the grid splits into exactly as many equal columns as
-  // there are tiles, so every cell is occupied. Beyond four it falls back to
-  // the 2/4-column layout; unoccupied cells would show the gray divider
-  // background (the hairlines come from the container bg through gap-px), so
-  // the incomplete rows get same-background fillers per breakpoint.
-  const columnsClass =
-    tiles.length <= 1
-      ? ''
-      : tiles.length === 2
-        ? 'sm:grid-cols-2'
-        : tiles.length === 3
-          ? 'sm:grid-cols-3'
-          : 'sm:grid-cols-2 xl:grid-cols-4';
-  if (tiles.length > 4) {
-    const smFillers = tiles.length % 2;
-    const xlFillers = (4 - (tiles.length % 4)) % 4;
-    for (let index = 0; index < xlFillers; index += 1) {
-      tiles.push(
-        <div
-          key={`filler-${index}`}
-          className={`hidden bg-[var(--bg-primary)] ${index < smFillers ? 'sm:block' : 'xl:block'}`}
-          aria-hidden="true"
-        />
-      );
-    }
-  }
-
-  return (
-    <div className={`grid grid-cols-1 gap-px border-t border-[var(--border)] bg-[var(--border)] ${columnsClass}`}>
-      {tiles}
-    </div>
-  );
-}
-
-function renderClaudePlanUsageState(
-  report: ClaudePlanUsageReport | null,
-  loading: boolean,
-  error: string | null
-) {
-  if (loading && !report) {
-    return <InlineEmpty label="Loading Claude plan usage…" />;
-  }
-
-  if (error && !report) {
-    return (
-      <div className="px-4 py-4 text-[12px] text-[var(--error)]">
-        <span className="font-medium">Unable to load Claude plan usage.</span> {error}
-      </div>
-    );
-  }
-
-  if (!report) {
-    return <InlineEmpty label="No Claude plan usage data available." />;
-  }
-
-  if (!report.rateLimitsAvailable) {
-    return (
-      <InlineEmpty label="Plan limits do not apply to this account (API key or third-party provider session)." />
-    );
-  }
-
-  return null;
-}
 
 function claudePlanWindowToTile(
   window: ClaudePlanUsageWindow | null,
@@ -940,91 +1188,6 @@ function formatClaudeCredits(value: number, currency: string): string {
   }
 }
 
-function GrokPlanUsagePanel({
-  report,
-  loading,
-  error,
-}: {
-  report: GrokPlanUsageReport | null;
-  loading: boolean;
-  error: string | null;
-}) {
-  return (
-    <SettingsGroup title="Grok plan limits">
-      {renderGrokPlanUsageState(report, loading, error) || (
-        <div>
-          <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <img src={grokLogo} alt="" className="h-4 w-4 flex-shrink-0" aria-hidden="true" />
-                <span className="truncate text-[13px] font-medium text-[var(--text-primary)]">
-                  Grok Build
-                </span>
-              </div>
-              <div className="mt-0.5 text-[11.5px] text-[var(--text-muted)]">
-                Updated {formatLocalTime(report!.fetchedAt)}
-                <span role="status" title={error || undefined}>
-                  {loading ? ' · Refreshing…' : error ? ' · Update failed; showing saved data' : ''}
-                </span>
-              </div>
-            </div>
-            {report!.subscriptionTier ? (
-              <span className="rounded-[6px] border border-[var(--border)] px-2 py-1 text-[11.5px] font-medium text-[var(--text-secondary)]">
-                {report!.subscriptionTier}
-              </span>
-            ) : null}
-          </div>
-
-          <div className="grid grid-cols-1 gap-px border-t border-[var(--border)] bg-[var(--border)] sm:grid-cols-3">
-            <CodexRateLimitWindowTile
-              title={`${grokPeriodLabel(report!.currentPeriod)} remaining`}
-              window={grokPlanWindowToTile(report!)}
-            />
-            <MetricTile
-              title="On-demand"
-              value={report!.onDemandUsed === null ? '—' : formatCurrency(report!.onDemandUsed)}
-              subtitle={
-                report!.onDemandCap && report!.onDemandCap > 0
-                  ? `of ${formatCurrency(report!.onDemandCap)} cap`
-                  : 'Not enabled'
-              }
-            />
-            <MetricTile
-              title="Prepaid balance"
-              value={report!.prepaidBalance === null ? '—' : formatCurrency(report!.prepaidBalance)}
-              subtitle="Credits"
-            />
-          </div>
-        </div>
-      )}
-    </SettingsGroup>
-  );
-}
-
-function renderGrokPlanUsageState(
-  report: GrokPlanUsageReport | null,
-  loading: boolean,
-  error: string | null
-) {
-  if (loading && !report) {
-    return <InlineEmpty label="Loading Grok plan usage…" />;
-  }
-
-  if (error && !report) {
-    return (
-      <div className="px-4 py-4 text-[12px] text-[var(--error)]">
-        <span className="font-medium">Unable to load Grok plan usage.</span> {error}
-      </div>
-    );
-  }
-
-  if (!report) {
-    return <InlineEmpty label="No Grok plan usage data available." />;
-  }
-
-  return null;
-}
-
 function grokPeriodLabel(period: GrokPlanUsageReport['currentPeriod']): string {
   if (period?.type === 'USAGE_PERIOD_TYPE_WEEKLY') return 'Weekly';
   if (period?.type === 'USAGE_PERIOD_TYPE_MONTHLY') return 'Monthly';
@@ -1052,128 +1215,6 @@ function grokPlanWindowToTile(report: GrokPlanUsageReport): CodexRateLimitWindow
     windowDurationMins,
     resetsAt: period?.endsAt ?? null,
   };
-}
-
-function QoderPlanUsagePanel({
-  report,
-  loading,
-  error,
-}: {
-  report: QoderPlanUsageReport | null;
-  loading: boolean;
-  error: string | null;
-}) {
-  return (
-    <SettingsGroup title="Qoder plan limits">
-      {renderQoderPlanUsageState(report, loading, error) || (
-        <div>
-          <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <img src={qoderLogo} alt="" className="h-4 w-4 flex-shrink-0" aria-hidden="true" />
-                <span className="truncate text-[13px] font-medium text-[var(--text-primary)]">
-                  Qoder CLI
-                </span>
-              </div>
-              <div className="mt-0.5 text-[11.5px] text-[var(--text-muted)]">
-                Updated {formatLocalTime(report!.fetchedAt)}
-                <span role="status" title={error || undefined}>
-                  {loading ? ' · Refreshing…' : error ? ' · Update failed; showing saved data' : ''}
-                </span>
-                {report!.isQuotaExceeded ? ' · Quota exceeded' : ''}
-              </div>
-            </div>
-            {report!.userType ? (
-              <span className="rounded-[6px] border border-[var(--border)] px-2 py-1 text-[11.5px] font-medium text-[var(--text-secondary)]">
-                {formatPlanName(report!.userType)}
-              </span>
-            ) : null}
-          </div>
-
-          <QoderPlanTileGrid report={report!} />
-        </div>
-      )}
-    </SettingsGroup>
-  );
-}
-
-function QoderPlanTileGrid({ report }: { report: QoderPlanUsageReport }) {
-  const tiles: ReactNode[] = [
-    <CodexRateLimitWindowTile
-      key="plan"
-      title="Plan quota remaining"
-      window={qoderPlanWindowToTile(report)}
-    />,
-  ];
-  if (report.userQuota) {
-    tiles.push(
-      <MetricTile
-        key="user-quota"
-        title="Plan quota"
-        value={formatQoderQuotaValue(report.userQuota)}
-        subtitle={formatQoderQuotaSubtitle(report.userQuota)}
-      />
-    );
-  }
-  if (report.addOnQuota) {
-    tiles.push(
-      <MetricTile
-        key="add-on"
-        title="Add-on pack"
-        value={formatQoderQuotaValue(report.addOnQuota)}
-        subtitle={formatQoderQuotaSubtitle(report.addOnQuota)}
-      />
-    );
-  }
-  if (report.orgResourcePackage) {
-    tiles.push(
-      <MetricTile
-        key="org"
-        title="Org package"
-        value={formatQoderQuotaValue(report.orgResourcePackage)}
-        subtitle={formatQoderQuotaSubtitle(report.orgResourcePackage)}
-      />
-    );
-  }
-
-  const columnsClass =
-    tiles.length <= 1
-      ? ''
-      : tiles.length === 2
-        ? 'sm:grid-cols-2'
-        : tiles.length === 3
-          ? 'sm:grid-cols-3'
-          : 'sm:grid-cols-2 xl:grid-cols-4';
-
-  return (
-    <div className={`grid grid-cols-1 gap-px border-t border-[var(--border)] bg-[var(--border)] ${columnsClass}`}>
-      {tiles}
-    </div>
-  );
-}
-
-function renderQoderPlanUsageState(
-  report: QoderPlanUsageReport | null,
-  loading: boolean,
-  error: string | null
-) {
-  if (loading && !report) {
-    return <InlineEmpty label="Loading Qoder plan usage…" />;
-  }
-
-  if (error && !report) {
-    return (
-      <div className="px-4 py-4 text-[12px] text-[var(--error)]">
-        <span className="font-medium">Unable to load Qoder plan usage.</span> {error}
-      </div>
-    );
-  }
-
-  if (!report) {
-    return <InlineEmpty label="No Qoder plan usage data available. Sign in to qodercli first." />;
-  }
-
-  return null;
 }
 
 function qoderPlanWindowToTile(report: QoderPlanUsageReport): CodexRateLimitWindow | null {
@@ -1208,190 +1249,6 @@ function formatQoderQuotaSubtitle(bucket: NonNullable<QoderPlanUsageReport['user
     return `${bucket.remaining.toLocaleString()}${unit} remaining`;
   }
   return 'Used';
-}
-
-function CodexRateLimitsPanel({
-  report,
-  loading,
-  error,
-}: {
-  report: CodexRateLimitReport | null;
-  loading: boolean;
-  error: string | null;
-}) {
-  const entries = getCodexRateLimitEntries(report);
-  const mainEntry = entries.find((entry) => entry.id === 'codex') || entries[0] || null;
-  const mainLimit = mainEntry?.snapshot || null;
-  const extraEntries = entries.filter((entry) => entry.id !== mainEntry?.id);
-
-  return (
-    <SettingsGroup title="Codex limits">
-      {renderCodexRateLimitState(report, loading, error) || (
-        <div>
-          <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <img src={openaiLogo} alt="" className="h-4 w-4 flex-shrink-0" aria-hidden="true" />
-                <span className="truncate text-[13px] font-medium text-[var(--text-primary)]">
-                  {mainLimit ? getCodexRateLimitName(mainEntry!.id, mainLimit) : 'Codex'}
-                </span>
-              </div>
-              <div className="mt-0.5 text-[11.5px] text-[var(--text-muted)]">
-                Updated {formatLocalTime(report!.fetchedAt)}
-                <span role="status" title={error || undefined}>
-                  {loading ? ' · Refreshing…' : error ? ' · Update failed; showing saved data' : ''}
-                </span>
-              </div>
-            </div>
-            {mainLimit?.planType ? (
-              <span className="rounded-[6px] border border-[var(--border)] px-2 py-1 text-[11.5px] font-medium text-[var(--text-secondary)]">
-                {formatPlanName(mainLimit.planType)}
-              </span>
-            ) : null}
-          </div>
-
-          <div className="grid grid-cols-1 gap-px border-t border-[var(--border)] bg-[var(--border)] sm:grid-cols-2 xl:grid-cols-4">
-            <CodexRateLimitWindowTile
-              title={`${formatRateLimitWindowName(mainLimit?.primary, 'Primary')} remaining`}
-              window={mainLimit?.primary || null}
-            />
-            <CodexRateLimitWindowTile
-              title={`${formatRateLimitWindowName(mainLimit?.secondary, 'Secondary')} remaining`}
-              window={mainLimit?.secondary || null}
-            />
-            <CodexCreditsTile snapshot={mainLimit} />
-            <CodexRateLimitStatusTile snapshot={mainLimit} />
-          </div>
-
-          {extraEntries.length > 0 ? (
-            <div className="border-t border-[var(--border)] px-4 py-3">
-              <div className="mb-2 text-[11.5px] font-medium uppercase tracking-[0.08em] text-[var(--text-muted)]">
-                Additional buckets
-              </div>
-              <div className="divide-y divide-[var(--border)]">
-                {extraEntries.map((entry) => (
-                  <CodexRateLimitBucketRow key={entry.id} id={entry.id} snapshot={entry.snapshot} />
-                ))}
-              </div>
-            </div>
-          ) : null}
-        </div>
-      )}
-    </SettingsGroup>
-  );
-}
-
-function renderCodexRateLimitState(
-  report: CodexRateLimitReport | null,
-  loading: boolean,
-  error: string | null
-) {
-  if (loading && !report) {
-    return <InlineEmpty label="Loading Codex limits…" />;
-  }
-
-  if (error && !report) {
-    return (
-      <div className="px-4 py-4 text-[12px] text-[var(--error)]">
-        <span className="font-medium">Unable to load Codex limits.</span> {error}
-      </div>
-    );
-  }
-
-  if (!getCodexRateLimitEntries(report).length) {
-    return <InlineEmpty label="No Codex limit data available." />;
-  }
-
-  return null;
-}
-
-function CodexRateLimitWindowTile({
-  title,
-  window,
-}: {
-  title: string;
-  window: CodexRateLimitWindow | null;
-}) {
-  const remaining = window ? Math.round(window.remainingPercent) : null;
-  const used = window ? Math.round(window.usedPercent) : null;
-
-  return (
-    <div className="bg-[var(--bg-primary)] px-4 py-3">
-      <div className="truncate text-[11.5px] font-medium uppercase tracking-[0.08em] text-[var(--text-muted)]" title={title}>
-        {title}
-      </div>
-      <div className="mt-1 text-[20px] font-semibold text-[var(--text-primary)]">
-        {remaining === null ? '—' : `${remaining}%`}
-      </div>
-      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[var(--bg-tertiary)]">
-        <div
-          className="h-full rounded-full bg-[#0F9D90]"
-          style={{ width: `${Math.max(0, Math.min(100, remaining || 0))}%` }}
-        />
-      </div>
-      <div className="mt-1.5 truncate text-[11.5px] text-[var(--text-muted)]">
-        {window ? `${used}% used · ${formatResetLabel(window.resetsAt)}` : 'Not reported'}
-      </div>
-    </div>
-  );
-}
-
-function CodexCreditsTile({ snapshot }: { snapshot: CodexRateLimitSnapshot | null }) {
-  const credits = snapshot?.credits || null;
-  const value = credits
-    ? credits.unlimited
-      ? 'Unlimited'
-      : credits.balance || '0'
-    : '—';
-  const subtitle = snapshot?.planType
-    ? `${formatPlanName(snapshot.planType)} plan`
-    : credits
-      ? credits.hasCredits
-        ? 'Credits available'
-        : 'No credits balance'
-      : 'Not reported';
-
-  return <MetricTile title="Credits" value={value} subtitle={subtitle} />;
-}
-
-function CodexRateLimitStatusTile({ snapshot }: { snapshot: CodexRateLimitSnapshot | null }) {
-  const limited = Boolean(snapshot?.rateLimitReachedType);
-  const value = limited ? 'Limited' : 'Available';
-  const subtitle = snapshot?.rateLimitReachedType
-    ? formatRateLimitReachedType(snapshot.rateLimitReachedType)
-    : 'No limit reached';
-
-  return <MetricTile title="Status" value={value} subtitle={subtitle} />;
-}
-
-function CodexRateLimitBucketRow({
-  id,
-  snapshot,
-}: {
-  id: string;
-  snapshot: CodexRateLimitSnapshot;
-}) {
-  return (
-    <div className="grid grid-cols-2 gap-x-3 gap-y-1 py-2 text-[12.5px] sm:grid-cols-[minmax(0,1.2fr)_90px_90px_130px]">
-      <div className="min-w-0">
-        <div className="truncate font-medium text-[var(--text-primary)]">
-          {getCodexRateLimitName(id, snapshot)}
-        </div>
-        <div className="mt-0.5 truncate text-[11.5px] text-[var(--text-muted)]">{id}</div>
-      </div>
-      <div className="text-[var(--text-primary)]">
-        <span className="text-[var(--text-muted)] sm:hidden">5h </span>
-        {formatRemaining(snapshot.primary)}
-      </div>
-      <div className="text-[var(--text-primary)]">
-        <span className="text-[var(--text-muted)] sm:hidden">Week </span>
-        {formatRemaining(snapshot.secondary)}
-      </div>
-      <div className="truncate text-[var(--text-muted)]">
-        {formatNearestReset(snapshot.primary, snapshot.secondary)}
-      </div>
-    </div>
-  );
 }
 
 function getCodexRateLimitEntries(report: CodexRateLimitReport | null): Array<{
@@ -1436,26 +1293,6 @@ function formatRateLimitWindowName(window: CodexRateLimitWindow | null | undefin
   if (minutes % 1440 === 0) return `${minutes / 1440}d`;
   if (minutes % 60 === 0) return `${minutes / 60}h`;
   return `${minutes}m`;
-}
-
-function formatRemaining(window: CodexRateLimitWindow | null): string {
-  return window ? `${Math.round(window.remainingPercent)}%` : '—';
-}
-
-function formatNearestReset(
-  primary: CodexRateLimitWindow | null,
-  secondary: CodexRateLimitWindow | null
-): string {
-  const resets = [primary?.resetsAt, secondary?.resetsAt].filter((value): value is number =>
-    typeof value === 'number' && Number.isFinite(value)
-  );
-  if (!resets.length) return 'No reset time';
-  return formatResetLabel(Math.min(...resets));
-}
-
-function formatResetLabel(value: number | null): string {
-  if (!value) return 'No reset time';
-  return `Resets ${formatLocalTime(normalizeTimestampMs(value))}`;
 }
 
 function formatLocalTime(value: number): string {
@@ -1510,7 +1347,9 @@ function ModelProviderLogo({
     );
   }
 
-  return <img src={logo} alt="" className={`${className} flex-shrink-0`} aria-hidden="true" />;
+  // One-color marks follow the theme, like the agent picker's logos.
+  const monochrome = [claudeLogo, openaiLogo, grokLogo, moonshotLogo, mimoLogo].includes(logo);
+  return <img src={logo} alt="" className={`${className} flex-shrink-0 ${monochrome ? 'settings-monochrome-logo' : ''}`} aria-hidden="true" />;
 }
 
 function getProviderLogoForModel(model: string): string | null {
@@ -1617,6 +1456,10 @@ function formatCurrency(value: number, estimated = false): string {
 
 function formatPercent(value: number): string {
   return `${(value * 100).toFixed(1)}%`;
+}
+
+function formatShortDate(dateKey: string): string {
+  return parseDateKey(dateKey).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
 function formatLongDate(dateKey: string): string {
