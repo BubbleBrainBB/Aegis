@@ -712,7 +712,9 @@ const usage = read('src/ui/components/settings/ClaudeUsageSettings.tsx');
 assert.ok(
     providers.includes("{ id: 'deepseek', label: 'DeepSeek Harness' }") &&
     picker.includes('DeepseekLogo') &&
-    /case 'deepseek':\s*return <DeepseekLogo/.test(onboarding) &&
+    // Onboarding draws agent marks through the shared AgentProviderLogo.
+    onboarding.includes('AgentProviderLogo') &&
+    /case 'deepseek':\s*return <DeepseekLogo/.test(read('src/ui/components/AgentProviderLogo.tsx')) &&
     deepseekLogo.includes('<svg') &&
     deepseekLogo.includes('fill="currentColor"') &&
     deepseekLogo.includes('M23.748 4.482') &&
@@ -725,7 +727,11 @@ assert.ok(
   'UI must identify the DeepSeek agent runtime as DeepSeek Harness across picker, onboarding, readiness, composer, MCP and usage settings'
 );
 assert.ok(
-  usage.includes('costMode={activeReport?.costMode}') && usage.includes("costMode === 'unavailable'"),
+  // The model table's cost column names the basis; the total says when cost is unavailable.
+  usage.includes('function costColumnLabel') &&
+    usage.includes("report.costMode === 'partial'") &&
+    usage.includes("report.costMode === 'unavailable'") &&
+    usage.includes("'Unavailable'"),
   'Usage settings must distinguish estimated, partial and unavailable costs'
 );
 

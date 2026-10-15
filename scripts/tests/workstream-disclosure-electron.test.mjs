@@ -315,7 +315,7 @@ try {
  await writeFile(path.join(dir,'index.html'),'<html><body style="margin:0;background:var(--bg-primary)"><div id="root"></div><script type="module" src="./probe.tsx"></script></body></html>');
  await writeFile(path.join(dir,'probe.tsx'),harness);
  await writeFile(path.join(dir,'main.cjs'),main);
- server=await createServer({root,configFile:path.join(root,'vite.config.ts'),server:{host:'127.0.0.1',port:0,strictPort:false}});
+ server=await createServer({root,configFile:path.join(root,'vite.config.ts'), cacheDir: path.join(dir, 'vite-cache'),server:{host:'127.0.0.1',port:0,strictPort:false}});
  await server.listen();
  const env={...process.env,QA_URL:new URL(path.relative(root,dir)+'/index.html',server.resolvedUrls.local[0]).href,QA_CAPTURE:path.join(root,'output/playwright/workstream-disclosure')};
  delete env.ELECTRON_RUN_AS_NODE;

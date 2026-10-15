@@ -107,7 +107,9 @@ assert.ok(
   'ProviderPicker must render the qoder logo'
 );
 assert.ok(
-  read('src/ui/components/onboarding/AgentOnboardingView.tsx').includes('qoder'),
+  // Onboarding draws agent marks through the shared AgentProviderLogo.
+  read('src/ui/components/onboarding/AgentOnboardingView.tsx').includes('AgentProviderLogo') &&
+    /qoder: qoderLogo/.test(read('src/ui/components/AgentProviderLogo.tsx')),
   'onboarding logos must include qoder'
 );
 assert.ok(
