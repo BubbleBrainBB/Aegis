@@ -72,7 +72,7 @@ import type { Attachment } from "../../types";
 import { DesignUndo, blockedBy, touchedBoards, undoKey } from "./design-undo";
 import { summarizeOperations } from "../../../shared/design-history";
 import { DesignAgentName, relativeTime, useDesignAgentName } from "./design-ui";
-import { DesignCover } from "./DesignCover";
+import { DesignCards } from "./DesignCards";
 import { DesignStylesDialog } from "./DesignStylesDialog";
 import { PROVIDERS } from "../../utils/provider";
 import "./design.css";
@@ -1110,11 +1110,6 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
   const exportBoard = (boardId: string) => exportAs("png", boardId);
 
   if (hidden) return null;
-  // "Edited 3h ago", "Edited just now", or the date once it is a week old.
-  const editedAgo = (at: number) => {
-    const ago = relativeTime(at);
-    return ago === "now" ? "Edited just now" : /^\d+[mhd]$/.test(ago) ? `Edited ${ago} ago` : `Edited ${ago}`;
-  };
   const projectPath = session?.projectCwd ?? session?.cwd ?? "";
   const projectName = projectPath.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "";
   if (!documentId)
@@ -1154,27 +1149,12 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
           </p>
         )}
         {list.length ? (
-          <div className="design-document-list">
-            {list.map((d) => (
-              <button
-                key={d.id}
-                className="design-document-card"
-                data-design-document-card={d.id}
-                onClick={() =>
-                  useAppStore
-                    .getState()
-                    .setActiveRightUtilityTab(`design:${d.id}`)
-                }
-              >
-                <DesignCover sessionId={sessionId!} documentId={d.id} revision={d.revision} />
-                <span className="design-document-card-body">
-                  <strong title={d.title}>{d.title}</strong>
-                  <span>{editedAgo(d.updatedAt)}</span>
-                </span>
-                {d.member ? <span className="design-document-tag">This chat</span> : null}
-              </button>
-            ))}
-          </div>
+          <DesignCards
+            designs={list}
+            coverSession={sessionId ?? undefined}
+            tagMembers
+            onOpen={(d) => useAppStore.getState().setActiveRightUtilityTab(`design:${d.id}`)}
+          />
         ) : (
           <div className="design-welcome">
             <div className="design-empty-boards">
@@ -1235,13 +1215,15 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
 
   const toolbar = (
       <header className="design-toolbar">
-        {chrome === "pane" && (
+        {(chrome === "pane" || chrome === "section") && (
           <button
             className="design-icon-button design-back-button"
             title="All designs"
             aria-label="All designs"
             onClick={() =>
-              useAppStore.getState().setActiveRightUtilityTab("design")
+              chrome === "section"
+                ? useDesignStore.getState().setSection(null)
+                : useAppStore.getState().setActiveRightUtilityTab("design")
             }
           >
             <ArrowLeft size={15} />

@@ -77,14 +77,20 @@ app.whenReady().then(async()=>{
   // A pane left fullscreen in Home must not hide the Design section.
   await js('qa.app.getState().setRightPanelFullscreen("browser")');
 
-  // Rail → Design: library, canvas, toolbar in the title bar, composer dock.
+  // Rail → Design: a home of design cards by project; a card opens its canvas, toolbar in the title bar, composer dock.
+  const card=(id)=>'[data-design-home] [data-design-document-card="'+id+'"]';
+  const goHome=async()=>{await click('[data-design-titlebar] [aria-label="All designs"]');await until('!!document.querySelector("[data-design-home]")','back to the designs home')};
   await click('nav[aria-label="Sections"] button[aria-label="Design"]');
-  await until('!!document.querySelector("[data-design-library]")','design library in the sidebar');
-  await until('!!document.querySelector("[data-design-row='+atlas.id+']")','Atlas listed');
-  assert.match(await js('document.querySelector("[data-design-library]").textContent'),/workflow-test[\s\S]*Atlas website[\s\S]*2 boards/);
+  await until('!!document.querySelector("[data-design-home]")','designs home');
+  await until('!!document.querySelector(\''+card(atlas.id)+'\')','Atlas card');
+  assert.match(await js('document.querySelector("[data-design-home]").textContent'),/Designs[\s\S]*workflow-test[\s\S]*Atlas website[\s\S]*Edited/);
+  await until('document.querySelectorAll(\''+card(atlas.id)+' .design-cover-board\').length===2','the card shows the canvas');
+  assert.equal(await js('!!document.querySelector("[data-design-library]")'),false,'no separate design list in the sidebar');
+  await shot('design-home');
+  await click(card(atlas.id));
   await until('document.querySelectorAll("[data-design-section] .design-board").length===2','canvas with two boards');
   await until('!!document.querySelector("[data-design-titlebar] .design-toolbar .design-title")','toolbar in the title bar');
-  assert.equal(await js('!!document.querySelector("[data-design-titlebar] [aria-label=\'All designs\']")'),false,'no back arrow in the section');
+  assert.equal(await js('!!document.querySelector("[data-design-titlebar] [aria-label=\'All designs\']")'),true,'back to the home from the title bar');
   // The title is one control: a click opens the design menu, a double click renames in place.
   const titleAt=JSON.parse(await js('JSON.stringify((r=>({x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}))(document.querySelector("[data-design-titlebar] .design-title-button").getBoundingClientRect()))'));
   const mouse=(clickCount)=>{for(const type of ['mouseDown','mouseUp'])win.webContents.sendInputEvent({type,x:titleAt.x,y:titleAt.y,button:'left',clickCount})};
@@ -260,7 +266,8 @@ app.whenReady().then(async()=>{
   await until('!!document.querySelector("[data-design-dock=composer]")','expanded again');
 
   // New design: an empty canvas whose chat is a draft until its first message.
-  await js('[...document.querySelectorAll("[data-design-library] button")].find(b=>b.textContent.trim()==="New design").click()');
+  await goHome();
+  await click('[data-design-home] .design-library-new');
   await until('!!document.querySelector("[data-design-start]")','start canvas');
   const draft=await js('qa.design.getState().section.sessionId');
   assert.equal(await js('qa.app.getState().sessions['+JSON.stringify(draft)+'].isDraft'),true);
@@ -290,11 +297,11 @@ app.whenReady().then(async()=>{
   await call('s9','design_update',{documentId:created.id,operationId:'u10',operations:[{type:'add',name:'Stories',width:1440,height:900,html:draftHtml}]});
   await until('document.querySelectorAll("[data-design-section] .design-board").length===2&&!document.querySelector("[data-board-writing]")&&![...document.querySelectorAll("[data-board-id]")].some(b=>b.dataset.boardId.startsWith("draft:"))','saved board replaces the draft');
   await js('qa.app.setState(s=>({sessions:{...s.sessions,s9:{...s.sessions.s9,status:"idle"}}}))');
-  await until('!!document.querySelector("[data-design-row='+created.id+'][aria-current=true]")','listed and current');
+  await until('(qa.design.getState().library??[]).some(d=>d.id==='+JSON.stringify(created.id)+')','listed');
 
   // A design has several chats: each keeps its conversation and works on the same canvas.
   const designRepo=()=>require(path.join(root,'dist-electron/electron/design/service.js')).getDesignRepository();
-  await click('[data-design-row="'+atlas.id+'"]');
+  await goHome();await click(card(atlas.id));
   await until('qa.design.getState().section?.documentId==='+JSON.stringify(atlas.id)+'&&qa.design.getState().section.sessionId==="s1"','Atlas opens with its latest chat');
   await until('document.querySelectorAll("[data-design-section] .design-board").length===3','Atlas canvas');
   await click('[data-design-chat-switcher]');
@@ -316,7 +323,7 @@ app.whenReady().then(async()=>{
   await call('s11','design_update',{documentId:atlas.id,operationId:'u11',operations:[{type:'add',name:'Diet',width:390,height:844,html:page('Eat well, slowly','#eef6ee')}]});
   await until('document.querySelectorAll("[data-design-section] .design-board").length===4','the new chat drew on the same canvas');
   assert.deepEqual(designRepo().chats(atlas.id),['s11','s1']);
-  await until('document.querySelector("[data-design-row=\\"'+atlas.id+'\\"]")?.textContent.includes("2 chats")','the library counts its chats');
+  await until('(qa.design.getState().library??[]).find(d=>d.id==='+JSON.stringify(atlas.id)+')?.chats.length===2','the library knows its chats');
   // Back to the first chat: its conversation, and History says which chat made the new version.
   await click('[data-design-chat-switcher]');
   await until('document.querySelectorAll(".design-chat-menu [data-design-chat]").length===2','both chats listed');
@@ -328,14 +335,17 @@ app.whenReady().then(async()=>{
   await until('document.querySelector(".design-history [data-version-chat=s11]")?.textContent.includes("Plan the diet app")','History names the other chat');
   await shot('design-history-chats');
   await click('[aria-label="Close history"]');
-  // Deleting a design asks first, then removes it; the chat that made it stays.
+  // Deleting a design (from its card on the home) asks first, then removes it; the chat that made it stays.
+  await goHome();
   await js('document.querySelector("[data-design-delete=\\"'+created.id+'\\"]").click()');
   await until('[...document.querySelectorAll("[role=dialog] button, [role=alertdialog] button")].some(b=>b.textContent.trim()==="Delete design")','asks before deleting');
   await js('[...document.querySelectorAll("[role=dialog] button, [role=alertdialog] button")].find(b=>b.textContent.trim()==="Delete design").click()');
-  await until('!document.querySelector("[data-design-row=\\"'+created.id+'\\"]")','gone from the library');
+  await until('!document.querySelector(\''+card(created.id)+'\')','gone from the home');
   assert.throws(()=>designRepo().read('s9',created.id),/not found/i);
   assert.equal(await js('!!qa.app.getState().sessions.s9'),true,'its chat stays');
-  assert.equal(await js('qa.design.getState().section?.documentId'),atlas.id,'the open design is untouched');
+  assert(await js('!!document.querySelector(\''+card(atlas.id)+'\')'),'the other designs stay');
+  await click(card(atlas.id));
+  await until('document.querySelectorAll("[data-design-section] .design-board").length===4','Atlas again');
 
   // Dark theme: the canvas, dock and library follow the theme's tokens.
   nativeTheme.themeSource='dark';
@@ -355,6 +365,15 @@ app.whenReady().then(async()=>{
   await until('qa.app.getState().activeRightUtilityTab==="design:'+atlas.id+'"','design tab beside it');
   await until('document.querySelectorAll(".design-panel .design-board").length===4','design tab canvas');
   await shot('design-pane');
+  // Fullscreen from the pane's tab bar, for a design and for the Designs list.
+  for(const tab of ['design:'+atlas.id,'design']){
+    await js('qa.app.getState().setActiveRightUtilityTab('+JSON.stringify(tab)+')');await delay(200);
+    await click('[aria-label="Enter fullscreen"]');
+    await until('qa.app.getState().rightPanelFullscreen==="design"&&!!document.querySelector(\'[aria-label="Exit fullscreen"]\')',tab+' fullscreen');
+    await delay(300);await shot('design-pane-fullscreen-'+(tab==='design'?'list':'canvas'));
+    await click('[aria-label="Exit fullscreen"]');
+    await until('qa.app.getState().rightPanelFullscreen===null',tab+' back from fullscreen');
+  }
 
   console.log(JSON.stringify({ok:true,errors:errors.filter(e=>!/No handler registered|Failed to load resource|Blocked script execution in 'about:srcdoc'/.test(e)).slice(0,6)}));app.exit(0);
  }catch(e){console.error(e);await shot('failure').catch(()=>{});console.log(JSON.stringify({errors:errors.slice(0,10)}));app.exit(1)}

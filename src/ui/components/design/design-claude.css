@@ -270,3 +270,14 @@
 .design-document-list .design-document-card-body strong { font-size: 13px; font-weight: 500; line-height: 19px; color: var(--d-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .design-document-list .design-document-card-body span { font-size: 12px; line-height: 17px; color: var(--d-muted); }
 .design-document-list .design-document-tag { position: absolute; top: 8px; left: 8px; padding: 1px 6px; border-radius: 5px; background: var(--d-popover); box-shadow: 0 0 0 1px var(--d-line); color: var(--d-secondary); font-size: 11px; line-height: 16px; }
+/* A design card's delete, over its cover on hover (the Design section's home). */
+.design-document-item { position: relative; min-width: 0; }
+.design-panel .design-document-item .design-document-delete { position: absolute; top: 8px; right: 8px; display: inline-grid; place-items: center; width: 26px; height: 26px; padding: 0; border-radius: 7px; background: var(--d-popover); box-shadow: 0 0 0 1px var(--d-line); color: var(--d-secondary); opacity: 0; transition: opacity 120ms var(--d-ease); }
+.design-document-item:hover .design-document-delete, .design-document-item .design-document-delete:focus-visible { opacity: 1; }
+.design-panel .design-document-item .design-document-delete:hover { color: var(--d-text); background: var(--d-popover); }
+/* The Design section's home: every design, by project. */
+.design-panel.design-home { overflow-y: auto; padding: 28px 32px 40px; }
+.design-home-group { margin-top: 26px; }
+.design-home-group > h3 { margin: 0; font-size: 12.5px; font-weight: 500; color: var(--d-muted); }
+.design-home-group .design-document-list { margin-top: 12px; }
+.design-panel .design-document-list .design-document-card { width: 100%; }

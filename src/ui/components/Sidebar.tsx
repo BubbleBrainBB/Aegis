@@ -26,7 +26,6 @@ import type {
   PaletteThread,
 } from './search/palette-ranking';
 import { FolderTreeView } from './FolderTreeView';
-import { DesignSidebarPanel } from './design/DesignSidebarPanel';
 import { CappedScrollbar } from './CappedScrollbar';
 import { DEFAULT_WORKSPACE_CHANNEL_ID } from '../../shared/types';
 import { getMessageContentBlocks } from '../utils/message-content';
@@ -428,9 +427,6 @@ export function Sidebar() {
             style={{ width: sidebarWidth, minWidth: sidebarWidth }}
             aria-hidden={sidebarHidden}
           >
-            {activeWorkspace === 'design' ? (
-              <DesignSidebarPanel />
-            ) : (
             <div className="flex min-h-0 flex-1 flex-col">
               <div className="flex items-center justify-between pb-1 pl-3.5 pr-2 pt-2.5">
                 <div className="aegis-sidebar-brand font-semibold leading-none tracking-[-0.02em] text-[var(--text-primary)]">
@@ -496,7 +492,6 @@ export function Sidebar() {
                 <CappedScrollbar scrollRef={sidebarScrollRef} />
               </div>
             </div>
-            )}
           </div>
 
           {!sidebarCollapsed ? (

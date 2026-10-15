@@ -2337,8 +2337,9 @@ export const useAppStore = create<Store>()(
   },
 
   setRightPanelFullscreen: (target) => {
-    if (target === 'images') {
-      set({ rightPanelFullscreen: 'images', rightUtilityPanelHidden: false, browserPanelOpen: false });
+    // Images, a design and review just take the whole window; the panel stays shown.
+    if (target === 'images' || target === 'design' || target === 'review') {
+      set({ rightPanelFullscreen: target, rightUtilityPanelHidden: false, browserPanelOpen: false });
       return;
     }
     if (target === 'browser') {

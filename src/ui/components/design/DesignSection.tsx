@@ -1,30 +1,27 @@
-import { useEffect, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { MainSheet } from "../MainSheet";
 import { DesignPanel } from "./DesignPanel";
 import { DesignAgentDock } from "./DesignAgentDock";
-import { liveDesignChat, startDesignChat, startNewDesign, useDesignLibrary, useDesignStore } from "../../store/useDesignStore";
+import { deleteDesign, openDesignInSection, startNewDesign, useDesignLibrary, useDesignStore } from "../../store/useDesignStore";
+import { DesignCards } from "./DesignCards";
 import { useAppStore } from "../../store/useAppStore";
-import { SquarePen } from "../icons";
+import { Plus, SquarePen } from "../icons";
 import type { CodexModelConfig } from "../../types";
 
 const leaf = (path: string | null | undefined) => (path ? path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path : "");
 
 /**
- * The Design section: the whole main area is the canvas, its toolbar sits in
- * the title bar, and the design's conversation floats over it as a small
+ * The Design section: a home of every design as cards, by project. Opening
+ * one gives the whole main area to its canvas, the toolbar sits in the title
+ * bar (← back home), and the design's conversation floats over it as a small
  * dock the user can move, open into a chat, or tuck away.
  */
 export function DesignSection({ codexModelConfig }: { codexModelConfig: CodexModelConfig }) {
   const library = useDesignLibrary();
   const section = useDesignStore((s) => s.section);
-  const newest = library[0];
-  // With nothing picked, the newest design and its latest chat (a new chat if
-  // every chat that worked on it is gone).
-  const newestChat = useAppStore((s) => (newest ? liveDesignChat(newest) : undefined) ?? (newest && s.sessionsLoaded ? null : undefined));
-  const target = section ?? (newest && newestChat ? { sessionId: newestChat, documentId: newest.id } : null);
-  useEffect(() => {
-    if (!section && newest && newestChat === null) startDesignChat(newest);
-  }, [section, newest, newestChat]);
+  // Nothing picked: the home.
+  const target = section;
   const [toolbarHost, setToolbarHost] = useState<HTMLDivElement | null>(null);
   const stage = useRef<HTMLDivElement>(null);
   const project = useAppStore((s) => (target ? s.sessions[target.sessionId]?.projectCwd ?? s.sessions[target.sessionId]?.cwd : null));
@@ -36,15 +33,15 @@ export function DesignSection({ codexModelConfig }: { codexModelConfig: CodexMod
           <div ref={setToolbarHost} className="flex h-full min-w-0 flex-1 items-center" data-design-titlebar />
         ) : (
           <div className="flex min-w-0 items-baseline gap-2 text-[13.5px]">
-            <span className="font-semibold text-[var(--text-primary)]">{target ? "New design" : "Design"}</span>
-            {project ? <span className="truncate text-[var(--text-muted)]">{leaf(project)}</span> : null}
+            <span className="font-semibold text-[var(--text-primary)]">{target ? "New design" : "Designs"}</span>
+            {target && project ? <span className="truncate text-[var(--text-muted)]">{leaf(project)}</span> : null}
           </div>
         )
       }
     >
       <div ref={stage} className="relative min-h-0 flex-1" data-design-section>
         {!target ? (
-          newest ? null : <DesignSectionEmpty />
+          library.length ? <DesignHome /> : <DesignSectionEmpty />
         ) : target.documentId ? (
           <DesignPanel
             // One canvas per design: switching its chat keeps the view.
@@ -72,6 +69,43 @@ export function DesignSection({ codexModelConfig }: { codexModelConfig: CodexMod
         )}
       </div>
     </MainSheet>
+  );
+}
+
+/** Every design as a card, grouped by its project; opening one shows its canvas. */
+function DesignHome() {
+  const designs = useDesignLibrary();
+  const projects = useAppStore(
+    useShallow((s) =>
+      Object.fromEntries(
+        designs.map((d) => [d.id, d.project ?? s.sessions[d.sessionId]?.projectCwd ?? s.sessions[d.sessionId]?.cwd ?? ""]),
+      ),
+    ),
+  );
+  const groups = useMemo(() => {
+    const byProject = new Map<string, typeof designs>();
+    for (const d of designs) byProject.set(projects[d.id] || "", [...(byProject.get(projects[d.id] || "") ?? []), d]);
+    return [...byProject.entries()];
+  }, [designs, projects]);
+  return (
+    <section className="design-panel design-library design-home" aria-label="Designs" data-design-home>
+      <div className="design-library-heading">
+        <div>
+          <h2>Designs</h2>
+          <p>{designs.length} {designs.length === 1 ? "design" : "designs"}</p>
+        </div>
+        <button type="button" className="design-library-new" onClick={() => startNewDesign()}>
+          <Plus size={14} />
+          New design
+        </button>
+      </div>
+      {groups.map(([project, rows]) => (
+        <div key={project || "none"} className="design-home-group" data-design-project={project || ""}>
+          <h3>{leaf(project) || "No project"}</h3>
+          <DesignCards designs={rows} onOpen={(d) => openDesignInSection(d)} onDelete={(d) => void deleteDesign(d)} />
+        </div>
+      ))}
+    </section>
   );
 }
 
