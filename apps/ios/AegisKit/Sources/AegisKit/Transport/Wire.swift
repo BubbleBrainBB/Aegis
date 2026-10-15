@@ -12,25 +12,29 @@ public protocol WireConnection: AnyObject, Sendable {
     func close()
 }
 
-/// The relay WebSocket. One Noise message is sent per binary frame.
+/// The relay WebSocket, or a direct one to the Mac. One Noise message is sent per binary frame.
 public final class RelaySocket: NSObject, WireConnection, URLSessionWebSocketDelegate, @unchecked Sendable {
     private let task: URLSessionWebSocketTask
-    private let session: URLSession
     private let opened = OpenSignal()
 
-    public init(url: URL) {
+    /// One session for every socket, so reconnects can resume TLS instead of a full handshake.
+    private static let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 15
         config.waitsForConnectivity = false
         let queue = OperationQueue()
         queue.maxConcurrentOperationCount = 1
-        let delegateProxy = DelegateProxy()
-        session = URLSession(configuration: config, delegate: delegateProxy, delegateQueue: queue)
-        task = session.webSocketTask(with: url)
+        return URLSession(configuration: config, delegate: nil, delegateQueue: queue)
+    }()
+
+    public init(url: URL) {
+        task = Self.session.webSocketTask(with: url)
         // The relay allows 256 KiB; Noise messages are at most 64 KiB.
         task.maximumMessageSize = 1 << 20
         super.init()
+        let delegateProxy = DelegateProxy()
         delegateProxy.owner = self
+        task.delegate = delegateProxy
         task.resume()
     }
 
@@ -56,7 +60,6 @@ public final class RelaySocket: NSObject, WireConnection, URLSessionWebSocketDel
 
     public func close() {
         task.cancel(with: .normalClosure, reason: nil)
-        session.invalidateAndCancel()
         opened.fail(AegisError.connection("Connection closed"))
     }
 
@@ -65,7 +68,7 @@ public final class RelaySocket: NSObject, WireConnection, URLSessionWebSocketDel
         opened.fail(error ?? AegisError.connection("Connection closed"))
     }
 
-    /// Breaks the URLSession → delegate retain cycle.
+    /// The task holds its delegate; this keeps that from holding the socket.
     private final class DelegateProxy: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable {
         weak var owner: RelaySocket?
         func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {

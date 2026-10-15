@@ -329,8 +329,13 @@ function turnCardsByTimelineIndex(transcript: Transcript, turns: TurnChangeSumma
   return map;
 }
 
-export function renderSession(messages: RemoteMessage[], running: boolean, status: string): SessionModel {
-  const transcript = buildTranscript(messages, running);
+/** `transcript` may be a cached buildTranscript() of the same messages and `running`. */
+export function renderSession(
+  messages: RemoteMessage[],
+  running: boolean,
+  status: string,
+  transcript: Transcript = buildTranscript(messages, running),
+): SessionModel {
   const items: SessionItem[] = [];
   const used = new Set<string>();
   const unique = (id: string) => {

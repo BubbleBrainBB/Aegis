@@ -119,6 +119,10 @@ let gateway: RemoteGateway | undefined;
 export function captureRemoteEvent(event: ServerEvent) {
   gateway?.capture(event);
 }
+/** The session list changed outside session events (archive, unarchive). */
+export function remoteListChanged() {
+  gateway?.listChanged();
+}
 export function closeRemoteGateway() {
   gateway?.close();
 }
@@ -162,6 +166,8 @@ export function setupRemoteIPC(
     gateway = new RemoteGateway(journal, {
       ...actions,
       environment: app.isPackaged ? "production" : "development",
+      // Phones on this Mac's network connect directly; AEGIS_REMOTE_LAN=0 keeps them on the relay.
+      ...(process.env.AEGIS_REMOTE_LAN === "0" ? { lan: false as const } : {}),
       projects: listProjects,
       options: agentOptions,
       capabilities: (provider, projectPath, sessionId) => {

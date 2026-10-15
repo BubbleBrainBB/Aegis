@@ -97,14 +97,93 @@ public struct RemoteSnapshot: Codable, Equatable, Sendable {
     public let machineName: String
     public let environment: RemoteEnvironment
     public let serverTime: Double
-    public let projects: [RemoteProject]
-    public let sessions: [RemoteSession]
-    public let permissions: [RemotePermission]
+    public var projects: [RemoteProject]
+    public var sessions: [RemoteSession]
+    public var permissions: [RemotePermission]
     public var sessionId: String?
     public var messages: [RemoteMessage]?
     public var before: Double?
-    public let revision: String
+    public var revision: String
     public var historyRevision: String?
+    /// Committed messages in the session on the Mac (Macs that push events).
+    public var historyCount: Int?
+    /// `messages` follow the tail the phone sent, from this index.
+    public var appendFrom: Int?
+    /// The last event sent before this snapshot.
+    public var seq: Int?
+}
+
+/// A session's loaded history on the phone.
+public struct SessionHistory: Codable, Equatable, Sendable {
+    /// Committed messages, oldest first. The reply being streamed is `live`.
+    public var messages: [RemoteMessage]
+    /// Streamed text the Mac hasn't committed yet.
+    public var live: String?
+    /// Cursor for the page before `messages`; nil once the start is loaded.
+    public var before: Double?
+    public var historyRevision: String?
+    /// Committed messages on the Mac; nil from Macs that don't sync by tail.
+    public var count: Int?
+    public var hostBootId: String
+    /// Changes whenever `messages` do, so views compare one number instead of the messages.
+    public var version: Int
+
+    public init(messages: [RemoteMessage], live: String? = nil, before: Double? = nil, historyRevision: String? = nil,
+                count: Int? = nil, hostBootId: String, version: Int) {
+        self.messages = messages
+        self.live = live
+        self.before = before
+        self.historyRevision = historyRevision
+        self.count = count
+        self.hostBootId = hostBootId
+        self.version = version
+    }
+}
+
+/// Everything in a snapshot but a session's messages, as an event carries it.
+public struct RemoteState: Codable, Equatable, Sendable {
+    public let projects: [RemoteProject]
+    public let sessions: [RemoteSession]
+    public let permissions: [RemotePermission]
+}
+
+/// Where the Mac listens on its own networks.
+public struct RemoteLan: Codable, Equatable, Sendable {
+    public let port: Int
+    public let addresses: [String]
+}
+
+/// A change the Mac pushes to phones that asked for events (src/shared/remote/protocol.ts RemoteEvent).
+public struct RemoteEvent: Decodable, Sendable {
+    public struct History: Decodable, Sendable {
+        public let sessionId: String
+        public let messages: [RemoteMessage]
+        public let appendFrom: Int?
+        public let before: Double?
+        public let count: Int
+        public let revision: String
+    }
+    public struct Live: Decodable, Sendable {
+        public enum Change: Equatable, Sendable { case append(String), replace(String?) }
+        public let sessionId: String
+        public let change: Change
+
+        private enum Keys: String, CodingKey { case sessionId, append, text }
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: Keys.self)
+            sessionId = try c.decode(String.self, forKey: .sessionId)
+            if let append = try c.decodeIfPresent(String.self, forKey: .append) {
+                change = .append(append)
+            } else {
+                // "text": null clears it.
+                change = .replace(try c.decodeIfPresent(String.self, forKey: .text))
+            }
+        }
+    }
+    public let seq: Int
+    public let state: RemoteState?
+    public let history: History?
+    public let live: Live?
 }
 
 public struct CommandResult: Codable, Equatable, Sendable {

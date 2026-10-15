@@ -21,6 +21,8 @@ export interface RemoteConfig {
   /** Older configs limited the phone to these projects; every project is shared now. */
   projectIds?: string[];
   enabled: boolean;
+  /** Port of the direct (same network) listener, kept so phones' saved addresses stay valid. */
+  lanPort?: number;
 }
 export interface RemoteDevice {
   peerId: string;

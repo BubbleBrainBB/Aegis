@@ -100,6 +100,21 @@ test("a finished turn with edits gets the desktop's files-changed card", () => {
   assert.deepEqual(files[0].lines.map((l) => l.type), ["hunk", "ctx", "del", "add"]);
 });
 
+test("keyed history: streamed text renders without resending or rebuilding the history", () => {
+  const history = [prompt("p1", "Explain", 1000), toolUse("a1", "t1", "ls", 2000), toolResult("r1", "t1", "ok", 3000)];
+  const plain = call("renderSession", { messages: [...history, { id: "s:live", role: "assistant", text: "Partial", streaming: true }], running: true, status: "running" });
+  const first = call("renderSession", { key: "s:1", messages: history, live: "Partial", running: true, status: "running" });
+  assert.deepEqual(first, plain, "same model as the unkeyed call");
+  // Only the text moves on: no messages cross the bridge.
+  const next = call("renderSession", { key: "s:1", live: "Partial answer", running: true, status: "running" });
+  assert.equal(JSON.stringify(next).includes("Partial answer"), true);
+  // Finished: running changes, so the transcript is rebuilt from the kept history.
+  const done = call("renderSession", { key: "s:1", live: null, running: false, status: "idle" });
+  assert.deepEqual(done, call("renderSession", { messages: history, running: false, status: "idle" }));
+  // A key the core doesn't hold asks Swift to send the messages.
+  assert.equal(call("renderSession", { key: "s:2", live: "x", running: true, status: "running" }).error, "STALE_HISTORY");
+});
+
 test("catalog evaluates per-model efforts and fast mode", () => {
   const codex = call("catalog", {
     provider: "codex",

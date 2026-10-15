@@ -4,6 +4,11 @@ import Testing
 @testable import AegisKit
 
 @Suite struct CryptoTests {
+    @Test func lanTokenMatchesTheDesktop() {
+        // Same vector as scripts/remote/gateway-events.test.mjs.
+        #expect(RemoteClient.lanToken(String(repeating: "r", count: 64)) == "3bad58f0c6097c530dac4d10368bc56cf3d636a778ecd06595a6fe3a02724233")
+    }
+
     @Test func peerIdMatchesLibp2pVector() throws {
         // Vector produced by @libp2p/crypto + @libp2p/peer-id for seed = 32 × 0x07.
         let key = try Curve25519.Signing.PrivateKey(rawRepresentation: Data(repeating: 7, count: 32))

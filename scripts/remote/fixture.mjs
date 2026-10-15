@@ -138,6 +138,8 @@ let pending = true;
 let gateway;
 const runtime = {
   environment: "fixture",
+  // The direct listener on loopback: the simulator and tests reach it like a phone on the Mac's Wi-Fi.
+  lan: { host: "127.0.0.1" },
   projects: () => [
     { id: "project", name: "coworker", path: "/fixture/coworker", isRepo: true },
     { id: "site", name: "aegis-site", path: "/fixture/aegis-site", isRepo: false },
@@ -214,18 +216,28 @@ const runtime = {
   },
   send: async (id, prompt, extras) => {
     console.log("fixture send", JSON.stringify({ settings: extras?.settings, attachments: extras?.attachments?.map((a) => a.name) }));
-    history[id].push(
-      { id: crypto.randomUUID(), role: "user", text: prompt },
-      {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        text: "Got the follow-up. The test session is updated.",
-      },
+    // Streams the reply in a few deltas, then commits it, like a provider turn.
+    const session = sessions.find((s) => s.id === id);
+    const reply = "Got the follow-up. The test session is updated.";
+    const chunks = reply.match(/.{1,12}/g);
+    history[id].push({ id: crypto.randomUUID(), role: "user", text: prompt });
+    session.status = "running";
+    gateway.capture({ type: "stream.user_prompt", payload: { sessionId: id, prompt } });
+    gateway.capture({ type: "session.status", payload: { sessionId: id, status: "running" } });
+    chunks.forEach((text, i) =>
+      setTimeout(() => {
+        gateway.capture({
+          type: "stream.message",
+          payload: { sessionId: id, message: { type: "stream_event", event: { delta: { type: "text_delta", text } } } },
+        });
+      }, 100 + i * 80),
     );
-    gateway.capture({
-      type: "session.status",
-      payload: { sessionId: id, status: "idle" },
-    });
+    setTimeout(() => {
+      history[id].push({ id: crypto.randomUUID(), role: "assistant", text: reply });
+      session.status = "idle";
+      gateway.capture({ type: "stream.message", payload: { sessionId: id, message: { type: "assistant" } } });
+      gateway.capture({ type: "session.status", payload: { sessionId: id, status: "idle" } });
+    }, 200 + chunks.length * 80);
     return true;
   },
   stop: (id) => {

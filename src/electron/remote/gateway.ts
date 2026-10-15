@@ -1,17 +1,25 @@
-import { randomBytes, randomUUID, createHash, timingSafeEqual } from "crypto";
+import { randomBytes, randomUUID, createHash, createHmac, timingSafeEqual } from "crypto";
 import { listProjectDir, readProjectFile, searchProjectFiles } from "./project-files";
-import { hostname } from "os";
+import { hostname, networkInterfaces } from "os";
 import { join } from "path";
+import type { AddressInfo } from "net";
 import WebSocket from "ws";
 import { RemoteJournal } from "./journal";
 import { defaultRelay, hostProof, identityKeys, pushRequest, relayHttpOrigin, roomFor } from "./relay-auth";
 import {
+  EMPTY_HISTORY,
+  EVENTS_FEATURE,
   REMOTE_PROTOCOL,
+  historyTailSchema,
   requestSchema,
+  type HistoryTail,
+  type RemoteEvent,
+  type RemoteLan,
   type RemoteMessage,
   type RemotePermission,
   type RemoteSession,
   type RemoteProject,
+  type RemoteState,
   type CommandResult,
   type Pairing,
   type RemoteEnvironment,
@@ -32,6 +40,16 @@ export interface RemoteTaskExtras {
 }
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 const UPLOAD_TTL = 10 * 60 * 1000;
+/** Pushed events are coalesced at most this long; older phones get `changed` at the old pace. */
+const EVENT_INTERVAL = 50;
+const CHANGED_INTERVAL = 180;
+/** A session's projected history is reused this long unless one of its events invalidates it. */
+const HISTORY_TTL = 3000;
+/** Bursts of commits re-read one session's history at most this often. */
+const HISTORY_MIN_INTERVAL = 150;
+const PAGE_MESSAGES = 100;
+const PAGE_BYTES = 512 * 1024;
+const MAX_LAN_SOCKETS = 8;
 
 interface Project extends RemoteProject {
   path: string;
@@ -39,8 +57,22 @@ interface Project extends RemoteProject {
 const permissionDetail = (p: PermissionRequestPayload) => JSON.stringify(p.input, null, 2) ?? "";
 const canApproveRemotely = (p: PermissionRequestPayload) =>
   !/question|plan|computer/i.test(p.toolName) && permissionDetail(p).length <= 24000;
+const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
+const sameSecret = (a: unknown, b: string) => {
+  if (typeof a !== "string") return false;
+  const x = Buffer.from(a);
+  const y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
+};
+/**
+ * What a phone proves on a direct connection. Derived from the route token, so the
+ * relay credential itself never travels over plain ws:// on a network that may not be ours.
+ */
+export const lanToken = (routeToken: string) => createHmac("sha256", routeToken).update("aegis.lan/1").digest("hex");
 export interface RemoteRuntime {
   environment?: RemoteEnvironment;
+  /** Interface for the direct same-network listener (default all); false turns it off. */
+  lan?: { host: string } | false;
   projects(): Project[];
   sessions(): RemoteSession[];
   history(id: string): RemoteMessage[];
@@ -65,24 +97,79 @@ export interface RemoteRuntime {
   hasPermission(id: string, toolUseId: string): boolean;
   confirm(name: string, peerId: string): Promise<boolean>;
 }
+type Channel = Awaited<ReturnType<typeof import("../../shared/remote/secure-channel").secureChannel>>;
+/** One authenticated phone connection, through the relay or directly. */
+interface Link {
+  channel: Channel;
+  peerId: string;
+  transport: "relay" | "lan";
+  /** The phone takes pushed events; otherwise it gets `changed` and polls. */
+  events: boolean;
+  /** The phone's app is off screen (switched away or locked). */
+  away: boolean;
+  seq: number;
+  /** What this phone already has, so events carry only the difference. */
+  subscribed?: string;
+  state?: string;
+  history?: { sessionId: string; count: number; hash: string };
+  live?: { sessionId: string; id: number; total: number };
+}
+/** A session's projected history with a hash chain over it (chain[i] covers messages 0…i). */
+interface History {
+  at: number;
+  messages: RemoteMessage[];
+  chain: string[];
+  sizes: number[];
+}
+/** The last `max` UTF-16 units, without a split surrogate pair at the front. */
+function lastChars(text: string, max: number) {
+  if (text.length <= max) return text;
+  const tail = text.slice(-max);
+  const first = tail.charCodeAt(0);
+  return first >= 0xdc00 && first <= 0xdfff ? tail.slice(1) : tail;
+}
+/** Private IPv4 addresses of this Mac a phone on the same network can reach. */
+function lanAddresses(host: string): string[] {
+  if (host !== "0.0.0.0") return [host];
+  const result: string[] = [];
+  for (const list of Object.values(networkInterfaces()))
+    for (const entry of list ?? []) {
+      if ((entry.family !== "IPv4" && (entry.family as unknown) !== 4) || entry.internal) continue;
+      const [a, b] = entry.address.split(".").map(Number);
+      const reachable =
+        a === 10 || (a === 172 && b >= 16 && b < 32) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b < 128);
+      if (reachable && !result.includes(entry.address)) result.push(entry.address);
+    }
+  // Home networks first; carrier-grade NAT space (Tailscale and the like) last.
+  return result.sort((x, y) => Number(x.startsWith("100.")) - Number(y.startsWith("100."))).slice(0, 6);
+}
 export class RemoteGateway {
   readonly hostBootId = randomUUID();
   private socket?: WebSocket;
-  private channel?: Awaited<
-    ReturnType<
-      typeof import("../../shared/remote/secure-channel").secureChannel
-    >
-  >;
   private retry?: ReturnType<typeof setTimeout>;
   private timer?: ReturnType<typeof setTimeout>;
+  private eventTimer?: ReturnType<typeof setTimeout>;
+  private lastFlush = 0;
+  /** Bumps when the gateway closes or is reconfigured; connections from before end. */
   private generation = 0;
+  /** Bumps per relay attempt; a stale socket's close must not schedule a retry. */
+  private relayAttempt = 0;
+  private relayStatus = "disabled";
   private invite?: { value: string; expiresAt: number; claimed: boolean };
   private runIds = new Map<string, string>();
   private permissions = new Map<string, PermissionRequestPayload>();
-  private live = new Map<string, Map<string, RemoteMessage>>();
-  private activePeer?: string;
-  /** The connected phone's app is off screen (switched away or locked). */
-  private peerAway = false;
+  private live = new Map<string, { id: number; text: string; total: number }>();
+  private liveIds = 0;
+  private histories = new Map<string, History>();
+  private historyReadAt = new Map<string, number>();
+  private links = new Set<Link>();
+  /** Per phone, its newest connection: the one that gets events. */
+  private current = new Map<string, Link>();
+  private stateDirty = false;
+  private historyDirty = new Set<string>();
+  private liveDirty = new Set<string>();
+  private lanServer?: WebSocket.Server;
+  private lanHeartbeat?: ReturnType<typeof setInterval>;
   private pendingCommands = new Set<string>();
   private uploads = new Map<string, { peer: string; name: string; total: number; parts: Buffer[]; bytes: number; at: number }>();
   private uploaded = new Map<string, { peer: string; attachment: Attachment; at: number }>();
@@ -90,11 +177,14 @@ export class RemoteGateway {
   private relayError?: string;
   private running = new Set<string>();
   private notified = new Map<string, number>();
-  status = "disabled";
   constructor(
     readonly journal: RemoteJournal,
     private runtime: RemoteRuntime,
   ) {}
+  /** A phone connected either way counts as connected; otherwise the relay's state. */
+  get status() {
+    return this.relayStatus !== "disabled" && this.links.size ? "connected" : this.relayStatus;
+  }
   private crypto(): typeof import("../../shared/remote/secure-channel") {
     return require(join(__dirname, "secure-channel.cjs"));
   }
@@ -145,7 +235,8 @@ export class RemoteGateway {
   }
   pairing(): Pairing {
     const config = this.journal.state.config;
-    if (!config?.enabled || !["waiting", "connected"].includes(this.status))
+    // Pairing always goes through the relay: the phone knows no other way to reach this Mac yet.
+    if (!config?.enabled || this.relayStatus !== "waiting")
       throw new Error("Wait for the relay connection");
     this.invite = {
       value: randomBytes(32).toString("hex"),
@@ -169,12 +260,12 @@ export class RemoteGateway {
       s.devices = s.devices.filter((d) => d.peerId !== peerId);
     });
     this.invite = undefined;
-    if (this.activePeer === peerId) {
+    for (const link of this.links) {
+      if (link.peerId !== peerId) continue;
       try {
-        this.channel?.send({ type: "revoked" });
+        link.channel.send({ type: "revoked" });
       } catch {}
-      const socket = this.socket;
-      setTimeout(() => socket?.close(), 100);
+      setTimeout(() => link.channel.close(), 100);
     }
     return this.describe();
   }
@@ -187,14 +278,20 @@ export class RemoteGateway {
   }
   close() {
     this.generation++;
+    this.relayAttempt++;
     clearTimeout(this.retry);
     clearTimeout(this.timer);
+    clearTimeout(this.eventTimer);
+    this.timer = undefined;
+    this.eventTimer = undefined;
     this.invite = undefined;
-    this.channel?.close();
+    for (const link of this.links) link.channel.close();
+    this.links.clear();
+    this.current.clear();
     this.socket?.close();
-    this.channel = undefined;
-    this.activePeer = undefined;
-    this.status = "disabled";
+    this.socket = undefined;
+    this.stopLan();
+    this.relayStatus = "disabled";
   }
   connect() {
     let config = this.journal.state.config;
@@ -208,9 +305,11 @@ export class RemoteGateway {
       });
       config = this.journal.state.config!;
     }
-    const generation = ++this.generation;
+    this.startLan();
+    const attempt = ++this.relayAttempt;
+    const generation = this.generation;
     clearTimeout(this.retry);
-    this.status = "connecting";
+    this.relayStatus = "connecting";
     const socket = new WebSocket(config.relay, {
       maxPayload: 256 * 1024,
       perMessageDeflate: false,
@@ -262,31 +361,126 @@ export class RemoteGateway {
       if (type === "challenge" && typeof message.nonce === "string" && /^[a-f0-9]{64}$/.test(message.nonce))
         socket.send(JSON.stringify({ type: "proof", signature: keys.sign(hostProof(message.nonce, room)).toString("base64") }));
       else if (type === "registered") {
-        this.status = "waiting";
+        this.relayStatus = "waiting";
         this.attempt = 0;
         this.relayError = undefined;
       } else if (type === "peer") {
         socket.removeEventListener("message", control);
-        void this.accept(socket, generation).catch(() => socket.close());
+        void this.accept(socket, "relay", generation).catch(() => socket.close());
       } else socket.close();
     };
     socket.addEventListener("message", control);
     socket.on("error", () => {
-      this.status = "offline";
+      if (attempt === this.relayAttempt) this.relayStatus = "offline";
     });
     socket.on("close", (code: number, reason: Buffer) => {
-      if (generation !== this.generation) return;
-      this.channel = undefined;
-      this.activePeer = undefined;
+      if (attempt !== this.relayAttempt) return;
       // 1008 is the relay refusing this Mac; retrying fast would not change that.
       const rejected = code === 1008;
-      this.status = rejected ? "rejected" : "offline";
+      this.relayStatus = rejected ? "rejected" : "offline";
       if (rejected) this.relayError = reason.toString().slice(0, 120) || "Connection rejected";
-      const base = rejected ? 60000 : Math.min(60000, 1500 * 2 ** this.attempt++);
+      // The relay drops this Mac's socket whenever its phone leaves; come straight back.
+      const base = rejected ? 60000 : code === 1012 && this.attempt === 0 ? 100 : Math.min(60000, 1500 * 2 ** this.attempt++);
       this.retry = setTimeout(() => this.connect(), base * (0.8 + Math.random() * 0.4));
     });
   }
-  private async accept(socket: WebSocket, generation: number) {
+  /** Listens on this Mac's own networks so a phone nearby can skip the relay. */
+  private startLan() {
+    const config = this.journal.state.config;
+    const lan = this.runtime.lan ?? { host: "0.0.0.0" };
+    if (this.lanServer || !config?.enabled || lan === false) return;
+    const server = new WebSocket.Server({
+      host: lan.host,
+      port: config.lanPort ?? 0,
+      maxPayload: 256 * 1024,
+      perMessageDeflate: false,
+    });
+    this.lanServer = server;
+    server.on("error", (error: NodeJS.ErrnoException) => {
+      if (this.lanServer !== server) return;
+      this.stopLan();
+      // The saved port is taken now: take any free one; phones learn it on their next connection.
+      if (error.code === "EADDRINUSE" && this.journal.state.config?.lanPort) {
+        this.journal.update((s) => {
+          if (s.config) delete s.config.lanPort;
+        });
+        this.startLan();
+      }
+    });
+    server.on("listening", () => {
+      const port = (server.address() as AddressInfo).port;
+      if (this.journal.state.config && this.journal.state.config.lanPort !== port)
+        this.journal.update((s) => {
+          if (s.config) s.config.lanPort = port;
+        });
+    });
+    const alive = new WeakSet<WebSocket>();
+    server.on("connection", (socket) => {
+      if (server.clients.size > MAX_LAN_SOCKETS) {
+        socket.terminate();
+        return;
+      }
+      alive.add(socket);
+      socket.on("pong", () => alive.add(socket));
+      this.acceptLan(socket);
+    });
+    // A phone that left the network leaves a silent socket; drop it so pushes resume.
+    this.lanHeartbeat = setInterval(() => {
+      for (const socket of server.clients) {
+        if (!alive.has(socket)) {
+          socket.terminate();
+          continue;
+        }
+        alive.delete(socket);
+        socket.ping();
+      }
+    }, 10000);
+  }
+  private stopLan() {
+    clearInterval(this.lanHeartbeat);
+    const server = this.lanServer;
+    this.lanServer = undefined;
+    if (!server) return;
+    for (const socket of server.clients) socket.terminate();
+    server.close();
+  }
+  private lanInfo(): RemoteLan | undefined {
+    const address = this.lanServer?.address();
+    const lan = this.runtime.lan ?? { host: "0.0.0.0" };
+    if (!address || typeof address === "string" || lan === false) return undefined;
+    const addresses = lanAddresses(lan.host);
+    return addresses.length ? { port: address.port, addresses } : undefined;
+  }
+  /** A direct connection says which pairing it belongs to, like it would to the relay. */
+  private acceptLan(socket: WebSocket) {
+    socket.binaryType = "arraybuffer";
+    const timer = setTimeout(() => socket.terminate(), 5000);
+    socket.once("close", () => clearTimeout(timer));
+    socket.once("message", (data: WebSocket.RawData, binary: boolean) => {
+      clearTimeout(timer);
+      const config = this.journal.state.config;
+      try {
+        // binaryType is already "arraybuffer" for the Noise frames that follow.
+        const bytes = Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data as ArrayBuffer);
+        if (binary || bytes.length > 4096) throw new Error();
+        const hello = JSON.parse(bytes.toString());
+        if (
+          !config?.enabled ||
+          !hello ||
+          typeof hello !== "object" ||
+          hello.role !== "phone" ||
+          !sameSecret(hello.token, lanToken(config.routeToken))
+        )
+          throw new Error();
+      } catch {
+        socket.terminate();
+        return;
+      }
+      socket.send(JSON.stringify({ type: "peer" }));
+      void this.accept(socket, "lan", this.generation).catch(() => socket.close());
+    });
+  }
+  private async accept(socket: WebSocket, transport: Link["transport"], generation: number) {
     const config = this.journal.state.config!;
     const channel = await this.crypto().secureChannel(
       socket as any,
@@ -294,6 +488,7 @@ export class RemoteGateway {
       false,
     );
     const authTimeout = setTimeout(() => channel.close(), 15000);
+    let link: Link | undefined;
     try {
       const first = await channel.messages.next();
       const auth = first.value as any;
@@ -309,6 +504,8 @@ export class RemoteGateway {
         (d) => d.peerId === channel.peerId,
       );
       if (!device) {
+        // New phones pair through the relay; a direct connection is only for paired ones.
+        if (transport !== "relay") throw new Error("Not paired");
         const invite = this.invite;
         if (
           !invite ||
@@ -339,16 +536,37 @@ export class RemoteGateway {
       }
       clearTimeout(authTimeout);
       if (generation !== this.generation) throw new Error("Stale connection");
-      this.channel = channel;
-      this.activePeer = device.peerId;
-      this.peerAway = false;
-      this.status = "connected";
+      const features: unknown[] = Array.isArray(auth.features) ? auth.features.slice(0, 16) : [];
+      link = {
+        channel,
+        peerId: device.peerId,
+        transport,
+        events: features.includes(EVENTS_FEATURE),
+        away: false,
+        seq: 0,
+      };
+      this.links.add(link);
+      this.current.set(link.peerId, link);
+      // An event phone gets its first snapshot with the answer: one round trip less per connection.
+      let snapshot: ReturnType<RemoteGateway["snapshot"]> | undefined;
+      if (link.events) {
+        const tail = historyTailSchema.safeParse(auth.tail);
+        const sessionId = typeof auth.sessionId === "string" && auth.sessionId.length <= 160 ? auth.sessionId : undefined;
+        try {
+          snapshot = this.snapshot(sessionId, undefined, undefined, link, tail.success ? tail.data : undefined);
+        } catch {
+          snapshot = this.snapshot(undefined, undefined, undefined, link);
+        }
+      }
+      const lan = this.lanInfo();
       channel.send({
         type: "authenticated",
         environment: this.runtime.environment ?? "development",
         protocol: REMOTE_PROTOCOL,
         hostBootId: this.hostBootId,
         serverTime: Date.now(),
+        ...(lan ? { lan } : {}),
+        ...(snapshot ? { snapshot } : {}),
       });
       for await (const data of channel.messages) {
         if (
@@ -363,7 +581,8 @@ export class RemoteGateway {
           channel.send({ type: "response", id, error: "TOO_MANY_REQUESTS" });
           continue;
         }
-        void this.dispatch(data, channel.peerId)
+        const from = link;
+        void this.dispatch(data, channel.peerId, from)
           .then((result) => {
             if (generation === this.generation) channel.send(result);
           })
@@ -377,101 +596,196 @@ export class RemoteGateway {
     } finally {
       clearTimeout(authTimeout);
       channel.close();
+      if (link) this.drop(link);
     }
   }
+  private drop(link: Link) {
+    this.links.delete(link);
+    if (this.current.get(link.peerId) !== link) return;
+    // Another connection of the same phone (the relay while a direct one ended) takes over.
+    const next = [...this.links].reverse().find((l) => l.peerId === link.peerId);
+    if (!next) {
+      this.current.delete(link.peerId);
+      return;
+    }
+    this.current.set(link.peerId, next);
+    // It missed what changed meanwhile; its baselines make the next flush send exactly that.
+    this.stateDirty = true;
+    if (next.subscribed) {
+      this.historyDirty.add(next.subscribed);
+      this.liveDirty.add(next.subscribed);
+    }
+    this.schedule();
+  }
   /** Paired phones see every project and session the desktop sidebar lists. */
-  private allowedSession(sessionId: string) {
-    const session = this.runtime.sessions().find((s) => s.id === sessionId);
+  private allowedSession(sessionId: string, sessions = this.runtime.sessions()) {
+    const session = sessions.find((s) => s.id === sessionId);
     if (!session) throw new Error("SCOPE_DENIED");
     return session;
   }
-  private runId(id: string) {
-    const session = this.runtime.sessions().find((s) => s.id === id);
+  private runId(id: string, sessions = this.runtime.sessions()) {
+    const session = sessions.find((s) => s.id === id);
     if (!session || !["running", "stopping"].includes(session.status))
       return null;
     if (!this.runIds.has(id)) this.runIds.set(id, randomUUID());
     return this.runIds.get(id)!;
   }
-  snapshot(
-    sessionId?: string,
-    before?: number,
-    expectedHistoryRevision?: string,
-  ) {
-    const sessions = this.runtime
-      .sessions()
-      .map((s) => ({ ...s, runId: this.runId(s.id) }));
+  /** Projects, sessions and pending approvals: everything but a session's messages. */
+  private state(): RemoteState {
+    const listed = this.runtime.sessions();
+    const sessions = listed.map((s) => ({ ...s, runId: this.runId(s.id, listed) }));
     const visible = new Set(sessions.map((s) => s.id));
     const permissions: RemotePermission[] = [];
     for (const [requestId, p] of this.permissions) {
-      const runId = this.runId(p.sessionId);
+      const runId = this.runId(p.sessionId, listed);
       if (
         visible.has(p.sessionId) &&
         runId &&
         this.runtime.hasPermission(p.sessionId, p.toolUseId)
-      )
+      ) {
+        const detail = permissionDetail(p);
         permissions.push({
           requestId,
           sessionId: p.sessionId,
           runId,
           toolName: p.toolName,
-          detail: permissionDetail(p).length > 24000
-            ? permissionDetail(p).slice(0, 24000) + "\n… Too long to show here. Review the full request on your Mac."
-            : permissionDetail(p),
+          detail: detail.length > 24000
+            ? detail.slice(0, 24000) + "\n… Too long to show here. Review the full request on your Mac."
+            : detail,
           canApprove: canApproveRemotely(p),
         });
-    }
-    let messages: RemoteMessage[] | undefined;
-    let historyRevision: string | undefined;
-    let cursor: number | null = null;
-    if (sessionId) {
-      this.allowedSession(sessionId);
-      const merged = new Map(
-        this.runtime.history(sessionId).map((m) => [m.id, m]),
-      );
-      for (const [id, message] of this.live.get(sessionId) ?? [])
-        merged.set(id, message);
-      const all = [...merged.values()];
-      historyRevision = createHash("sha256")
-        .update(JSON.stringify(all))
-        .digest("hex");
-      if (before !== undefined && expectedHistoryRevision !== historyRevision)
-        throw new Error("HISTORY_CHANGED");
-      const end = Math.min(before ?? all.length, all.length);
-      let start = end;
-      let bytes = 0;
-      while (start > 0 && end - start < 100) {
-        const size = Buffer.byteLength(JSON.stringify(all[start - 1]));
-        if (bytes + size > 512 * 1024) break;
-        bytes += size;
-        start--;
       }
-      messages = all.slice(start, end);
-      cursor = start > 0 ? start : null;
     }
-    const state = {
+    return {
       projects: this.runtime
         .projects()
         .map(({ id, name, isRepo }) => ({ id, name, isRepo })),
       sessions,
       permissions,
+    };
+  }
+  /** Reads and projects a session's history once until its events or the TTL say otherwise. */
+  private historyOf(sessionId: string): History {
+    const cached = this.histories.get(sessionId);
+    if (cached && Date.now() - cached.at < HISTORY_TTL) return cached;
+    const messages = [...new Map(this.runtime.history(sessionId).map((m) => [m.id, m])).values()];
+    const chain: string[] = [];
+    const sizes: number[] = [];
+    let hash = "";
+    for (const message of messages) {
+      const json = JSON.stringify(message);
+      sizes.push(Buffer.byteLength(json));
+      hash = createHash("sha256").update(hash).update(json).digest("hex");
+      chain.push(hash);
+    }
+    const entry = { at: Date.now(), messages, chain, sizes };
+    this.historyReadAt.set(sessionId, entry.at);
+    this.histories.delete(sessionId);
+    this.histories.set(sessionId, entry);
+    while (this.histories.size > 16) this.histories.delete(this.histories.keys().next().value!);
+    while (this.historyReadAt.size > 64) this.historyReadAt.delete(this.historyReadAt.keys().next().value!);
+    return entry;
+  }
+  private headOf(history: History) {
+    const count = history.messages.length;
+    return { count, hash: count ? history.chain[count - 1] : EMPTY_HISTORY };
+  }
+  /** The phone's `tail` is still a prefix of the history (nothing before it changed). */
+  private extends(history: History, tail: HistoryTail) {
+    if (tail.count > history.messages.length) return false;
+    return tail.count === 0 ? tail.hash === EMPTY_HISTORY : history.chain[tail.count - 1] === tail.hash;
+  }
+  private liveMessage(sessionId: string): RemoteMessage | undefined {
+    const live = this.live.get(sessionId);
+    return live && { id: sessionId + ":live", role: "assistant", text: live.text, streaming: true };
+  }
+  /** The newest messages ending at `end` that fit one page, plus the cursor for older ones. */
+  private page(history: History, live: RemoteMessage | undefined, end: number) {
+    const all = live ? [...history.messages, live] : history.messages;
+    end = Math.min(end, all.length);
+    let start = end;
+    let bytes = 0;
+    while (start > 0 && end - start < PAGE_MESSAGES) {
+      const size = history.sizes[start - 1] ?? Buffer.byteLength(JSON.stringify(all[start - 1]));
+      if (bytes + size > PAGE_BYTES) break;
+      bytes += size;
+      start--;
+    }
+    return { messages: all.slice(start, end), before: start > 0 ? start : null };
+  }
+  /** Committed messages after `from`, when they fit one page. */
+  private after(history: History, from: number) {
+    const count = history.messages.length - from;
+    if (count > PAGE_MESSAGES) return undefined;
+    let bytes = 0;
+    for (let i = from; i < history.messages.length; i++) bytes += history.sizes[i];
+    return bytes > PAGE_BYTES ? undefined : history.messages.slice(from);
+  }
+  snapshot(
+    sessionId?: string,
+    before?: number,
+    expectedHistoryRevision?: string,
+    link?: Link,
+    tail?: HistoryTail,
+  ) {
+    const base = this.state();
+    const events = link?.events === true;
+    let messages: RemoteMessage[] | undefined;
+    let historyRevision: string | undefined;
+    let historyCount: number | undefined;
+    let appendFrom: number | undefined;
+    let cursor: number | null = null;
+    let liveEntry: { id: number; total: number } | undefined;
+    if (sessionId) {
+      this.allowedSession(sessionId, base.sessions);
+      const history = this.historyOf(sessionId);
+      const live = this.liveMessage(sessionId);
+      liveEntry = this.live.get(sessionId);
+      if (events) {
+        // Over committed messages only, so streamed text doesn't invalidate the phone's pages.
+        const head = this.headOf(history);
+        historyRevision = head.hash;
+        historyCount = head.count;
+      } else
+        historyRevision = sha256(JSON.stringify(live ? [...history.messages, live] : history.messages));
+      if (before !== undefined) {
+        const intact = tail ? this.extends(history, tail) : expectedHistoryRevision === historyRevision;
+        if (!intact) throw new Error("HISTORY_CHANGED");
+        ({ messages, before: cursor } = this.page(history, live, before));
+      } else {
+        const appended = tail && this.extends(history, tail) ? this.after(history, tail.count) : undefined;
+        if (appended && tail) {
+          messages = live ? [...appended, live] : appended;
+          appendFrom = tail.count;
+        } else ({ messages, before: cursor } = this.page(history, live, Infinity));
+      }
+    }
+    const state = {
+      ...base,
       sessionId,
       messages,
       before: cursor,
       historyRevision,
     };
+    if (link?.events && before === undefined) {
+      // Events after this build on exactly what this snapshot holds.
+      link.subscribed = sessionId;
+      link.state = sha256(JSON.stringify(base));
+      link.history = sessionId && historyCount !== undefined ? { sessionId, count: historyCount, hash: historyRevision! } : undefined;
+      link.live = sessionId && liveEntry ? { sessionId, id: liveEntry.id, total: liveEntry.total } : undefined;
+    }
     return {
       ...state,
+      ...(events ? { historyCount, appendFrom, seq: link!.seq } : {}),
       protocol: REMOTE_PROTOCOL,
       hostBootId: this.hostBootId,
       machineName: hostname(),
       environment: this.runtime.environment ?? "development",
       serverTime: Date.now(),
-      revision: createHash("sha256")
-        .update(JSON.stringify(state))
-        .digest("hex"),
+      revision: sha256(JSON.stringify(state)),
     };
   }
-  async dispatch(data: unknown, peerId: string): Promise<unknown> {
+  async dispatch(data: unknown, peerId: string, link?: Link): Promise<unknown> {
     const parsed = requestSchema.safeParse(data);
     const requestId =
       typeof (data as any)?.id === "string"
@@ -493,7 +807,8 @@ export class RemoteGateway {
           result: { serverTime: Date.now() },
         };
       if (request.method === "presence") {
-        if (peerId === this.activePeer) this.peerAway = request.background;
+        // Every connection of this phone: one it is leaving may linger until its heartbeat ends it.
+        for (const each of this.links) if (each.peerId === peerId) each.away = request.background;
         return { type: "response", id: request.id, result: { ok: true } };
       }
       if (request.method === "snapshot") {
@@ -501,6 +816,8 @@ export class RemoteGateway {
           request.sessionId,
           request.before,
           request.historyRevision,
+          link,
+          request.tail,
         );
         // Polls repeat every few seconds; an unchanged snapshot is not worth resending.
         return {
@@ -761,6 +1078,7 @@ export class RemoteGateway {
   capture(event: ServerEvent) {
     const p = event.payload as any;
     const id = p.sessionId as string | undefined;
+    let textDelta = false;
     if (event.type === "stream.user_prompt" && id) {
       this.runIds.set(id, randomUUID());
       this.live.delete(id);
@@ -774,16 +1092,11 @@ export class RemoteGateway {
         message.event?.delta?.type === "text_delta" &&
         typeof message.event.delta.text === "string"
       ) {
-        const messages = this.live.get(id) ?? new Map<string, RemoteMessage>();
-        const key = id + ":live";
-        const text = (messages.get(key)?.text ?? "") + message.event.delta.text;
-        messages.set(key, {
-          id: key,
-          role: "assistant",
-          text: text.slice(-64000),
-          streaming: true,
-        });
-        this.live.set(id, messages);
+        textDelta = true;
+        const live = this.live.get(id) ?? { id: ++this.liveIds, text: "", total: 0 };
+        live.text = lastChars(live.text + message.event.delta.text, 64000);
+        live.total += message.event.delta.text.length;
+        this.live.set(id, live);
       } else if (message.type === "assistant" && !message.streaming)
         this.live.delete(id);
     }
@@ -813,15 +1126,38 @@ export class RemoteGateway {
       event.type.startsWith("session.") ||
       event.type.startsWith("stream.") ||
       event.type.startsWith("permission.")
-    )
-      this.invalidate();
+    ) {
+      if (event.type === "stream.tool_output_delta") {
+        // Live tool output is never stored and the phone doesn't show it.
+        this.changed();
+      } else if (textDelta && id) {
+        this.liveDirty.add(id);
+        this.changed();
+        this.schedule();
+      } else if (
+        !(
+          event.type === "stream.message" &&
+          // Deltas and in-progress assistant messages are never stored; the history didn't change.
+          (p.message?.type === "stream_event" || (p.message?.type === "assistant" && p.message?.streaming === true))
+        )
+      ) {
+        // Anything else may have written the session's history or changed the list.
+        if (id) {
+          this.histories.delete(id);
+          this.historyDirty.add(id);
+          this.liveDirty.add(id);
+        }
+        this.invalidate();
+      } else this.changed();
+    }
   }
   /** Tells paired phones through APNs, only while none is connected to see it live. */
   private notify(kind: "approval" | "finished" | "failed", sessionId: string) {
     const config = this.journal.state.config;
     // A phone that is connected and on screen sees it live; one that is off screen still gets the push.
-    const away = this.status === "connected" && this.peerAway;
-    if (!config?.enabled || (this.status !== "waiting" && !away)) return;
+    // Pushes go out through the relay, so this Mac must be registered there.
+    if (!config?.enabled || this.relayStatus !== "waiting") return;
+    if ([...this.current.values()].some((link) => !link.away)) return;
     const session = this.runtime.sessions().find((s) => s.id === sessionId);
     if (!session) return;
     const key = kind + ":" + sessionId;
@@ -863,13 +1199,113 @@ export class RemoteGateway {
       await new Promise((resolve) => setTimeout(resolve, 2000 * 4 ** attempt));
     }
   }
+  /** The desktop changed the list without a session event (archiving, for one). */
+  listChanged() {
+    this.invalidate();
+  }
+  /** The session list or a history may have changed. */
   private invalidate() {
+    this.stateDirty = true;
+    this.changed();
+    this.schedule();
+  }
+  /** Phones without events refetch the snapshot when told something changed. */
+  private changed() {
     if (this.timer) return;
     this.timer = setTimeout(() => {
       this.timer = undefined;
+      for (const link of this.current.values())
+        if (!link.events)
+          try {
+            link.channel.send({ type: "changed" });
+          } catch {}
+    }, CHANGED_INTERVAL);
+  }
+  /** The first change after a quiet spell goes out at once; a stream then at most every EVENT_INTERVAL. */
+  private schedule(delay?: number) {
+    if (this.eventTimer) return;
+    const wait = delay ?? Math.max(0, EVENT_INTERVAL - (Date.now() - this.lastFlush));
+    this.eventTimer = setTimeout(() => this.flush(), wait);
+  }
+  /** Sends each event phone what changed since what it last got, in one event. */
+  private flush() {
+    this.eventTimer = undefined;
+    this.lastFlush = Date.now();
+    const stateDirty = this.stateDirty;
+    const historyDirty = this.historyDirty;
+    const liveDirty = this.liveDirty;
+    this.stateDirty = false;
+    this.historyDirty = new Set();
+    this.liveDirty = new Set();
+    const links = [...this.current.values()].filter((link) => link.events);
+    if (!links.length) return;
+    let state: { value: RemoteState; hash: string } | undefined;
+    for (const link of links) {
+      const event: Omit<RemoteEvent, "seq"> = { type: "event" };
+      if (stateDirty) {
+        if (!state) {
+          const value = this.state();
+          state = { value, hash: sha256(JSON.stringify(value)) };
+        }
+        if (state.hash !== link.state) {
+          event.state = state.value;
+          link.state = state.hash;
+        }
+      }
+      const sessionId = link.subscribed;
+      // Just read: wait a moment rather than read it again per commit. Its live text
+      // waits too, so a reply never vanishes from the stream before it lands in the history.
+      const wait = sessionId && historyDirty.has(sessionId) && !this.histories.has(sessionId)
+        ? HISTORY_MIN_INTERVAL - (Date.now() - (this.historyReadAt.get(sessionId) ?? 0))
+        : 0;
+      if (sessionId && wait > 0) {
+        this.historyDirty.add(sessionId);
+        if (liveDirty.has(sessionId)) this.liveDirty.add(sessionId);
+        this.schedule(wait);
+      } else if (sessionId && historyDirty.has(sessionId) && !this.visible(sessionId, state?.value)) {
+        // Archived, hidden or deleted since: stop sending it (the state part drops it).
+        link.subscribed = undefined;
+        link.history = undefined;
+        link.live = undefined;
+      } else if (sessionId && historyDirty.has(sessionId)) {
+        const history = this.historyOf(sessionId);
+        const head = this.headOf(history);
+        const sent = link.history;
+        if (!sent || sent.sessionId !== sessionId || sent.hash !== head.hash) {
+          const appended = sent?.sessionId === sessionId && this.extends(history, sent) ? this.after(history, sent.count) : undefined;
+          if (appended && sent)
+            event.history = { sessionId, messages: appended, appendFrom: sent.count, count: head.count, revision: head.hash };
+          else {
+            const page = this.page(history, undefined, Infinity);
+            event.history = { sessionId, messages: page.messages, before: page.before, count: head.count, revision: head.hash };
+          }
+          link.history = { sessionId, count: head.count, hash: head.hash };
+        }
+      }
+      if (link.subscribed && sessionId && wait <= 0 && liveDirty.has(sessionId)) {
+        const live = this.live.get(sessionId);
+        const sent = link.live?.sessionId === sessionId ? link.live : undefined;
+        if (!live) {
+          if (sent) event.live = { sessionId, text: null };
+          link.live = undefined;
+        } else if (!sent || sent.id !== live.id || live.total - sent.total > live.text.length) {
+          event.live = { sessionId, text: live.text };
+          link.live = { sessionId, id: live.id, total: live.total };
+        } else if (live.total > sent.total) {
+          event.live = { sessionId, append: live.text.slice(live.text.length - (live.total - sent.total)) };
+          link.live = { sessionId, id: live.id, total: live.total };
+        }
+      }
+      if (!event.state && !event.history && !event.live) continue;
       try {
-        this.channel?.send({ type: "changed" });
-      } catch {}
-    }, 180);
+        link.channel.send({ ...event, seq: ++link.seq });
+      } catch {
+        // A phone too far behind: its baselines no longer match what it has, so start over.
+        link.channel.close();
+      }
+    }
+  }
+  private visible(sessionId: string, state?: RemoteState) {
+    return (state?.sessions ?? this.runtime.sessions()).some((s) => s.id === sessionId);
   }
 }

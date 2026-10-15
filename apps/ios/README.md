@@ -44,7 +44,7 @@ This command:
   - Noise interop in both directions against the desktop's real `secure-channel` (`Tests/interop/noise-peer.mjs`);
   - concurrent large-message ordering;
   - JavaScriptCore rendering;
-  - an end-to-end run of `RemoteClient` against `scripts/remote/fixture.mjs` (pair, snapshot, history, approval, chunked upload, create with settings and attachments, forget).
+  - an end-to-end run of `RemoteClient` against `scripts/remote/fixture.mjs` (pair, snapshot, history, moving from the relay to the Mac's direct listener, a reply streamed as pushed events, approval, chunked upload, create with settings and attachments, reconnecting directly, forget).
 
 ## Run against Aegis Dev
 

@@ -24,6 +24,28 @@ import Testing
         #expect(model.lastAnswerText == "Green")
     }
 
+    @Test func keyedRenderMatchesAndStreamsWithoutResending() async throws {
+        let script = CoreScript()
+        let history = [
+            RemoteMessage(id: "p1", role: "user", text: "Explain", streaming: nil, at: nil, raw: raw(#"{"type":"user_prompt","uuid":"p1","prompt":"Explain","createdAt":1000}"#)),
+        ]
+        let live = RemoteMessage(id: "s:live", role: "assistant", text: "Part", streaming: true, at: nil, raw: nil)
+        let plain = await script.renderSession(messages: history + [live], running: true, status: "running")
+        let keyed = await script.renderSession(history: "s:1", messages: history, live: "Part", running: true, status: "running")
+        #expect(keyed == plain)
+        // More streamed text under the same key; the messages stay in the JS context.
+        let more = await script.renderSession(history: "s:1", messages: history, live: "Partial answer", running: true, status: "running")
+        guard case .answer(_, let markdown, let streaming) = more.items.last else {
+            Issue.record("expected the streamed answer last"); return
+        }
+        #expect(markdown == "Partial answer" && streaming)
+        // Another session's history under its own key.
+        let other = await script.renderSession(history: "t:2", messages: [], live: nil, running: false, status: "idle")
+        #expect(other.items.isEmpty)
+        let back = await script.renderSession(history: "s:1", messages: history, live: "Partial answer", running: true, status: "running")
+        #expect(back == more)
+    }
+
     @Test func catalogResolvesSettingsLikeTheDesktop() async throws {
         let options = raw(#"{"codex":{"defaultModel":"gpt-5-codex","defaultReasoningEffort":"medium","options":[],"availableModels":[{"name":"gpt-5-codex","label":"GPT-5 Codex","enabled":true,"isDefault":true,"defaultReasoningEffort":"medium","supportedReasoningLevels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"}],"supportsFastMode":true}]}}"#)
         let catalog = await CoreScript().catalog(provider: "codex", options: options)

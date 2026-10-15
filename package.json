@@ -156,7 +156,7 @@
     "verify:app-preferences": "npm run transpile:electron && node scripts/tests/app-preferences.test.cjs && npx tsx scripts/tests/appearance-preferences.test.ts && node scripts/tests/settings-general-electron.test.mjs && node scripts/tests/composer-newline-electron.test.mjs",
     "dev:relay": "node services/relay/server.mjs",
     "verify:feishu": "npm run transpile:electron && node scripts/tests/feishu-bridge.test.mjs",
-    "verify:remote": "npm run transpile:electron && node scripts/remote/smoke-crypto.mjs && node scripts/remote/crypto-negative.test.mjs && node scripts/remote/gateway.test.mjs && node scripts/remote/relay.test.mjs && node scripts/remote/gateway-push.test.mjs",
+    "verify:remote": "npm run transpile:electron && node scripts/remote/smoke-crypto.mjs && node scripts/remote/crypto-negative.test.mjs && node scripts/remote/gateway.test.mjs && node scripts/remote/relay.test.mjs && node scripts/remote/gateway-push.test.mjs && node scripts/remote/gateway-events.test.mjs",
     "ios:core": "node apps/ios/core/build.mjs",
     "ios:project": "node apps/ios/core/build.mjs && cd apps/ios && xcodegen generate",
     "ios:device": "zsh apps/ios/scripts/device.sh",

@@ -54,7 +54,7 @@ public actor SecureChannel {
         self.remotePeerId = remotePeerId
         self.sendCipher = send
         var continuation: AsyncThrowingStream<Data, Error>.Continuation!
-        messages = AsyncThrowingStream(bufferingPolicy: .bufferingOldest(128)) { continuation = $0 }
+        messages = AsyncThrowingStream(bufferingPolicy: .bufferingOldest(512)) { continuation = $0 }
         self.continuation = continuation
     }
 

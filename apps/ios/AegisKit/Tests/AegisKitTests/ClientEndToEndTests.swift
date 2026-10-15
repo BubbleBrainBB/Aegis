@@ -37,7 +37,26 @@ import Testing
 
         // History for a session.
         client.select("design")
-        try await waitUntil { client.messagesBySession["design"]?.messages?.isEmpty == false }
+        try await waitUntil { client.messagesBySession["design"]?.messages.isEmpty == false }
+
+        // Paired through the relay, the client moves to the Mac's direct listener.
+        try await waitUntil { client.transport == .direct }
+        #expect(client.connection == .connected)
+
+        // A reply streams in as pushed events: live text first, then the committed message.
+        client.select("stream")
+        try await waitUntil { client.messagesBySession["stream"]?.messages.isEmpty == false }
+        let followUp = try await client.mutate(["method": "send", "sessionId": "stream", "prompt": "One more thing"])
+        #expect(followUp.state == .completed)
+        var streamed: [String] = []
+        try await waitUntil {
+            if let live = client.messagesBySession["stream"]?.live, streamed.last != live { streamed.append(live) }
+            return client.messagesBySession["stream"]?.messages.last?.text == "Got the follow-up. The test session is updated."
+        }
+        #expect(!streamed.isEmpty && "Got the follow-up. The test session is updated.".hasPrefix(streamed.last ?? "-"))
+        try await waitUntil { client.messagesBySession["stream"]?.live == nil }
+        #expect(client.messagesBySession["stream"]?.messages.map(\.text).suffix(2) == ["One more thing", "Got the follow-up. The test session is updated."])
+        client.select("design")
 
         // Approval, as the approval sheet sends it.
         let permission = try #require(snapshot.permissions.first)
@@ -101,6 +120,8 @@ import Testing
         #expect(client.connection == .offline)
         await client.foreground()
         try await waitUntil { client.connection == .connected }
+        // The Mac's address was kept: the reconnect goes straight to it.
+        #expect(client.transport == .direct)
         // The lost one runs now (gateway.test.mjs covers that a repeat never runs twice).
         _ = try await fixture.line(containing: "fixture start claude")
 

@@ -5,6 +5,7 @@ import { catalogFor } from "./agents";
 import { composerMenu } from "./composer";
 import { describeRequest, parsePatch, requestSummary } from "./patch";
 import { renderSession } from "./session";
+import { buildTranscript, type Transcript } from "./transcript";
 
 const guard =
   <T>(fn: (input: T) => unknown) =>
@@ -52,10 +53,41 @@ function catalog({ provider, options, extraModels = [] }: { provider: string; op
   };
 }
 
+const STALE_HISTORY = "STALE_HISTORY";
+/**
+ * The last committed history Swift sent, keyed by its version, and its transcript.
+ * While a reply streams only `live` changes, so neither crosses the bridge again
+ * nor gets rebuilt.
+ */
+let history: { key: string; messages: RemoteMessage[]; running?: boolean; transcript?: Transcript } | undefined;
+
+interface RenderInput {
+  /** Identifies `messages`; without it, `messages` are rendered as they are. */
+  key?: string;
+  /** Omitted when Swift already sent the history for `key`. */
+  messages?: RemoteMessage[];
+  /** Streamed text not yet committed. */
+  live?: string | null;
+  running: boolean;
+  status: string;
+}
+
+function render(input: RenderInput) {
+  if (input.key === undefined) return renderSession(input.messages ?? [], input.running, input.status);
+  if (input.messages) history = { key: input.key, messages: input.messages };
+  if (!history || history.key !== input.key) return { error: STALE_HISTORY };
+  if (!history.transcript || history.running !== input.running) {
+    history.transcript = buildTranscript(history.messages, input.running);
+    history.running = input.running;
+  }
+  const live = input.live ?? "";
+  const messages: RemoteMessage[] = live
+    ? [...history.messages, { id: "live", role: "assistant", text: live, streaming: true }]
+    : history.messages;
+  return renderSession(messages, input.running, input.status, { ...history.transcript, partialText: live });
+}
 const api = {
-  renderSession: guard((input: { messages: RemoteMessage[]; running: boolean; status: string }) =>
-    renderSession(input.messages, input.running, input.status),
-  ),
+  renderSession: guard(render),
   catalog: guard(catalog),
   composerMenu: guard(composerMenu),
   parsePatch: guard((input: { patch: string }) => parsePatch(input.patch)),

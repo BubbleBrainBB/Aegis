@@ -4,6 +4,7 @@ import { BrowserWindow, clipboard, dialog, ShareMenu, shell } from 'electron';
 import type { SessionOrganizationChange } from '../../shared/session-organization';
 import { ipcMainHandle } from '../util';
 import * as sessions from '../libs/session-store';
+import { remoteListChanged } from '../remote/integration';
 
 export function setupSessionOrganizationIPC() {
   ipcMainHandle('get-session-organization', () => sessions.getSessionOrganization());
@@ -12,6 +13,8 @@ export function setupSessionOrganizationIPC() {
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) win.webContents.send('session-organization-changed', snapshot);
     }
+    // Archiving hides a session from the phone too; it isn't a session event, so say so.
+    remoteListChanged();
     return snapshot;
   });
   ipcMainHandle('export-session-markdown', async (event, sessionId: string, share: boolean) => {

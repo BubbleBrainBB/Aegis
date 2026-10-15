@@ -49,7 +49,7 @@
 	<key>NSCameraUsageDescription</key>
 	<string>Scan the pairing code on your Mac and take photos to attach to tasks.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Connects to a local Aegis relay during development.</string>
+	<string>Connects straight to Aegis on your Mac when both are on the same network, which is faster than going through the relay.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

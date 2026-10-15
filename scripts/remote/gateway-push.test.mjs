@@ -20,6 +20,7 @@ const sessions = [
   { id: "private", projectId: "hidden", title: "Private", provider: "claude", status: "idle", updatedAt: 1, runId: null },
 ];
 const runtime = {
+  lan: { host: "127.0.0.1" },
   projects: () => [{ id: "allowed", name: "Allowed", path: dir }],
   sessions: () => sessions,
   history: () => [],
@@ -100,8 +101,11 @@ try {
   await settle();
   assert.deepEqual(pushes.map((p) => p.body.kind), ["finished", "failed", "approval"]);
   // While a phone is connected and on screen it sees events live, so nothing is pushed.
-  gateway.activePeer = "phone";
-  gateway.status = "connected";
+  // A connected phone, as accept() records it.
+  const link = { channel: { send() {}, close() {} }, peerId: "phone", transport: "relay", events: false, away: false, seq: 0 };
+  gateway.links.add(link);
+  gateway.current.set("phone", link);
+  assert.equal(gateway.status, "connected");
   gateway.notified.clear();
   gateway.capture({ type: "permission.request", payload: { sessionId: "shared", toolUseId: "u", toolName: "Bash", input: {} } });
   await settle();
@@ -117,8 +121,9 @@ try {
   gateway.capture({ type: "permission.request", payload: { sessionId: "shared", toolUseId: "x", toolName: "Bash", input: {} } });
   await settle();
   assert.equal(pushes.length, 4);
-  gateway.activePeer = undefined;
-  gateway.status = "waiting";
+  gateway.links.delete(link);
+  gateway.current.delete("phone");
+  assert.equal(gateway.status, "waiting");
 
   // The relay reporting an unregistered token makes the Mac forget it.
   globalThis.fetch = async () => new Response(JSON.stringify({ unregistered: true }), { status: 200 });

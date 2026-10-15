@@ -3,13 +3,14 @@ import SwiftUI
 
 struct SessionView: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.pageWidth) private var pageWidth
     let sessionId: String
 
     @State private var rendered = SessionModel.empty
     /// The inputs `rendered` was built from. Rendering is async, so anything placed next
     /// to it (pending bubbles, the copy button) must follow these, not the newest data.
-    @State private var shown = RenderKey(messages: [], running: false, status: "")
+    @State private var shown = RenderKey(history: "", live: nil, running: false, status: "")
+    /// The committed messages `rendered` was built from.
+    @State private var shownMessages: [RemoteMessage] = []
     private static let bottomID = "session-bottom"
     @State private var scroller = ScrollHandle()
     @State private var atBottom = true
@@ -17,13 +18,17 @@ struct SessionView: View {
     @State private var loadingOlder = false
 
     private var session: RemoteSession? { model.sessions.first { $0.id == sessionId } }
-    private var history: RemoteSnapshot? { model.client.messagesBySession[sessionId] }
+    private var history: SessionHistory? { model.client.messagesBySession[sessionId] }
     private var messages: [RemoteMessage] { history?.messages ?? [] }
+    /// Names `messages`: comparing it is cheap, unlike comparing the messages.
+    private var historyKey: String { sessionId + ":" + String(history?.version ?? 0) }
     private var running: Bool { session?.isRunning ?? false }
     private var permissions: [RemotePermission] { model.permissions.filter { $0.sessionId == sessionId } }
 
     private struct RenderKey: Equatable {
-        let messages: [RemoteMessage]
+        let history: String
+        /// Streamed text not yet committed.
+        let live: String?
         let running: Bool
         let status: String
     }
@@ -39,7 +44,7 @@ struct SessionView: View {
             let sentAt = op.sentAt ?? 0
             let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
             // Only a matching message recorded after this send counts: an earlier "OK" is not this one.
-            let recorded = shown.messages.contains {
+            let recorded = shownMessages.contains {
                 $0.role == "user" && $0.text.trimmingCharacters(in: .whitespacesAndNewlines) == text && ($0.at ?? .infinity) >= sentAt - 5000
             }
             if recorded { return nil }
@@ -80,7 +85,7 @@ struct SessionView: View {
                 }
                 let pending = pendingSends
                 // A new task already shows its message; no loading line under it.
-                if messages.isEmpty && pending.isEmpty {
+                if messages.isEmpty && history?.live == nil && pending.isEmpty {
                     Text(model.ready ? "Loading messages…" : "Messages update when your Mac is back.")
                         .font(.app(14)).foregroundStyle(Color.text2)
                         .frame(maxWidth: .infinity).padding(.vertical, 40)
@@ -114,7 +119,7 @@ struct SessionView: View {
                     .background(Color.dangerBg, in: .rect(cornerRadius: 20))
                 }
                 if !shown.running, pending.isEmpty, session?.isFailed != true, let answer = rendered.lastAnswerText, !answer.isEmpty,
-                   !shown.messages.isEmpty, !isUserLast {
+                   !shownMessages.isEmpty, !isUserLast {
                     Button {
                         UIPasteboard.general.string = answer
                         copied = true
@@ -155,13 +160,15 @@ struct SessionView: View {
             if atBottom, distance > 140 { atBottom = false }
             else if !atBottom, distance < 80 { atBottom = true }
         }
-        .task(id: RenderKey(messages: messages, running: running, status: session?.status ?? "")) {
-            let key = RenderKey(messages: messages, running: running, status: session?.status ?? "")
-            let next = await model.core.renderSession(messages: key.messages, running: key.running, status: key.status)
+        .task(id: RenderKey(history: historyKey, live: history?.live, running: running, status: session?.status ?? "")) {
+            let key = RenderKey(history: historyKey, live: history?.live, running: running, status: session?.status ?? "")
+            let committed = messages
+            let next = await model.core.renderSession(history: key.history, messages: committed, live: key.live, running: key.running, status: key.status)
             guard !Task.isCancelled else { return }
             let follow = atBottom
             rendered = next
             shown = key
+            shownMessages = committed
             if follow { scrollToBottom(proxy, animated: false) }
         }
         .onChange(of: model.sendTick) {
@@ -214,8 +221,10 @@ struct SessionView: View {
         }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) { SidebarButton() }
-            // Title sits next to the sidebar button, without a glass background.
-            ToolbarItem(placement: .topBarLeading) {
+            // Title sits next to the sidebar button, without a glass background. In the
+            // principal slot: a leading item's (hidden) glass morphed into the next
+            // page's back button as a rectangle during the push.
+            ToolbarItem(placement: .principal) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(session?.title ?? startingTitle ?? "Task").font(.app(16, weight: .semibold)).lineLimit(1)
                     HStack(spacing: 5) {
@@ -233,12 +242,10 @@ struct SessionView: View {
                     .foregroundStyle(Color.text2)
                     .lineLimit(1)
                 }
-                // Toolbar items size to their minimum; give the title the room
-                // between the sidebar button and the trailing capsule.
-                .frame(width: max(120, pageWidth - 224), alignment: .leading)
-                .padding(.leading, 4)
+                // The whole room between the sidebar button and the trailing capsule.
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, 8)
             }
-            .sharedBackgroundVisibility(.hidden)
             // Grouped into one glass capsule, like the system toolbars.
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button("New task in this project", systemImage: "square.and.pencil") {
@@ -600,7 +607,6 @@ private struct ScrollViewProbe: UIViewRepresentable {
 /// right away, then the task itself (AppModel.startSettled).
 struct StartingView: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.pageWidth) private var pageWidth
     let commandId: String
 
     private var operation: RemoteOperation? { model.client.operations[commandId] }
@@ -647,15 +653,15 @@ struct StartingView: View {
         }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) { SidebarButton() }
-            ToolbarItem(placement: .topBarLeading) {
+            // As in SessionView: the principal slot, so no glass morphs on navigation.
+            ToolbarItem(placement: .principal) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(prompt).font(.app(16, weight: .semibold)).lineLimit(1)
                     Text("Starting on \(model.macName)…").font(.app(12)).foregroundStyle(Color.text2).lineLimit(1)
                 }
-                .frame(width: max(120, pageWidth - 224), alignment: .leading)
-                .padding(.leading, 4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, 8)
             }
-            .sharedBackgroundVisibility(.hidden)
         }
         .task(id: result) { model.startSettled(commandId) }
         .onAppear { if operation == nil { model.openHome() } }

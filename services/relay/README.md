@@ -18,6 +18,12 @@ parses business commands or stores chat history.
   The relay then splices the two sockets together.
 - **Inside the tunnel:** Noise XX runs between the two ends, pinned to the host's peer
   id. Each phone also needs separate approval on the Mac.
+- **Skipping the relay:** the Mac also listens on its own networks and tells an
+  authenticated phone its private addresses and port. A paired phone on the same
+  network (or one reachable over 100.64.0.0/10, such as Tailscale) sends the same
+  `{role:"phone", room, token}` hello there and runs the same Noise handshake; pairing
+  itself always goes through the relay. Set `AEGIS_REMOTE_LAN=0` on the desktop to
+  turn the listener off.
 
 By default anyone with a key can register a room, which is what the public relay
 needs. `RELAY_REGISTRATION_TOKEN` additionally restricts hosts to people who know a

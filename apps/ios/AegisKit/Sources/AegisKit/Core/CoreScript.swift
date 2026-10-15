@@ -10,6 +10,16 @@ public final class CoreScript: @unchecked Sendable {
     private var context: JSContext?
     private var api: JSValue?
     private var lastSession: (key: Int, model: SessionModel)?
+    private var lastKeyed: (key: RenderKey, model: SessionModel)?
+    /// The history key the JS context holds messages for.
+    private var sentHistory: String?
+
+    private struct RenderKey: Equatable {
+        let history: String
+        let live: String?
+        let running: Bool
+        let status: String
+    }
 
     public init(source: String? = nil) {
         queue.async {
@@ -69,6 +79,41 @@ public final class CoreScript: @unchecked Sendable {
         } catch {
             NSLog("renderSession failed: %@", String(describing: error))
             return Self.plainText(messages, running: running, status: status)
+        }
+    }
+
+    private struct KeyedInput: Encodable {
+        let key: String
+        let messages: [RemoteMessage]?
+        let live: String?
+        let running: Bool
+        let status: String
+    }
+
+    /// The session render model for committed `messages`, named by `history` (it must
+    /// change whenever they do), plus the streamed `live` text. While only `live`
+    /// changes, the messages stay in the JS context instead of crossing the bridge again.
+    public func renderSession(history: String, messages: [RemoteMessage], live: String?, running: Bool, status: String) async -> SessionModel {
+        let key = RenderKey(history: history, live: live, running: running, status: status)
+        do {
+            return try await run {
+                if let last = self.lastKeyed, last.key == key { return last.model }
+                let resend = self.sentHistory != history
+                let model: SessionModel
+                do {
+                    model = try self.call("renderSession", KeyedInput(key: history, messages: resend ? messages : nil, live: live, running: running, status: status), as: SessionModel.self)
+                } catch AegisError.message("STALE_HISTORY") where !resend {
+                    model = try self.call("renderSession", KeyedInput(key: history, messages: messages, live: live, running: running, status: status), as: SessionModel.self)
+                }
+                self.sentHistory = history
+                self.lastKeyed = (key, model)
+                return model
+            }
+        } catch {
+            NSLog("renderSession failed: %@", String(describing: error))
+            queue.async { self.sentHistory = nil }
+            let streamed = live.map { [RemoteMessage(id: "live", role: "assistant", text: $0, streaming: true, at: nil, raw: nil)] } ?? []
+            return Self.plainText(messages + streamed, running: running, status: status)
         }
     }
 

@@ -25,6 +25,17 @@ export const taskSettingsSchema = z
   .strict();
 export type RemoteTaskSettings = z.infer<typeof taskSettingsSchema>;
 const attachmentIds = z.array(id).max(10).optional();
+/**
+ * A prefix of a session's committed history, as the phone holds it: `count`
+ * messages whose chained hash is `hash` (EMPTY_HISTORY for none).
+ */
+export const historyTailSchema = z
+  .object({ count: z.number().int().nonnegative(), hash: id })
+  .strict();
+export type HistoryTail = z.infer<typeof historyTailSchema>;
+export const EMPTY_HISTORY = "0";
+/** Phones that send this in `auth.features` get pushed `event`s instead of `changed` + polls. */
+export const EVENTS_FEATURE = "events";
 /** Upload chunks stay well under the relay's 256 KB message cap. */
 export const ATTACHMENT_CHUNK_BYTES = 96 * 1024;
 export const requestSchema = z.discriminatedUnion("method", [
@@ -38,6 +49,8 @@ export const requestSchema = z.discriminatedUnion("method", [
       historyRevision: id.optional(),
       /** The snapshot revision the phone already has; an equal one comes back as `unchanged`. */
       knownRevision: id.optional(),
+      /** The phone's committed history: a matching prefix comes back as only what follows it. */
+      tail: historyTailSchema.optional(),
     })
     .strict(),
   z.object({ id, method: z.literal("command.get"), commandId: id }).strict(),
@@ -275,6 +288,43 @@ export interface RemoteSnapshot {
   before?: number | null;
   revision: string;
   historyRevision?: string;
+  /** Event phones only: committed messages in the session (the live message excluded). */
+  historyCount?: number;
+  /** Event phones only: `messages` follow the phone's `tail` from this index; keep its own `before`. */
+  appendFrom?: number;
+  /** Event phones only: the last event sent before this snapshot; later events build on it. */
+  seq?: number;
+}
+/** The session list part of a snapshot, as an event carries it. */
+export interface RemoteState {
+  projects: RemoteProject[];
+  sessions: RemoteSession[];
+  permissions: RemotePermission[];
+}
+/**
+ * Pushed to phones with the events feature, at most every 50 ms. `seq` counts
+ * up by one per event on a connection; a gap means the phone refreshes.
+ */
+export interface RemoteEvent {
+  type: "event";
+  seq: number;
+  state?: RemoteState;
+  /** The subscribed session's committed history: appended after `appendFrom`, or replaced. */
+  history?: {
+    sessionId: string;
+    messages: RemoteMessage[];
+    appendFrom?: number;
+    before?: number | null;
+    count: number;
+    revision: string;
+  };
+  /** Streamed text not yet committed: `append` to what the phone has, or replace with `text` (null clears). */
+  live?: { sessionId: string; append?: string; text?: string | null };
+}
+/** Addresses on the Mac's own networks where a phone can skip the relay. */
+export interface RemoteLan {
+  port: number;
+  addresses: string[];
 }
 export interface CommandResult {
   commandId: string;
