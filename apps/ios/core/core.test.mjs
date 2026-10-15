@@ -207,7 +207,7 @@ test("errors come back as values", () => {
 });
 
 test("a session's own model resolves even when the Mac's list doesn't carry it", () => {
-  const options = { claude: { defaultModel: null, options: ["claude-sonnet-4-6"], compatible: [] } };
+  const options = { claude: { defaultModel: null, options: ["claude-sonnet-4-6"] } };
   const c = call("catalog", { provider: "claude", options, extraModels: ["claude-opus-5-5"] });
   assert.equal(c.labels["claude-opus-5-5"], "Opus 5.5");
   assert.ok(c.perModel["claude-opus-5-5"].efforts.length > 0);

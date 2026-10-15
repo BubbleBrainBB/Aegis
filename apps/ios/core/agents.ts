@@ -28,13 +28,11 @@ import {
   MIMO_PERMISSION_MODE_OPTIONS,
 } from "../../../src/ui/utils/permission-modes";
 import { orderedEfforts } from "../../../src/ui/utils/effort-order";
-import { COMPATIBLE_PROVIDER_LABELS } from "../../../src/ui/utils/compatible-provider-labels";
 
 export interface ModelChoice {
   value: string;
   label: string;
   description?: string;
-  compatibleProviderId?: string | null;
 }
 export interface PermissionChoice {
   mode: string;
@@ -151,19 +149,15 @@ export function catalogFor(provider: string, options?: RemoteAgentOptions): Agen
       supportsPlan: true,
     };
   }
-  // Claude: Default, official models, then enabled compatible providers.
+  // Claude: Default, then official models.
   const config = options?.claude;
-  const compatible = config?.compatible ?? [];
-  const compatibleModels = new Set(compatible.map((c) => c.model));
-  const configuredDefault = canonicalizeClaudeModel(config?.defaultModel);
   const official = config
     ? Array.from(
         new Set(
           buildClaudeModelOptions({ defaultModel: config.defaultModel, options: config.options })
             .map((v) => canonicalizeClaudeModel(v))
             .filter((v): v is string => Boolean(v))
-            .filter((v) => isOfficialClaudeModel(v))
-            .filter((v) => v === configuredDefault || !compatibleModels.has(v)),
+            .filter((v) => isOfficialClaudeModel(v)),
         ),
       )
     : [];
@@ -172,12 +166,6 @@ export function catalogFor(provider: string, options?: RemoteAgentOptions): Agen
     models: [
       { value: "", label: "Default", description: "Do not override the default model" },
       ...official.map((v) => ({ value: v, label: formatClaudeModelLabel(v) })),
-      ...compatible.map((c) => ({
-        value: c.model,
-        label: c.model,
-        description: COMPATIBLE_PROVIDER_LABELS[c.id as keyof typeof COMPATIBLE_PROVIDER_LABELS] ?? c.id,
-        compatibleProviderId: c.id,
-      })),
     ],
     defaultModel: "",
     effortsFor: () => [...CLAUDE_REASONING_EFFORT_OPTIONS],
@@ -194,9 +182,7 @@ export function catalogFor(provider: string, options?: RemoteAgentOptions): Agen
 /** Effective settings with defaults filled in, for labels and requests. */
 export function resolveSettings(catalog: AgentCatalog, settings: RemoteTaskSettings) {
   const model = settings.model ?? catalog.defaultModel;
-  const modelChoice =
-    catalog.models.find((m) => m.value === model && (m.compatibleProviderId ?? null) === (settings.compatibleProviderId ?? null)) ??
-    catalog.models.find((m) => m.value === model);
+  const modelChoice = catalog.models.find((m) => m.value === model);
   const efforts = catalog.effortsFor(model);
   const effort = settings.effort && efforts.includes(settings.effort) ? settings.effort : catalog.defaultEffortFor(model);
   const permissionMode = catalog.permissionModes.some((p) => p.mode === settings.permissionMode)
@@ -205,7 +191,6 @@ export function resolveSettings(catalog: AgentCatalog, settings: RemoteTaskSetti
   return {
     model,
     modelLabel: modelChoice?.label ?? (model || "Default"),
-    compatibleProviderId: modelChoice?.compatibleProviderId ?? null,
     efforts,
     effort,
     effortLabel: effort ? catalog.effortLabel(effort) : null,
@@ -222,7 +207,6 @@ export function toRequestSettings(catalog: AgentCatalog, settings: RemoteTaskSet
   const r = resolveSettings(catalog, settings);
   return {
     ...(r.model ? { model: r.model } : {}),
-    ...(r.compatibleProviderId ? { compatibleProviderId: r.compatibleProviderId } : {}),
     ...(settings.effort && r.effort ? { effort: r.effort } : {}),
     ...(r.fastAvailable ? { fast: r.fast } : {}),
     permissionMode: r.permissionMode,

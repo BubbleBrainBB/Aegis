@@ -93,7 +93,6 @@ export function resolveAgent(prefs: ScopePrefs, desktop: Record<string, string>)
       payload.claudeAccessMode = (plan ? "default" : permissionMode ?? "default") as SessionStartPayload["claudeAccessMode"];
       payload.claudeExecutionMode = plan ? "plan" : "execute";
       payload.claudeReasoningEffort = perModel(desktop["cowork.preferredClaudeReasoningEfforts"], model) as SessionStartPayload["claudeReasoningEffort"];
-      payload.compatibleProviderId = (desktop["cowork.preferredClaudeCompatibleProvider"] || undefined) as SessionStartPayload["compatibleProviderId"];
       break;
     case "codex":
       payload.codexPermissionMode = (permissionMode ?? "defaultPermissions") as SessionStartPayload["codexPermissionMode"];

@@ -161,22 +161,15 @@ function testCurrentSessionSelectionUpdatesImmediately() {
     status: 'idle',
     provider: 'claude',
     model: 'claude-old',
-    compatibleProviderId: 'custom-provider',
   } as unknown as SessionView;
 
   const updated = applySessionAgentSelection(session, {
     provider: 'codex',
     model: 'gpt-5.6-terra',
-    compatibleProviderId: null,
   });
 
   assert.equal(updated.provider, 'codex');
   assert.equal(updated.model, 'gpt-5.6-terra');
-  assert.equal(
-    updated.compatibleProviderId,
-    undefined,
-    'switching away from Claude must clear the compatible-provider selection'
-  );
   assert.equal(session.model, 'claude-old', 'session updates must remain immutable');
 }
 
@@ -192,11 +185,9 @@ function testDefaultModelClearsSessionOverride() {
   const updated = applySessionAgentSelection(session, {
     provider: 'claude',
     model: null,
-    compatibleProviderId: null,
   });
 
   assert.equal(updated.model, undefined);
-  assert.equal(updated.compatibleProviderId, undefined);
 }
 
 function testAtomicCodexSelectionUpdatesModelAndRuntimeControls() {
@@ -214,7 +205,6 @@ function testAtomicCodexSelectionUpdatesModelAndRuntimeControls() {
   const updated = applySessionAgentSelection(session, {
     provider: 'codex',
     model: 'gpt-5.6-sol',
-    compatibleProviderId: null,
     codexReasoningEffort: 'xhigh',
     codexFastMode: true,
   });
@@ -244,7 +234,6 @@ function testProviderSelectionWithoutRuntimeOverridePreservesSessionValue() {
   const updated = applySessionAgentSelection(session, {
     provider: 'codex',
     model: 'gpt-5.6-terra',
-    compatibleProviderId: null,
   });
 
   assert.equal(updated.codexReasoningEffort, 'max');

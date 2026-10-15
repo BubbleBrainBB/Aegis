@@ -181,7 +181,6 @@ public struct AgentCatalog: Decodable, Equatable, Sendable {
         public let value: String
         public let label: String
         public let description: String?
-        public let compatibleProviderId: String?
     }
     public struct Effort: Decodable, Equatable, Hashable, Sendable {
         public let value: String
@@ -224,7 +223,6 @@ public struct AgentCatalog: Decodable, Equatable, Sendable {
 public struct ResolvedSettings: Equatable, Sendable {
     public let model: String
     public let modelLabel: String
-    public let compatibleProviderId: String?
     public let efforts: [AgentCatalog.Effort]
     public let effort: String?
     public let effortLabel: String?
@@ -242,15 +240,13 @@ public struct ResolvedSettings: Equatable, Sendable {
 extension AgentCatalog {
     public func resolve(_ settings: RemoteTaskSettings) -> ResolvedSettings {
         let model = settings.model ?? defaultModel
-        let choice = models.first { $0.value == model && $0.compatibleProviderId == settings.compatibleProviderId }
-            ?? models.first { $0.value == model }
+        let choice = models.first { $0.value == model }
         let options = options(for: model)
         let effort = settings.effort.flatMap { e in options.efforts.contains { $0.value == e } ? e : nil } ?? options.defaultEffort
         let permissionMode = permissionModes.contains { $0.mode == settings.permissionMode } ? settings.permissionMode! : defaultPermission
         return ResolvedSettings(
             model: model,
             modelLabel: choice?.label ?? labels?[model] ?? (model.isEmpty ? "Default" : model),
-            compatibleProviderId: choice?.compatibleProviderId,
             efforts: options.efforts,
             effort: effort,
             effortLabel: effort.map { e in options.efforts.first { $0.value == e }?.label ?? e },
@@ -268,7 +264,6 @@ extension AgentCatalog {
         let r = resolve(settings)
         var out: [String: JSONValue] = ["permissionMode": .string(r.permissionMode), "plan": .bool(r.plan)]
         if !r.model.isEmpty { out["model"] = .string(r.model) }
-        if let id = r.compatibleProviderId { out["compatibleProviderId"] = .string(id) }
         if settings.effort != nil, let effort = r.effort { out["effort"] = .string(effort) }
         if r.fastAvailable { out["fast"] = .bool(r.fast) }
         return .object(out)

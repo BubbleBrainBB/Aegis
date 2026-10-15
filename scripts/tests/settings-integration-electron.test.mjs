@@ -28,7 +28,7 @@ window.electron={
   if(action==='save-credentials'){if(qa.failSave)throw Error('Save failed');f.appId=payload.appId;}return JSON.parse(JSON.stringify(f));},selectDirectory:async()=>'/tmp/new-project',
  getUserProfile:async()=>qa.profile,saveUserProfile:async profile=>qa.profile={...qa.profile,...profile},
  getBubbleProvidersConfig:async()=>({providers:[{id:'openai',name:'OpenAI',configured:true,enabled:true,hasApiKey:true,isDefault:true},{id:'google',name:'Google',configured:false,enabled:false,hasApiKey:false}],defaultProviderId:'openai'}),
- getClaudeCompatibleProviderConfig:async()=>({}),getDeepseekKeyStatus:async()=>({hasApiKey:false}),getAgentRuntimeDirectory:async()=>({checkedAt:Date.now(),entries:[]}),
+ getDeepseekKeyStatus:async()=>({hasApiKey:false}),getAgentRuntimeDirectory:async()=>({checkedAt:Date.now(),entries:[]}),
  getAgentUsageReport:async provider=>({rangeDays:365,costMode:'actual',totals:{inputTokens:8000,outputTokens:2000,totalTokens:10000,totalCostUsd:1.25,sessionCount:2,cacheReadTokens:1000,cacheHitRate:.125},models:[],daily:[{date:'2026-09-12',inputTokens:8000,outputTokens:2000,totalTokens:10000,totalCostUsd:1.25,sessionCount:2,cacheReadTokens:1000}]}),
  getCodexRateLimits:async()=>({rateLimits:null,rateLimitsByLimitId:{}}),getClaudePlanUsage:async()=>{throw Error('No subscription');},getGrokPlanUsage:async()=>{throw Error('No subscription');},getQoderPlanUsage:async()=>{throw Error('No subscription');},
  getKimiModelConfig:async()=>({defaultModel:null,options:[],availableModels:[]}),

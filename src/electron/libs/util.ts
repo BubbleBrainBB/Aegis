@@ -1,6 +1,5 @@
-import type { AgentProvider, ClaudeCompatibleProviderId, ClaudeReasoningEffort } from '../../shared/types';
+import type { AgentProvider, ClaudeReasoningEffort } from '../../shared/types';
 import { getClaudeEnv, sanitizeOfficialClaudeEnv } from './claude-settings';
-import { applyCompatibleProviderEnv } from './compatible-provider-config';
 import {
   reconcileClaudeDisplayModel,
   toClaudeCodeRuntimeModel,
@@ -9,7 +8,6 @@ import { getRequiredClaudeCodeRuntime } from './claude-runtime';
 import { generateSessionTitleLocally, truncateSessionTitle } from '../../shared/session-title';
 
 type ClaudeSettingSource = 'user' | 'project' | 'local';
-const CLAUDE_SETTING_SOURCES: ClaudeSettingSource[] = ['user', 'project', 'local'];
 const OFFICIAL_CLAUDE_SETTING_SOURCES: ClaudeSettingSource[] = ['user', 'project', 'local'];
 const DEFAULT_CLAUDE_REASONING_EFFORT: ClaudeReasoningEffort = 'high';
 type ClaudeAgentSdkModule = typeof import('@anthropic-ai/claude-agent-sdk');
@@ -76,15 +74,10 @@ function resolveExplicitMaxThinkingTokens(): number | null {
 
 function buildClaudeThinkingOptions(params: {
   effort?: ClaudeReasoningEffort;
-  compatibleProviderMatched: boolean;
 }): {
   thinking?: { type: 'adaptive' | 'enabled'; budgetTokens?: number; display?: 'summarized' };
   effort?: ClaudeReasoningEffort;
 } {
-  if (params.compatibleProviderMatched) {
-    return {};
-  }
-
   const explicitMaxThinkingTokens = resolveExplicitMaxThinkingTokens();
   if (explicitMaxThinkingTokens) {
     return {
@@ -107,7 +100,6 @@ export async function runClaudeOneShot(params: {
   cwd?: string;
   resumeSessionId?: string;
   model?: string;
-  compatibleProviderId?: ClaudeCompatibleProviderId;
   betas?: string[];
   claudeReasoningEffort?: ClaudeReasoningEffort;
   /** Replaces Claude Code's own system prompt (short tasks that need no agent). */
@@ -121,21 +113,13 @@ export async function runClaudeOneShot(params: {
     if (params.signal.aborted) abortController.abort();
     else params.signal.addEventListener('abort', () => abortController.abort(), { once: true });
   }
-  let env = {
+  const env = sanitizeOfficialClaudeEnv({
     ...process.env,
     ...getClaudeEnv(),
-  };
-  const providerOverride = applyCompatibleProviderEnv(env, params.model, params.compatibleProviderId);
-  env = providerOverride.matchedProviderId
-    ? providerOverride.env
-    : sanitizeOfficialClaudeEnv(providerOverride.env);
-  const forcedModel = providerOverride.forcedModel || params.model;
-  const runtimeModel = providerOverride.matchedProviderId
-    ? forcedModel
-    : toClaudeCodeRuntimeModel(forcedModel, params.betas);
+  });
+  const runtimeModel = toClaudeCodeRuntimeModel(params.model, params.betas);
   const thinkingOptions = buildClaudeThinkingOptions({
     effort: params.claudeReasoningEffort,
-    compatibleProviderMatched: Boolean(providerOverride.matchedProviderId),
   });
   const { executable, executableArgs, env: runtimeEnv, pathToClaudeCodeExecutable } = getRequiredClaudeCodeRuntime();
   Object.assign(env, runtimeEnv);
@@ -160,21 +144,19 @@ export async function runClaudeOneShot(params: {
       executable: executable as unknown as 'node',
       executableArgs,
       pathToClaudeCodeExecutable,
-      settingSources: providerOverride.matchedProviderId
-        ? CLAUDE_SETTING_SOURCES
-        : OFFICIAL_CLAUDE_SETTING_SOURCES,
+      settingSources: OFFICIAL_CLAUDE_SETTING_SOURCES,
     },
   });
 
   let text = '';
   let sessionId = params.resumeSessionId;
-  let resolvedModel = forcedModel;
+  let resolvedModel = params.model;
 
   for await (const message of result) {
     const msg = message as SDKMessage;
     if (msg.type === 'system' && msg.subtype === 'init') {
       sessionId = msg.session_id || sessionId;
-      resolvedModel = reconcileClaudeDisplayModel(forcedModel, msg.model) || msg.model || resolvedModel;
+      resolvedModel = reconcileClaudeDisplayModel(params.model, msg.model) || msg.model || resolvedModel;
       continue;
     }
 
@@ -220,7 +202,6 @@ export async function generateWorktreeBranchSlug(params: {
   cwd?: string;
   provider?: AgentProvider;
   model?: string;
-  compatibleProviderId?: ClaudeCompatibleProviderId;
   betas?: string[];
   claudeReasoningEffort?: ClaudeReasoningEffort;
 }): Promise<string | null> {
@@ -243,7 +224,6 @@ Output only the branch name.`;
       prompt: slugPrompt,
       cwd: params.cwd,
       model: provider === 'claude' ? params.model : undefined,
-      compatibleProviderId: provider === 'claude' ? params.compatibleProviderId : undefined,
       betas: provider === 'claude' ? params.betas : undefined,
       claudeReasoningEffort: params.claudeReasoningEffort,
     });
@@ -270,7 +250,6 @@ export async function generateSessionTitle(
   prompt: string,
   cwd?: string,
   model?: string,
-  compatibleProviderId?: ClaudeCompatibleProviderId,
   betas?: string[],
   provider: AgentProvider = 'claude',
   claudeReasoningEffort?: ClaudeReasoningEffort
@@ -289,7 +268,6 @@ Just output the title, nothing else.`;
       prompt: titlePrompt,
       cwd,
       model,
-      compatibleProviderId,
       betas,
       claudeReasoningEffort,
     });

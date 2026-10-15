@@ -39,7 +39,6 @@ export interface SessionRow {
   model: string | null;
   conversation_scope: import('../shared/types').SessionScope | null;
   agent_id: string | null;
-  compatible_provider_id: import('../shared/types').ClaudeCompatibleProviderId | null;
   betas: string | null;
   claude_access_mode: import('../shared/types').ClaudeAccessMode | null;
   claude_execution_mode: import('../shared/types').ClaudeExecutionMode | null;
@@ -122,7 +121,6 @@ export interface RunnerOptions {
   session: SessionRow;
   resumeSessionId?: string;
   model?: string;
-  compatibleProviderId?: import('../shared/types').ClaudeCompatibleProviderId;
   betas?: string[];
   claudeAccessMode?: import('../shared/types').ClaudeAccessMode;
   claudeExecutionMode?: import('../shared/types').ClaudeExecutionMode;

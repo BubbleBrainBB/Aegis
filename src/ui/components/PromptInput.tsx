@@ -300,7 +300,6 @@ export function PromptInput({
     selectionKey: activeSession?.id || targetSessionId || '__composer__',
     provider: activeSession?.provider || null,
     model: activeSession?.model || null,
-    compatibleProviderId: activeSession?.compatibleProviderId || null,
     claudePermissionMode:
       activeSession?.provider === 'claude' ? activeSession.claudeAccessMode || null : null,
     claudeExecutionMode:
@@ -342,7 +341,6 @@ export function PromptInput({
   // timer reads current values at fire time (see the effect below).
   const prewarmConfigRef = useRef({
     model: selectedModel,
-    compatibleProviderId: agentSelection.compatibleProviderId,
     claudeAccessMode: agentSelection.claudePermissionMode,
     claudeExecutionMode: agentSelection.claudeExecutionMode,
     claudeReasoningEffort: agentSelection.claudeReasoningEffort,
@@ -351,7 +349,6 @@ export function PromptInput({
   });
   prewarmConfigRef.current = {
     model: selectedModel,
-    compatibleProviderId: agentSelection.compatibleProviderId,
     claudeAccessMode: agentSelection.claudePermissionMode,
     claudeExecutionMode: agentSelection.claudeExecutionMode,
     claudeReasoningEffort: agentSelection.claudeReasoningEffort,
@@ -387,7 +384,6 @@ export function PromptInput({
                 grokReasoningEffort: cfg.grokReasoningEffort || undefined,
               }
             : {
-                compatibleProviderId: cfg.compatibleProviderId || undefined,
                 claudeAccessMode: cfg.claudeAccessMode,
                 claudeExecutionMode: cfg.claudeExecutionMode,
                 claudeReasoningEffort: cfg.claudeReasoningEffort || undefined,
@@ -935,8 +931,6 @@ export function PromptInput({
           attachments: outgoingAttachments.length > 0 ? outgoingAttachments : undefined,
           provider: runtimeProvider,
           model: selectedModel || undefined,
-          compatibleProviderId:
-            runtimeProvider === 'claude' ? agentSelection.compatibleProviderId || undefined : undefined,
           claudeAccessMode:
             runtimeProvider === 'claude'
               ? agentSelection.claudePermissionMode
@@ -1080,8 +1074,6 @@ export function PromptInput({
         attachments: outgoing.attachments.length > 0 ? outgoing.attachments : undefined,
         provider: runtimeProvider,
         model: selectedModel || undefined,
-        compatibleProviderId:
-          runtimeProvider === 'claude' ? agentSelection.compatibleProviderId || undefined : undefined,
         claudeAccessMode:
           runtimeProvider === 'claude'
             ? agentSelection.claudePermissionMode

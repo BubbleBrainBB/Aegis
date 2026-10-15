@@ -4,7 +4,6 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 import type {
   AutomationDefinition,
   AutomationSnapshot,
-  ClaudeCompatibleProvidersConfig,
   ClaudeUsageRangeDays,
   CodexMcpServerRuntimeStatus,
   FontSettingsPayload,
@@ -466,16 +465,6 @@ contextBridge.exposeInMainWorld('electron', {
   // 获取 Claude 模型配置
   getClaudeModelConfig: () => {
     return ipcRenderer.invoke('get-claude-model-config');
-  },
-
-  // 获取 Claude-compatible provider 配置
-  getClaudeCompatibleProviderConfig: () => {
-    return ipcRenderer.invoke('get-claude-compatible-provider-config');
-  },
-
-  // 保存 Claude-compatible provider 配置
-  saveClaudeCompatibleProviderConfig: (config: ClaudeCompatibleProvidersConfig) => {
-    return ipcRenderer.invoke('save-claude-compatible-provider-config', config);
   },
 
   getWechatHtmlGeneratorConfig: (): Promise<WechatMarkdownHtmlGeneratorConfig> => {

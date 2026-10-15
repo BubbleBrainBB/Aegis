@@ -1,16 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import claudeLogo from '../../assets/claude-color.svg';
-import grokLogo from '../../assets/grok.svg';
-import moonshotLogo from '../../assets/moonshot.svg';
-import openaiLogo from '../../assets/openai.svg';
-import piLogo from '../../assets/pi-logo-auto.svg';
-import bubbleLogo from '../../assets/bubble-logo-auto.svg';
-import qoderLogo from '../../assets/qoder.svg';
-import devinLogo from '../../assets/devin-color.svg';
-import { OpenCodeLogo } from '../OpenCodeLogo';
-import { DeepseekLogo } from '../DeepseekLogo';
-import { MimoLogo } from '../MimoLogo';
+import { AgentProviderLogo } from '../AgentProviderLogo';
 import { ArrowLeft, Check, ChevronDown, ExternalLink, Eye, EyeOff, Loader2, Search } from '../icons';
 import type {
   AgentProvider,
@@ -30,41 +20,6 @@ const ONBOARDING_DONE_KEY = 'aegis-onboarding-complete';
 // Always listed first: the default we point new users at.
 const FIRST_PROVIDER: AgentProvider = 'claude';
 const NODE_DOWNLOAD_URL = 'https://nodejs.org/';
-
-// Logos render bare (no avatar circle) so the list reads as one flat column.
-function ProviderLogo({ provider, className }: { provider: AgentProvider; className: string }) {
-  switch (provider) {
-    case 'opencode':
-      return <OpenCodeLogo className={className} />;
-    case 'deepseek':
-      return <DeepseekLogo className={className} />;
-    case 'mimo':
-      return <MimoLogo className={className} />;
-    default:
-      return (
-        <img
-          src={PROVIDER_LOGO_SRC[provider]}
-          alt=""
-          className={`${className} ${MONOCHROME_PROVIDERS.has(provider) ? 'provider-monochrome-logo' : ''}`}
-          aria-hidden="true"
-        />
-      );
-  }
-}
-
-const PROVIDER_LOGO_SRC: Record<Exclude<AgentProvider, 'opencode' | 'deepseek' | 'mimo'>, string> = {
-  claude: claudeLogo,
-  codex: openaiLogo,
-  kimi: moonshotLogo,
-  grok: grokLogo,
-  pi: piLogo,
-  qoder: qoderLogo,
-  bubble: bubbleLogo,
-  devin: devinLogo,
-};
-
-// Black single-colour marks that need inverting on dark surfaces.
-const MONOCHROME_PROVIDERS = new Set<AgentProvider>(['claude', 'codex', 'grok', 'kimi']);
 
 const STATE_ORDER: Record<AgentRuntimeEntry['state'], number> = {
   ready: 0,
@@ -465,7 +420,7 @@ function OverviewStep({
           <div className="flex flex-wrap gap-1.5" data-ready-agents>
             {ready.map((item) => (
               <LogoTile key={item.provider} label={item.title}>
-                <ProviderLogo provider={item.provider} className="h-[15px] w-[15px]" />
+                <AgentProviderLogo provider={item.provider} className="h-[15px] w-[15px]" />
               </LogoTile>
             ))}
           </div>
@@ -539,7 +494,7 @@ function DefaultAgentPicker({
           data-default-agent={selected?.provider}
           className="inline-flex h-[30px] min-w-0 items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] pl-2.5 pr-2 text-[13px] text-[var(--text-primary)] transition-colors hover:bg-[var(--bg-secondary)]"
         >
-          {selected ? <ProviderLogo provider={selected.provider} className="h-[13px] w-[13px] shrink-0" /> : null}
+          {selected ? <AgentProviderLogo provider={selected.provider} className="h-[13px] w-[13px] shrink-0" /> : null}
           <span className="truncate">{selected?.title}</span>
           <ChevronDown aria-hidden="true" className="h-3 w-3 shrink-0 text-[var(--text-muted)]" />
         </button>
@@ -560,7 +515,7 @@ function DefaultAgentPicker({
                 onSelect={() => onChange(item.provider)}
                 className="h-7 gap-2 rounded-md px-2 py-0 text-[13px] text-[var(--text-primary)] data-[highlighted]:bg-[var(--sidebar-item-hover)]"
               >
-                <ProviderLogo provider={item.provider} className="h-[13px] w-[13px] shrink-0" />
+                <AgentProviderLogo provider={item.provider} className="h-[13px] w-[13px] shrink-0" />
                 <span className="min-w-0 flex-1 truncate">{item.title}</span>
                 {item.provider === selected?.provider ? (
                   <Check aria-label="Selected" className="h-3.5 w-3.5 shrink-0 text-[var(--text-secondary)]" />
@@ -684,7 +639,7 @@ function BubbleProviderStep({
             <BackTile onClick={onBack} label="Back" />
           ) : (
             <LogoTile label="Bubble">
-              <ProviderLogo provider="bubble" className="h-[15px] w-[15px]" />
+              <AgentProviderLogo provider="bubble" className="h-[15px] w-[15px]" />
             </LogoTile>
           )}
           <span className="text-[12px] text-[var(--text-muted)]">Step 1 of 2</span>
@@ -920,7 +875,7 @@ export function AgentRow({
   return (
     <div className={compact ? 'py-1.5' : 'px-5 py-3'} data-agent-row={entry.provider}>
       <div className="flex min-h-7 items-center gap-3">
-        <ProviderLogo provider={entry.provider} className="h-4 w-4 shrink-0" />
+        <AgentProviderLogo provider={entry.provider} className="h-4 w-4 shrink-0" />
         <div
           className={`min-w-0 flex-1 truncate text-[13px] text-[var(--text-primary)] ${compact ? '' : 'font-medium'}`}
         >

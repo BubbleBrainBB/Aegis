@@ -24,7 +24,6 @@ import type {
   ClaudeReasoningEffort,
 } from '../../shared/types';
 import { getClaudeEnv, getMcpServers, sanitizeOfficialClaudeEnv } from './claude-settings';
-import { applyCompatibleProviderEnv } from './compatible-provider-config';
 import {
   reconcileClaudeDisplayModel,
   toClaudeCodeRuntimeModel,
@@ -45,7 +44,6 @@ import {
 } from './browser-preview-policy';
 
 type ClaudeSettingSource = 'user' | 'project' | 'local';
-const CLAUDE_SETTING_SOURCES: ClaudeSettingSource[] = ['user', 'project', 'local'];
 const OFFICIAL_CLAUDE_SETTING_SOURCES: ClaudeSettingSource[] = ['user', 'project', 'local'];
 const ENABLE_AEGIS_MEMORY_FOR_NATIVE_PROVIDERS = false;
 
@@ -132,7 +130,6 @@ type StreamEventType =
   | 'content_block_delta'
   | 'content_block_stop';
 
-const DEFAULT_MAX_THINKING_TOKENS = 64000;
 const DEFAULT_CLAUDE_REASONING_EFFORT: ClaudeReasoningEffort = 'high';
 type ClaudeAgentSdkModule = typeof import('@anthropic-ai/claude-agent-sdk');
 
@@ -282,18 +279,6 @@ export function preloadClaudeAgentSdk(): void {
   });
 }
 
-function resolveMaxThinkingTokens(): number {
-  const raw = process.env.CLAUDE_CODE_MAX_THINKING_TOKENS;
-  if (!raw) {
-    return DEFAULT_MAX_THINKING_TOKENS;
-  }
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return DEFAULT_MAX_THINKING_TOKENS;
-  }
-  return Math.floor(parsed);
-}
-
 function resolveExplicitMaxThinkingTokens(): number | null {
   const raw = process.env.CLAUDE_CODE_MAX_THINKING_TOKENS;
   if (!raw) {
@@ -323,23 +308,12 @@ function normalizeClaudeReasoningEffort(
 
 function buildClaudeThinkingOptions(params: {
   effort?: ClaudeReasoningEffort;
-  compatibleProviderMatched: boolean;
 }): {
   queryOptions: {
     thinking?: { type: 'adaptive' | 'enabled'; budgetTokens?: number; display?: 'summarized' };
     effort?: ClaudeReasoningEffort;
-    maxThinkingTokens?: number;
   };
-  legacyMaxThinkingTokens?: number;
 } {
-  if (params.compatibleProviderMatched) {
-    const legacyMaxThinkingTokens = resolveMaxThinkingTokens();
-    return {
-      queryOptions: { maxThinkingTokens: legacyMaxThinkingTokens },
-      legacyMaxThinkingTokens,
-    };
-  }
-
   const explicitMaxThinkingTokens = resolveExplicitMaxThinkingTokens();
   if (explicitMaxThinkingTokens) {
     return {
@@ -566,7 +540,6 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
     session,
     resumeSessionId,
     model,
-    compatibleProviderId,
     betas,
     claudeAccessMode,
     claudeExecutionMode,
@@ -585,7 +558,6 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
   let enqueueChain: Promise<void> = Promise.resolve();
   let currentModel = typeof model === 'string' && model.trim().length > 0 ? model.trim() : undefined;
   let currentRuntimeModel = toClaudeCodeRuntimeModel(currentModel, betas);
-  let compatibleProviderMatched = false;
   let activeQuery: ClaudeQuery | null = null;
   // Uuids of the prompts this runner sent for the host, until a result names
   // them in user_message_uuids (hidden goal sends are not among them).
@@ -703,9 +675,7 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
         // is CONFIRMED: with a switch pending (possibly abandoned by a stop)
         // or after a rejected one, the scalar comparison lies about the CLI.
         if (activeQuery && (normalizedModel !== currentModel || modelState !== 'confirmed')) {
-          const nextRuntimeModel = compatibleProviderMatched
-            ? currentRuntimeModel
-            : toClaudeCodeRuntimeModel(normalizedModel, betas);
+          const nextRuntimeModel = toClaudeCodeRuntimeModel(normalizedModel, betas);
           // Only touch the live query when the RESOLVED runtime model actually
           // changes — a display-model spelling (e.g. the reconciled name the
           // init handler stores) must not trigger a spurious switch on reuse —
@@ -803,23 +773,10 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
   (async () => {
     try {
       const sdk = await loadClaudeAgentSdk();
-      let env = {
+      const env = sanitizeOfficialClaudeEnv({
         ...process.env,
         ...getClaudeEnv(),
-      };
-      const providerOverride = applyCompatibleProviderEnv(
-        env,
-        currentModel,
-        compatibleProviderId || session.compatible_provider_id || null
-      );
-      env = providerOverride.matchedProviderId
-        ? providerOverride.env
-        : sanitizeOfficialClaudeEnv(providerOverride.env);
-      compatibleProviderMatched = Boolean(providerOverride.matchedProviderId);
-      currentModel = providerOverride.forcedModel || currentModel;
-      currentRuntimeModel = compatibleProviderMatched
-        ? currentModel
-        : toClaudeCodeRuntimeModel(currentModel, betas);
+      });
       const { executable, executableArgs, env: runtimeEnv, pathToClaudeCodeExecutable } = getRequiredClaudeCodeRuntime();
       Object.assign(env, runtimeEnv);
 
@@ -832,7 +789,6 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
         apiKeyPrefix: env.ANTHROPIC_API_KEY?.substring(0, 10),
         hasAuthToken: !!env.ANTHROPIC_AUTH_TOKEN,
         baseUrl: env.ANTHROPIC_BASE_URL,
-        compatibleProvider: providerOverride.matchedProviderId || null,
         requestedModel: currentModel,
         runtimeModel: currentRuntimeModel,
         cwd: session.cwd || process.cwd(),
@@ -843,7 +799,6 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
 
       const thinkingOptions = buildClaudeThinkingOptions({
         effort: claudeReasoningEffort,
-        compatibleProviderMatched,
       });
 
       const sessionCwd = session.cwd || process.cwd();
@@ -924,9 +879,7 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
           executable: executable as unknown as 'node',
           executableArgs,
           pathToClaudeCodeExecutable,
-          settingSources: compatibleProviderMatched
-            ? CLAUDE_SETTING_SOURCES
-            : OFFICIAL_CLAUDE_SETTING_SOURCES,
+          settingSources: OFFICIAL_CLAUDE_SETTING_SOURCES,
           // Workflow members: built-in tools by allowlist (new SDK tools that
           // spawn or defer work stay out), and only the MCP servers given here.
           ...(workflowPolicy
@@ -1249,14 +1202,6 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
         interrupt: () => result.interrupt(),
         abort: () => { abortController.abort(); inputQueue.close(); },
       }).catch(error => { rejectClaudeGoalSet(session.id, error); onError?.(error); });
-
-      if (typeof thinkingOptions.legacyMaxThinkingTokens === 'number') {
-        try {
-          await result.setMaxThinkingTokens(thinkingOptions.legacyMaxThinkingTokens);
-        } catch (error) {
-          console.warn('Failed to set maxThinkingTokens:', error);
-        }
-      }
 
       // Track recent messages and assistant text for memory extraction
       // Use a persistent map so messages accumulate across runClaude calls for the same session

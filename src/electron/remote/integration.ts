@@ -13,7 +13,6 @@ import type { RemoteAgentOptions } from "../../shared/remote/protocol";
 import type { ServerEvent } from "../../shared/types";
 export { remoteTaskPayload } from "./task-payload";
 import { getClaudeModelConfigWithCatalog } from "../libs/claude-settings";
-import { loadCompatibleProviderConfig } from "../libs/compatible-provider-config";
 import { getCodexModelConfig } from "../libs/codex-settings";
 import { getBubbleModelConfig } from "../libs/bubble-settings";
 import { getDevinModelConfig, getDevinThoughtLevels } from "../libs/devin-cli";
@@ -64,17 +63,8 @@ async function agentOptions(): Promise<RemoteAgentOptions> {
   } catch {
     codex = null;
   }
-  let compatible: Array<{ id: string; model: string }> = [];
-  try {
-    // Only ids and model names leave the Mac; endpoints and keys stay here.
-    compatible = Object.entries(loadCompatibleProviderConfig().providers)
-      .filter(([, p]) => p.enabled && p.secret?.trim() && p.model?.trim())
-      .map(([id, p]) => ({ id, model: p.model.trim() }));
-  } catch {
-    compatible = [];
-  }
   return {
-    ...(claude ? { claude: { defaultModel: claude.defaultModel, options: claude.options, compatible } } : {}),
+    ...(claude ? { claude: { defaultModel: claude.defaultModel, options: claude.options } } : {}),
     ...(codex
       ? {
           codex: {
@@ -200,7 +190,6 @@ export function setupRemoteIPC(
             pinned: s.pinned === 1,
             settings: {
               model: s.model || undefined,
-              compatibleProviderId: s.compatible_provider_id || undefined,
               effort: (s.provider === "codex" ? s.codex_reasoning_effort : s.provider === "claude" ? s.claude_reasoning_effort : null) || undefined,
               fast: s.provider === "codex" && s.codex_fast_mode != null ? s.codex_fast_mode === 1 : undefined,
               permissionMode: (s.provider === "codex" ? s.codex_permission_mode : s.provider === "claude" ? s.claude_access_mode : null) || undefined,

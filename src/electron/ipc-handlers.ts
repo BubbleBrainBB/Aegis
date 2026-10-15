@@ -146,10 +146,6 @@ import {
   saveDeepseekGlobalMcpServers,
   saveDeepseekProjectMcpServers,
 } from './libs/deepseek-mcp-settings';
-import {
-  loadCompatibleProviderConfig,
-  saveCompatibleProviderConfig,
-} from './libs/compatible-provider-config';
 import { generateWechatMarkdownHtml } from './libs/wechat-html-generator';
 import {
   loadWechatHtmlGeneratorConfig,
@@ -243,7 +239,7 @@ import {
 import { expandClaudeSkillPrompt, listClaudeSkills } from './libs/claude-skills';
 import { captureFeishuEvent, closeFeishu, setupFeishu } from './feishu/integration';
 import { getMemoryWorkspace, saveMemoryDocument } from './libs/memory-store';
-import { formatClaudeRuntimeBlockingMessage, getClaudeRuntimeStatus, getClaudeRuntimeStatusCached, invalidateClaudeRuntimeCache } from './libs/claude-runtime-status';
+import { formatClaudeRuntimeBlockingMessage, getClaudeRuntimeStatus, getClaudeRuntimeStatusCached } from './libs/claude-runtime-status';
 import { selectClaudeRunnersToReap, type ClaudeRunnerSnapshot } from './libs/claude-runner-pool';
 import {
   markClaudePromptDispatched,
@@ -286,8 +282,6 @@ import type {
   SessionStatus,
 } from './types';
 import type {
-  ClaudeCompatibleProvidersConfig,
-  ClaudeCompatibleProviderId,
   ClaudeUsageRangeDays,
   FolderConfig,
   FontSettingsPayload,
@@ -2390,7 +2384,6 @@ async function bootstrapClaudeSessionFromHistory(params: {
   history: StreamMessage[];
   cwd?: string | null;
   model?: string | null;
-  compatibleProviderId?: ClaudeCompatibleProviderId;
   betas?: string[];
   claudeReasoningEffort?: import('../shared/types').ClaudeReasoningEffort;
 }): Promise<{ sessionId: string; model?: string | null }> {
@@ -2407,7 +2400,6 @@ async function bootstrapClaudeSessionFromHistory(params: {
         }),
         cwd: params.cwd ?? undefined,
         model: params.model || undefined,
-        compatibleProviderId: params.compatibleProviderId,
         betas: params.betas,
         claudeReasoningEffort: params.claudeReasoningEffort,
       })
@@ -2416,7 +2408,6 @@ async function bootstrapClaudeSessionFromHistory(params: {
           prompt: buildLatestEditSummaryPrompt(params.history),
           cwd: params.cwd ?? undefined,
           model: params.model || undefined,
-          compatibleProviderId: params.compatibleProviderId,
           betas: params.betas,
           claudeReasoningEffort: params.claudeReasoningEffort,
         });
@@ -2433,7 +2424,6 @@ async function bootstrapClaudeSessionFromHistory(params: {
           }),
           cwd: params.cwd ?? undefined,
           model: summaryResult.model || params.model || undefined,
-          compatibleProviderId: params.compatibleProviderId,
           betas: params.betas,
           claudeReasoningEffort: params.claudeReasoningEffort,
         });
@@ -2653,7 +2643,6 @@ async function handleEditLatestPrompt(
     prompt,
     attachments,
     model,
-    compatibleProviderId,
     betas,
     claudeAccessMode,
     claudeExecutionMode,
@@ -2721,7 +2710,6 @@ async function handleEditLatestPrompt(
   const previousStatus = (session.status as SessionStatus) || 'completed';
   const previousClaudeSessionId = session.claude_session_id || null;
   const previousModel = session.model || null;
-  const previousCompatibleProviderId = session.compatible_provider_id || null;
   const previousBetas = parseStoredBetas(session.betas);
   const previousClaudeAccessMode = normalizeClaudeAccessMode(session.claude_access_mode);
   const previousClaudeExecutionMode = normalizeClaudeExecutionMode(
@@ -2755,8 +2743,6 @@ async function handleEditLatestPrompt(
 
   const preservedHistory = history.slice(0, latestUserPromptIndex);
   const requestedModel = normalizeModel(model ?? session.model ?? undefined);
-  const requestedCompatibleProviderId =
-    compatibleProviderId ?? session.compatible_provider_id ?? undefined;
   const requestedBetas = normalizeBetas(betas ?? parseStoredBetas(session.betas));
   const nextPrompt = nextPromptText.trim();
   const nextClaudeAccessMode = normalizeClaudeAccessMode(claudeAccessMode || previousClaudeAccessMode);
@@ -2785,7 +2771,6 @@ async function handleEditLatestPrompt(
   sessions.updateLastPrompt(sessionId, nextPrompt);
   sessions.setClaudeSessionId(sessionId, null);
   sessions.updateSessionModel(sessionId, requestedModel || null);
-  sessions.updateSessionCompatibleProviderId(sessionId, requestedCompatibleProviderId || null);
   sessions.updateSessionBetas(sessionId, requestedBetas || null);
   sessions.updateSessionClaudeAccessMode(sessionId, nextClaudeAccessMode);
   sessions.updateSessionClaudeExecutionMode(sessionId, nextClaudeExecutionMode);
@@ -2807,7 +2792,6 @@ async function handleEditLatestPrompt(
       status: 'running',
       provider: session.provider || 'claude',
       model: requestedModel || undefined,
-      compatibleProviderId: requestedCompatibleProviderId,
       betas: requestedBetas,
       claudeAccessMode: nextClaudeAccessMode,
       claudeExecutionMode: nextClaudeExecutionMode,
@@ -2822,7 +2806,6 @@ async function handleEditLatestPrompt(
         history: preservedHistory,
         cwd: session.cwd,
         model: requestedModel,
-        compatibleProviderId: requestedCompatibleProviderId,
         betas: requestedBetas,
         claudeReasoningEffort: nextClaudeReasoningEffort,
       });
@@ -2835,7 +2818,6 @@ async function handleEditLatestPrompt(
     sessions.updateLastPrompt(sessionId, previousEditablePrompt.prompt);
     sessions.setClaudeSessionId(sessionId, previousClaudeSessionId);
     sessions.updateSessionModel(sessionId, previousModel);
-    sessions.updateSessionCompatibleProviderId(sessionId, previousCompatibleProviderId);
     sessions.updateSessionBetas(sessionId, previousBetas || null);
     sessions.updateSessionClaudeAccessMode(sessionId, previousClaudeAccessMode);
     sessions.updateSessionClaudeReasoningEffort(sessionId, previousClaudeReasoningEffort);
@@ -2857,7 +2839,6 @@ async function handleEditLatestPrompt(
         status: previousStatus,
         provider: session.provider || 'claude',
         model: previousModel || undefined,
-        compatibleProviderId: previousCompatibleProviderId || undefined,
         betas: previousBetas,
         claudeAccessMode: previousClaudeAccessMode,
         claudeExecutionMode: previousClaudeExecutionMode,
@@ -2875,7 +2856,6 @@ async function handleEditLatestPrompt(
   }
   sessions.setClaudeSessionId(sessionId, nextClaudeSessionId || null);
   sessions.updateSessionModel(sessionId, resolvedModel || null);
-  sessions.updateSessionCompatibleProviderId(sessionId, requestedCompatibleProviderId || null);
   sessions.updateSessionBetas(sessionId, requestedBetas || null);
   sessions.updateSessionClaudeAccessMode(sessionId, nextClaudeAccessMode);
   sessions.updateSessionClaudeExecutionMode(sessionId, nextClaudeExecutionMode);
@@ -2897,7 +2877,6 @@ async function handleEditLatestPrompt(
       status: 'running',
       provider: refreshedSession.provider,
       model: resolvedModel || undefined,
-      compatibleProviderId: refreshedSession.compatible_provider_id || undefined,
       betas: requestedBetas,
       claudeAccessMode: nextClaudeAccessMode,
       claudeExecutionMode: nextClaudeExecutionMode,
@@ -2914,7 +2893,6 @@ async function handleEditLatestPrompt(
     nextAttachments,
     'claude',
     resolvedModel || undefined,
-    requestedCompatibleProviderId,
     requestedBetas,
     nextClaudeAccessMode,
     nextClaudeExecutionMode,
@@ -3103,7 +3081,6 @@ async function handleEditLatestOpenCodePrompt(
     attachments,
     'opencode',
     resolvedModel || undefined,
-    undefined,
     undefined,
     undefined,
     undefined,
@@ -3343,7 +3320,6 @@ async function handleEditLatestCodexPrompt(
     undefined,
     undefined,
     undefined,
-    undefined,
     nextCodexExecutionMode,
     nextCodexPermissionMode,
     nextCodexReasoningEffort || undefined,
@@ -3504,7 +3480,6 @@ const runnerHandles = new Map<
   {
     handle: RunnerHandle;
     provider: 'claude' | 'codex' | 'opencode' | 'kimi' | 'grok' | 'pi' | 'qoder' | 'bubble' | 'deepseek' | 'devin' | 'mimo';
-    compatibleProviderId?: import('../shared/types').ClaudeCompatibleProviderId;
     claudeAccessMode?: import('../shared/types').ClaudeAccessMode;
     claudeExecutionMode?: import('../shared/types').ClaudeExecutionMode;
     claudeReasoningEffort?: import('../shared/types').ClaudeReasoningEffort;
@@ -3678,7 +3653,7 @@ function stopClaudeRunnerReaper(): void {
 
 /**
  * Config/workspace changes invalidate the environment a live runner captured
- * at spawn (API keys, compatible-provider endpoints, MCP servers, cwd). Idle
+ * at spawn (API keys, endpoints, MCP servers, cwd). Idle
  * runners are killed immediately; busy ones are doomed and reaped at their
  * next `result` so they can never serve another turn with stale state.
  */
@@ -5285,7 +5260,7 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
       if (!controller) {
         // Empty prewarm: only the native clear command runs, without inference.
         startRunner(mainWindow, session, '', session.claude_session_id || undefined,
-          undefined, 'claude', session.model || undefined, session.compatible_provider_id || undefined,
+          undefined, 'claude', session.model || undefined,
           parseStoredBetas(session.betas), normalizeClaudeAccessMode(session.claude_access_mode),
           normalizeClaudeExecutionMode(session.claude_execution_mode), normalizeClaudeReasoningEffort(session.claude_reasoning_effort),
           undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
@@ -5298,7 +5273,7 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
     },
     startGoalRunner: (session, action, settings) => {
       startRunner(mainWindow, session, '', session.codex_session_id || undefined, undefined, 'codex',
-        settings.model || session.model || undefined, undefined, undefined, undefined, undefined, undefined,
+        settings.model || session.model || undefined, undefined, undefined, undefined, undefined,
         'execute', settings.codexPermissionMode || normalizeCodexPermissionMode(session.codex_permission_mode),
         settings.codexReasoningEffort || normalizeCodexReasoningEffort(session.codex_reasoning_effort),
         settings.codexFastMode ?? normalizeCodexFastMode(session.codex_fast_mode),
@@ -5466,7 +5441,6 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
           history: sourceHistory,
           cwd: source.cwd,
           model: source.model,
-          compatibleProviderId: source.compatible_provider_id || undefined,
           betas: parseStoredBetas(source.betas),
           claudeReasoningEffort: normalizeClaudeReasoningEffort(source.claude_reasoning_effort),
         });
@@ -5490,7 +5464,6 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
         model: source.model || undefined,
         scope: normalizeSessionScope(source.conversation_scope),
         agentId: source.agent_id || null,
-        compatibleProviderId: source.compatible_provider_id || undefined,
         betas: parseStoredBetas(source.betas),
         claudeAccessMode: normalizeClaudeAccessMode(source.claude_access_mode),
         claudeExecutionMode: normalizeClaudeExecutionMode(
@@ -5725,7 +5698,6 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
             history: preservedHistory,
             cwd: session.cwd,
             model: normalizeModel(session.model ?? undefined),
-            compatibleProviderId: session.compatible_provider_id ?? undefined,
             betas: parseStoredBetas(session.betas),
             claudeReasoningEffort: normalizeClaudeReasoningEffort(session.claude_reasoning_effort),
           });
@@ -5886,7 +5858,6 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
             cwd: row.project_cwd || row.cwd || undefined,
             provider: (row.provider || 'claude') as AgentProvider,
             model: row.model || undefined,
-            compatibleProviderId: row.compatible_provider_id || undefined,
           });
       const result = await assignIsolatedWorkspace(sessionId, nameHint);
       if (result.ok) broadcastSessionWorkspace(mainWindow, sessionId);
@@ -6105,21 +6076,6 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
   // RPC: 获取 Claude 模型配置(官方目录优先,本地记录兜底)
   ipcMainHandle('get-claude-model-config', async () => {
     return getClaudeModelConfigWithCatalog();
-  });
-
-  // RPC: 获取 Claude-compatible provider 配置
-  ipcMainHandle('get-claude-compatible-provider-config', async () => {
-    return loadCompatibleProviderConfig();
-  });
-
-  // RPC: 保存 Claude-compatible provider 配置
-  ipcMainHandle('save-claude-compatible-provider-config', async (_, config: ClaudeCompatibleProvidersConfig) => {
-    saveCompatibleProviderConfig(config);
-    invalidateClaudeRuntimeCache(); // 配置变更后清除缓存，下次发消息时重新检查
-    // Live runners captured the previous provider env (keys, base URLs) at
-    // spawn — retire them so the next turn picks up the new config.
-    flushClaudeRunners();
-    return loadCompatibleProviderConfig();
   });
 
   ipcMainHandle('get-wechat-html-generator-config', async () => {
@@ -9118,7 +9074,6 @@ function buildSessionInfoFromRow(
     claudeSessionId: row.claude_session_id || undefined,
     provider: row.provider || 'claude',
     model: row.model || undefined,
-    compatibleProviderId: row.compatible_provider_id || undefined,
     betas: parseStoredBetas(row.betas),
     claudeAccessMode: normalizeClaudeAccessMode(row.claude_access_mode),
     claudeExecutionMode: normalizeClaudeExecutionMode(row.claude_execution_mode, row.claude_access_mode),
@@ -9205,7 +9160,6 @@ async function handleSessionStart(
     attachments,
     provider,
     model,
-    compatibleProviderId,
     betas,
     claudeAccessMode,
     claudeExecutionMode,
@@ -9269,7 +9223,6 @@ async function handleSessionStart(
             cwd: sessionCwd,
             provider: chosenProvider,
             model: normalizeProviderModel(chosenProvider, model),
-            compatibleProviderId: chosenProvider === 'claude' ? compatibleProviderId : undefined,
             betas: chosenProvider === 'claude' ? normalizeBetas(betas) : undefined,
           });
       isolated = await provisionIsolatedWorkspace(sessionCwd, llmSlug || promptHint);
@@ -9349,7 +9302,6 @@ async function handleSessionStart(
     console.log('[Session Start]', {
       provider: chosenProvider,
       model: selectedModel,
-      compatibleProviderId: chosenProvider === 'claude' ? compatibleProviderId : undefined,
       scope: sessionScope,
       agentId: sessionAgentId || undefined,
       cwd: sessionCwd,
@@ -9376,7 +9328,6 @@ async function handleSessionStart(
     prompt: outgoingPrompt,
     provider: chosenProvider,
     model: selectedModel,
-    compatibleProviderId: chosenProvider === 'claude' ? compatibleProviderId : undefined,
     betas: selectedBetas,
     claudeAccessMode: selectedClaudeAccessMode,
     claudeExecutionMode: selectedClaudeExecutionMode,
@@ -9426,7 +9377,6 @@ async function handleSessionStart(
       associatedWorktreeRef: session.associated_worktree_ref || null,
       provider: chosenProvider,
       model: selectedModel,
-      compatibleProviderId: chosenProvider === 'claude' ? compatibleProviderId : undefined,
       betas: selectedBetas,
       claudeAccessMode: selectedClaudeAccessMode,
       claudeExecutionMode: selectedClaudeExecutionMode,
@@ -9596,7 +9546,6 @@ async function handleSessionStart(
       sourcePrompt,
       sessionCwd,
       chosenProvider === 'claude' ? selectedModel : undefined,
-      chosenProvider === 'claude' ? compatibleProviderId : undefined,
       chosenProvider === 'claude' ? selectedBetas : undefined,
       chosenProvider,
       selectedClaudeReasoningEffort
@@ -9634,7 +9583,6 @@ async function handleSessionStart(
     outgoingAttachments,
     chosenProvider,
     selectedModel,
-    chosenProvider === 'claude' ? compatibleProviderId : undefined,
     selectedBetas,
     selectedClaudeAccessMode,
     selectedClaudeExecutionMode,
@@ -9707,7 +9655,6 @@ async function handleSessionContinueImpl(
     attachments,
     provider,
     model,
-    compatibleProviderId,
     betas,
     claudeAccessMode,
     claudeExecutionMode,
@@ -9802,18 +9749,12 @@ async function handleSessionContinueImpl(
   const nextProvider = provider || previousProvider;
   const sessionAgentId = session.agent_id || null;
   const nextModel = normalizeProviderModel(nextProvider, model ?? session.model ?? undefined);
-  const previousCompatibleProviderId = session.compatible_provider_id || undefined;
-  const nextCompatibleProviderId =
-    nextProvider === 'claude'
-      ? compatibleProviderId ?? previousCompatibleProviderId
-      : undefined;
   const previousBetas = parseStoredBetas(session.betas);
   const nextBetas = nextProvider === 'claude'
     ? normalizeBetas(betas ?? previousBetas)
     : undefined;
   const previousModel = normalizeProviderModel(previousProvider, session.model ?? undefined);
   const providerChanged = nextProvider !== previousProvider;
-  const compatibleProviderChanged = nextCompatibleProviderId !== previousCompatibleProviderId;
   // Claude compares alias-aware: init records the concrete model id the CLI
   // resolved a family alias to, while the composer keeps sending the alias —
   // a raw string comparison read that as a model change on EVERY follow-up,
@@ -10009,10 +9950,8 @@ async function handleSessionContinueImpl(
       nextProvider,
       nextModel,
       previousModel,
-      nextCompatibleProviderId,
       nextBetas,
       providerChanged,
-      compatibleProviderChanged,
       modelChanged,
       betasChanged,
       accessModeChanged,
@@ -10035,10 +9974,6 @@ async function handleSessionContinueImpl(
     sessions.updateSessionProvider(sessionId, nextProvider);
   }
   sessions.updateSessionModel(sessionId, nextModel || null);
-  sessions.updateSessionCompatibleProviderId(
-    sessionId,
-    nextProvider === 'claude' ? nextCompatibleProviderId || null : null
-  );
   sessions.updateSessionBetas(sessionId, nextBetas || null);
   if (nextProvider === 'claude') {
     sessions.updateSessionClaudeAccessMode(sessionId, nextClaudeAccessMode || 'default');
@@ -10083,7 +10018,6 @@ async function handleSessionContinueImpl(
       associatedWorktreeRef: session.associated_worktree_ref || null,
       provider: nextProvider,
       model: nextModel ?? '',
-      compatibleProviderId: nextProvider === 'claude' ? nextCompatibleProviderId : undefined,
       betas: nextBetas,
       claudeAccessMode: nextProvider === 'claude' ? nextClaudeAccessMode : undefined,
       claudeExecutionMode: nextProvider === 'claude' ? nextClaudeExecutionMode : undefined,
@@ -10275,7 +10209,6 @@ async function handleSessionContinueImpl(
       (nextProvider === 'claude' &&
         (
           modelChanged ||
-          compatibleProviderChanged ||
           betasChanged ||
           accessModeChanged ||
           executionModeChanged ||
@@ -10443,7 +10376,6 @@ async function handleSessionContinueImpl(
         history: historyBeforeContinue,
         cwd: session.cwd,
         model: nextModel,
-        compatibleProviderId: nextCompatibleProviderId,
         betas: nextBetas,
         claudeReasoningEffort: nextClaudeReasoningEffort,
       });
@@ -10480,7 +10412,6 @@ async function handleSessionContinueImpl(
     outgoingAttachments,
     nextProvider,
     startModel,
-    nextProvider === 'claude' ? nextCompatibleProviderId : undefined,
     nextBetas,
     nextClaudeAccessMode,
     nextClaudeExecutionMode,
@@ -10525,7 +10456,6 @@ function startRunner(
   attachments?: Attachment[],
   providerOverride?: 'claude' | 'codex' | 'opencode' | 'kimi' | 'grok' | 'pi' | 'qoder' | 'bubble' | 'deepseek' | 'devin' | 'mimo',
   modelOverride?: string,
-  compatibleProviderOverride?: import('../shared/types').ClaudeCompatibleProviderId,
   betasOverride?: string[],
   claudeAccessMode?: import('../shared/types').ClaudeAccessMode,
   claudeExecutionMode?: import('../shared/types').ClaudeExecutionMode,
@@ -10586,10 +10516,6 @@ function startRunner(
   const normalizedActiveAgentId = activeAgentId?.trim() || session.agent_id || null;
   const normalizedActiveAgentRunId =
     activeAgentRunId?.trim() || createAgentRunId(normalizedActiveAgentId, 'direct');
-  const compatibleProviderId =
-    provider === 'claude'
-      ? compatibleProviderOverride || session.compatible_provider_id || undefined
-      : undefined;
   const normalizedClaudeAccessMode =
     provider === 'claude'
       ? normalizeClaudeAccessMode(claudeAccessMode || session.claude_access_mode)
@@ -10617,7 +10543,6 @@ function startRunner(
               ? `${provider} acp`
               : 'opencode sdk',
       model: resolvedModelOverride,
-      compatibleProviderId,
       cwd: runnerSession.cwd || process.cwd(),
       scope: normalizeSessionScope(session.conversation_scope),
       hasResume: !!resumeSessionId,
@@ -10656,7 +10581,6 @@ function startRunner(
     session: runnerSession,
     resumeSessionId,
     model: resolvedModelOverride,
-    compatibleProviderId,
     betas: provider === 'claude' ? betasOverride || parseStoredBetas(session.betas) : undefined,
     claudeAccessMode: normalizedClaudeAccessMode,
     claudeExecutionMode: normalizedClaudeExecutionMode,
@@ -10772,10 +10696,6 @@ function startRunner(
               provider === 'claude'
                 ? reconcileClaudeDisplayModel(resolvedModelOverride || session.model, message.model)
                 : message.model || resolvedModelOverride || undefined,
-            compatibleProviderId:
-              provider === 'claude'
-                ? sessions.getSession(session.id)?.compatible_provider_id || compatibleProviderId
-                : undefined,
             betas:
               provider === 'claude'
                 ? betasOverride || parseStoredBetas(sessions.getSession(session.id)?.betas)
@@ -11079,10 +10999,6 @@ function startRunner(
             agentId: sessions.getSession(session.id)?.agent_id || null,
             provider,
             model: sessions.getSession(session.id)?.model || resolvedModelOverride || undefined,
-            compatibleProviderId:
-              provider === 'claude'
-                ? sessions.getSession(session.id)?.compatible_provider_id || compatibleProviderId
-                : undefined,
             betas:
               provider === 'claude'
                 ? betasOverride || parseStoredBetas(sessions.getSession(session.id)?.betas)
@@ -11362,10 +11278,6 @@ function startRunner(
           status: (current?.status || 'running') as SessionStatus,
           provider,
           model: current?.model || resolvedModelOverride || undefined,
-          compatibleProviderId:
-            provider === 'claude'
-              ? current?.compatible_provider_id || compatibleProviderId
-              : undefined,
           betas:
             provider === 'claude'
               ? betasOverride || parseStoredBetas(current?.betas)
@@ -11521,7 +11433,6 @@ function startRunner(
   runnerHandles.set(session.id, {
     handle,
     provider,
-    compatibleProviderId,
     claudeAccessMode: provider === 'claude' ? normalizedClaudeAccessMode : undefined,
     claudeExecutionMode: provider === 'claude' ? normalizedClaudeExecutionMode : undefined,
     claudeReasoningEffort:
@@ -11663,7 +11574,6 @@ async function prewarmGrokRunner(
     undefined,
     undefined,
     undefined,
-    undefined,
     normalizeGrokPermissionMode(payload.grokPermissionMode) ?? undefined,
     nextEffort ?? undefined,
     undefined,
@@ -11762,8 +11672,6 @@ async function handleRunnerPrewarm(
   // and any asymmetry here turns the prewarm into a net loss (abort + second
   // cold start on the first real send).
   const nextModel = normalizeModel(payload.model ?? session.model ?? undefined);
-  const nextCompatibleProviderId =
-    payload.compatibleProviderId ?? (session.compatible_provider_id || undefined);
   const nextBetas = normalizeBetas(payload.betas ?? parseStoredBetas(session.betas));
   const previousAccessMode = normalizeClaudeAccessMode(session.claude_access_mode);
   const nextAccessMode = normalizeClaudeAccessMode(payload.claudeAccessMode || previousAccessMode);
@@ -11779,20 +11687,18 @@ async function handleRunnerPrewarm(
     payload.claudeReasoningEffort || normalizeClaudeReasoningEffort(session.claude_reasoning_effort)
   );
 
-  // The send-path reuse check compares model / compatibleProvider / betas
-  // against the SESSION ROW (not the runner entry — unlike access/execution/
-  // effort, which read the entry). So if the composer carries an unsaved
-  // change to any of those three, the first real send would see it as a
-  // change and abort this prewarmed runner, paying a wasted spawn on top of
-  // the cold start. Skip prewarm entirely in that case — the send then cold-
-  // starts exactly once, as it would with no prewarm. Uses the same
-  // comparators the reuse check uses so the two decisions stay symmetric.
+  // The send-path reuse check compares model / betas against the SESSION ROW
+  // (not the runner entry — unlike access/execution/effort, which read the
+  // entry). So if the composer carries an unsaved change to either, the first
+  // real send would see it as a change and abort this prewarmed runner, paying
+  // a wasted spawn on top of the cold start. Skip prewarm entirely in that
+  // case — the send then cold-starts exactly once, as it would with no
+  // prewarm. Uses the same comparators the reuse check uses so the two
+  // decisions stay symmetric.
   const rowModel = normalizeModel(session.model ?? undefined);
-  const rowCompatibleProviderId = session.compatible_provider_id || undefined;
   const rowBetas = normalizeBetas(parseStoredBetas(session.betas));
   const configDivergesFromRow =
     !isSameClaudeModelSelection(nextModel, rowModel) ||
-    nextCompatibleProviderId !== rowCompatibleProviderId ||
     JSON.stringify(nextBetas || []) !== JSON.stringify(rowBetas || []);
   if (configDivergesFromRow) {
     return;
@@ -11814,7 +11720,6 @@ async function handleRunnerPrewarm(
     undefined,
     'claude',
     nextModel,
-    nextCompatibleProviderId,
     nextBetas,
     nextAccessMode,
     nextExecutionMode,

@@ -7,9 +7,8 @@ import { useEffect, useLayoutEffect, useState, type CSSProperties, type ReactNod
 import { ArrowLeft, Keyboard, Server, Settings as SettingsIcon, Sun, ChartColumn, User, PlugZap, Bot, Image, Trash2, Globe, Monitor } from '../icons';
 import { useAppStore } from '../../store/useAppStore';
 import { ClaudeUsageSettingsContent } from './ClaudeUsageSettings';
-import { CompatibleProviderSettingsContent, PROVIDER_META } from './CompatibleProviderSettings';
+import { AgentRuntimeSettings } from './AgentRuntimeSettings';
 import { BubbleProviderSettings } from './BubbleProviderSettings';
-import { DeepseekProviderSettings } from './DeepseekProviderSettings';
 import { BrowserUseSettings } from './BrowserUseSettings';
 import { MCP_RUNTIMES, McpSettingsContent } from './McpSettings';
 import { ProviderIcon } from '../AgentModelPicker';
@@ -120,7 +119,6 @@ export function Settings() {
   const store = useAppStore();
   const mcpCatalogs = [store.mcpGlobalServers, store.mcpCodexGlobalServers, store.mcpOpencodeGlobalServers, store.mcpKimiGlobalServers, store.mcpQoderGlobalServers, store.mcpBubbleGlobalServers, store.mcpDeepseekGlobalServers];
   const extraEntries: SettingsSearchEntry[] = [
-    ...Object.values(PROVIDER_META).map(meta => ({tab:'providers' as const, label:meta.label, scope:'Claude Code', id:`Claude Code:${meta.label}`, keywords:'api key model endpoint 密钥 模型'})),
     ...bubbleEntries,
     ...MCP_RUNTIMES.flatMap((runtime, index) => [
       {tab:'mcp' as const, label:runtime.label, scope:'MCP Servers', id:`mcp-runtime:${runtime.id}`, runtime:runtime.id, keywords:'mcp server tools 服务器 工具'},
@@ -300,9 +298,8 @@ export function Settings() {
           )}
           {resolvedActiveSettingsTab === 'providers' && (
             <div className="providers-settings">
-              <CompatibleProviderSettingsContent />
+              <AgentRuntimeSettings />
               <BubbleProviderSettings revealTarget={target?.tab === 'providers' ? target.id : undefined} />
-              <DeepseekProviderSettings />
             </div>
           )}
           {resolvedActiveSettingsTab === 'usage' && <ClaudeUsageSettingsContent />}

@@ -2,7 +2,6 @@ import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import type { ClaudeModelConfig } from '../../shared/types';
-import { getEnabledCompatibleProviderConfigs } from './compatible-provider-config';
 
 function canonicalizeClaudeModel(model?: string | null): string | null {
   const normalized = model?.trim();
@@ -292,10 +291,9 @@ export function getClaudeModelConfig(): ClaudeModelConfig {
   const claudeJson = loadClaudeJson();
   const defaultModel = canonicalizeClaudeModel(s.model);
   const claudeCodeModels = getClaudeJsonModelCandidates(claudeJson);
-  const compatibleModels = getEnabledCompatibleProviderConfigs().map((provider) => provider.model);
   const options = Array.from(
     new Set(
-      [defaultModel, ...claudeCodeModels, ...compatibleModels].filter((value): value is string => Boolean(value))
+      [defaultModel, ...claudeCodeModels].filter((value): value is string => Boolean(value))
     )
   );
 
@@ -305,15 +303,14 @@ export function getClaudeModelConfig(): ClaudeModelConfig {
 /**
  * Model config with the official catalog as the primary source: models come
  * from the SDK's supportedModels (what the signed-in account can actually
- * use), plus compatible-provider models. The locally-recorded candidates in
- * ~/.claude.json only fill in when the catalog probe is unavailable, so stale
- * or retired entries stop leaking into the picker.
+ * use). The locally-recorded candidates in ~/.claude.json only fill in when
+ * the catalog probe is unavailable, so stale or retired entries stop leaking
+ * into the picker.
  */
 export async function getClaudeModelConfigWithCatalog(): Promise<ClaudeModelConfig> {
   const { getClaudeSupportedModels } = await import('./claude-model-catalog');
   const s = loadClaudeSettings();
   const defaultModel = canonicalizeClaudeModel(s.model);
-  const compatibleModels = getEnabledCompatibleProviderConfigs().map((provider) => provider.model);
 
   const catalogModels = await getClaudeSupportedModels();
   if (catalogModels.length === 0) {
@@ -322,7 +319,7 @@ export async function getClaudeModelConfigWithCatalog(): Promise<ClaudeModelConf
 
   const options = Array.from(
     new Set(
-      [defaultModel, ...catalogModels, ...compatibleModels].filter((value): value is string =>
+      [defaultModel, ...catalogModels].filter((value): value is string =>
         Boolean(value)
       )
     )

@@ -31,7 +31,6 @@ window.electron={getProjectTree:async()=>null,getRecentCwds:async()=>['/tmp/goal
 for(const p of ['Claude','Kimi','Grok','Opencode','Pi','Bubble','Qoder','Deepseek','Devin','Mimo'])window.electron['get'+p+'ModelConfig']=async()=>({defaultModel:null,options:[],availableModels:[]});
 window.electron.getDevinThoughtLevels=async()=>({model:null,levels:[],defaultLevel:null});
 window.electron.getClaudeModelConfig=async()=>({defaultModel:'claude-sonnet-4-6',options:['claude-sonnet-4-6'],availableModels:[]});
-window.electron.getClaudeCompatibleProviderConfig=async()=>({});
 window.electron.getCodexModelConfig=async()=>({defaultModel:'gpt-test',defaultReasoningEffort:'high',options:['gpt-test'],availableModels:[{name:'gpt-test',label:'GPT Test',defaultReasoningEffort:'high',supportedReasoningLevels:[{effort:'low'},{effort:'high'}]}]});
 const a=useAppStore.getState();const first=a.createDraftSession('/tmp/goal-project');const second=a.createDraftSession('/tmp/second');
 useAppStore.setState(s=>({projectCwd:'/tmp/goal-project',pendingStart:false,sessions:{...s.sessions,[first]:{...s.sessions[first],provider:'codex',model:'gpt-test',codexExecutionMode:'plan',isDraft:false,status:'completed',messages:[]},[second]:{...s.sessions[second],provider:'codex',model:'gpt-test',isDraft:false,status:'completed',messages:[]}}}));

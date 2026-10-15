@@ -29,7 +29,7 @@ window.electron={
  getGitBranches:async cwd=>{await new Promise(r=>setTimeout(r,120));return cwd===Notes?{ok:false}:{ok:true,entries:[{name:'main',current:true,remote:false},{name:'feature',current:false,remote:false}]};},
  gitCheckoutBranch:async p=>{qa.calls.push(p);return {ok:true};},
  getProjectGitSummary:async()=>({isGitRepository:true}),getProjectTree:async()=>null,
- getAgentRuntimeDirectory:async()=>({checkedAt:Date.now(),entries:[]}),getClaudeCompatibleProviderConfig:async()=>({}),
+ getAgentRuntimeDirectory:async()=>({checkedAt:Date.now(),entries:[]}),
  chooseAttachments:async()=>({attachments:[{id:'file',name:'notes.txt',path:'/tmp/notes.txt',mimeType:'text/plain',size:10}],errors:[]}),
  getSessionGoal:async id=>({sessionId:id,supported:false,goal:null,revision:0}),onSessionGoalChanged:()=>()=>{},
 };

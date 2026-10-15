@@ -13,7 +13,6 @@ import { createHash } from 'crypto';
 import { existsSync, mkdirSync, appendFileSync, readdirSync } from 'fs';
 import { join, resolve } from 'path';
 import { getClaudeSettings } from './claude-settings';
-import { getEnabledCompatibleProviderConfigs } from './compatible-provider-config';
 import { getAegisMemoryHome, getAegisProjectsRoot } from './memory-paths';
 
 const EXTRACTION_INTERVAL = 3;
@@ -68,7 +67,7 @@ function getLocalDateString(): string {
 
 /**
  * Resolve API credentials for a lightweight extraction call.
- * Tries: env ANTHROPIC_API_KEY → claude settings → compatible providers.
+ * Tries: env ANTHROPIC_API_KEY → claude settings.
  * Returns null if no credentials available.
  */
 function resolveCredentials(): {
@@ -101,18 +100,6 @@ function resolveCredentials(): {
       baseUrl: 'https://api.anthropic.com',
       model: 'claude-haiku-4-5-20251001',
       authStyle: 'api_key',
-    };
-  }
-
-  // 3) Fall back to compatible provider configs
-  const providers = getEnabledCompatibleProviderConfigs();
-  if (providers.length > 0) {
-    const provider = providers[0];
-    return {
-      apiKey: provider.secret,
-      baseUrl: provider.baseUrl,
-      model: provider.smallFastModel?.trim() || provider.model,
-      authStyle: provider.authType === 'api_key' ? 'api_key' : 'auth_token',
     };
   }
 

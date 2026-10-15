@@ -1,8 +1,7 @@
 import { rendererStateStorage } from './renderer-state-storage';
-import type { ClaudeCompatibleProviderId, ClaudeModelConfig } from '../types';
+import type { ClaudeModelConfig } from '../types';
 
 const STORAGE_KEY = 'cowork.preferredClaudeModel';
-const COMPATIBLE_PROVIDER_STORAGE_KEY = 'cowork.preferredClaudeCompatibleProvider';
 const CONTEXT_1M_STORAGE_KEY = 'cowork.preferredClaudeContext1m';
 
 const CLAUDE_SHORT_ALIASES = new Set(['sonnet', 'opus', 'haiku']);
@@ -49,33 +48,6 @@ export function savePreferredClaudeModel(model: string | null): void {
     return;
   }
   rendererStateStorage.setItem(STORAGE_KEY, canonicalizeClaudeModel(model) || model);
-}
-
-export function loadPreferredClaudeCompatibleProviderId(): ClaudeCompatibleProviderId | null {
-  if (typeof window === 'undefined') return null;
-  const raw = rendererStateStorage.getItem(COMPATIBLE_PROVIDER_STORAGE_KEY);
-  if (
-    raw === 'minimaxCn' ||
-    raw === 'minimax' ||
-    raw === 'mimo' ||
-    raw === 'zhipu' ||
-    raw === 'moonshot' ||
-    raw === 'deepseek'
-  ) {
-    return raw;
-  }
-  return null;
-}
-
-export function savePreferredClaudeCompatibleProviderId(
-  providerId: ClaudeCompatibleProviderId | null
-): void {
-  if (typeof window === 'undefined') return;
-  if (!providerId) {
-    rendererStateStorage.removeItem(COMPATIBLE_PROVIDER_STORAGE_KEY);
-    return;
-  }
-  rendererStateStorage.setItem(COMPATIBLE_PROVIDER_STORAGE_KEY, providerId);
 }
 
 export function loadPreferredClaudeContext1m(): boolean {

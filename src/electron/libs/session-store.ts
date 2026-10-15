@@ -21,7 +21,6 @@ import type {
   ClaudeAccessMode,
   ClaudeExecutionMode,
   ClaudeReasoningEffort,
-  ClaudeCompatibleProviderId,
   AgentProvider,
   AutomationDefinition,
   AutomationRunRecord,
@@ -103,7 +102,6 @@ interface AutomationRow {
   prompt: string;
   provider: AgentProvider;
   model: string | null;
-  compatible_provider_id: ClaudeCompatibleProviderId | null;
   codex_reasoning_effort: CodexReasoningEffort | null;
   codex_fast_mode: number | null;
   schedule_kind: AutomationSchedule['kind'];
@@ -316,10 +314,6 @@ function normalizeAutomationRuntime(runtime?: AutomationRuntimeConfig | null): A
   return {
     provider,
     model: runtime?.model?.trim() || null,
-    compatibleProviderId:
-      provider === 'claude'
-        ? runtime?.compatibleProviderId || null
-        : null,
     codexReasoningEffort:
       provider === 'codex'
         ? runtime?.codexReasoningEffort || null
@@ -389,7 +383,6 @@ export function initialize(): void {
       model TEXT,
       conversation_scope TEXT DEFAULT 'project',
       agent_id TEXT,
-      compatible_provider_id TEXT,
       betas TEXT,
       claude_access_mode TEXT DEFAULT 'default',
       claude_execution_mode TEXT DEFAULT 'execute',
@@ -522,7 +515,6 @@ export function initialize(): void {
       prompt TEXT NOT NULL,
       provider TEXT NOT NULL,
       model TEXT,
-      compatible_provider_id TEXT,
       codex_reasoning_effort TEXT,
       codex_fast_mode INTEGER DEFAULT 0,
       team_mode TEXT DEFAULT 'channel_default',
@@ -572,7 +564,6 @@ export function initialize(): void {
   ensureColumn('sessions', 'model', 'TEXT');
   ensureColumn('sessions', 'conversation_scope', "TEXT DEFAULT 'project'");
   ensureColumn('sessions', 'agent_id', 'TEXT');
-  ensureColumn('sessions', 'compatible_provider_id', 'TEXT');
   ensureColumn('sessions', 'betas', 'TEXT');
   ensureColumn('sessions', 'claude_access_mode', "TEXT DEFAULT 'default'");
   ensureColumn('sessions', 'claude_execution_mode', "TEXT DEFAULT 'execute'");
@@ -1375,7 +1366,6 @@ export function createSession(params: {
   model?: string;
   scope?: SessionScope;
   agentId?: string | null;
-  compatibleProviderId?: ClaudeCompatibleProviderId;
   betas?: string[];
   claudeAccessMode?: ClaudeAccessMode;
   claudeExecutionMode?: ClaudeExecutionMode;
@@ -1395,8 +1385,8 @@ export function createSession(params: {
   const id = uuidv4();
 
   const stmt = getDb().prepare(`
-    INSERT INTO sessions (id, title, provider, model, conversation_scope, agent_id, compatible_provider_id, betas, claude_access_mode, claude_execution_mode, claude_reasoning_effort, codex_execution_mode, codex_permission_mode, codex_reasoning_effort, codex_fast_mode, opencode_permission_mode, deepseek_agent_preset, cwd, allowed_tools, last_prompt, todo_state, session_origin, external_file_path, external_file_mtime, hidden_from_threads, workspace_channel_id, team_mode, team_id, status, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'aegis', NULL, NULL, ?, ?, ?, ?, 'idle', ?, ?)
+    INSERT INTO sessions (id, title, provider, model, conversation_scope, agent_id, betas, claude_access_mode, claude_execution_mode, claude_reasoning_effort, codex_execution_mode, codex_permission_mode, codex_reasoning_effort, codex_fast_mode, opencode_permission_mode, deepseek_agent_preset, cwd, allowed_tools, last_prompt, todo_state, session_origin, external_file_path, external_file_mtime, hidden_from_threads, workspace_channel_id, team_mode, team_id, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'aegis', NULL, NULL, ?, ?, ?, ?, 'idle', ?, ?)
   `);
 
   stmt.run(
@@ -1406,7 +1396,6 @@ export function createSession(params: {
     params.model || null,
     normalizeSessionScope(params.scope),
     normalizeSessionScope(params.scope) === 'dm' ? params.agentId?.trim() || null : null,
-    params.provider === 'claude' ? params.compatibleProviderId || null : null,
     params.betas && params.betas.length > 0 ? JSON.stringify(params.betas) : null,
     params.provider === 'claude' ? normalizeClaudeAccessMode(params.claudeAccessMode) : null,
     params.provider === 'claude'
@@ -1484,7 +1473,6 @@ function automationRowToDefinition(row: AutomationRow): AutomationDefinition {
   const runtime = normalizeAutomationRuntime({
     provider: row.provider,
     model: row.model,
-    compatibleProviderId: row.compatible_provider_id,
     codexReasoningEffort: row.codex_reasoning_effort,
     codexFastMode: row.codex_fast_mode === 1,
   });
@@ -1576,7 +1564,6 @@ export function saveAutomation(input: UpsertAutomationInput): AutomationDefiniti
       prompt,
       provider,
       model,
-      compatible_provider_id,
       codex_reasoning_effort,
       codex_fast_mode,
       schedule_kind,
@@ -1594,14 +1581,13 @@ export function saveAutomation(input: UpsertAutomationInput): AutomationDefiniti
       created_at,
       updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
       project_cwd = excluded.project_cwd,
       prompt = excluded.prompt,
       provider = excluded.provider,
       model = excluded.model,
-      compatible_provider_id = excluded.compatible_provider_id,
       codex_reasoning_effort = excluded.codex_reasoning_effort,
       codex_fast_mode = excluded.codex_fast_mode,
       schedule_kind = excluded.schedule_kind,
@@ -1620,7 +1606,6 @@ export function saveAutomation(input: UpsertAutomationInput): AutomationDefiniti
     normalized.prompt,
     normalized.runtime.provider,
     normalized.runtime.model || null,
-    normalized.runtime.compatibleProviderId || null,
     normalized.runtime.codexReasoningEffort || null,
     normalized.runtime.codexFastMode ? 1 : 0,
     normalized.schedule.kind,
@@ -2061,17 +2046,6 @@ export function updateSessionModel(sessionId: string, model: string | null): voi
   `);
   stmt.run(model, now, sessionId);
   invalidateClaudeUsageReportCache();
-}
-
-export function updateSessionCompatibleProviderId(
-  sessionId: string,
-  compatibleProviderId: ClaudeCompatibleProviderId | null
-): void {
-  const now = Date.now();
-  const stmt = getDb().prepare(`
-    UPDATE sessions SET compatible_provider_id = ?, updated_at = ? WHERE id = ?
-  `);
-  stmt.run(compatibleProviderId, now, sessionId);
 }
 
 export function updateSessionBetas(sessionId: string, betas: string[] | null): void {

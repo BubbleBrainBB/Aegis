@@ -10,9 +10,6 @@ import type { ThemeRecipe, ThemeTypefaces, ThemeMode, ThemeChoice, AppearanceSta
 import type {
   AgentProvider,
   AppUpdateStatus,
-  ClaudeCompatibleProviderId,
-  ClaudeCompatibleProviderConfig,
-  ClaudeCompatibleProvidersConfig,
   ClaudeReasoningEffort,
   CodexReasoningEffort,
   DeepseekReasoningEffort,
@@ -58,9 +55,6 @@ export type {
   AvailableCommand,
   ClaudeSkillSummary,
   ClaudeModelConfig,
-  ClaudeCompatibleProviderId,
-  ClaudeCompatibleProviderConfig,
-  ClaudeCompatibleProvidersConfig,
   ClaudePermissionMode,
   ClaudeAccessMode,
   ClaudeExecutionMode,
@@ -354,7 +348,6 @@ export interface SessionView {
   claudeSessionId?: string;
   provider?: AgentProvider;
   model?: string;
-  compatibleProviderId?: import('../shared/types').ClaudeCompatibleProviderId;
   betas?: string[];
   claudeAccessMode?: import('../shared/types').ClaudeAccessMode;
   claudeExecutionMode?: import('../shared/types').ClaudeExecutionMode;

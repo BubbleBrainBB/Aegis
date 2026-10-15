@@ -29,16 +29,14 @@ public enum RemoteEnvironment: String, Codable, Sendable {
 
 public struct RemoteTaskSettings: Codable, Equatable, Hashable, Sendable {
     public var model: String?
-    public var compatibleProviderId: String?
     public var effort: String?
     public var fast: Bool?
     public var permissionMode: String?
     public var plan: Bool?
 
-    public init(model: String? = nil, compatibleProviderId: String? = nil, effort: String? = nil,
+    public init(model: String? = nil, effort: String? = nil,
                 fast: Bool? = nil, permissionMode: String? = nil, plan: Bool? = nil) {
         self.model = model
-        self.compatibleProviderId = compatibleProviderId
         self.effort = effort
         self.fast = fast
         self.permissionMode = permissionMode

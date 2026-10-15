@@ -16,6 +16,7 @@ const short = z.string().trim().min(1).max(120);
 export const taskSettingsSchema = z
   .object({
     model: z.string().trim().max(200).optional(),
+    /** Sent by older phones; ignored. */
     compatibleProviderId: short.optional(),
     effort: short.optional(),
     fast: z.boolean().optional(),
@@ -164,8 +165,6 @@ export interface RemoteAgentOptions {
   claude?: {
     defaultModel: string | null;
     options: string[];
-    /** Enabled Claude-compatible providers (no endpoints or keys). */
-    compatible: Array<{ id: string; model: string }>;
   };
   codex?: {
     defaultModel: string | null;

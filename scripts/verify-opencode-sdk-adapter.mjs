@@ -150,7 +150,6 @@ assert.ok(
 );
 
 for (const file of [
-  'src/ui/components/settings/CompatibleProviderSettings.tsx',
   'src/electron/ipc-handlers.ts',
 ]) {
   const source = read(file);

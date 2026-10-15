@@ -35,8 +35,6 @@ function buildAutomationSessionPayload(
     projectCwd: automation.projectCwd,
     provider,
     model: automation.runtime.model || undefined,
-    compatibleProviderId:
-      provider === 'claude' ? automation.runtime.compatibleProviderId || undefined : undefined,
     claudeAccessMode: provider === 'claude' ? 'bypassPermissions' : undefined,
     claudeExecutionMode: provider === 'claude' ? 'execute' : undefined,
     codexExecutionMode: provider === 'codex' ? 'execute' : undefined,

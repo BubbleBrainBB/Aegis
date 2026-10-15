@@ -14,7 +14,6 @@ import type {
   SessionInfo,
   SessionStartPayload,
   ClientEvent,
-  ClaudeCompatibleProvidersConfig,
   ServerEvent,
   StatisticsData,
   StaticData,
@@ -213,8 +212,6 @@ declare global {
     checkForUpdates: () => Promise<{ ok: boolean }>;
     getUpdateStatus: () => Promise<AppUpdateStatus>;
     getClaudeModelConfig: () => Promise<ClaudeModelConfig>;
-    getClaudeCompatibleProviderConfig: () => Promise<ClaudeCompatibleProvidersConfig>;
-    saveClaudeCompatibleProviderConfig: (config: ClaudeCompatibleProvidersConfig) => Promise<ClaudeCompatibleProvidersConfig>;
     getWechatHtmlGeneratorConfig: () => Promise<WechatMarkdownHtmlGeneratorConfig>;
     saveWechatHtmlGeneratorConfig: (config: WechatMarkdownHtmlGeneratorConfig) => Promise<WechatMarkdownHtmlGeneratorConfig>;
     generateWechatMarkdownHtml: (input: WechatMarkdownHtmlGenerationInput) => Promise<WechatMarkdownHtmlGenerationResult>;

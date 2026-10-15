@@ -1,6 +1,6 @@
 import { rendererStateStorage } from '../utils/renderer-state-storage';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { AgentProvider, ClaudeCompatibleProviderId, SettingsTab } from '../types';
+import type { AgentProvider, SettingsTab } from '../types';
 import {
   resolveConfirmedListedPreference,
   resolveListedOrPendingModel,
@@ -21,16 +21,13 @@ import { useDevinThoughtLevels } from './useDevinThoughtLevels';
 import { resolveDevinThoughtLevel, savePreferredDevinThoughtLevel } from '../utils/devin-reasoning';
 import { useMimoModelConfig } from './useMimoModelConfig';
 import { resolveMimoReasoningEffort, savePreferredMimoReasoningEffort } from '../utils/mimo-reasoning';
-import { useCompatibleProviderConfig } from './useCompatibleProviderConfig';
 import { loadPreferredProvider, PREFERRED_PROVIDER_EVENT, savePreferredProvider } from '../utils/provider';
 import {
   canonicalizeClaudeModel,
   buildClaudeModelOptions,
   formatClaudeModelLabel,
   isOfficialClaudeModel,
-  loadPreferredClaudeCompatibleProviderId,
   loadPreferredClaudeModel,
-  savePreferredClaudeCompatibleProviderId,
   savePreferredClaudeModel,
 } from '../utils/claude-model';
 import {
@@ -150,7 +147,6 @@ export interface ComposerModelOption {
   value: string;
   label: string;
   description?: string;
-  compatibleProviderId?: ClaudeCompatibleProviderId | null;
   details?: string;
   /** Keep saved model selections resolvable without offering duplicate aliases. */
   hiddenFromPicker?: boolean;
@@ -292,82 +288,30 @@ function savePreferredQoderModel(model: string | null): void {
   rendererStateStorage.setItem(QODER_MODEL_STORAGE_KEY, model);
 }
 
-function resolveCompatibleProviderForModel(
-  model: string | null | undefined,
-  preferredProviderId: ClaudeCompatibleProviderId | null | undefined,
-  compatibleOptions: Array<{ id: ClaudeCompatibleProviderId; model: string }>
-): ClaudeCompatibleProviderId | null {
-  const normalized = model?.trim();
-  if (!normalized) return null;
-  const matches = compatibleOptions.filter((option) => option.model === normalized);
-  if (matches.length === 0) return null;
-  if (preferredProviderId && matches.some((option) => option.id === preferredProviderId)) {
-    return preferredProviderId;
-  }
-  return matches[0]?.id || null;
-}
-
-function buildConfiguredClaudeModelValues(
-  config: { defaultModel: string | null; options: string[] },
-  compatibleOptions: Array<{ model: string }>
-): string[] {
-  const compatibleModels = new Set(compatibleOptions.map((option) => option.model.trim()).filter(Boolean));
-  const defaultModel = canonicalizeClaudeModel(config.defaultModel);
+function buildConfiguredClaudeModelValues(config: { defaultModel: string | null; options: string[] }): string[] {
   return Array.from(
     new Set(
       buildClaudeModelOptions(config)
         .map((value) => canonicalizeClaudeModel(value))
         .filter((value): value is string => Boolean(value))
         .filter((value) => isOfficialClaudeModel(value))
-        .filter((value) => value === defaultModel || !compatibleModels.has(value))
     )
   );
 }
 
-function resolveConfiguredClaudeSelection(
+function resolveConfiguredClaudeModel(
   requestedModel: string | null,
-  requestedCompatibleProviderId: ClaudeCompatibleProviderId | null | undefined,
-  config: { defaultModel: string | null; options: string[] },
-  compatibleOptions: Array<{ id: ClaudeCompatibleProviderId; model: string }>
-): { model: string | null; compatibleProviderId: ClaudeCompatibleProviderId | null } {
-  const officialOptions = buildConfiguredClaudeModelValues(config, compatibleOptions);
-  const selectCandidate = (
-    candidateModel: string | null | undefined,
-    candidateCompatibleProviderId?: ClaudeCompatibleProviderId | null
-  ): { model: string; compatibleProviderId: ClaudeCompatibleProviderId | null } | null => {
+  config: { defaultModel: string | null; options: string[] }
+): string | null {
+  const officialOptions = buildConfiguredClaudeModelValues(config);
+  const selectCandidate = (candidateModel: string | null | undefined): string | null => {
     const normalized = canonicalizeClaudeModel(candidateModel);
-    if (!normalized) return null;
-
-    if (candidateCompatibleProviderId) {
-      const compatibleMatch = compatibleOptions.find(
-        (option) => option.id === candidateCompatibleProviderId && option.model === normalized
-      );
-      if (compatibleMatch) {
-        return { model: compatibleMatch.model, compatibleProviderId: compatibleMatch.id };
-      }
-    }
-
-    if (officialOptions.includes(normalized)) {
-      return { model: normalized, compatibleProviderId: null };
-    }
-
-    const compatibleProviderId = resolveCompatibleProviderForModel(
-      normalized,
-      candidateCompatibleProviderId,
-      compatibleOptions
-    );
-    if (compatibleProviderId) {
-      return { model: normalized, compatibleProviderId };
-    }
-
-    return null;
+    return normalized && officialOptions.includes(normalized) ? normalized : null;
   };
-
   return (
-    selectCandidate(requestedModel, requestedCompatibleProviderId) ||
-    selectCandidate(loadPreferredClaudeModel(), loadPreferredClaudeCompatibleProviderId()) ||
-    selectCandidate(config.defaultModel, null) ||
-    { model: null, compatibleProviderId: null }
+    selectCandidate(requestedModel) ||
+    selectCandidate(loadPreferredClaudeModel()) ||
+    selectCandidate(config.defaultModel)
   );
 }
 
@@ -716,7 +660,6 @@ export function useComposerAgentSelection(input?: {
   selectionKey?: string | null;
   provider?: AgentProvider | null;
   model?: string | null;
-  compatibleProviderId?: ClaudeCompatibleProviderId | null;
   // Accepts the wider access mode (includes 'fullAccess'); normalized internally.
   claudePermissionMode?: ClaudeAccessMode | null;
   claudeExecutionMode?: import('../../shared/types').ClaudeExecutionMode | null;
@@ -744,7 +687,6 @@ export function useComposerAgentSelection(input?: {
   const deepseekModelConfig = useDeepseekModelConfig();
   const devinModelConfig = useDevinModelConfig();
   const mimoModelConfig = useMimoModelConfig();
-  const { compatibleOptions } = useCompatibleProviderConfig();
   const [provider, setProviderState] = useState<AgentProvider>(() => input?.provider || loadPreferredProvider());
   const [model, setModelState] = useState<string | null>(() => {
     const initialProvider = input?.provider || loadPreferredProvider();
@@ -768,9 +710,6 @@ export function useComposerAgentSelection(input?: {
     if (initialProvider === 'claude') return loadPreferredClaudeModel();
     return null;
   });
-  const [compatibleProviderId, setCompatibleProviderId] = useState<ClaudeCompatibleProviderId | null>(
-    () => input?.compatibleProviderId || null
-  );
   // Tracks which selectionKey the provider/model state currently belongs to.
   // Initialized to the current key so the first paint of a fresh composer does
   // not wait a frame for useEffect before applying session/preferred model.
@@ -786,22 +725,13 @@ export function useComposerAgentSelection(input?: {
           value: '',
           label: 'Default',
           description: 'Do not override the default model',
-          compatibleProviderId: null,
         };
-        const officialOptions = buildConfiguredClaudeModelValues(claudeModelConfig, compatibleOptions).map((option) => ({
+        const officialOptions = buildConfiguredClaudeModelValues(claudeModelConfig).map((option) => ({
           key: `claude:official:${option}`,
           value: option,
           label: formatClaudeModelLabel(option),
-          compatibleProviderId: null,
         }));
-        const compatible = compatibleOptions.map((option) => ({
-          key: `claude:compatible:${option.id}:${option.model}`,
-          value: option.model,
-          label: option.model,
-          description: option.label,
-          compatibleProviderId: option.id,
-        }));
-        return [defaultOption, ...officialOptions, ...compatible];
+        return [defaultOption, ...officialOptions];
       })(),
       codex: buildCodexModelOptions(codexModelConfig).map((option) => {
         const meta = codexModelConfig.availableModels.find((entry) => entry.name === option);
@@ -821,7 +751,7 @@ export function useComposerAgentSelection(input?: {
       devin: buildDevinModelOptions(devinModelConfig),
       mimo: buildMimoModelOptions(mimoModelConfig),
     };
-  }, [claudeModelConfig, codexModelConfig, compatibleOptions, opencodeModelConfig, kimiModelConfig, grokModelConfig, piModelConfig, bubbleModelConfig, qoderModelConfig, deepseekModelConfig, devinModelConfig, mimoModelConfig]);
+  }, [claudeModelConfig, codexModelConfig, opencodeModelConfig, kimiModelConfig, grokModelConfig, piModelConfig, bubbleModelConfig, qoderModelConfig, deepseekModelConfig, devinModelConfig, mimoModelConfig]);
 
   const modelOptions = useMemo<ComposerModelOption[]>(() => {
     if (provider === 'claude') {
@@ -830,22 +760,13 @@ export function useComposerAgentSelection(input?: {
         value: '',
         label: 'Default',
         description: 'Do not override the default model',
-        compatibleProviderId: null,
       };
-      const officialOptions = buildConfiguredClaudeModelValues(claudeModelConfig, compatibleOptions).map((option) => ({
+      const officialOptions = buildConfiguredClaudeModelValues(claudeModelConfig).map((option) => ({
         key: `claude:official:${option}`,
         value: option,
         label: formatClaudeModelLabel(option),
-        compatibleProviderId: null,
       }));
-      const compatible = compatibleOptions.map((option) => ({
-        key: `claude:compatible:${option.id}:${option.model}`,
-        value: option.model,
-        label: option.model,
-        description: option.label,
-        compatibleProviderId: option.id,
-      }));
-      return [defaultOption, ...officialOptions, ...compatible];
+      return [defaultOption, ...officialOptions];
     }
 
     if (provider === 'codex') {
@@ -896,28 +817,21 @@ export function useComposerAgentSelection(input?: {
     }
 
     return [];
-  }, [claudeModelConfig, codexModelConfig, compatibleOptions, opencodeModelConfig, kimiModelConfig, grokModelConfig, piModelConfig, bubbleModelConfig, qoderModelConfig, deepseekModelConfig, devinModelConfig, mimoModelConfig, provider]);
+  }, [claudeModelConfig, codexModelConfig, opencodeModelConfig, kimiModelConfig, grokModelConfig, piModelConfig, bubbleModelConfig, qoderModelConfig, deepseekModelConfig, devinModelConfig, mimoModelConfig, provider]);
 
   const resolveModelForProvider = useCallback(
     (
       nextProvider: AgentProvider,
-      requestedModel?: string | null,
-      requestedCompatibleProviderId?: ClaudeCompatibleProviderId | null
-    ): { model: string | null; compatibleProviderId: ClaudeCompatibleProviderId | null } => {
+      requestedModel?: string | null
+    ): { model: string | null } => {
       const normalizedRequestedModel = requestedModel?.trim() || null;
       if (nextProvider === 'claude') {
-        return resolveConfiguredClaudeSelection(
-          normalizedRequestedModel,
-          requestedCompatibleProviderId,
-          claudeModelConfig,
-          compatibleOptions
-        );
+        return { model: resolveConfiguredClaudeModel(normalizedRequestedModel, claudeModelConfig) };
       }
 
       if (nextProvider === 'codex') {
         return {
           model: resolveCodexModel(normalizedRequestedModel || loadPreferredCodexModel(), codexModelConfig),
-          compatibleProviderId: null,
         };
       }
 
@@ -932,72 +846,62 @@ export function useComposerAgentSelection(input?: {
           null;
         return {
           model: nextModel && (options.length === 0 || options.includes(nextModel)) ? nextModel : options[0] || null,
-          compatibleProviderId: null,
         };
       }
 
       if (nextProvider === 'kimi') {
         return {
           model: resolveConfiguredKimiModel(normalizedRequestedModel, kimiModelConfig),
-          compatibleProviderId: null,
         };
       }
 
       if (nextProvider === 'grok') {
         return {
           model: resolveConfiguredGrokModel(normalizedRequestedModel, grokModelConfig),
-          compatibleProviderId: null,
         };
       }
 
       if (nextProvider === 'pi') {
         return {
           model: resolveConfiguredPiModel(normalizedRequestedModel, piModelConfig),
-          compatibleProviderId: null,
         };
       }
 
       if (nextProvider === 'bubble') {
         return {
           model: resolveConfiguredBubbleModel(normalizedRequestedModel, bubbleModelConfig),
-          compatibleProviderId: null,
         };
       }
 
       if (nextProvider === 'qoder') {
         return {
           model: resolveConfiguredQoderModel(normalizedRequestedModel, qoderModelConfig),
-          compatibleProviderId: null,
         };
       }
 
       if (nextProvider === 'deepseek') {
         return {
           model: resolveConfiguredDeepseekModel(normalizedRequestedModel, deepseekModelConfig),
-          compatibleProviderId: null,
         };
       }
 
       if (nextProvider === 'devin') {
         return {
           model: resolveConfiguredDevinModel(normalizedRequestedModel, devinModelConfig),
-          compatibleProviderId: null,
         };
       }
 
       if (nextProvider === 'mimo') {
         return {
           model: resolveConfiguredMimoModel(normalizedRequestedModel, mimoModelConfig),
-          compatibleProviderId: null,
         };
       }
 
       return {
         model: null,
-        compatibleProviderId: null,
       };
     },
-    [claudeModelConfig, codexModelConfig, compatibleOptions, opencodeModelConfig, kimiModelConfig, grokModelConfig, piModelConfig, bubbleModelConfig, qoderModelConfig, deepseekModelConfig, devinModelConfig, mimoModelConfig]
+    [claudeModelConfig, codexModelConfig, opencodeModelConfig, kimiModelConfig, grokModelConfig, piModelConfig, bubbleModelConfig, qoderModelConfig, deepseekModelConfig, devinModelConfig, mimoModelConfig]
   );
 
   const decorateAgentSelection = useCallback(
@@ -1101,14 +1005,9 @@ export function useComposerAgentSelection(input?: {
   if (appliedSelectionKey !== selectionKey) {
     setAppliedSelectionKey(selectionKey);
     const nextProvider = input?.provider || loadPreferredProvider();
-    const nextSelection = resolveModelForProvider(
-      nextProvider,
-      input?.model,
-      input?.compatibleProviderId
-    );
+    const nextSelection = resolveModelForProvider(nextProvider, input?.model);
     setProviderState(nextProvider);
     setModelState(nextSelection.model);
-    setCompatibleProviderId(nextSelection.compatibleProviderId);
   }
 
   // Keep provider/model in sync when the active session's own fields change
@@ -1121,23 +1020,13 @@ export function useComposerAgentSelection(input?: {
       setProviderState(input.provider);
     }
     if (input?.model !== undefined) {
-      const nextSelection = resolveModelForProvider(
-        input?.provider || provider,
-        input.model,
-        input.compatibleProviderId
-      );
-      if (
-        nextSelection.model !== model ||
-        nextSelection.compatibleProviderId !== (compatibleProviderId || null)
-      ) {
+      const nextSelection = resolveModelForProvider(input?.provider || provider, input.model);
+      if (nextSelection.model !== model) {
         setModelState(nextSelection.model);
-        setCompatibleProviderId(nextSelection.compatibleProviderId);
       }
     }
   }, [
     appliedSelectionKey,
-    compatibleProviderId,
-    input?.compatibleProviderId,
     input?.model,
     input?.provider,
     input?.selectionKey,
@@ -1150,12 +1039,11 @@ export function useComposerAgentSelection(input?: {
     if (model) {
       return;
     }
-    const nextSelection = resolveModelForProvider(provider, input?.model, input?.compatibleProviderId);
+    const nextSelection = resolveModelForProvider(provider, input?.model);
     if (nextSelection.model) {
       setModelState(nextSelection.model);
-      setCompatibleProviderId(nextSelection.compatibleProviderId);
     }
-  }, [input?.compatibleProviderId, input?.model, model, provider, resolveModelForProvider]);
+  }, [input?.model, model, provider, resolveModelForProvider]);
 
   useEffect(() => {
     if (!grokModelConfig.loaded) {
@@ -1185,10 +1073,7 @@ export function useComposerAgentSelection(input?: {
       (option) => {
         const optionValue = option.value.trim() || null;
         if (!optionValue) return false;
-        return (
-          optionValue === normalizedModel &&
-          (option.compatibleProviderId || null) === (compatibleProviderId || null)
-        );
+        return optionValue === normalizedModel;
       }
     );
     if (selectedModelStillConfigured) {
@@ -1198,17 +1083,11 @@ export function useComposerAgentSelection(input?: {
       return;
     }
 
-    const nextSelection = resolveModelForProvider(provider, input?.model, input?.compatibleProviderId);
-    if (
-      nextSelection.model !== model ||
-      nextSelection.compatibleProviderId !== (compatibleProviderId || null)
-    ) {
+    const nextSelection = resolveModelForProvider(provider, input?.model);
+    if (nextSelection.model !== model) {
       setModelState(nextSelection.model);
-      setCompatibleProviderId(nextSelection.compatibleProviderId);
     }
   }, [
-    compatibleProviderId,
-    input?.compatibleProviderId,
     input?.model,
     model,
     modelOptions,
@@ -1225,7 +1104,6 @@ export function useComposerAgentSelection(input?: {
       });
       setProviderState(nextProvider);
       setModelState(nextSelection.model);
-      setCompatibleProviderId(nextSelection.compatibleProviderId);
       input?.onSelectionChange?.(nextSelection);
     },
     [decorateAgentSelection, input?.onSelectionChange, resolveModelForProvider]
@@ -1255,23 +1133,18 @@ export function useComposerAgentSelection(input?: {
         return;
       }
       const nextModel = option.value.trim() || null;
-      const nextCompatibleProviderId =
-        targetProvider === 'claude' ? option.compatibleProviderId || null : null;
       const nextSelection = decorateAgentSelection({
         provider: targetProvider,
         model: nextModel,
-        compatibleProviderId: nextCompatibleProviderId,
       });
       if (targetProvider !== provider) {
         savePreferredProvider(targetProvider);
         setProviderState(targetProvider);
       }
       setModelState(nextModel);
-      setCompatibleProviderId(nextCompatibleProviderId);
 
       if (targetProvider === 'claude') {
         savePreferredClaudeModel(nextModel);
-        savePreferredClaudeCompatibleProviderId(nextCompatibleProviderId);
       } else if (targetProvider === 'codex') {
         savePreferredCodexModel(nextModel);
       } else if (targetProvider === 'opencode') {
@@ -1306,16 +1179,8 @@ export function useComposerAgentSelection(input?: {
       return null;
     }
     const normalizedModel = model.trim() || null;
-    return (
-      modelOptions.find(
-        (option) =>
-          (option.value.trim() || null) === normalizedModel &&
-          (option.compatibleProviderId || null) === (compatibleProviderId || null)
-      ) ||
-      modelOptions.find((option) => (option.value.trim() || null) === normalizedModel) ||
-      null
-    );
-  }, [compatibleProviderId, model, modelOptions]);
+    return modelOptions.find((option) => (option.value.trim() || null) === normalizedModel) || null;
+  }, [model, modelOptions]);
 
   const modelSetup = useMemo<ComposerModelSetupState | null>(() => {
     // Only show setup CTA when there is no resolvable model to display.
@@ -1822,7 +1687,6 @@ export function useComposerAgentSelection(input?: {
         {
           provider: change.provider,
           model: nextModel,
-          compatibleProviderId: resolved.compatibleProviderId,
         },
         change
       );
@@ -1861,7 +1725,6 @@ export function useComposerAgentSelection(input?: {
       savePreferredProvider(change.provider);
       setProviderState(change.provider);
       setModelState(nextModel);
-      setCompatibleProviderId(resolved.compatibleProviderId);
       input?.onSelectionChange?.(nextSelection);
     },
     [
@@ -1877,7 +1740,6 @@ export function useComposerAgentSelection(input?: {
   return {
     provider,
     model,
-    compatibleProviderId,
     allAgentModelOptions,
     modelValueByProvider,
     modelOptions,

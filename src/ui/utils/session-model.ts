@@ -1,6 +1,5 @@
 import type {
   AgentProvider,
-  ClaudeCompatibleProviderId,
   SessionView,
   StreamMessage,
 } from '../types';
@@ -13,7 +12,6 @@ import type {
 export interface AgentModelSelection {
   provider: AgentProvider;
   model: string | null;
-  compatibleProviderId: ClaudeCompatibleProviderId | null;
   claudeReasoningEffort?: ClaudeReasoningEffort;
   codexReasoningEffort?: CodexReasoningEffort;
   codexFastMode?: boolean;
@@ -28,10 +26,6 @@ export function applySessionAgentSelection(
     ...session,
     provider: selection.provider,
     model: selection.model || undefined,
-    compatibleProviderId:
-      selection.provider === 'claude'
-        ? selection.compatibleProviderId || undefined
-        : undefined,
     claudeReasoningEffort:
       selection.provider === 'claude' && selection.claudeReasoningEffort !== undefined
         ? selection.claudeReasoningEffort

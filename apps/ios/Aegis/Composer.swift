@@ -515,11 +515,10 @@ struct ModelPicker: View {
                 ScrollView {
                     VStack(spacing: 2) {
                         ForEach(items, id: \.self) { item in
-                            let selected = item.value == r.model && item.compatibleProviderId == r.compatibleProviderId
+                            let selected = item.value == r.model
                             Button {
                                 set {
                                     $0.model = item.value
-                                    $0.compatibleProviderId = item.compatibleProviderId
                                     $0.effort = nil
                                 }
                                 page = .settings

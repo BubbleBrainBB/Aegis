@@ -10,22 +10,25 @@ import React from 'react';
 import {createRoot} from 'react-dom/client';
 import {Settings} from '/src/ui/components/settings/Settings';
 import {useAppStore} from '/src/ui/store/useAppStore';
-import {normalizeCompatibleProvidersConfig} from '/src/ui/hooks/useCompatibleProviderConfig';
 import {Toaster} from 'sonner';
 import {Tooltip} from '@base-ui-components/react/tooltip';
 import '/src/ui/index.css';
-const config=normalizeCompatibleProvidersConfig({});
-config.providers.zhipu={...config.providers.zhipu,enabled:true,secret:'test-placeholder',model:'glm-5.3'};
-window.qa={store:useAppStore,config,failSave:false,calls:[],bubble:{defaultProviderId:'openai',providers:[
- {id:'openai',name:'OpenAI',hasApiKey:true,configured:true,enabled:true,isDefault:true},
- {id:'zhipuai-coding-plan',name:'Zhipu Coding Plan',hasApiKey:true,configured:true,enabled:true,isDefault:false},
- {id:'deepseek',name:'DeepSeek',hasApiKey:false,configured:false,enabled:false,isDefault:false},
-]},deep:{hasApiKey:true,keySource:'aegis',dshKeyAvailable:false}};
+const P=(id,name,o={})=>({id,name,hasApiKey:true,configured:true,enabled:true,isDefault:false,...o});
+const E=(provider,title,state,o={})=>({provider,title,state,version:null,summary:'',detail:null,installCommand:null,canAutoInstall:false,loginCommand:null,docsUrl:null,checkedAt:Date.now(),...o});
+window.qa={store:useAppStore,calls:[],bubble:{defaultProviderId:'openai',providers:[
+ P('openai','OpenAI',{isDefault:true}),P('anthropic','Anthropic'),P('google','Google Gemini'),P('openrouter','OpenRouter'),
+ P('zhipuai','Zhipu AI'),P('zhipuai-coding-plan','Zhipu AI Coding Plan'),P('doubao','Doubao (Volcengine Ark)'),P('stepfun','StepFun Step Plan'),
+ P('moonshot-intl','Moonshot (International)',{hasApiKey:false}),P('fireworks','Fireworks',{enabled:false}),
+ P('deepseek','DeepSeek',{hasApiKey:false,configured:false,enabled:false}),
+]},deep:{hasApiKey:true,keySource:'aegis',dshKeyAvailable:false},
+dir:[E('claude','Claude Code','ready'),E('codex','Codex CLI','ready'),E('bubble','Bubble','ready'),E('deepseek','DeepSeek Harness','ready'),
+ E('kimi','Kimi Code','ready'),E('grok','Grok Build','login_required',{loginCommand:'grok login'}),
+ E('devin','Devin','not_installed',{canAutoInstall:true,installCommand:'npm i -g devin'})]};
 window.electron={
- getClaudeCompatibleProviderConfig:async()=>{if(qa.failLoad)throw Error('Load failed');return qa.config;},
- saveClaudeCompatibleProviderConfig:async next=>{if(qa.saveDelay)await new Promise(resolve=>setTimeout(resolve,qa.saveDelay));if(qa.failSave)throw Error('Could not save configuration');qa.calls.push('claude-save');return qa.config=next;},
- getAgentRuntimeDirectory:async()=>({checkedAt:Date.now(),entries:[]}),
- getBubbleProvidersConfig:async()=>qa.bubble,
+ getAgentRuntimeDirectory:async()=>({checkedAt:Date.now(),readyCount:0,entries:qa.dir}),
+ installAgentRuntime:async provider=>{qa.calls.push({type:'install',provider});qa.dir=qa.dir.map(e=>e.provider===provider?{...e,state:'ready'}:e);return {ok:true};},
+ openExternalUrl:async()=>{},
+ getBubbleProvidersConfig:async()=>{if(qa.failLoad)throw Error('Load failed');return qa.bubble;},
  getBubbleProviderKey:async()=>new Promise(resolve=>setTimeout(()=>resolve('test-stored-key'),600)),
  setBubbleProviderKey:async(id,key)=>{qa.calls.push({type:'bubble-key',id,key});return qa.bubble={...qa.bubble,providers:qa.bubble.providers.map(p=>p.id===id?{...p,hasApiKey:true,configured:true,enabled:true}:p)};},
  setBubbleProviderEnabled:async(id,enabled)=>qa.bubble={...qa.bubble,providers:qa.bubble.providers.map(p=>p.id===id?{...p,enabled}:p)},
@@ -57,49 +60,47 @@ app.whenReady().then(async()=>{
  const shot=async name=>{await delay(200);fs.mkdirSync(process.env.QA_CAPTURE,{recursive:true});fs.writeFileSync(path.join(process.env.QA_CAPTURE,name+'.png'),(await win.webContents.capturePage()).toPNG());};
  const menu=async(scope,label,action)=>{await click('[aria-label="More actions for '+scope+': '+label+'"]');await js('Array.from(document.querySelectorAll("[role=menuitem]")).find(e=>e.textContent==='+JSON.stringify(action)+').click()');await delay(100);};
  try{
-  await win.loadURL(process.env.QA_URL);await until('!!document.querySelector(".provider-settings-expand")&&!document.querySelector(".provider-settings-expand").disabled');
-  assert.equal(await js('document.querySelector(".provider-runtime").open'),false);
+  await win.loadURL(process.env.QA_URL);await until('document.querySelectorAll(".agent-cell").length===7&&!!document.querySelector(\'[aria-label="Bubble: OpenAI"]\')');
+  const btn=async label=>{await js('Array.from(document.querySelectorAll("button")).find(e=>e.textContent.trim()==='+JSON.stringify(label)+').click()');await delay(150);};
+  const rows=()=>js('document.querySelectorAll(\'[aria-label^="Bubble: "].provider-settings-expand\').length');
+  assert.equal(await js('!!document.querySelector(".agent-runtime-summary")'),false,'no agent summary line');
+  assert.equal(await js('document.querySelector("[data-settings-label=Agents]").compareDocumentPosition(document.querySelector(\'[data-settings-label="Bubble model providers"]\'))&4'),4,'agents come before Bubble providers');
   await shot('providers-light');
-  await click('[aria-label="Claude Code: Zhipu AI"]');await shot('providers-claude-editor');
-  await text('[aria-label="Base URL"]','');await click('.provider-settings-editor [type=submit]');
-  assert.equal(await js('qa.calls.length'),0,'invalid form does not save');
-  await text('[aria-label="Base URL"]','https://example.test/anthropic');
-  await js('qa.failSave=true');await click('.provider-settings-editor [type=submit]');
-  assert(await js('document.querySelector(".provider-settings-editor").textContent.includes("Could not save configuration")'));
-  await js('qa.failSave=false');await click('.provider-settings-editor [type=submit]');
-  assert.equal(await js('qa.config.providers.zhipu.baseUrl'),'https://example.test/anthropic');
+  await btn('Sign in');assert.match(await js('document.querySelector(".agent-panel-row").textContent'),/grok login/);await shot('providers-sign-in');
+  await btn('Sign in');assert.equal(await js('!!document.querySelector(".agent-panel-row")'),false,'sign-in panel toggles closed');
+  await btn('Install');await until('qa.calls.some(c=>c.type==="install"&&c.provider==="devin")');await until('!document.querySelector(\'[data-settings-id="Agents:Devin"] .agent-cell-button\')');
+  await click('[data-settings-id="Agents:DeepSeek Harness"]');await text('[aria-label="DeepSeek API key for DeepSeek Harness"]','test-harness-key');await delay(700);
+  assert.equal(await js('document.querySelector(\'input[aria-label="DeepSeek API key for DeepSeek Harness"]\').value'),'test-harness-key','async key load preserves typing');
+  await click('.agent-panel-row .provider-settings-editor [type=submit], .agent-panel-row [type=submit]');await until('qa.calls.some(c=>c.type==="deepseek-key"&&c.key==="test-harness-key")');
+  assert.equal(await rows(),6,'list collapses to six providers');
+  assert.equal(await js('document.querySelector(\'[aria-label="Bubble: Moonshot (International)"]\').textContent.includes("No API key")'),true,'missing-key provider stays visible');
+  await btn('Show 3 more');assert.equal(await rows(),9);await btn('Show less');assert.equal(await rows(),6);
+  await click('.provider-off-toggle');assert.equal(await rows(),7,'turned-off providers expand');await click('.provider-off-toggle');
   await click('[aria-label="Bubble: OpenAI"]');
   await text('[aria-label="OpenAI API key for Bubble"]','test-replacement');await delay(700);
   assert.equal(await js('document.querySelector(".provider-key-input input").value'),'test-replacement','async credential load preserves typing');
   await click('[aria-label="Show OpenAI API key for Bubble"]');assert.equal(await js('document.querySelector(".provider-key-input input").type'),'text');
   await shot('providers-key-editor');await click('.provider-settings-editor .provider-secondary-button');
   assert.equal(await js('qa.calls.filter(c=>c.type==="bubble-key").length'),0,'cancel does not save key');
-  await menu('Bubble','Zhipu Coding Plan','Make default');assert.equal(await js('qa.bubble.defaultProviderId'),'zhipuai-coding-plan');
-  await click('[aria-label="Enable OpenAI for Bubble"]');assert.equal(await js('qa.bubble.providers[0].enabled'),false);
-  await click('.provider-add-button');await click('[aria-label="Bubble: DeepSeek"]');await text('[aria-label="DeepSeek API key for Bubble"]','test-new-key');await click('.provider-settings-editor [type=submit]');
+  await menu('Bubble','Anthropic','Make default');assert.equal(await js('qa.bubble.defaultProviderId'),'anthropic');
+  await click('[aria-label="Default Bubble provider"]');
+  assert.equal(await js('getComputedStyle(document.querySelector("[role=menuitem]")).fontSize'),'13px','default menu uses the settings text size');await shot('providers-default-menu');
+  await js('Array.from(document.querySelectorAll("[role=menuitem]")).find(e=>e.textContent==="OpenAI").click()');await delay(150);
+  assert.equal(await js('qa.bubble.defaultProviderId'),'openai','default picker switches provider');
+  await click('[aria-label="Enable Anthropic for Bubble"]');assert.equal(await js('qa.bubble.providers.find(p=>p.id==="anthropic").enabled'),false);
+  await click('.provider-add-button');await js('Array.from(document.querySelectorAll("[role=menuitem]")).find(e=>e.textContent==="DeepSeek").click()');await delay(150);
+  await text('[aria-label="DeepSeek API key for Bubble"]','test-new-key');await click('.provider-settings-editor [type=submit]');
   assert(await js('qa.calls.some(c=>c.type==="bubble-key"&&c.id==="deepseek")'));
-  await menu('Bubble','DeepSeek','Remove provider');assert.equal(await js('qa.bubble.providers.find(p=>p.id==="deepseek").configured'),false);
-  await click('[aria-label="DeepSeek Harness: DeepSeek"]');await text('[aria-label="DeepSeek API key for DeepSeek Harness"]','test-harness-key');await delay(700);
-  assert.equal(await js('document.querySelector(".provider-key-input input").value'),'test-harness-key');await click('.provider-settings-editor [type=submit]');
-  assert(await js('qa.calls.some(c=>c.type==="deepseek-key"&&c.key==="test-harness-key")'));
-  await menu('DeepSeek Harness','DeepSeek','Remove saved key');assert.equal(await js('qa.deep.hasApiKey'),false);
-  await click('.provider-runtime summary');await shot('providers-agents');
+  await btn('Show 3 more');await menu('Bubble','DeepSeek','Remove provider');assert.equal(await js('qa.bubble.providers.find(p=>p.id==="deepseek").configured'),false);
   await js('qa.store.getState().setTheme("dark");document.querySelector("main").scrollTop=0');await shot('providers-dark');
-  await click('[aria-label="More actions for Claude Code: Zhipu AI"]');await shot('providers-menu');
-  win.webContents.sendInputEvent({type:'keyDown',keyCode:'Escape'});win.webContents.sendInputEvent({type:'keyUp',keyCode:'Escape'});await delay(100);
   win.setContentSize(390,850);await js('document.querySelector("main").scrollTop=0');await shot('providers-narrow');
   assert.equal(await js('document.querySelector("main").scrollWidth>document.querySelector("main").clientWidth'),false);
-  await click('[aria-label="Claude Code: Zhipu AI"]');await shot('providers-narrow-editor');
+  await click('[aria-label="Bubble: OpenAI"]');await shot('providers-narrow-editor');
   assert.equal(await js('document.querySelector("main").scrollWidth>document.querySelector("main").clientWidth'),false);
   await js('qa.failLoad=true;qa.store.setState({showSettings:false})');await delay(100);
   await js('qa.store.setState({showSettings:true})');await until('!!document.querySelector(".provider-load-message[role=alert]")');
-  assert.equal(await js('document.querySelector(\'[aria-label="Claude Code: Zhipu AI"]\').disabled'),true);
   await js('qa.failLoad=false;Array.from(document.querySelectorAll("button")).find(e=>e.textContent==="Retry").click()');
-  await until('!document.querySelector(\'[aria-label="Claude Code: Zhipu AI"]\').disabled');
-  await js('qa.saveDelay=600');await click('[aria-label="Enable Zhipu AI for Claude Code"]');
-  assert.equal(await js('document.querySelector(\'[aria-label="Claude Code: Zhipu AI"]\').disabled'),true,'disable editing while configuration is saving');
-  await until('!document.querySelector(\'[aria-label="Claude Code: Zhipu AI"]\').disabled');
-  assert.equal(await js('qa.config.providers.zhipu.enabled'),false);
+  await until('!!document.querySelector(\'[aria-label="Bubble: OpenAI"]\')');
   assert.deepEqual(errors,[]);console.log(JSON.stringify({ok:true,captures:process.env.QA_CAPTURE}));app.exit(0);
  }catch(error){console.error(error);await shot('failure');app.exit(1);}
 });

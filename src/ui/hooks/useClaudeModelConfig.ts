@@ -25,14 +25,8 @@ export function useClaudeModelConfig() {
 
     void loadConfig();
 
-    const handleCompatibleProviderUpdated = () => {
-      void loadConfig();
-    };
-    window.addEventListener('claude-compatible-provider-updated', handleCompatibleProviderUpdated);
-
     return () => {
       cancelled = true;
-      window.removeEventListener('claude-compatible-provider-updated', handleCompatibleProviderUpdated);
     };
   }, []);
 

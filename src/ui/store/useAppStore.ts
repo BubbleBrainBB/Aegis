@@ -557,7 +557,6 @@ function freshSessionViewFromInfo(info: import('../../shared/types').SessionInfo
     claudeSessionId: info.claudeSessionId,
     provider: info.provider || 'claude',
     model: info.model,
-    compatibleProviderId: info.compatibleProviderId,
     betas: info.betas,
     claudeAccessMode: normalizeClaudeAccessMode(info.claudeAccessMode),
     claudeExecutionMode: normalizeClaudeExecutionMode(info.claudeExecutionMode, info.claudeAccessMode),
@@ -614,7 +613,6 @@ function createDraftSessionView(
     | 'agentId'
     | 'provider'
     | 'model'
-    | 'compatibleProviderId'
     | 'claudeAccessMode'
     | 'claudeExecutionMode'
     | 'claudeReasoningEffort'
@@ -659,7 +657,6 @@ function createDraftSessionView(
     teamId: options?.teamId || null,
     provider: options?.provider || loadPreferredProvider(),
     model: options?.model,
-    compatibleProviderId: options?.compatibleProviderId,
     claudeAccessMode: options?.claudeAccessMode,
     claudeExecutionMode: options?.claudeExecutionMode || 'execute',
     claudeReasoningEffort: options?.claudeReasoningEffort || 'high',
@@ -3095,7 +3092,6 @@ function handleSessionList(
       claudeSessionId: session.claudeSessionId,
       provider: session.provider || 'claude',
       model: session.model,
-      compatibleProviderId: session.compatibleProviderId,
       betas: session.betas,
       claudeAccessMode: normalizeClaudeAccessMode(session.claudeAccessMode),
       claudeExecutionMode: normalizeClaudeExecutionMode(session.claudeExecutionMode, session.claudeAccessMode),
@@ -3210,7 +3206,6 @@ function handleSessionStatus(
     associatedWorktreeRef?: SessionInfo['associatedWorktreeRef'];
     provider?: SessionInfo['provider'];
     model?: SessionInfo['model'];
-    compatibleProviderId?: SessionInfo['compatibleProviderId'];
     betas?: SessionInfo['betas'];
     claudeAccessMode?: SessionInfo['claudeAccessMode'];
     claudeExecutionMode?: SessionInfo['claudeExecutionMode'];
@@ -3248,7 +3243,6 @@ function handleSessionStatus(
     associatedWorktreeRef,
     provider,
     model,
-    compatibleProviderId,
     betas,
     claudeAccessMode,
     claudeExecutionMode,
@@ -3339,8 +3333,6 @@ function handleSessionStatus(
               : session.associatedWorktreeRef ?? null,
           provider: provider || session.provider,
           model: model !== undefined ? (model || undefined) : session.model,
-          compatibleProviderId:
-            compatibleProviderId !== undefined ? compatibleProviderId || undefined : session.compatibleProviderId,
           betas: betas !== undefined ? betas : session.betas,
           claudeAccessMode:
             claudeAccessMode !== undefined
@@ -3431,7 +3423,6 @@ function handleSessionStatus(
       associatedWorktreeRef: associatedWorktreeRef ?? null,
       provider: provider || 'claude',
       model,
-      compatibleProviderId,
       betas,
       claudeAccessMode: normalizeClaudeAccessMode(claudeAccessMode),
       claudeExecutionMode: normalizeClaudeExecutionMode(claudeExecutionMode, claudeAccessMode),

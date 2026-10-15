@@ -259,10 +259,6 @@ export function NewSessionView() {
         attachments: outgoingAttachments.length > 0 ? outgoingAttachments : undefined,
         provider: agentSelection.provider,
         model: agentSelection.model || undefined,
-        compatibleProviderId:
-          agentSelection.provider === 'claude'
-            ? agentSelection.compatibleProviderId || undefined
-            : undefined,
         claudeAccessMode:
           agentSelection.provider === 'claude'
             ? agentSelection.claudePermissionMode

@@ -22,7 +22,7 @@ window.electron = {
  sendClientEvent:()=>{},getProjectTree:async()=>null,getRecentCwds:async()=>[],getProjectGitSummary:async()=>({isGitRepository:false}),
  getAgentRuntimeDirectory:async()=>({checkedAt:Date.now(),entries:[]}),getSessionUserPrompts:async()=>[],
  getSessionGoal:async()=>({goal:null,supported:false,revision:0}),onSessionGoalChanged:()=>()=>{},
- getClaudeCompatibleProviderConfig:async()=>({}),getBubbleProvidersConfig:async()=>({providers:[]}),
+ getBubbleProvidersConfig:async()=>({providers:[]}),
  getProjectFolders:async()=>[],getModels:async()=>[],
  design:{read:async({documentId})=>({id:documentId,title:'Lift log',revision:3,boards:[]}),onChanged:()=>()=>{}},
  readProjectFilePreview:async()=>{const c=document.createElement('canvas');c.width=320;c.height=240;const x=c.getContext('2d');x.fillStyle='#c5d2bf';x.fillRect(0,0,320,240);return {kind:'image',dataUrl:c.toDataURL()}},

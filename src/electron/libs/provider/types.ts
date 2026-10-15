@@ -34,7 +34,6 @@ import type {
   ClaudeAccessMode,
   ClaudeExecutionMode,
   ClaudeReasoningEffort,
-  ClaudeCompatibleProviderId,
   CodexRateLimitReport,
   QoderPlanUsageReport,
   ProviderComposerCapabilities,
@@ -112,7 +111,6 @@ export interface ProviderSessionStartInput {
   claudeAccessMode?: ClaudeAccessMode;
   claudeExecutionMode?: ClaudeExecutionMode;
   claudeReasoningEffort?: ClaudeReasoningEffort;
-  compatibleProviderId?: ClaudeCompatibleProviderId;
   betas?: string[];
 }
 

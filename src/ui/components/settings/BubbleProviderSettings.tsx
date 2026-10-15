@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { ChevronDown } from '../icons';
+import { Check, ChevronDown, Plus } from '../icons';
+import * as Menu from '../ui/dropdown-menu';
+import { AgentProviderLogo } from '../AgentProviderLogo';
 import { OpenCodeLogo } from '../OpenCodeLogo';
 import claudeLogo from '../../assets/claude-color.svg';
 import openaiLogo from '../../assets/openai.svg';
@@ -62,6 +64,8 @@ export function BubbleProviderLogo({ providerId, name }: { providerId: string; n
 
 // Composer hooks re-fetch Bubble catalogs on this event; fire it after any
 // credential change so the model picker updates without a restart.
+const COLLAPSED_COUNT = 6;
+
 function notifyBubbleConfigChanged() {
   window.dispatchEvent(new Event('bubble-model-config-updated'));
 }
@@ -80,9 +84,10 @@ export function BubbleProviderSettings({ revealTarget }: { revealTarget?: string
   const keyEdited = useRef(false);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [busyId, setBusyId] = useState<string | null>(null);
-  // null = "no explicit choice yet": the unconfigured catalog stays collapsed
-  // once something is configured, but a brand-new user sees it open.
-  const [showAvailable, setShowAvailable] = useState<boolean | null>(null);
+  const [showAll, setShowAll] = useState(false);
+  const [showOff, setShowOff] = useState(false);
+  // An unconfigured provider picked from "Add provider", shown at the top with its key editor open.
+  const [addingId, setAddingId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -125,6 +130,7 @@ export function BubbleProviderSettings({ revealTarget }: { revealTarget?: string
     try {
       applyResult(await window.electron.setBubbleProviderKey(providerId, keyDraft));
       setExpandedId(null);
+      setAddingId(null);
       setKeyDraft('');
       toast.success(`Saved ${providerId} key for Bubble.`);
     } catch (error) {
@@ -197,36 +203,97 @@ export function BubbleProviderSettings({ revealTarget }: { revealTarget?: string
     // edit with the stored key.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [expandedId]);
+  // Default first, then enabled providers missing a key (they need action),
+  // then the rest in catalog order.
+  const rank = (provider: (typeof providers)[number]) => (provider.isDefault ? 0 : !provider.hasApiKey ? 1 : 2);
   const configuredProviders = providers.filter((provider) => provider.configured);
+  const onProviders = configuredProviders.filter((provider) => provider.enabled).sort((a, b) => rank(a) - rank(b));
+  const offProviders = configuredProviders.filter((provider) => !provider.enabled);
   const availableProviders = providers.filter((provider) => !provider.configured);
-  const availableVisible = showAvailable ?? configuredProviders.length === 0;
+  const defaultCandidates = onProviders.filter((provider) => provider.hasApiKey);
+  const defaultProvider = providers.find((provider) => provider.isDefault);
+  const addingProvider = addingId ? availableProviders.find((provider) => provider.id === addingId) : undefined;
+  const visibleOn = showAll ? onProviders : onProviders.slice(0, COLLAPSED_COUNT);
+  const hiddenCount = onProviders.length - visibleOn.length;
 
   useEffect(() => {
-    if (revealTarget?.startsWith('Bubble:')) setShowAvailable(true);
-  }, [revealTarget]);
+    if (!revealTarget?.startsWith('Bubble:') || !config) return;
+    const target = providers.find((provider) => `Bubble:${provider.name}` === revealTarget);
+    if (!target) return;
+    if (!target.configured) {
+      setAddingId(target.id);
+      setExpandedId(target.id);
+    } else if (!target.enabled) {
+      setShowOff(true);
+    } else {
+      setShowAll(true);
+    }
+    // Only react to a new search target, not to config refreshes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revealTarget, Boolean(config)]);
+
+  const startAdding = (providerId: string) => {
+    setAddingId(providerId);
+    setExpandedId(providerId);
+    setKeyDraft('');
+    keyEdited.current = false;
+    setShowKey(false);
+  };
 
   const renderRow = (provider: (typeof providers)[number]) => {
     const actions = [
       ...(provider.configured && provider.hasApiKey && provider.enabled && !provider.isDefault ? [{ label: 'Make default', onSelect: () => void makeDefault(provider.id) }] : []),
       ...(provider.configured ? [{ label: 'Remove provider', onSelect: () => void removeProvider(provider.id), destructive: true }] : []),
     ];
+    const onToggleExpand = provider.configured ? () => toggleExpanded(provider.id) : () => { setAddingId(null); setExpandedId(null); };
     return <ProviderSettingsRow key={provider.id} label={provider.name} scope="Bubble" logo={<BubbleProviderLogo providerId={provider.id} name={provider.name} />}
       expanded={expandedId === provider.id} disabled={busyId !== null} isDefault={provider.isDefault}
-      status={!provider.hasApiKey ? 'No API key' : !provider.enabled ? 'Disabled' : undefined}
+      status={provider.configured && !provider.hasApiKey ? 'No API key' : undefined} statusTone="warn"
       enabled={provider.enabled} onToggleEnabled={provider.configured ? value => void setEnabled(provider.id, value) : undefined}
-      onToggleExpand={() => toggleExpanded(provider.id)} actions={actions}>
-      <ProviderKeyEditor label={`${provider.name} API key for Bubble`} value={keyDraft} onChange={value => { keyEdited.current = true; setKeyDraft(value); }} showKey={showKey} onToggleVisibility={() => setShowKey(value => !value)} busy={busyId !== null} onSave={() => void saveKey(provider.id)} onCancel={() => toggleExpanded(provider.id)} />
+      onToggleExpand={onToggleExpand} actions={actions}>
+      <ProviderKeyEditor label={`${provider.name} API key for Bubble`} value={keyDraft} onChange={value => { keyEdited.current = true; setKeyDraft(value); }} showKey={showKey} onToggleVisibility={() => setShowKey(value => !value)} busy={busyId !== null} onSave={() => void saveKey(provider.id)} onCancel={onToggleExpand} />
     </ProviderSettingsRow>;
   };
-  return <ProviderSettingsSection title="Bubble">
+
+  const headerActions = config && <>
+    {defaultCandidates.length > 0 && <Menu.Root><Menu.Trigger asChild>
+      <button type="button" className="provider-header-button" aria-label="Default Bubble provider" disabled={busyId !== null}>
+        <span className="provider-header-button-label">Default</span>
+        {defaultProvider && <BubbleProviderLogo providerId={defaultProvider.id} name={defaultProvider.name} />}
+        <span>{defaultProvider?.name ?? 'None'}</span><ChevronDown className="h-3 w-3 opacity-60" />
+      </button>
+    </Menu.Trigger><Menu.Portal><Menu.Content align="end" sideOffset={6} className="max-h-[320px] overflow-y-auto">
+      {defaultCandidates.map(provider => <Menu.Item key={provider.id} onSelect={() => void makeDefault(provider.id)} className="gap-3 text-[13px]">
+        <span className="flex min-w-0 flex-1 items-center gap-2"><BubbleProviderLogo providerId={provider.id} name={provider.name} />{provider.name}</span>
+        <Check aria-hidden="true" className={`h-3.5 w-3.5 shrink-0 ${provider.isDefault ? '' : 'invisible'}`} />
+      </Menu.Item>)}
+    </Menu.Content></Menu.Portal></Menu.Root>}
+    {availableProviders.length > 0 && configuredProviders.length > 0 && <Menu.Root><Menu.Trigger asChild>
+      <button type="button" className="provider-header-button provider-add-button" disabled={busyId !== null}><Plus className="h-3 w-3" />Add provider</button>
+    </Menu.Trigger><Menu.Portal><Menu.Content align="end" sideOffset={6} className="max-h-[320px] overflow-y-auto">
+      {availableProviders.map(provider => <Menu.Item key={provider.id} onSelect={() => startAdding(provider.id)} className="gap-2 text-[13px]">
+        <BubbleProviderLogo providerId={provider.id} name={provider.name} />{provider.name}
+      </Menu.Item>)}
+    </Menu.Content></Menu.Portal></Menu.Root>}
+  </>;
+
+  return <ProviderSettingsSection title="Bubble model providers" icon={<AgentProviderLogo provider="bubble" className="h-3.5 w-3.5" />} actions={headerActions}>
     {loadError ? <div className="provider-load-message" role="alert">Could not load providers. <button onClick={() => { setLoadError(null); setLoadAttempt(value => value + 1); }}>Retry</button></div>
       : !config ? <div className="provider-load-message" role="status">Loading…</div>
+      : configuredProviders.length === 0 ? availableProviders.map(renderRow)
       : <>
-        {configuredProviders.map(renderRow)}
-        {availableProviders.length > 0 && <button type="button" className="provider-add-button" onClick={() => setShowAvailable(!availableVisible)} aria-expanded={availableVisible}>
-          <ChevronDown className={`h-3.5 w-3.5 transition-transform ${availableVisible ? 'rotate-180' : ''}`} />{availableVisible ? 'Hide available providers' : 'Add provider'}
+        {addingProvider && renderRow(addingProvider)}
+        {visibleOn.map(renderRow)}
+        {(hiddenCount > 0 || showAll) && onProviders.length > COLLAPSED_COUNT && <button type="button" className="provider-list-toggle" onClick={() => setShowAll(!showAll)} aria-expanded={showAll}>
+          <ChevronDown className={`h-3 w-3 transition-transform ${showAll ? 'rotate-180' : ''}`} />{showAll ? 'Show less' : `Show ${hiddenCount} more`}
         </button>}
-        {availableVisible && availableProviders.map(renderRow)}
+        {offProviders.length > 0 && <button type="button" className="provider-list-toggle provider-off-toggle" onClick={() => setShowOff(!showOff)} aria-expanded={showOff}>
+          <span className="provider-off-logos">{offProviders.slice(0, 3).map(provider => <BubbleProviderLogo key={provider.id} providerId={provider.id} name={provider.name} />)}</span>
+          <span>{offProviders.length} turned off</span>
+          {!showOff && <span className="provider-off-names">{offProviders.map(provider => provider.name).join(', ')}</span>}
+          <ChevronDown className={`ml-auto h-3 w-3 transition-transform ${showOff ? 'rotate-180' : ''}`} />
+        </button>}
+        {showOff && offProviders.map(renderRow)}
       </>}
   </ProviderSettingsSection>;
 }

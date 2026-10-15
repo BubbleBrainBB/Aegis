@@ -28,8 +28,6 @@ const importMap = {
   'getOpencodeRuntimeStatus': './libs/opencode-runtime-status',
   'getOpencodeUsageReport': './libs/opencode-usage-report',
   'getClaudeModelConfig': './libs/claude-settings',
-  'saveClaudeCompatibleProviderConfig': './libs/claude-settings',
-  'getClaudeCompatibleProviderConfig': './libs/claude-settings',
   'getClaudeUsageReport': './libs/claude-usage-report',
   'getClaudeRuntimeStatus': './libs/claude-runtime-status',
   'getClaudeRuntimeStatusCached': './libs/claude-runtime-status',

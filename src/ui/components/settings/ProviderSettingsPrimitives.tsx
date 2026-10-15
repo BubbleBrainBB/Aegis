@@ -4,13 +4,14 @@ import * as Menu from '../ui/dropdown-menu';
 import { SettingsToggle } from './SettingsPrimitives';
 import './provider-settings.css';
 
-export function ProviderSettingsSection({ title, children }: { title: string; children: ReactNode }) {
+export function ProviderSettingsSection({ title, icon, actions, children }: { title: string; icon?: ReactNode; actions?: ReactNode; children: ReactNode }) {
   return <section className="provider-settings-section" aria-label={title} data-settings-label={title}>
-    <h2>{title}</h2><div className="provider-settings-card">{children}</div>
+    <div className="provider-settings-section-head"><h2>{icon}{title}</h2>{actions && <div className="provider-settings-section-actions">{actions}</div>}</div>
+    <div className="provider-settings-card">{children}</div>
   </section>;
 }
-export function ProviderSettingsRow({ label, scope, logo, status, isDefault, expanded, disabled, enabled, onToggleEnabled, onToggleExpand, actions = [], children }: {
-  label: string; scope: string; logo: ReactNode; status?: string; isDefault?: boolean; expanded: boolean; disabled?: boolean;
+export function ProviderSettingsRow({ label, scope, logo, status, statusTone, isDefault, expanded, disabled, enabled, onToggleEnabled, onToggleExpand, actions = [], children }: {
+  label: string; scope: string; logo: ReactNode; status?: string; statusTone?: 'warn'; isDefault?: boolean; expanded: boolean; disabled?: boolean;
   enabled?: boolean; onToggleEnabled?: (next: boolean) => void; onToggleExpand: () => void;
   actions?: {label: string; onSelect: () => void; destructive?: boolean}[]; children?: ReactNode;
 }) {
@@ -19,8 +20,8 @@ export function ProviderSettingsRow({ label, scope, logo, status, isDefault, exp
     <div className="provider-settings-row">
       <button type="button" className="provider-settings-expand" aria-label={`${scope}: ${label}`} aria-expanded={expanded} aria-controls={id} disabled={disabled} onClick={onToggleExpand}>
         <span className="provider-settings-logo">{logo}</span><span className="provider-settings-name">{label}</span>
-        {isDefault && <span className="provider-settings-status">Default</span>}
-        {status && <span className="provider-settings-status">{status}</span>}
+        {isDefault && <span className="provider-settings-badge">Default</span>}
+        {status && <span className={`provider-settings-status${statusTone === 'warn' ? ' is-warn' : ''}`}>{status}</span>}
         <ChevronDown className={`provider-settings-chevron ${expanded ? 'rotate-180' : ''}`} />
       </button>
       <div className="provider-settings-actions">

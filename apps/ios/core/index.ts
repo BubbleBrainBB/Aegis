@@ -42,7 +42,6 @@ function catalog({ provider, options, extraModels = [] }: { provider: string; op
       value: m.value,
       label: m.label,
       description: m.description ?? null,
-      compatibleProviderId: m.compatibleProviderId ?? null,
     })),
     defaultModel: c.defaultModel,
     perModel,

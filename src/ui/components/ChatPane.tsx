@@ -2172,7 +2172,6 @@ export function ChatPane({
                                           session.provider === 'codex'
                                             ? resolveCodexModel(session.model, codexModelConfig) || undefined
                                             : session.model,
-                                        compatibleProviderId: session.compatibleProviderId,
                                         betas: session.betas,
                                         claudeAccessMode:
                                           session.provider === 'claude'

@@ -568,29 +568,6 @@ export interface FeishuStatus {
   registration?: { state: 'waiting' | 'error'; qr?: string; expiresAt?: number; error?: string };
 }
 
-export type ClaudeCompatibleAuthType = 'api_key' | 'auth_token';
-export type ClaudeCompatibleProviderId =
-  | 'minimaxCn'
-  | 'minimax'
-  | 'mimo'
-  | 'zhipu'
-  | 'moonshot'
-  | 'deepseek';
-
-export interface ClaudeCompatibleProviderConfig {
-  enabled: boolean;
-  baseUrl: string;
-  authType: ClaudeCompatibleAuthType;
-  secret: string;
-  model: string;
-  smallFastModel?: string;
-  maxOutputTokens?: number;
-}
-
-export interface ClaudeCompatibleProvidersConfig {
-  providers: Record<ClaudeCompatibleProviderId, ClaudeCompatibleProviderConfig>;
-}
-
 export type WechatMarkdownHtmlThemeId = 'black-red-imprint' | 'black-orange-imprint';
 export type WechatMarkdownHtmlGeneratorRuntime = AgentProvider;
 
@@ -885,7 +862,6 @@ export interface AutomationSchedule {
 export interface AutomationRuntimeConfig {
   provider: AgentProvider;
   model?: string | null;
-  compatibleProviderId?: ClaudeCompatibleProviderId | null;
   codexReasoningEffort?: CodexReasoningEffort | null;
   codexFastMode?: boolean;
 }
@@ -1113,7 +1089,6 @@ export interface SessionStartPayload {
   attachments?: Attachment[];
   provider?: AgentProvider;
   model?: string;
-  compatibleProviderId?: ClaudeCompatibleProviderId;
   betas?: string[];
   claudeAccessMode?: ClaudeAccessMode;
   claudeExecutionMode?: ClaudeExecutionMode;
@@ -1234,7 +1209,6 @@ export interface SessionContinuePayload {
   attachments?: Attachment[];
   provider?: AgentProvider;
   model?: string;
-  compatibleProviderId?: ClaudeCompatibleProviderId;
   betas?: string[];
   claudeAccessMode?: ClaudeAccessMode;
   claudeExecutionMode?: ClaudeExecutionMode;
@@ -1277,7 +1251,6 @@ export interface RunnerPrewarmPayload {
   sessionId: string;
   provider?: AgentProvider;
   model?: string;
-  compatibleProviderId?: ClaudeCompatibleProviderId;
   betas?: string[];
   claudeAccessMode?: ClaudeAccessMode;
   claudeExecutionMode?: ClaudeExecutionMode;
@@ -1498,7 +1471,6 @@ export interface SessionInfo {
   claudeSessionId?: string;
   provider?: AgentProvider;
   model?: string;
-  compatibleProviderId?: ClaudeCompatibleProviderId;
   betas?: string[];
   claudeAccessMode?: ClaudeAccessMode;
   claudeExecutionMode?: ClaudeExecutionMode;
@@ -1569,7 +1541,6 @@ export interface SessionStatusPayload {
   error?: string;
   provider?: AgentProvider;
   model?: string;
-  compatibleProviderId?: ClaudeCompatibleProviderId;
   betas?: string[];
   claudeAccessMode?: ClaudeAccessMode;
   claudeExecutionMode?: ClaudeExecutionMode;

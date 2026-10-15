@@ -26,7 +26,6 @@ export function remoteTaskPayload(
     attachments: extras.attachments?.length ? extras.attachments : undefined,
   };
   if (provider === "claude") {
-    payload.compatibleProviderId = (s.compatibleProviderId || undefined) as SessionContinuePayload["compatibleProviderId"];
     payload.claudeAccessMode = (mode ?? "default") as SessionContinuePayload["claudeAccessMode"];
     payload.claudeExecutionMode = s.plan ? "plan" : "execute";
     if (s.effort && CLAUDE_EFFORTS.includes(s.effort))
