@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from "react";
 import { PromptInput } from "../PromptInput";
 import { ChatPane } from "../ChatPane";
-import { ArrowUpRight, ChevronDown, ChevronUp, GripVertical, Minus } from "../icons";
+import { ChevronUp, Minus, PanelBottom, PanelRight } from "../icons";
 import { useAppStore } from "../../store/useAppStore";
 import { openDesign } from "../../store/useDesignStore";
 import { PROVIDERS } from "../../utils/provider";
+import { ProviderIcon } from "../AgentModelPicker";
 import { useDesignDraftStatus } from "./design-draft-status";
 import { DesignComposerControls } from "./DesignComposerControls";
 import { DesignChatSwitcher } from "./DesignChatSwitcher";
@@ -42,7 +43,7 @@ const cornerStyle = (corner: Corner) => ({
  * The design's conversation, floating over the canvas. By default only the
  * composer shows, with a status line for the run; "Show chat" lifts the
  * conversation above it; minimized it is a pill. Drag it by its grip and it
- * snaps to the nearest corner.
+ * snaps to the nearest corner. Its header (or the whole pill) is the handle.
  */
 export function DesignAgentDock({
   sessionId,
@@ -78,6 +79,8 @@ export function DesignAgentDock({
   const [drag, setDrag] = useState<{ x: number; y: number; dx: number; dy: number } | null>(null);
   const startDrag = (event: ReactPointerEvent) => {
     if (event.button !== 0 || !dock.current || !stage.current) return;
+    // The header's controls keep their clicks.
+    if ((event.target as Element).closest("button")) return;
     const box = dock.current.getBoundingClientRect();
     const host = stage.current.getBoundingClientRect();
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -112,12 +115,17 @@ export function DesignAgentDock({
     if (documentId) openDesign({ sessionId, documentId, where: "pane" });
   };
 
+  const statusText = waiting ? "Waiting for your approval" : status ?? (running ? "Working…" : null);
   const statusLine = (
     <span className="flex min-w-0 flex-1 items-center gap-1.5 text-[12.5px] text-[var(--text-muted)]" data-design-dock-status>
       {running ? <span aria-hidden="true" className="design-dock-spinner" /> : null}
-      <span className="truncate">
-        {waiting ? "Waiting for your approval" : status ?? (running ? "Working…" : shownMode === "pill" ? "Ready" : isDraft && !documentId ? "New design" : agent)}
-      </span>
+      <span className="truncate">{statusText ?? (shownMode === "pill" ? "Ready" : "")}</span>
+    </span>
+  );
+  // The agent by its logo; its name shows on hover.
+  const agentIcon = (
+    <span className="inline-flex h-6 w-6 flex-shrink-0 items-center justify-center" title={agent} aria-label={agent} role="img" data-design-dock-agent>
+      {session?.provider ? <ProviderIcon provider={session.provider} /> : null}
     </span>
   );
   const iconButton = "inline-flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-[6px] text-[var(--text-muted)] hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)]";
@@ -140,44 +148,51 @@ export function DesignAgentDock({
         }}
       >
         {shownMode === "pill" ? (
-          <div className="flex items-center gap-2 py-1.5 pl-1.5 pr-2">
-            <span className={`${iconButton} cursor-grab`} {...dragHandlers} aria-label="Move" role="button" tabIndex={-1}>
-              <GripVertical className="h-3.5 w-3.5" />
-            </span>
+          <div className="design-dock-handle flex items-center gap-2 py-1.5 pl-2 pr-2" data-design-dock-handle {...dragHandlers}>
+            {agentIcon}
             <span className="flex min-w-0 flex-col pr-1">
               <span className="text-[12.5px] font-medium text-[var(--text-primary)]">{agent}</span>
               {statusLine}
             </span>
-            <button type="button" className={iconButton} onClick={() => update({ mode: "composer" })} aria-label="Expand">
+            <button type="button" className={iconButton} onClick={() => update({ mode: "composer" })} aria-label="Expand" title="Expand">
               <ChevronUp className="h-3.5 w-3.5" />
             </button>
           </div>
         ) : (
           <>
-            <div className="flex h-9 flex-shrink-0 items-center gap-1.5 border-b border-[var(--panel-soft-divider)] pl-1.5 pr-2">
-              <span className={`${iconButton} cursor-grab`} {...dragHandlers} aria-label="Move" role="button" tabIndex={-1}>
-                <GripVertical className="h-3.5 w-3.5" />
-              </span>
-              {documentId ? <DesignChatSwitcher sessionId={sessionId} documentId={documentId} /> : null}
+            <div
+              className="design-dock-handle flex h-9 flex-shrink-0 items-center gap-1 border-b border-[var(--panel-soft-divider)] pl-2 pr-1.5"
+              data-design-dock-handle
+              data-busy={statusText ? "" : undefined}
+              {...dragHandlers}
+            >
+              {agentIcon}
+              {documentId ? (
+                <DesignChatSwitcher sessionId={sessionId} documentId={documentId} />
+              ) : (
+                <span className="truncate px-1.5 text-[12.5px] font-medium text-[var(--text-primary)]">New design</span>
+              )}
+              {statusText ? <span aria-hidden="true" className="mx-1 h-3.5 w-px flex-shrink-0 bg-[var(--panel-soft-divider)]" /> : null}
               {statusLine}
-              {!isDraft && documentId ? (
-                <button type="button" className={iconButton} onClick={openAsChat} aria-label="Open as a chat" title="Open as a chat">
-                  <ArrowUpRight className="h-3.5 w-3.5" />
-                </button>
-              ) : null}
               {!isDraft && !waiting ? (
                 <button
                   type="button"
-                  className="inline-flex h-6 items-center gap-1 rounded-[6px] px-1.5 text-[12px] text-[var(--text-muted)] hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)]"
+                  className={`${iconButton} ${shownMode === "chat" ? "bg-[var(--sidebar-item-hover)] text-[var(--text-primary)]" : ""}`}
                   onClick={() => update({ mode: shownMode === "chat" ? "composer" : "chat" })}
-                  aria-expanded={shownMode === "chat"}
+                  aria-label={shownMode === "chat" ? "Hide chat" : "Show chat"}
+                  title={shownMode === "chat" ? "Hide chat" : "Show chat"}
+                  aria-pressed={shownMode === "chat"}
                 >
-                  {shownMode === "chat" ? "Hide chat" : "Show chat"}
-                  {shownMode === "chat" ? <ChevronDown className="h-3 w-3" /> : <ChevronUp className="h-3 w-3" />}
+                  <PanelBottom className="h-3.5 w-3.5" />
+                </button>
+              ) : null}
+              {!isDraft && documentId ? (
+                <button type="button" className={iconButton} onClick={openAsChat} aria-label="Open as a chat" title="Open beside its chat">
+                  <PanelRight className="h-3.5 w-3.5" />
                 </button>
               ) : null}
               {!waiting ? (
-                <button type="button" className={iconButton} onClick={() => update({ mode: "pill" })} aria-label="Minimize">
+                <button type="button" className={iconButton} onClick={() => update({ mode: "pill" })} aria-label="Minimize" title="Minimize">
                   <Minus className="h-3.5 w-3.5" />
                 </button>
               ) : null}

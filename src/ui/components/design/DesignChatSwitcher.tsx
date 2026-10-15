@@ -32,7 +32,7 @@ export function DesignChatSwitcher({ sessionId, documentId }: { sessionId: strin
         aria-expanded={open}
         title="Chats on this design"
         onClick={() => setOpen(!open)}
-        className="inline-flex h-6 min-w-0 max-w-[180px] flex-shrink items-center gap-1 rounded-[6px] px-1.5 text-[12.5px] font-medium text-[var(--text-primary)] hover:bg-[var(--sidebar-item-hover)]"
+        className="inline-flex h-6 min-w-0 max-w-[280px] flex-shrink items-center gap-1 rounded-[6px] px-1.5 text-[12.5px] font-medium text-[var(--text-primary)] hover:bg-[var(--sidebar-item-hover)]"
       >
         <span className="truncate">{titleOf(sessionId)}</span>
         <ChevronDown className="h-3 w-3 flex-shrink-0 text-[var(--text-muted)]" />

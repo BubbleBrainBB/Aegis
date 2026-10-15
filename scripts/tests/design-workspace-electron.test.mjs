@@ -245,7 +245,12 @@ app.whenReady().then(async()=>{
   await js('document.querySelector("[data-design-section] .design-viewport").dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))');
 
   // Show chat → the conversation; minimize → a pill; expand back.
-  await js('[...document.querySelectorAll("[data-design-dock] button")].find(b=>b.textContent.includes("Show chat")).click()');
+  // The header: the agent's logo, the chat, and three icon buttons; no grip, no agent name.
+  assert.equal(await js('document.querySelector("[data-design-dock-agent]").getAttribute("aria-label")'),'Claude Code');
+  assert.equal(await js('!!document.querySelector("[data-design-dock] [aria-label=Move]")'),false,'the header is the handle');
+  assert.deepEqual(JSON.parse(await js('JSON.stringify([...document.querySelectorAll("[data-design-dock-handle] > button[aria-label]")].map(b=>b.getAttribute("aria-label")))')),['Show chat','Open as a chat','Minimize']);
+  assert.equal(await js('document.querySelector("[data-design-dock-status]").textContent.trim()'),'','idle: no status');
+  await click('[data-design-dock] [aria-label="Show chat"]');
   await until('!!document.querySelector("[data-design-dock=chat] [data-design-dock-chat]")','chat shown');
   await shot('design-dock-chat');
   await click('[data-design-dock] [aria-label="Minimize"]');
@@ -253,8 +258,8 @@ app.whenReady().then(async()=>{
   assert.equal(JSON.parse(await js('localStorage.getItem("aegis.design.dock")')).mode,'pill','the dock remembers its state');
   await shot('design-dock-pill');
 
-  // Drag the pill by its grip to the top left: it snaps there.
-  const grip=JSON.parse(await js('(()=>{const r=document.querySelector("[data-design-dock] [aria-label=Move]").getBoundingClientRect();return JSON.stringify({x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)})})()'));
+  // Drag the pill by its logo to the top left: it snaps there.
+  const grip=JSON.parse(await js('(()=>{const r=document.querySelector("[data-design-dock] [data-design-dock-agent]").getBoundingClientRect();return JSON.stringify({x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)})})()'));
   const stage=JSON.parse(await js('(()=>{const r=document.querySelector(".design-canvas-overlay").getBoundingClientRect();return JSON.stringify({x:Math.round(r.x),y:Math.round(r.y)})})()'));
   win.focus();win.webContents.sendInputEvent({type:'mouseMove',x:grip.x,y:grip.y});
   win.webContents.sendInputEvent({type:'mouseDown',x:grip.x,y:grip.y,button:'left',clickCount:1});
@@ -273,7 +278,7 @@ app.whenReady().then(async()=>{
   assert.equal(await js('qa.app.getState().sessions['+JSON.stringify(draft)+'].isDraft'),true);
   assert.equal(await js('qa.app.getState().activeWorkspace'),'design','the section stays');
   assert.equal(await js('qa.app.getState().activeSessionId'),'s2','Home keeps its own chat');
-  assert.equal(await js('[...document.querySelectorAll("[data-design-dock] button")].some(b=>b.textContent.includes("Show chat"))'),false,'no chat to show for a draft');
+  assert.equal(await js('[...document.querySelectorAll("[data-design-dock] button")].some(b=>b.getAttribute("aria-label")==="Show chat")'),false,'no chat to show for a draft');
   await shot('design-new');
   // The chat starts: the section follows the real session…
   await js('(()=>{const s=qa.app.getState();const d=s.sessions['+JSON.stringify(draft)+'];qa.app.setState({sessions:{...s.sessions,s9:{...d,id:"s9",isDraft:false,title:"Pricing page",status:"running"}},draftPromotion:{from:'+JSON.stringify(draft)+',to:"s9"}})})()');

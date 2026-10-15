@@ -2389,6 +2389,21 @@ details.design-section > .design-grid {
     0 24px 60px color-mix(in srgb, var(--text-primary) 22%, transparent),
     0 0 0 1px color-mix(in srgb, var(--text-primary) 12%, transparent);
 }
+/* The header (or the pill) moves the dock; its buttons stay buttons. */
+.design-dock-handle {
+  cursor: grab;
+  user-select: none;
+}
+.design-dock.is-dragging .design-dock-handle {
+  cursor: grabbing;
+}
+.design-dock-handle button {
+  cursor: default;
+}
+/* While the agent works the title makes room for what it is doing. */
+.design-dock-handle[data-busy] [data-design-chat-switcher] {
+  max-width: 190px;
+}
 .design-dock-composer {
   padding: 2px 0 0;
 }
