@@ -173,7 +173,8 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
   const [historyOpen, setHistoryOpen] = useState(false);
   const [versions, setVersions] = useState<DesignRevisionInfo[]>([]);
   const [historical, setHistorical] = useState<number>();
-  // Tell the next turn which design is open here and what is selected in it.
+  // Tell the next turn which design is open here and what is in view. The
+  // selection goes with each message instead, as the composer chip below.
   useEffect(() => {
     if (!sessionId || hidden) return;
     const open = doc && !historical ? doc.id : undefined;
@@ -182,14 +183,11 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
         sessionId,
         documentId: open,
         pageId: open ? activePageId : undefined,
-        boardId: open ? (selection?.boardId ?? selected) : undefined,
-        nodeId: open ? selection?.anchor.nodeId : undefined,
-        selectedBoardIds: open ? (selection ? [selection.boardId] : selectedIds) : undefined,
         visibleBoardIds: open ? currentAwareness?.visibleBoardIds : undefined,
         focusedBoardId: open ? currentAwareness?.focusedBoardId : undefined,
       })
       ?.catch(() => {});
-  }, [sessionId, hidden, doc?.id, historical, activePageId, selected, selectedIds, selection?.boardId, selection?.anchor.nodeId, currentAwareness]);
+  }, [sessionId, hidden, doc?.id, historical, activePageId, currentAwareness]);
   // Close only on lifecycle changes, not between every selection/viewport report.
   useEffect(() => {
     const open = !hidden && !historical ? doc?.id : undefined;
@@ -197,25 +195,34 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
       if (sessionId && open) void window.electron.design.focus?.({ sessionId, documentId: open, open: false })?.catch(() => {});
     };
   }, [sessionId, hidden, doc?.id, historical]);
-  // The chat composer shows what is selected here as a chip; dropping the
-  // chip clears the selection.
+  // The chat composer shows what is selected here as a chip, and a message
+  // sent with it carries it to the agent; dropping the chip clears the selection.
   useEffect(() => {
     if (!sessionId) return;
-    const board = doc?.boards.find((b) => b.id === (selection?.boardId ?? selected));
+    const ids = selection ? [selection.boardId] : selectedIds;
+    const boards = doc ? ids.flatMap((id) => doc.boards.filter((b) => b.id === id)) : [];
     const store = useDesignStore.getState();
-    if (hidden || !doc || historical || !board) {
+    if (hidden || !doc || historical || !boards.length) {
       // Another tab of this chat may own the chip; clear only ours.
       if (store.selections[sessionId]?.documentId === (doc?.id ?? documentId)) store.setSelection(sessionId, undefined);
       return;
     }
+    const [board] = boards;
     const layer = selection ? anchorLabel(board, selection.anchor) : undefined;
-    store.setSelection(sessionId, {
-      documentId: doc.id,
-      boardId: board.id,
-      nodeId: selection?.anchor.nodeId,
-      label: layer ? `${layer} · ${board.name}` : board.name,
-    });
-  }, [sessionId, documentId, hidden, doc, historical, selected, selection]);
+    store.setSelection(sessionId, boards.length > 1
+      ? {
+          documentId: doc.id,
+          boardIds: boards.map((b) => b.id),
+          label: boards.length === 2 ? `${boards[0].name}, ${boards[1].name}` : `${board.name} + ${boards.length - 1} more`,
+        }
+      : {
+          documentId: doc.id,
+          boardIds: [board.id],
+          ...(selection?.anchor.nodeId ? { nodeId: selection.anchor.nodeId } : {}),
+          label: layer ? `${layer} · ${board.name}` : board.name,
+          contentRevision: board.contentRevision,
+        });
+  }, [sessionId, documentId, hidden, doc, historical, selectedIds, selection]);
   useEffect(() => () => {
     const store = useDesignStore.getState();
     if (sessionId && documentId && store.selections[sessionId]?.documentId === documentId) store.setSelection(sessionId, undefined);
@@ -404,8 +411,8 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
       toast.error("That comment no longer exists.");
       return;
     }
-    // Arriving from chat to a thread shows comments again.
-    setCommentsHidden(false);
+    // Arriving from chat to a thread shows comments again; a sent selection only shows its board.
+    if (comment) setCommentsHidden(false);
     openThread(comment, focusRequest.boardId);
   }, [focusRequest, doc, hidden, sessionId]);
 

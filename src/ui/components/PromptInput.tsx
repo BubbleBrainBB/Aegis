@@ -1,4 +1,4 @@
-import type { DesignPromptRef } from '../../shared/types';
+import type { DesignPromptRef, DesignSelectionRef } from '../../shared/types';
 import { useImageStudioAttachments } from '../hooks/useImageStudioAttachments';
 import { useImageStudioStore, EMPTY_IMAGE_STUDIO } from '../store/useImageStudioStore';
 import { resolveImageStudioReferences } from '../lib/image-studio';
@@ -22,7 +22,7 @@ import {
   type MutableRefObject,
   type ReactNode,
 } from 'react';
-import { ArrowElbowRight, CornerDownRight, Plus, Square, Trash2 } from './icons';
+import { ArrowElbowRight, CornerDownRight, MousePointer, Plus, Square, Trash2 } from './icons';
 import { toast } from 'sonner';
 import { getSessionReferenceCapabilityError } from '../../shared/session-links';
 import { useAppStore } from '../store/useAppStore';
@@ -861,6 +861,8 @@ export function PromptInput({
       ? buildSideChatEffectivePrompt(normalizedPrompt)
       : normalizedPrompt;
     const outgoingAttachments = attachments;
+    // The canvas chip goes with this message: what the user saw is what the agent gets.
+    const outgoingDesignSelection = useDesignStore.getState().selections[activeSession.id];
     const imageEdit = attachments.some(item => item.id.startsWith('image-studio:')) && supportsImageStudio(runtimeProvider);
     const codexReferences = runtimeProvider === 'codex'
       ? capabilityMenu.selectedSkill ? buildCodexReferencePayload(capabilityMenu.selectedSkill)
@@ -929,6 +931,7 @@ export function PromptInput({
           createIsolatedWorkspace:
             draftStartMode[activeSession.id] === 'worktree' || undefined,
           attachments: outgoingAttachments.length > 0 ? outgoingAttachments : undefined,
+          ...(outgoingDesignSelection ? { designSelection: outgoingDesignSelection } : {}),
           provider: runtimeProvider,
           model: selectedModel || undefined,
           claudeAccessMode:
@@ -1038,6 +1041,7 @@ export function PromptInput({
         attachments: outgoingAttachments,
         references: codexReferences,
         exclusive: imageEdit,
+        ...(outgoingDesignSelection ? { designSelection: outgoingDesignSelection } : {}),
       });
       resetComposer();
       return;
@@ -1048,6 +1052,7 @@ export function PromptInput({
       effectivePrompt: outgoingEffectivePrompt,
       attachments: outgoingAttachments,
       references: codexReferences,
+      ...(outgoingDesignSelection ? { designSelection: outgoingDesignSelection } : {}),
     });
     resetComposer();
   };
@@ -1062,6 +1067,7 @@ export function PromptInput({
       attachments: Attachment[];
       references: CodexReferencePayload;
       design?: DesignPromptRef;
+      designSelection?: DesignSelectionRef;
     }
   ) => {
     sendEvent({
@@ -1071,6 +1077,7 @@ export function PromptInput({
         prompt: outgoing.displayPrompt,
         effectivePrompt: outgoing.effectivePrompt,
         ...(outgoing.design ? { design: outgoing.design } : {}),
+        ...(outgoing.designSelection ? { designSelection: outgoing.designSelection } : {}),
         attachments: outgoing.attachments.length > 0 ? outgoing.attachments : undefined,
         provider: runtimeProvider,
         model: selectedModel || undefined,
@@ -1250,6 +1257,8 @@ export function PromptInput({
         codexSkills: items.flatMap((item) => item.references.codexSkills ?? []),
         codexMentions: items.flatMap((item) => item.references.codexMentions ?? []),
       },
+      // A batch shares one canvas selection (the queue splits where it changes).
+      ...(items[0].designSelection ? { designSelection: items[0].designSelection } : {}),
     });
     // Config for the flushed turn is read from the CURRENT composer selection,
     // matching what a manual send at this moment would use.
@@ -1498,6 +1507,12 @@ export function PromptInput({
                 <span className="min-w-0 flex-1 truncate text-[13.5px] text-[var(--text-primary)]">
                   {item.displayPrompt || 'Queued message'}
                 </span>
+                {item.designSelection ? (
+                  <span className="flex max-w-[40%] flex-shrink-0 items-center gap-1 text-[11px] text-[var(--text-muted)]" title={`Selected on canvas: ${item.designSelection.label}`}>
+                    <MousePointer size={11} aria-hidden="true" />
+                    <span className="truncate">{item.designSelection.label}</span>
+                  </span>
+                ) : null}
                 {item.attachments.length > 0 ? (
                   <span className="flex-shrink-0 text-[11px] text-[var(--text-muted)]">
                     +{item.attachments.length} file{item.attachments.length > 1 ? 's' : ''}

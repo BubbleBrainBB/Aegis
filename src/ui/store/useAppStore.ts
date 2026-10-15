@@ -3587,10 +3587,10 @@ function handleSessionDeleted(
 
 // 处理用户 prompt
 function handleUserPrompt(
-  payload: { sessionId: string; prompt: string; attachments?: Attachment[]; createdAt?: number; workflowPrompt?: WorkflowPromptKind; design?: import('../../shared/types').DesignPromptRef },
+  payload: { sessionId: string; prompt: string; attachments?: Attachment[]; createdAt?: number; workflowPrompt?: WorkflowPromptKind; design?: import('../../shared/types').DesignPromptRef; designSelection?: import('../../shared/types').DesignSelectionRef },
   set: SetState
 ) {
-  const { sessionId, prompt, attachments, createdAt, workflowPrompt, design } = payload;
+  const { sessionId, prompt, attachments, createdAt, workflowPrompt, design, designSelection } = payload;
 
   set((state) => {
     const session = state.sessions[sessionId];
@@ -3603,6 +3603,7 @@ function handleUserPrompt(
       createdAt: typeof createdAt === 'number' ? createdAt : Date.now(),
       ...(workflowPrompt ? { workflowPrompt } : {}),
       ...(design ? { design } : {}),
+      ...(designSelection ? { designSelection } : {}),
     };
 
     return {

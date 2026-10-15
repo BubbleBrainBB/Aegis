@@ -245,14 +245,11 @@ export interface DesignAPI {
     commentId: string;
     resolved: boolean;
   }): Promise<DesignComment>;
-  /** The design open in the right panel and its selection; the next turn tells the agent. */
+  /** The design open in the right panel and what is in view; the next turn tells the agent. */
   focus(input: {
     sessionId: string;
     documentId?: string;
     pageId?: string;
-    boardId?: string;
-    nodeId?: string;
-    selectedBoardIds?: string[];
     visibleBoardIds?: string[];
     focusedBoardId?: string;
     /** false: this panel closed; clears the focus only if it is still this design. */

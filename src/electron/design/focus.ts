@@ -1,15 +1,17 @@
 import { designPages, designPageId } from "../../shared/design-pages";
 import { getDesignRepository } from "./service";
 import { findDesignLayer, readDesignLayers } from "../../shared/design-layers";
-import type { DesignSummary } from "../../shared/design-types";
+import type { DesignDocument, DesignSummary } from "../../shared/design-types";
+import type { DesignSelectionRef } from "../../shared/types";
 
-/** The design a conversation has open and its selection, as the renderer reports it. */
+/**
+ * The design a conversation has open and what is in view, as the renderer
+ * reports it. What is selected travels with each message instead
+ * (DesignSelectionRef), so the agent gets exactly the chip the user sent.
+ */
 export interface DesignFocus {
   documentId: string;
-  boardId?: string;
   pageId?: string;
-  nodeId?: string;
-  selectedBoardIds?: string[];
   visibleBoardIds?: string[];
   focusedBoardId?: string;
 }
@@ -84,8 +86,7 @@ export function setDesignFocus(
     return;
   }
   focus.set(sessionId, {
-    documentId, pageId: id(value?.pageId), boardId: id(value?.boardId), nodeId: id(value?.nodeId),
-    selectedBoardIds: boardIds(value?.selectedBoardIds), visibleBoardIds: boardIds(value?.visibleBoardIds),
+    documentId, pageId: id(value?.pageId), visibleBoardIds: boardIds(value?.visibleBoardIds),
     focusedBoardId: id(value?.focusedBoardId),
   });
 }
@@ -95,11 +96,33 @@ const label = (v: string) => JSON.stringify(v.replace(/[<>\r\n]+/g, " ").trim().
 // Layer ids come from board HTML too; print only plain ones.
 const plainId = (v: string) => /^[\w:.-]{1,200}$/.test(v);
 
+type Board = DesignDocument["boards"][number];
+const describe = (b: Board) => `${label(b.name)} (boardId ${b.id}, x=${b.x}, y=${b.y}, width=${b.width}, height=${b.height})`;
+
+/** The lines for the selection a message was sent with, against the latest saved document. */
+function selectionLines(doc: DesignDocument, selection: DesignSelectionRef, openId: string | undefined): string[] {
+  const where = doc.id === openId ? "" : ` in ${label(doc.title)} (documentId ${doc.id})`;
+  const boards = selection.boardIds.map((id) => doc.boards.find((b) => b.id === id)).filter((b): b is Board => !!b);
+  if (!boards.length) return [`Selected${where}: ${label(selection.label)}, no longer in the design.`];
+  if (boards.length > 1) return [`Selected boards${where}: ${boards.map(describe).join("; ")}.`];
+  const [board] = boards;
+  const node = selection.nodeId ? findDesignLayer(readDesignLayers(board.html), selection.nodeId) : undefined;
+  const layer = node
+    ? `, layer ${label(node.name.split(" · ")[0])}${plainId(node.id) ? ` (nodeId ${node.id})` : ""}`
+    : selection.nodeId ? `, a layer that is no longer in the board` : "";
+  const changed =
+    selection.contentRevision !== undefined && selection.contentRevision !== board.contentRevision
+      ? ` The board changed after it was selected (contentRevision ${selection.contentRevision} → ${board.contentRevision}).`
+      : "";
+  return [`Selected${where}: board ${describe(board)}${layer}.${changed}`];
+}
+
 /**
- * The per-turn <design_context> block: which design is open, what is selected,
- * and the other designs in this conversation. Facts only; the tools carry the rules.
+ * The per-turn <design_context> block: which design is open, what the message
+ * was sent about, and the other designs in this conversation. Facts only; the
+ * tools carry the rules.
  */
-export function designContextText(sessionId: string): string {
+export function designContextText(sessionId: string, selection?: DesignSelectionRef): string {
   let all: DesignSummary[];
   try {
     all = getDesignRepository().list(sessionId);
@@ -120,9 +143,17 @@ export function designContextText(sessionId: string): string {
   if (prefs.variants) asks.push(`Variations: make ${prefs.variants} distinct directions for each new board, side by side.`);
   const f = focus.get(sessionId);
   const open = f && all.find((d) => d.id === f.documentId);
-  if (!designs.length && !open)
+  // Only a design this conversation can use; the list is its access.
+  const picked = selection && all.find((d) => d.id === selection.documentId);
+  if (!designs.length && !open && !picked)
     return asks.length ? `\n\n<design_context>\n${asks.join("\n")}\n</design_context>` : "";
   const lines: string[] = [];
+  let selected: string[] = [];
+  if (picked && selection) {
+    try {
+      selected = selectionLines(getDesignRepository().read(sessionId, picked.id), selection, open?.id);
+    } catch {}
+  }
   if (open && f) {
     lines.push(`Open: ${label(open.title)} (documentId ${open.id}, ${open.boardCount} board${open.boardCount === 1 ? "" : "s"}).`);
     try {
@@ -130,27 +161,16 @@ export function designContextText(sessionId: string): string {
       const page = designPages(doc).find(page => page.id === f.pageId) ?? designPages(doc)[0];
       lines.push(`Current page: ${label(page.name)} (pageId ${page.id}). Add boards to this page with pageId unless the user requests another page.`);
       const onPage = doc.boards.filter(b => designPageId(doc, b) === page.id);
-      const describe = (b: typeof doc.boards[number]) => `${label(b.name)} (boardId ${b.id}, x=${b.x}, y=${b.y}, width=${b.width}, height=${b.height})`;
       if (f.visibleBoardIds !== undefined) {
         const visible = onPage.filter(b => f.visibleBoardIds!.includes(b.id));
         lines.push(`Visible boards: ${visible.length ? visible.map(describe).join("; ") : "none"}.`);
       }
-      const selected = onPage.filter(b => f.selectedBoardIds?.includes(b.id));
-      if (selected.length > 1) lines.push(`Selected boards: ${selected.map(describe).join("; ")}.`);
       const focused = onPage.find(b => b.id === f.focusedBoardId);
       if (focused) lines.push(`Focused preview: ${describe(focused)}.`);
-      const board = onPage.find(b => b.id === f.boardId) ?? (selected.length === 1 ? selected[0] : undefined);
-      if (board) {
-        const node = f.nodeId ? findDesignLayer(readDesignLayers(board.html), f.nodeId) : undefined;
-        lines.push(
-          `Selected: board ${describe(board)}` +
-            (node ? `, layer ${label(node.name.split(" · ")[0])}${plainId(node.id) ? ` (nodeId ${node.id})` : ""}` : "") +
-            ".",
-        );
-      }
       lines.push("Positions are canvas coordinates, independent of pan and zoom. Read design_read for the latest complete layout before placing or moving boards.");
     } catch {}
   } else lines.push("No design is open.");
+  lines.push(...selected);
   const others = designs.filter((d) => d.id !== open?.id).slice(0, 8);
   if (others.length)
     lines.push(

@@ -3,6 +3,8 @@ import { create } from "zustand";
 import { useAppStore } from "./useAppStore";
 import { useDesignDraftStore } from "./useDesignDraftStore";
 import type { DesignSummary } from "../../shared/design-types";
+import type { DesignSelectionRef } from "../../shared/types";
+import { sameDesignSelection } from "../../shared/design-selection";
 
 /** A request from outside the canvas (e.g. chat "View thread") to focus a target. */
 export interface DesignFocusRequest {
@@ -19,14 +21,11 @@ export interface DesignSectionTarget {
   documentId?: string;
 }
 
-/** What is selected on a chat's open canvas, shown as a chip in its composer. */
-export interface DesignCanvasSelection {
-  documentId: string;
-  boardId: string;
-  nodeId?: string;
-  /** "Plus card · Pricing" */
-  label: string;
-}
+/**
+ * What is selected on a chat's open canvas, shown as a chip in its composer.
+ * Sending a message snapshots it into the message, so the agent gets this.
+ */
+export type DesignCanvasSelection = DesignSelectionRef;
 
 /** What the design composer asks for: a style guide and how many directions. */
 export interface DesignComposerChoice {
@@ -79,14 +78,7 @@ export const useDesignStore = create<{
   selections: {},
   setSelection: (sessionId, selection) =>
     set((s) => {
-      const current = s.selections[sessionId];
-      if (
-        current?.documentId === selection?.documentId &&
-        current?.boardId === selection?.boardId &&
-        current?.nodeId === selection?.nodeId &&
-        current?.label === selection?.label
-      )
-        return s;
+      if (sameDesignSelection(s.selections[sessionId], selection)) return s;
       return { selections: { ...s.selections, [sessionId]: selection } };
     }),
   clearRequest: null,

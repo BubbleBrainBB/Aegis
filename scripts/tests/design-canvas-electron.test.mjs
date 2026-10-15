@@ -248,13 +248,19 @@ await require(path.join(process.env.QA_ROOT,'scripts/tests/design-comment-mode-e
 await require(path.join(process.env.QA_ROOT,'scripts/tests/design-spacing-electron.cjs')).run({w,js,repo,sessionId:a,documentId:d.id,screenshotDir:process.env.QA_CAPTURE});
 await require(path.join(process.env.QA_ROOT,'scripts/tests/design-layers-electron.cjs')).run({w,js,repo,sessionId:a,documentId:d.id,screenshotDir:process.env.QA_CAPTURE});
 await require(path.join(process.env.QA_ROOT,'scripts/tests/design-insert-electron.cjs')).run({w,js,repo,sessionId:a,documentId:d.id,screenshotDir:process.env.QA_CAPTURE});
-// The agent sees which design is open and what is selected; it continues there unless asked for a separate one.
+// The agent sees which design is open and what the message was sent about (the composer chip); it continues there unless asked for a separate one.
 const {designContextText}=require(path.join(process.env.QA_ROOT,'dist-electron/electron/design/focus.js'));
+const {sanitizeDesignSelectionRef}=require(path.join(process.env.QA_ROOT,'dist-electron/shared/design-selection.js'));
 await js('document.querySelector(".design-viewport").dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))');
 const homeNow=repo.read(a,d.id).boards[0];
 await click('[data-board-id="'+homeNow.id+'"] .design-board-label');
-let ctx='';for(let i=0;i<40&&!ctx.includes('Selected: board');i++){await delay(50);ctx=designContextText(a)}
+await until('qa.design.getState().selections[qa.a]?.boardIds?.[0]==='+JSON.stringify(homeNow.id),'the chip holds the selected board');
+const chip=await js('qa.design.getState().selections[qa.a]');
+assert.deepEqual(chip,{documentId:d.id,boardIds:[homeNow.id],label:homeNow.name,contentRevision:homeNow.contentRevision},JSON.stringify(chip));
+let ctx='';for(let i=0;i<40&&!ctx.includes('Open: "Fieldnotes"');i++){await delay(50);ctx=designContextText(a)}
 assert(ctx.startsWith('\n\n<design_context>')&&ctx.includes('Open: "Fieldnotes" (documentId '+d.id),ctx);
+assert(!ctx.includes('Selected'),'without the message snapshot the context names no selection: '+ctx);
+ctx=designContextText(a,sanitizeDesignSelectionRef(chip));
 assert(ctx.includes('Selected: board "'+homeNow.name+'" (boardId '+homeNow.id+', x='),ctx);
 assert.equal(designContextText(b),'','no designs, no context');
 const blocked=await tools.find(t=>t.name==='design_create').execute({title:'Another',operationId:'second-design'},{});

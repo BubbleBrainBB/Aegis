@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { stripContentReferences } from '../utils/content-references';
 import { stripLeakedContextTags } from '../utils/leaked-context-tags';
 import { DesignCommentPromptRow } from './design/DesignCommentPromptRow';
+import { DesignSelectionTag } from './design/DesignSelectionChip';
+import { useDesignStore } from '../store/useDesignStore';
 import { ChevronRight, Copy, Check, History, Pencil, RotateCcw, TargetArrow, Workflow } from './icons';
 import { parseGoalInput, supportsGoalUI, isClaudeGoalClearObjective } from '../../shared/session-goal';
 import type { ThreadGoal } from '../../shared/session-goal';
@@ -31,6 +33,7 @@ import type {
   ContentBlock,
   ToolStatus,
 } from '../types';
+import type { DesignSelectionRef } from '../../shared/types';
 
 type UserPromptPrefixDisplay = PromptPrefixDisplay;
 
@@ -87,6 +90,7 @@ export function MessageCard({
         <UserPromptCard
           prompt={message.prompt}
           attachments={message.attachments}
+          designSelection={message.designSelection}
           createdAt={message.createdAt}
           actions={userPromptActions}
           sessionId={sessionId}
@@ -154,12 +158,14 @@ function ProposedPlanCard({ planMarkdown }: { planMarkdown: string }) {
 function UserPromptCard({
   prompt,
   attachments,
+  designSelection,
   createdAt,
   actions,
   sessionId,
 }: {
   prompt: string;
   attachments?: Attachment[];
+  designSelection?: DesignSelectionRef;
   createdAt?: number;
   actions?: {
     canEditAndRetry: boolean;
@@ -353,6 +359,18 @@ function UserPromptCard({
                 <AttachmentChips attachments={fileAttachments} variant="message" />
               </div>
             )}
+          </div>
+        )}
+        {designSelection && (
+          <div className="mb-1 flex min-w-0 max-w-full justify-end">
+            <DesignSelectionTag
+              label={designSelection.label}
+              onOpen={currentSessionId ? () => useDesignStore.getState().requestFocus({
+                sessionId: currentSessionId,
+                documentId: designSelection.documentId,
+                boardId: designSelection.boardIds[0],
+              }) : undefined}
+            />
           </div>
         )}
         {(isEditing || hasVisiblePrompt || promptPrefixDisplay) && (

@@ -22,3 +22,20 @@ export function DesignSelectionChip({ label, onRemove }: { label: string; onRemo
     </span>
   );
 }
+
+/** The canvas selection a sent message carried; opens it on the canvas. */
+export function DesignSelectionTag({ label, onOpen }: { label: string; onOpen?: () => void }) {
+  return (
+    <button
+      type="button"
+      data-design-selection-tag
+      onClick={onOpen}
+      disabled={!onOpen}
+      title="Selected on canvas when this was sent"
+      className="inline-flex max-w-full items-center gap-1.5 rounded-[8px] bg-[color-mix(in_srgb,var(--accent)_12%,transparent)] px-2 py-1 text-[12px] text-[var(--accent)] enabled:hover:bg-[color-mix(in_srgb,var(--accent)_18%,transparent)] disabled:cursor-default"
+    >
+      <MousePointer size={12} aria-hidden="true" />
+      <span className="truncate">{label}</span>
+    </button>
+  );
+}

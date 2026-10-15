@@ -63,6 +63,8 @@ function flushIfUnowned(sessionId: string, provider: AgentProvider | undefined):
       ...sessionContinuePermissions(useAppStore.getState().sessions[sessionId] ?? { provider }),
       codexSkills: items.flatMap((item) => item.references.codexSkills ?? []),
       codexMentions: items.flatMap((item) => item.references.codexMentions ?? []),
+      // A batch shares one canvas selection (the queue splits where it changes).
+      ...(items[0].designSelection ? { designSelection: items[0].designSelection } : {}),
       teamMode: 'solo',
       teamId: null,
     },

@@ -29,6 +29,7 @@ import { setupSessionPullRequestsIPC } from './ipc/session-pull-requests';
 import { registerDesignIpc } from './design/ipc';
 import { deleteSessionDesigns, markDesignCommentSent, moveSessionDesigns, settleDesignTurn } from './design/service';
 import { sanitizeDesignPromptRef } from '../shared/design-comment';
+import { sanitizeDesignSelectionRef } from '../shared/design-selection';
 import { designContextText } from './design/focus';
 import { setDesignProjectRoot } from './design/styles';
 import { setDesignAgentNamer, setDesignPromptSource } from './design/tools';
@@ -9203,6 +9204,8 @@ async function handleSessionStart(
     return null;
   }
   const referenceContext = appendSessionReferences('', prompt, undefined, provider || 'claude');
+  // The canvas selection the composer showed; it describes this message only.
+  const designSelection = payload.draftSessionId ? sanitizeDesignSelectionRef(payload.designSelection) : undefined;
   const chosenProvider = provider || 'claude';
   const normalizedProjectCwd = projectCwd?.trim() || sessionCwd || null;
   const normalizedEnvMode = envMode === 'worktree' ? 'worktree' : 'local';
@@ -9243,7 +9246,7 @@ async function handleSessionStart(
   const outgoingAttachments = (attachments ?? []).filter((attachment) => !!attachment?.path);
   const effectiveRunnerPrompt = (effectivePrompt ?? sourcePrompt).trim();
   const runnerPrompt = chosenProvider === 'claude' && parseGoalInput(sourcePrompt, false).isGoal ? sourcePrompt : augmentPromptForLiveWidgetProtocol(
-    await buildRunnerPromptWithMemory(chosenProvider, effectiveRunnerPrompt + referenceContext + (payload.draftSessionId ? designContextText(payload.draftSessionId) : '') + sessions.buildProjectSourcesContext(normalizedProjectCwd, isolated?.worktreePath || normalizedWorktreePath || sessionCwd, Boolean(isolated) || normalizedEnvMode === 'worktree'), sessionCwd),
+    await buildRunnerPromptWithMemory(chosenProvider, effectiveRunnerPrompt + referenceContext + (payload.draftSessionId ? designContextText(payload.draftSessionId, designSelection) : '') + sessions.buildProjectSourcesContext(normalizedProjectCwd, isolated?.worktreePath || normalizedWorktreePath || sessionCwd, Boolean(isolated) || normalizedEnvMode === 'worktree'), sessionCwd),
   );
   const selectedModel = normalizeProviderModel(chosenProvider, model);
   const selectedBetas = chosenProvider === 'claude' ? normalizeBetas(betas) : undefined;
@@ -9413,6 +9416,7 @@ async function handleSessionStart(
       attachments: outgoingAttachments,
       createdAt,
       ...(workflowPrompt ? { workflowPrompt } : {}),
+      ...(designSelection ? { designSelection } : {}),
     },
   });
 
@@ -9423,6 +9427,7 @@ async function handleSessionStart(
     attachments: outgoingAttachments,
     createdAt,
     ...(workflowPrompt ? { workflowPrompt } : {}),
+    ...(designSelection ? { designSelection } : {}),
   });
 
   // 检查运行时状态（在会话状态已设为 running 之后，以便前端立即显示 spinning 效果）
@@ -9695,6 +9700,8 @@ async function handleSessionContinueImpl(
 
   // Validate references before altering handoff/workspace state.
   const referenceContext = appendSessionReferences('', prompt, sessionId, provider || session.provider || 'claude');
+  // The canvas selection the composer showed; it describes this message only.
+  const designSelection = sanitizeDesignSelectionRef(payload.designSelection);
 
   // Steer lock (docs/delegate-mcp-plan.md): while a delegated agent runs in
   // this session's working directory, "lead blocked on the tool call = single
@@ -9828,7 +9835,7 @@ async function handleSessionContinueImpl(
     sessions.clearSessionHandoffPending(sessionId);
   }
   const runnerPrompt = nextProvider === 'claude' && parseGoalInput(prompt, false).isGoal ? prompt.trim() : augmentPromptForLiveWidgetProtocol(
-    await buildRunnerPromptWithMemory(nextProvider, effectiveRunnerPrompt + referenceContext + designContextText(sessionId) + sessions.buildProjectSourcesContext(session.project_cwd || session.cwd, session.cwd, session.env_mode === 'worktree' && Boolean(session.worktree_path)), session.cwd || undefined),
+    await buildRunnerPromptWithMemory(nextProvider, effectiveRunnerPrompt + referenceContext + designContextText(sessionId, designSelection) + sessions.buildProjectSourcesContext(session.project_cwd || session.cwd, session.cwd, session.env_mode === 'worktree' && Boolean(session.worktree_path)), session.cwd || undefined),
     historyBeforeContinue
   );
   const previousOpenCodePermissionMode = normalizeOpenCodePermissionMode(session.opencode_permission_mode);
@@ -10049,6 +10056,7 @@ async function handleSessionContinueImpl(
         createdAt,
         ...(workflowPrompt ? { workflowPrompt } : {}),
         ...(design ? { design } : {}),
+        ...(designSelection ? { designSelection } : {}),
       },
     });
 
@@ -10060,6 +10068,7 @@ async function handleSessionContinueImpl(
       createdAt,
       ...(workflowPrompt ? { workflowPrompt } : {}),
       ...(design ? { design } : {}),
+      ...(designSelection ? { designSelection } : {}),
     });
     // The thread is now in progress from the design's current version.
     if (design) markDesignCommentSent(sessionId, design, createdAt);

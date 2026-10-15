@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import type { Attachment } from '../types';
 import type { CodexReferencePayload } from '../utils/codex-composer';
+import type { DesignSelectionRef } from '../../shared/types';
+import { sameDesignSelection } from '../../shared/design-selection';
 
 /**
  * A composer message captured while the agent was still running a turn.
@@ -22,6 +24,8 @@ export interface QueuedComposerMessage {
   exclusive?: boolean;
   /** A design comment: the thread its message links back to. */
   design?: import('../../shared/types').DesignPromptRef;
+  /** The canvas selection shown in the composer when it was queued. */
+  designSelection?: DesignSelectionRef;
   /** An exclusive action keeps its captured session configuration. */
   dispatch?: () => void;
   onRemove?: () => void;
@@ -87,7 +91,9 @@ export const useComposerQueueStore = create<ComposerQueueStore>()((set, get) => 
 
   takeNextBatch: (sessionId) => {
     const queue = get().queues[sessionId] ?? EMPTY_QUEUE;
-    const boundary = queue.findIndex(item => item.exclusive);
+    // A batch is one turn with one canvas selection: it also ends where the selection changes.
+    const boundary = queue.findIndex((item, index) =>
+      item.exclusive || (index > 0 && !sameDesignSelection(item.designSelection, queue[0].designSelection)));
     const count = boundary === 0 ? 1 : boundary < 0 ? queue.length : boundary;
     const items = queue.slice(0, count);
     if (count) set(state => ({ queues: { ...state.queues, [sessionId]: queue.slice(count) } }));

@@ -982,7 +982,7 @@ export type ServerEvent =
   | { type: 'session.renamed'; payload: { sessionId: string; title: string; updatedAt: number } }
   | {
       type: 'stream.user_prompt';
-      payload: { sessionId: string; prompt: string; attachments?: Attachment[]; createdAt?: number; workflowPrompt?: WorkflowPromptKind; design?: DesignPromptRef };
+      payload: { sessionId: string; prompt: string; attachments?: Attachment[]; createdAt?: number; workflowPrompt?: WorkflowPromptKind; design?: DesignPromptRef; designSelection?: DesignSelectionRef };
     }
   | { type: 'stream.message'; payload: { sessionId: string; message: StreamMessage } }
   // Incremental stdout/stderr from a tool that is still running (codex
@@ -1069,6 +1069,8 @@ export type WorkflowPromptKind = 'event' | 'task';
 export interface SessionStartPayload {
   /** The draft chat this start promotes; its browser pages move to the new id. */
   draftSessionId?: string;
+  /** The draft's canvas selection shown in the composer when this was sent. */
+  designSelection?: DesignSelectionRef;
   codexGoal?: import('./session-goal').GoalAction;
   title: string;
   prompt: string;
@@ -1199,12 +1201,30 @@ export interface DesignPromptRef {
   reply: boolean;
 }
 
+/**
+ * What was selected on a design canvas when a message was sent: the composer
+ * chip, carried with the message so the agent gets exactly what the user saw.
+ */
+export interface DesignSelectionRef {
+  documentId: string;
+  /** One board, or several selected together. */
+  boardIds: string[];
+  /** A layer inside the single selected board. */
+  nodeId?: string;
+  /** The chip's text, e.g. "Plus card · Pricing" or "3 boards". */
+  label: string;
+  /** The single board's content revision when it was selected. */
+  contentRevision?: number;
+}
+
 export interface SessionContinuePayload {
   sessionId: string;
   prompt: string;
   effectivePrompt?: string;
   /** Design comment thread this message was sent from. */
   design?: DesignPromptRef;
+  /** The canvas selection shown in the composer when this was sent. */
+  designSelection?: DesignSelectionRef;
   workflowPrompt?: WorkflowPromptKind;
   attachments?: Attachment[];
   provider?: AgentProvider;
@@ -1769,7 +1789,7 @@ export interface AvailableCommand {
 }
 
 export type StreamMessage =
-  | (StreamMessageBase & { type: 'user_prompt'; prompt: string; attachments?: Attachment[]; workflowPrompt?: WorkflowPromptKind; design?: DesignPromptRef })
+  | (StreamMessageBase & { type: 'user_prompt'; prompt: string; attachments?: Attachment[]; workflowPrompt?: WorkflowPromptKind; design?: DesignPromptRef; designSelection?: DesignSelectionRef })
   | (StreamMessageBase & {
       /** Durable, native completion metadata; never sent to the model as a prompt. */
       type: 'goal_completed';
