@@ -72,13 +72,19 @@ export function WorkstreamElapsed({ startedAt, durationMs, completedAt, running 
   const duration = durationMs ?? (startedAt != null && (running || completedAt != null)
     ? (completedAt ?? now) - startedAt : undefined);
   if (duration == null || !Number.isFinite(duration) || duration < 1000) return null;
-  return <span className="shrink-0 tabular-nums text-[var(--text-muted)]" data-workstream-elapsed> · {formatWorkstreamElapsed(duration)}</span>;
+  return <span data-workstream-elapsed>{formatWorkstreamElapsed(duration)}</span>;
 }
 
 export function formatWorkstreamElapsed(ms: number) {
   const seconds = Math.max(0, Math.floor(ms / 1000));
   const minutes = Math.floor(seconds / 60);
   return minutes ? `${minutes}m${seconds % 60 ? ` ${seconds % 60}s` : ''}` : `${seconds}s`;
+}
+
+/** Within 24px of the end, or half the scroll range when it is short enough that 24px would cover the top. */
+function isNearBottom(element: HTMLElement) {
+  const range = element.scrollHeight - element.clientHeight;
+  return range - element.scrollTop <= Math.min(24, range / 2);
 }
 
 /** Follow new activity until the reader deliberately scrolls back into history. */
@@ -93,8 +99,7 @@ export function WorkstreamScrollArea({ children, followKey }: { children: ReactN
     const update = () => {
       // Scroll events can arrive after ResizeObserver; honor the actual reader
       // position before an output resize has a chance to pull it back down.
-      if (element.scrollTop < lastScrollTop.current - 1
-        && element.scrollHeight - element.clientHeight - element.scrollTop >= 24) following.current = false;
+      if (element.scrollTop < lastScrollTop.current - 1 && !isNearBottom(element)) following.current = false;
       if (followKey && following.current) element.scrollTop = element.scrollHeight;
       lastScrollTop.current = element.scrollTop;
       setEdges({ top: element.scrollTop > 1, bottom: element.scrollHeight - element.clientHeight - element.scrollTop > 1 });
@@ -113,7 +118,7 @@ export function WorkstreamScrollArea({ children, followKey }: { children: ReactN
       onScroll={(event) => {
         const element = event.currentTarget;
         const remaining = element.scrollHeight - element.clientHeight - element.scrollTop;
-        following.current = remaining < 24;
+        following.current = isNearBottom(element);
         lastScrollTop.current = element.scrollTop;
         setEdges({ top: element.scrollTop > 1, bottom: remaining > 1 });
       }}>

@@ -4045,7 +4045,61 @@ button.aegis-mdx-metadata-key:hover {
   mask-image: linear-gradient(to bottom, transparent, black 1.5rem, black calc(100% - 1.5rem), transparent);
 }
 
-.workstream-details { margin-inline-start: 22px; }
+/* TraceLine: one row anatomy for every step in an agent trace. */
+.trace-text, .trace-line {
+  font-size: calc(12px * var(--ui-font-scale, 1));
+  line-height: 1.667;
+}
+.trace-line {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  padding-block: 2px;
+  text-align: start;
+  color: var(--text-muted);
+  transition: color .15s;
+}
+button.trace-line:disabled { opacity: 1; cursor: default; }
+.trace-line-icon {
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: color-mix(in srgb, var(--text-muted) 55%, transparent);
+}
+.trace-line-icon > * { width: 100%; height: 100%; }
+.trace-line-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trace-line-meta {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.trace-line-meta:empty { display: none; }
+.trace-line-trail {
+  display: inline-flex;
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  color: color-mix(in srgb, var(--text-muted) 45%, transparent);
+}
+.trace-line-trail > * { width: 100%; height: 100%; }
+button.trace-line:hover .trace-line-title { color: var(--text-primary); }
+.trace-line[data-tone="active"] .trace-line-title,
+.trace-line[data-tone="waiting"] .trace-line-title { color: var(--text-secondary); }
+.trace-line[data-tone="waiting"] .trace-line-icon,
+.trace-line[data-tone="waiting"] .trace-line-meta { color: var(--warning); }
+.trace-line[data-tone="error"] .trace-line-icon { color: var(--error); }
+.trace-meta-error { color: var(--error); }
+.trace-nest {
+  margin-inline-start: 6.5px;
+  padding-inline-start: 14.5px;
+  border-inline-start: 1px solid color-mix(in srgb, var(--text-primary) 10%, transparent);
+}
 .workstream-output-panel {
   min-width: 0;
   overflow: clip;

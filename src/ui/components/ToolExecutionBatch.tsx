@@ -11,7 +11,7 @@ import {
 } from '../utils/workstream';
 import { TodoProgressCard } from './TodoProgressCard';
 import type { ClaudeTaskToolCall } from '../../shared/claude-task-tools';
-import { WorkstreamDisclosureState, useWorkstreamDisclosure, useWorkstreamWasInspected, useWorkstreamDisclosureActions } from './WorkstreamDisclosureState';
+import { WorkstreamDisclosureState, useWorkstreamDisclosure, useWorkstreamDisclosureActions } from './WorkstreamDisclosureState';
 import { GeneratedMediaGallery } from './GeneratedMediaGallery';
 import { WorkstreamCollapse, formatWorkstreamElapsed } from './WorkstreamPrimitives';
 import type { GeneratedMediaItem } from '../utils/generated-media';
@@ -141,8 +141,8 @@ function WorkstreamDisclosureBody({
   const bodyRef = useRef<HTMLDivElement>(null);
   const setDetailChoice = useWorkstreamDisclosureActions();
   const [navigation, setNavigation] = useState(0);
-  const inspected = useWorkstreamWasInspected();
-  const [choice, setChoice] = useWorkstreamDisclosure('turn', defaultExpanded || inspected);
+  // A finished turn folds down to its answer even if a step was opened while it ran.
+  const [choice, setChoice] = useWorkstreamDisclosure('turn', defaultExpanded);
   const interrupted = model.entries.some((entry) =>
     (entry.type === 'tool' || entry.type === 'task' || entry.type === 'memory') && entry.status === 'interrupted');
   const stopped = isStopped ?? (!isRunning && interrupted);

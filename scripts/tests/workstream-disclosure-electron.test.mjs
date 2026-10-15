@@ -154,7 +154,7 @@ app.whenReady().then(async()=>{
   await js('qa.finish()');await delay(320);
   assert.equal(await expanded('#mcp'),'true','explicit expansion survives rerender');
   assert.equal(await expanded('#auto'),'false','untouched trace collapses on completion');
-  assert.equal(await expanded('#reset'),'true','inspecting nested activities prevents automatic turn collapse');
+  assert.equal(await expanded('#reset'),'false','a finished turn collapses even after a nested step was opened');
   await js('qa.newTurn()');await delay(320);
   assert.equal(await js('document.querySelectorAll("#auto .workstream-toggle-row").length'),0,'next running turn is open');
   await click('#reset [data-workstream-group]');
@@ -179,10 +179,10 @@ app.whenReady().then(async()=>{
   assert.equal(await js('document.querySelectorAll("#stopped .workstream-toggle-row").length'),0,'stopped work is not presented as a completed collapsed turn');
   assert.equal(await js('document.querySelector("#waiting [data-workstream-group]").getAttribute("aria-expanded")'),'true','approval group opens by default');
   assert.equal(await js('document.querySelector("#error [data-workstream-group]").getAttribute("aria-expanded")'),'false','error group stays collapsed while the agent is working');
-  assert.equal(await js('document.querySelector("#error [data-workstream-group]").textContent'),'Thinking(1 failed)','collapsed group retains its activity and failure count');
+  assert.equal(await js('document.querySelector("#error [data-workstream-group]").textContent'),'Thinking1 failed','collapsed group retains its activity and failure count');
   await click('#error [data-workstream-group]');
   assert.equal(await js('document.querySelector("#error [data-workstream-stage=\\"stage:error:failed\\"] > button").getAttribute("aria-expanded")'),'false','failed tool details stay collapsed');
-  assert((await js('document.querySelector("#error [data-workstream-stage=\\"stage:error:failed\\"] > button").textContent')).endsWith('(1 failed)'));
+  assert((await js('document.querySelector("#error [data-workstream-stage=\\"stage:error:failed\\"] > button").textContent')).endsWith('1 failed'));
   assert(!(await js('document.querySelector("#error").innerText')).includes('Documentation output for failed'));
   await shot('error-collapsed');
   await click('#error [data-workstream-stage="stage:error:failed"] > button');
@@ -199,7 +199,8 @@ app.whenReady().then(async()=>{
   await shot('shell-collapsed');
   await click('#shell [data-workstream-stage] > button');
   await js('qa.shellDone()');await delay(350);
-  assert.equal(await expanded('#shell'),'true','reading command output prevents whole-turn collapse');
+  assert.equal(await expanded('#shell'),'false','a finished command turn collapses even while its output was open');
+  await click('#shell .workstream-toggle-row button');await delay(350);
   assert.equal(await js('document.querySelector("#shell [data-workstream-stage] > button").getAttribute("aria-expanded")'),'true','command completion preserves the open detail');
   assert((await js('document.querySelector("#shell").innerText')).includes('Exit code 0'));
   assert((await js('document.querySelector("#shell [data-workstream-elapsed]").textContent')).includes('5s'));
@@ -237,10 +238,11 @@ app.whenReady().then(async()=>{
   await js('qa.readingTurn(true)');await delay(200);
   assert.equal(await js('document.querySelector("#real-chat [data-workstream-stage] > button").getAttribute("aria-expanded")'),'true','real tool result retains open details');
   await js('qa.answer()');await delay(350);
-  assert.equal(await js('document.querySelector("#real-chat .workstream-toggle-row button").getAttribute("aria-expanded")'),'true','real final-answer regrouping retains inspected trace');
+  assert.equal(await js('document.querySelector("#real-chat .workstream-toggle-row button").getAttribute("aria-expanded")'),'false','final answer collapses the trace even after a step was opened');
   await js('qa.complete()');await delay(350);
   await click('#real-chat .workstream-toggle-row button');
-  assert.equal(await js('document.querySelector("#real-chat .workstream-toggle-row button").getAttribute("aria-expanded")'),'false','explicit turn collapse still wins over inspection protection');
+  assert.equal(await js('document.querySelector("#real-chat .workstream-toggle-row button").getAttribute("aria-expanded")'),'true','the reader can reopen the finished trace');
+  assert.equal(await js('document.querySelector("#real-chat [data-workstream-stage] > button").getAttribute("aria-expanded")'),'true','reopening keeps the step the reader opened');
   for(const provider of ['grok','codex']){
    await js('qa.imageTurn('+JSON.stringify(provider)+',"generated")');
    await until('document.querySelectorAll("#real-chat img[alt=\\"white-cat.png\\"]").length===1','image appears before reply');
@@ -271,7 +273,7 @@ app.whenReady().then(async()=>{
   for(const withTools of [false,true]){
    await js('qa.retryTurn('+withTools+')');await delay(200);
    await js('(()=>{const b=[...document.querySelectorAll("#real-chat button[aria-expanded]")].find(b=>b.textContent==="Thinking");if(b?.getAttribute("aria-expanded")==="false")b.click()})()');await delay(320);
-   await js('window.frozenReasoning=[...document.querySelectorAll("#real-chat .workstream-text")].find(e=>e.textContent==="Original reasoning before connection loss")');
+   await js('window.frozenReasoning=[...document.querySelectorAll("#real-chat .trace-text")].find(e=>e.textContent==="Original reasoning before connection loss")');
    assert(await js('!!window.frozenReasoning'),'reasoning is expanded');
    await js('qa.retry(1)');await delay(150);
    assert((await js('document.querySelector("[data-stream-retry]").textContent')).includes('Reconnecting 1/10'));
@@ -280,7 +282,7 @@ app.whenReady().then(async()=>{
    assert(await js('window.retryRow===document.querySelector("[data-stream-retry]")'),'retries update the same status row');
    assert(await js('window.frozenReasoning.isConnected'),'repeated retries do not remount reasoning');
    assert.equal(await js('document.querySelectorAll("[data-stream-retry]").length'),1);
-   assert.equal(await js('[...document.querySelectorAll("#real-chat .workstream-text")].some(e=>e.textContent.trim()==="Working")'),false,'retry replaces the generic working footer');
+   assert.equal(await js('[...document.querySelectorAll("#real-chat .trace-text")].some(e=>e.textContent.trim()==="Working")'),false,'retry replaces the generic working footer');
    assert((await js('window.retryRow.textContent')).includes('2/10'));
    w.webContents.invalidate();await delay(150);
    await shot(withTools?'retry-with-tools':'retry-thinking');
@@ -288,7 +290,7 @@ app.whenReady().then(async()=>{
    assert.equal(await js('document.querySelector("[data-stream-retry]")===null'),true,'real output clears retry immediately: '+errors.join(' | '));
    assert.equal(await js('qa.store.getState().sessions[qa.chatId].streaming.thinking'),'New reasoning after recovery');
    assert.equal(await js('qa.store.getState().sessions[qa.chatId].messages.filter(m=>m.interrupted).length'),1);
-   assert((await js('document.querySelector("#real-chat").innerText')).includes('Reasoning · interrupted'));
+   assert(await js('[...document.querySelectorAll("#real-chat button[aria-expanded]")].some(b=>b.textContent==="ReasoningInterrupted")'),'interrupted reasoning keeps its row');
    await js('qa.retry(3);qa.store.getState().handleServerEvent({type:"session.status",payload:{sessionId:qa.chatId,status:"error"}})');await delay(200);
    assert.equal(await js('document.querySelector("[data-stream-retry]")'),null,'terminal failure removes retry');
    assert(await js('!!document.querySelector("[data-turn-failure]")'),'terminal failure is visible');
@@ -301,7 +303,7 @@ app.whenReady().then(async()=>{
   await js('qa.completeTracked();qa.reloadRetryHistory("completed")');await delay(300);
   assert.equal(await js('document.querySelectorAll("#real-chat .workstream-toggle-row").length'),1,'profile retry stays in one completed work group');
   await click('#real-chat .workstream-toggle-row button');
-  await js('(()=>{const b=[...document.querySelectorAll("#real-chat button[aria-expanded]")].find(b=>b.textContent.includes("Reasoning · interrupted"));if(b?.getAttribute("aria-expanded")==="false")b.click()})()');await delay(200);
+  await js('(()=>{const b=[...document.querySelectorAll("#real-chat button[aria-expanded]")].find(b=>b.textContent==="ReasoningInterrupted");if(b?.getAttribute("aria-expanded")==="false")b.click()})()');await delay(200);
   assert((await js('document.querySelector("#real-chat").innerText')).includes('Durable reasoning before retry'),'archived thinking remains readable after history reload');
   w.webContents.invalidate();await delay(100);await shot('retry-restored-history');
   assert.deepEqual(errors,[],'renderer errors after retry tests');

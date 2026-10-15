@@ -4,21 +4,22 @@ import { ToolResultContent, ToolOutputPanel } from './ToolResultContent';
 import { WorkstreamActivityLabel, WorkstreamCollapse, WorkstreamScrollArea, WorkstreamElapsed } from './WorkstreamPrimitives';
 import { AttachmentPreviewGrid } from './AttachmentPreviewGrid';
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import { TraceChevron, TraceLine, TraceNest, TraceSpinner, type TraceTone } from './TraceLine';
 import {
+  ArrowUpRight,
   BrandGithub,
   BrandSlack,
   BrandNotion,
   BrandFigma,
   BrandGoogleDrive,
-  ChevronRight,
   CircleDashed,
   CircleX,
   FileDiff,
   FolderSearch,
   Globe,
   Brain,
+  Lightbulb,
   Plug,
-  LoaderCircle,
   ShieldAlert,
   SquareTerminal,
   Workflow,
@@ -292,28 +293,32 @@ function CompactGroup({
   const showGroup = stages.length > 1;
   const thinking = isLatestRunning && !activeStage;
   const headerStage = activeStage || stages[0];
+  const headerActive = thinking || Boolean(activeStage?.entries.some(entry => 'status' in entry && entry.status === 'pending'));
+  const stageRows = (
+    <WorkstreamScrollArea followKey={activeStage?.id}>
+      {stages.map((stage) =>
+        stage.kind === 'task' ? (
+          <SubagentStage key={stage.id} stage={stage} />
+        ) : (
+          <StageRow key={stage.id} stage={stage} onOpenDiff={onOpenDiff} />
+        )
+      )}
+    </WorkstreamScrollArea>
+  );
   return (
     <div className="my-2 space-y-px">
-      {showGroup && <button type="button" data-workstream-group aria-expanded={expanded}
+      {showGroup && <TraceLine data-workstream-group aria-expanded={expanded}
         onClick={() => setExpanded(!expanded)}
-        className="workstream-text flex max-w-full items-center gap-1.5 text-left text-[var(--text-muted)] hover:text-[var(--text-primary)]">
-        {!thinking && headerStage && <StageKindIcon stage={headerStage} />}
-        <WorkstreamActivityLabel active={thinking || Boolean(activeStage?.entries.some(entry => 'status' in entry && entry.status === 'pending'))} activityKey={thinking ? 'thinking' : activeStage?.id}>
+        tone={headerActive ? 'active' : 'default'}
+        icon={thinking || !headerStage ? <Lightbulb /> : <StageKindIcon stage={headerStage} />}
+        title={<WorkstreamActivityLabel active={headerActive} activityKey={thinking ? 'thinking' : activeStage?.id}>
           {thinking ? 'Thinking' : activeStage?.title || formatWorkstreamStageSummary(stages)}
-        </WorkstreamActivityLabel>
-        <FailureCount entries={entries} />
-        <ChevronRight className={`h-3.5 w-3.5 shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`} />
-      </button>}
+        </WorkstreamActivityLabel>}
+        meta={<FailureCount entries={entries} />}
+        trail={<TraceChevron expanded={expanded} />}
+      />}
       <WorkstreamCollapse open={!showGroup || expanded}>
-        <WorkstreamScrollArea followKey={activeStage?.id}>
-          {stages.map((stage) =>
-            stage.kind === 'task' ? (
-              <SubagentStage key={stage.id} stage={stage} />
-            ) : (
-              <StageRow key={stage.id} stage={stage} onOpenDiff={onOpenDiff} />
-            )
-          )}
-        </WorkstreamScrollArea>
+        {showGroup ? <TraceNest>{stageRows}</TraceNest> : stageRows}
       </WorkstreamCollapse>
       {!showGroup && thinking && <WorkingFooter label="Thinking" />}
     </div>
@@ -324,7 +329,13 @@ function CompactGroup({
 
 function FailureCount({ entries }: { entries: WorkstreamEntry[] }) {
   const count = getWorkstreamFailureCount(entries);
-  return count > 0 ? <span className="shrink-0 text-[var(--text-muted)]">({count} failed)</span> : null;
+  return count > 0 ? <span className="trace-meta-error">{count} failed</span> : null;
+}
+
+/** A lone command's non-zero exit code, shown in the line's meta instead of under the output. */
+function getStageMetaExitCode(stage: WorkstreamStage): number | null {
+  const exitCode = stage.commands.length === 1 ? stage.commands[0].execution?.exitCode : null;
+  return exitCode != null && exitCode !== 0 ? exitCode : null;
 }
 
 function StageRow({
@@ -351,30 +362,30 @@ function StageRow({
   const isPending = stage.status === 'pending';
   const execution = stage.commands[0]?.execution;
   const denied = stage.entries.some(entry => getWorkstreamDeniedActionIds(entry).length > 0);
-  const titleClass = isPending || stage.status === 'waiting'
-      ? 'text-[var(--text-secondary)]'
-      : 'text-[var(--text-muted)] group-hover/stage:text-[var(--text-primary)]';
+  const exitCode = getStageMetaExitCode(stage);
+  const failed = exitCode != null || getWorkstreamFailureCount(stage.entries) > 0;
+  const tone: TraceTone = stage.status === 'waiting' ? 'waiting' : isPending ? 'active' : failed ? 'error' : 'default';
 
   return (
-    <div className="group/stage" data-workstream-stage={stage.id} data-denied-action={denied || undefined} tabIndex={denied ? -1 : undefined}>
-      <button
-        type="button"
+    <div data-workstream-stage={stage.id} data-denied-action={denied || undefined} tabIndex={denied ? -1 : undefined}>
+      <TraceLine
         onClick={() => canExpand && setExpanded(!expanded)}
         disabled={!canExpand}
-        className={`flex w-full items-center gap-1.5 workstream-text py-0.5 text-left transition-colors disabled:opacity-100 ${
-          canExpand ? '' : 'cursor-default'
-        }`}
         aria-expanded={canExpand ? expanded : undefined}
-      >
-        <StageKindIcon stage={stage} />
-        <span title={stage.files.length === 1 ? stage.files[0].filePath : undefined} className={`min-w-0 truncate ${titleClass}`}><WorkstreamActivityLabel active={isPending}>{stage.title}</WorkstreamActivityLabel></span>
-        <WorkstreamElapsed {...execution} running={isPending} />
-        <FailureCount entries={stage.entries} />
-        {stage.kind === 'edit' ? (
-          <DiffStatLabel additions={stage.addedLines} deletions={stage.removedLines} muted />
-        ) : null}
-        <StageStatusGlyph stage={stage} expanded={expanded} canExpand={canExpand} />
-      </button>
+        tone={tone}
+        hint={stage.files.length === 1 ? stage.files[0].filePath : undefined}
+        icon={<StageKindIcon stage={stage} />}
+        title={<WorkstreamActivityLabel active={isPending}>{stage.title}</WorkstreamActivityLabel>}
+        meta={<>
+          <WorkstreamElapsed {...execution} running={isPending} />
+          {stage.kind === 'edit' ? (
+            <DiffStatLabel additions={stage.addedLines} deletions={stage.removedLines} muted />
+          ) : null}
+          {exitCode != null ? <span className="trace-meta-error">exit {exitCode}</span> : <FailureCount entries={stage.entries} />}
+          {stage.status === 'interrupted' ? <span>Interrupted</span> : null}
+        </>}
+        trail={<StageStatusGlyph stage={stage} expanded={expanded} canExpand={canExpand} />}
+      />
       <WorkstreamCollapse open={expanded && canExpand}>
         <StageDetails stage={stage} onOpenDiff={onOpenDiff} />
       </WorkstreamCollapse>
@@ -384,26 +395,18 @@ function StageRow({
 
 function StageKindIcon({ stage }: { stage: WorkstreamStage }) {
   const kind = getWorkstreamStageActivityKind(stage);
-  const className = `h-3.5 w-3.5 flex-shrink-0 ${
-    stage.status === 'waiting'
-        ? 'text-amber-600'
-        : 'text-[var(--text-muted)]/55'
-  }`;
-
-  if (kind === 'edit') return <FileDiff className={className} />;
-  if (kind === 'command') return <SquareTerminal className={className} />;
-  if (kind === 'approval') return <ShieldAlert className={className} />;
-  if (kind === 'computer_use') {
-    return <ComputerUseAppIcon app={stage.computerUseApp} className={className} />;
-  }
-  if (kind === 'error') return <CircleX className={className} />;
-  if (kind === 'web') return <Globe className={className} />;
-  if (kind === 'memory') return <Brain className={className} />;
+  if (kind === 'edit') return <FileDiff />;
+  if (kind === 'command') return <SquareTerminal />;
+  if (kind === 'approval') return <ShieldAlert />;
+  if (kind === 'computer_use') return <ComputerUseAppIcon app={stage.computerUseApp} className="" />;
+  if (kind === 'error') return <CircleX />;
+  if (kind === 'web') return <Globe />;
+  if (kind === 'memory') return <Brain />;
   if (kind === 'other') {
     const Icon = ({ GitHub: BrandGithub, Slack: BrandSlack, Notion: BrandNotion, Figma: BrandFigma, 'Google Drive': BrandGoogleDrive, Browser: Globe })[stage.source ?? ''] || Plug;
-    return <Icon className={className} />;
+    return <Icon />;
   }
-  return <FolderSearch className={className} />;
+  return <FolderSearch />;
 }
 
 function StageStatusGlyph({
@@ -415,21 +418,11 @@ function StageStatusGlyph({
   expanded: boolean;
   canExpand: boolean;
 }) {
-  if (stage.status === 'waiting') {
-    return <ShieldAlert className="h-3 w-3 flex-shrink-0 text-amber-600" />;
-  }
-  if (stage.status === 'interrupted') {
-    return <CircleDashed className="h-3 w-3 flex-shrink-0 text-[var(--text-muted)]/60" />;
-  }
-  if (!canExpand) return null;
-
-  return (
-    <ChevronRight
-      className={`h-3 w-3 flex-shrink-0 text-[var(--text-muted)]/45 transition-transform ${
-        expanded ? 'rotate-90' : ''
-      }`}
-    />
-  );
+  if (stage.status === 'pending') return <TraceSpinner />;
+  if (stage.status === 'interrupted') return <CircleDashed />;
+  // A waiting stage already says so in its amber icon and title.
+  if (stage.status === 'waiting' || !canExpand) return null;
+  return <TraceChevron expanded={expanded} />;
 }
 
 function StageDetails({
@@ -447,7 +440,7 @@ function StageDetails({
     entry.type === 'tool' ? entry.result?.images || [] : []).map((image) => [image.id, image])).values());
 
   return (
-    <div className="workstream-details mb-1 space-y-1">
+    <TraceNest className="mb-1 space-y-1">
       {stage.entries.flatMap(entry => 'execution' in entry ? entry.execution?.approvalReviews ?? [] : []).map(review =>
         <div key={review.id} className="workstream-text text-[var(--text-secondary)]">
           {review.status === 'timedOut' ? 'Approval review timed out' : 'Action denied'}{review.reason ? `: ${review.reason}` : ''}
@@ -457,7 +450,7 @@ function StageDetails({
         <StageFilesDetail stage={stage} onOpenDiff={onOpenDiff} />
       ) : null}
       {images.length > 0 && !showGenericDetail && stage.kind !== 'computer_use' ? <AttachmentPreviewGrid attachments={images} align="start" /> : null}
-      {stage.commands.length > 0 ? <StageCommandsDetail commands={stage.commands} /> : null}
+      {stage.commands.length > 0 ? <StageCommandsDetail commands={stage.commands} exitInMeta={getStageMetaExitCode(stage) != null} /> : null}
       {stage.kind === 'computer_use' ? <StageComputerUseDetail entries={stage.entries} /> : null}
       {showGenericDetail && stage.kind === 'edit' && stage.status !== 'error' ? (
         <div className="px-2 py-1 text-[11px] text-[var(--text-muted)]">
@@ -468,7 +461,7 @@ function StageDetails({
       ) : stage.status === 'error' ? (
         <StageFailureNotes entries={stage.entries} />
       ) : null}
-    </div>
+    </TraceNest>
   );
 }
 
@@ -688,14 +681,14 @@ function StageFileRow({
   );
 }
 
-function StageCommandsDetail({ commands }: { commands: WorkstreamStageCommand[] }) {
+function StageCommandsDetail({ commands, exitInMeta }: { commands: WorkstreamStageCommand[]; exitInMeta: boolean }) {
   return (
     <div className="space-y-1">
       {commands.map((command) => (
         <div key={command.id}>
           <ToolOutputPanel follow language="shell" isError={command.status === 'error'}
             text={`$ ${command.command}${command.output ? `\n${command.output}` : ''}`} />
-          {command.execution?.exitCode != null && <div className="workstream-text mt-1 text-[var(--text-muted)]">Exit code {command.execution.exitCode}</div>}
+          {command.execution?.exitCode != null && !exitInMeta && <div className="workstream-text mt-1 text-[var(--text-muted)]">Exit code {command.execution.exitCode}</div>}
         </div>
       ))}
     </div>
@@ -918,51 +911,35 @@ function SubagentLane({
   const persona = getSubagentPersona(entry.block.id, trace?.agentType, description);
   const delegateAgent = getDelegateAgentFromBlock(entry.block) as AgentProvider | null;
 
+  const pending = entry.status === 'pending';
+  const stats = buildSubagentLaneStats(entry);
+
   // The whole row opens this subagent's tab in the right-side detail panel —
   // the subagent's working trace lives there, not inline in the main trace.
   return (
-    <button
-      type="button"
+    <TraceLine
       onClick={() => useAppStore.getState().openSubagentPanel(entry.block.id)}
-      title={buildSubagentLaneTitle(entry, description)}
-      className={`group flex w-full min-w-0 cursor-pointer items-center gap-2 text-left text-[12px] leading-5 transition-colors ${
-        standalone ? 'py-0.5' : 'px-2.5 py-1'
-      }`}
-    >
-      <span className="flex min-w-0 max-w-full items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--bg-secondary)]/60 py-0.5 pl-1.5 pr-2.5 transition-colors group-hover:border-[var(--text-muted)]/45 group-hover:bg-[var(--bg-tertiary)]/60">
-        {delegateAgent ? (
-          <ProviderIcon provider={delegateAgent} />
-        ) : (
-          <SubagentAvatar id={entry.block.id} hue={persona.colorHue} size={12} />
-        )}
-        <span className="min-w-0 truncate text-[12px] leading-4 text-[var(--text-secondary)] transition-colors group-hover:text-[var(--text-primary)]">
-          {description}
-        </span>
-      </span>
-      <SubagentLaneStatusWord status={entry.status} />
-    </button>
+      hint={safeTitle(stats.length > 0 ? `${description}\n${stats.join(' · ')}` : description)}
+      className={standalone ? '' : 'px-2.5 py-1'}
+      tone={pending ? 'active' : entry.status === 'error' ? 'error' : 'default'}
+      icon={delegateAgent ? (
+        <ProviderIcon provider={delegateAgent} />
+      ) : (
+        <SubagentAvatar id={entry.block.id} hue={persona.colorHue} size={14} />
+      )}
+      title={<WorkstreamActivityLabel active={pending}>{description}</WorkstreamActivityLabel>}
+      meta={<>
+        {stats.length > 0 ? <span>{stats.join(' · ')}</span> : null}
+        {entry.status === 'error' ? <span className="trace-meta-error">Failed</span>
+          : entry.status === 'interrupted' ? <span>Interrupted</span> : null}
+      </>}
+      trail={pending ? <TraceSpinner /> : <ArrowUpRight />}
+    />
   );
 }
 
-/** Muted lowercase status word to the right of the subagent chip. */
-function SubagentLaneStatusWord({ status }: { status: TaskEntry['status'] }) {
-  if (status === 'pending') {
-    return (
-      <span className="flex flex-shrink-0 items-center gap-1 text-[11px] text-[var(--text-muted)]/80">
-        <LoaderCircle className="h-3 w-3 flex-shrink-0 animate-spin text-[var(--text-muted)]/55" />
-        running
-      </span>
-    );
-  }
-  const word =
-    status === 'error' ? 'failed' : status === 'interrupted' ? 'interrupted' : 'finished';
-  return (
-    <span className="flex-shrink-0 text-[11px] text-[var(--text-muted)]/80">{word}</span>
-  );
-}
-
-/** Fuller hover info (agent type, tool count, duration) kept off the line. */
-function buildSubagentLaneTitle(entry: TaskEntry, description: string): string | undefined {
+/** Agent type, tool count and duration, shown in the line's meta. */
+function buildSubagentLaneStats(entry: TaskEntry): string[] {
   const trace = entry.subagent;
   const parts: string[] = [];
   if (trace?.agentType) parts.push(trace.agentType);
@@ -972,7 +949,7 @@ function buildSubagentLaneTitle(entry: TaskEntry, description: string): string |
   if (typeof trace?.durationMs === 'number') {
     parts.push(formatElapsed(trace.durationMs));
   }
-  return safeTitle(parts.length > 0 ? `${description}\n${parts.join(' · ')}` : description);
+  return parts;
 }
 
 function getTaskDescription(entry: TaskEntry): string | null {
@@ -1049,19 +1026,23 @@ function ThinkingRow({
   const text = entry.detail || entry.summary;
   return (
     <div className="my-2">
-      <button type="button" className="workstream-text flex max-w-full items-center gap-1.5 py-0.5 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-        aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
-        <WorkstreamActivityLabel active={isActive}>{entry.state === 'interrupted' ? 'Reasoning · interrupted' : isActive ? 'Thinking' : 'Reasoning'}</WorkstreamActivityLabel>
-        <ChevronRight className={`h-3.5 w-3.5 shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`} />
-      </button>
+      <TraceLine aria-expanded={expanded} onClick={() => setExpanded(!expanded)}
+        tone={isActive ? 'active' : 'default'}
+        icon={<Lightbulb />}
+        title={<WorkstreamActivityLabel active={isActive}>{isActive ? 'Thinking' : 'Reasoning'}</WorkstreamActivityLabel>}
+        meta={entry.state === 'interrupted' ? <span>Interrupted</span> : null}
+        trail={<TraceChevron expanded={expanded} />}
+      />
       <WorkstreamCollapse open={expanded}>
-        <WorkstreamScrollArea followKey={isActive ? entry.id : undefined}>
-          {/* Reasoning is plain text in a height-bounded scroll area, so the full
-              trace renders cheaply — no MAX_TRACE_TEXT_CHARS cap here. */}
-          <div className="workstream-text py-2 text-[var(--text-secondary)] whitespace-pre-wrap break-words">
-            {text}
-          </div>
-        </WorkstreamScrollArea>
+        <TraceNest>
+          <WorkstreamScrollArea followKey={isActive ? entry.id : undefined}>
+            {/* Reasoning is plain text in a height-bounded scroll area, so the full
+                trace renders cheaply — no MAX_TRACE_TEXT_CHARS cap here. */}
+            <div className="trace-text py-1 text-[var(--text-secondary)] whitespace-pre-wrap break-words">
+              {text}
+            </div>
+          </WorkstreamScrollArea>
+        </TraceNest>
       </WorkstreamCollapse>
     </div>
   );
@@ -1074,21 +1055,17 @@ function ApprovalRow({
 }: {
   entry: Extract<WorkstreamEntry, { type: 'approval' }>;
 }) {
-  const tone =
-    entry.state === 'approved'
-      ? 'text-emerald-600'
-      : entry.state === 'denied'
-        ? 'text-[var(--error)]'
-        : 'text-amber-600';
-
   return (
-    <div className="flex items-center gap-2 py-0.5 text-[12px] leading-5 text-[var(--text-primary)]">
-      <ShieldAlert className={`h-3.5 w-3.5 flex-shrink-0 ${tone}`} />
-      <div className="min-w-0 flex-1"><div>{entry.summary}</div>{entry.detail && <div className="workstream-text text-[var(--text-secondary)]">{entry.detail}</div>}</div>
-      <span className={`flex-shrink-0 text-[11px] uppercase tracking-[0.06em] ${tone}`}>
-        {entry.state}
-      </span>
-    </div>
+    <TraceLine
+      as="div"
+      tone={entry.state === 'waiting' ? 'waiting' : 'default'}
+      hint={safeTitle(entry.detail)}
+      icon={<ShieldAlert />}
+      // The detail truncates with the summary; the meta keeps only the state word.
+      title={<>{entry.summary}{entry.detail ? <span className="text-[var(--text-muted)]"> · {entry.detail}</span> : null}</>}
+      meta={entry.state === 'denied' ? <span className="trace-meta-error">Denied</span>
+        : <span>{entry.state === 'approved' ? 'Approved' : 'Waiting'}</span>}
+    />
   );
 }
 
@@ -1100,10 +1077,13 @@ function ErrorRow({
   entry: Extract<WorkstreamEntry, { type: 'error' }>;
 }) {
   return (
-    <div className="flex items-baseline gap-2 py-0.5 text-[12px] leading-5 text-[var(--error)]" title={safeTitle(entry.detail)}>
-      <CircleX className="h-3.5 w-3.5 flex-shrink-0" />
-      <span className="min-w-0 flex-1 truncate">{entry.summary}</span>
-    </div>
+    <TraceLine
+      as="div"
+      tone="error"
+      hint={safeTitle(entry.detail)}
+      icon={<CircleX />}
+      title={<span className="text-[var(--error)]">{entry.summary}</span>}
+    />
   );
 }
 
@@ -1119,32 +1099,29 @@ function ToolRow({
   const [expanded, setExpanded] = useWorkstreamDisclosure(`tool:${entry.id}`);
   const { changeRecordByToolUseId, onOpenDiff } = useTurnDiffContext();
   const changeRecord = changeRecordByToolUseId.get(entry.block.id) || null;
+  // A one-entry stage picks the same kind icon the stage rows use.
+  const iconStage = useMemo(() => summarizeWorkstreamEntries([entry])[0], [entry]);
 
   const canExpand = hasEntryDetail(entry);
   const isPending = entry.status === 'pending';
   const isError = entry.status === 'error';
 
-  const summaryClass = isError
-    ? 'text-[var(--error)]'
-    : isPending
-      ? 'text-[var(--text-muted)]/70'
-      : 'text-[var(--text-muted)]/55 group-hover:text-[var(--text-secondary)]';
-
   return (
-    <div className="group">
-      <button
-        type="button"
+    <div>
+      <TraceLine
         onClick={() => canExpand && setExpanded(!expanded)}
         aria-expanded={canExpand ? expanded : undefined}
         disabled={!canExpand}
-        title={safeTitle(entry.detail || entry.summary)}
-        className={`flex w-full items-baseline gap-1.5 py-0.5 text-left workstream-text transition-colors disabled:opacity-100 ${
-          canExpand ? '' : 'cursor-default'
-        }`}
-      >
-        <span className={`min-w-0 flex-1 truncate ${summaryClass}`}>{entry.summary}</span>
-        <RightStatusGlyph entry={entry} canExpand={canExpand} expanded={expanded} />
-      </button>
+        hint={safeTitle(entry.detail || entry.summary)}
+        tone={isPending ? 'active' : isError ? 'error' : 'default'}
+        icon={iconStage ? <StageKindIcon stage={iconStage} /> : <Plug />}
+        title={<WorkstreamActivityLabel active={isPending}>{entry.summary}</WorkstreamActivityLabel>}
+        meta={isError ? <span className="trace-meta-error">Failed</span>
+          : entry.status === 'interrupted' ? <span>Interrupted</span> : null}
+        trail={isPending ? <TraceSpinner />
+          : entry.status === 'interrupted' ? <CircleDashed />
+          : canExpand ? <TraceChevron expanded={expanded} /> : null}
+      />
 
       {showChangeHint && changeRecord ? (
         <EditedFileHint record={changeRecord} onOpen={onOpenDiff} />
@@ -1155,9 +1132,9 @@ function ToolRow({
       ) : null}
 
       {expanded && canExpand ? (
-        <div className="mb-1 ml-1 border-l border-[var(--border)]/50 pl-3">
+        <TraceNest className="mb-1">
           <ToolEntryDetail entry={entry} />
-        </div>
+        </TraceNest>
       ) : null}
     </div>
   );
@@ -1180,37 +1157,11 @@ function LiveToolOutputTail({ text }: { text: string }) {
 
   if (!tail) return null;
   return (
-    <pre className="mb-1 ml-1 max-h-28 overflow-hidden whitespace-pre-wrap break-all border-l border-[var(--border)]/50 pl-3 font-mono text-[11px] leading-4 text-[var(--text-muted)]/70">
-      {tail}
-    </pre>
-  );
-}
-
-function RightStatusGlyph({
-  entry,
-  canExpand,
-  expanded,
-}: {
-  entry: Extract<WorkstreamEntry, { type: 'tool' | 'task' | 'memory' }>;
-  canExpand: boolean;
-  expanded: boolean;
-}) {
-  if (entry.status === 'pending') {
-    return <LoaderCircle className="h-3 w-3 flex-shrink-0 animate-spin text-[var(--text-muted)]/55" />;
-  }
-  if (entry.status === 'error') {
-    return <CircleX className="h-3 w-3 flex-shrink-0 text-[var(--error)]" />;
-  }
-  if (entry.status === 'interrupted') {
-    return <CircleDashed className="h-3 w-3 flex-shrink-0 text-[var(--text-muted)]/60" />;
-  }
-  if (!canExpand) return null;
-  return (
-    <ChevronRight
-      className={`h-3 w-3 flex-shrink-0 text-[var(--text-muted)]/45 transition-transform ${
-        expanded ? 'rotate-90' : ''
-      }`}
-    />
+    <TraceNest className="mb-1">
+      <pre className="max-h-28 overflow-hidden whitespace-pre-wrap break-all font-mono text-[11px] leading-4 text-[var(--text-muted)]/70">
+        {tail}
+      </pre>
+    </TraceNest>
   );
 }
 
@@ -1389,7 +1340,7 @@ function buildWritePreviewHunks(content: string): UnifiedDiffHunk[] {
 
 export function WorkingFooter({ label = 'Working' }: { label?: string }) {
   return (
-    <div className="workstream-text my-2 text-[var(--text-muted)]">
+    <div className="trace-text my-2 text-[var(--text-muted)]">
       <WorkstreamActivityLabel active>{label}</WorkstreamActivityLabel>
     </div>
   );
