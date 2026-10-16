@@ -548,7 +548,7 @@ export function PullRequestsView() {
   const listError = result?.error;
 
   return (
-    <div className="flex-1 min-w-0 flex bg-[var(--bg-primary)]">
+    <div className="flex min-h-0 min-w-0 flex-1 bg-[var(--bg-primary)]">
         <section
           className={`${detailFullscreen ? 'hidden' : 'flex'} flex-shrink-0 flex-col`}
           style={{ width: listWidth }}

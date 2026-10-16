@@ -364,7 +364,7 @@ export function AutomationsView() {
   };
 
   return (
-    <div className="flex-1 min-w-0 flex flex-col bg-[var(--bg-primary)]">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-[var(--bg-primary)]">
       <main className="min-w-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full max-w-[1180px] flex-col gap-7 px-8 pb-7 pt-4">
           <header className="flex items-start justify-between gap-4">
