@@ -89,15 +89,13 @@ Desktop builds are published on [GitHub Releases](https://github.com/DylanDDeng/
 
 ### macOS: “Aegis is damaged and can’t be opened”
 
-Current macOS builds are not signed and notarized. Gatekeeper may quarantine the downloaded app and show a misleading damaged-app warning.
+Starting with v0.0.65, macOS builds are signed with an Apple Developer ID and notarized, so they open directly with no extra steps.
 
-Install Aegis in `/Applications`, then run:
+If you are on v0.0.64 or earlier (unsigned), download the new DMG and drag Aegis into `/Applications` to replace the old copy. If an older build still shows the damaged-app warning, run this after installing it to `/Applications`:
 
 ```bash
 xattr -cr /Applications/Aegis.app
 ```
-
-You may need to repeat this after downloading an update.
 
 ### Windows support
 

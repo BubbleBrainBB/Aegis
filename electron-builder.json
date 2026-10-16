@@ -76,7 +76,17 @@
       { "target": "dmg", "arch": ["x64", "arm64"] },
       { "target": "zip", "arch": ["x64", "arm64"] }
     ],
-    "category": "public.app-category.developer-tools"
+    "category": "public.app-category.developer-tools",
+    // Developer ID signing + notarization. Signing picks up CSC_LINK /
+    // CSC_KEY_PASSWORD (or the login keychain); notarization runs when
+    // APPLE_API_KEY / APPLE_API_KEY_ID / APPLE_API_ISSUER are set.
+    "hardenedRuntime": true,
+    "gatekeeperAssess": false,
+    "entitlements": "build/entitlements.mac.plist",
+    "entitlementsInherit": "build/entitlements.mac.plist",
+    "extendInfo": {
+      "NSAppleEventsUsageDescription": "Aegis agents can control other apps when you ask them to."
+    }
   },
   "win": {
     "target": ["portable", "nsis"],

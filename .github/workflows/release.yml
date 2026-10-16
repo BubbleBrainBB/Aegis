@@ -23,9 +23,6 @@ jobs:
       matrix:
         os: [macos-14, windows-2022, ubuntu-latest]
 
-    env:
-      # Publish unsigned artifacts (no Apple Developer ID in CI)
-      CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
     steps:
       - name: Checkout
@@ -75,8 +72,50 @@ jobs:
       - name: Build (Vite + TS)
         run: npm run build
 
+      - name: Write App Store Connect API key
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          KEY_PATH="$RUNNER_TEMP/AuthKey.p8"
+          printf '%s' "$APPLE_API_KEY_P8" > "$KEY_PATH"
+          echo "APPLE_API_KEY=$KEY_PATH" >> "$GITHUB_ENV"
+
+      - name: Package (electron-builder, signed + notarized)
+        if: runner.os == 'macOS'
+        shell: bash
+        # Apple's timestamp and notary services fail intermittently; retry the whole package.
+        run: |
+          for attempt in 1 2 3; do
+            npm run build:electron -- --publish never && exit 0
+            echo "::warning::Packaging attempt $attempt failed"
+            sleep 30
+          done
+          exit 1
+        env:
+          # Developer ID Application certificate, exported as .p12 and base64-encoded
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+
       - name: Package (electron-builder)
+        if: runner.os != 'macOS'
         run: npm run build:electron -- --publish never
+        env:
+          # Windows and Linux builds stay unsigned
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Verify macOS signature and notarization
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          for app in release/mac*/Aegis.app; do
+            codesign --verify --deep --strict --verbose=2 "$app"
+            xcrun stapler validate "$app"
+            spctl --assess --type execute --verbose "$app"
+          done
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
