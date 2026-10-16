@@ -28,6 +28,21 @@ store().setProjectTreeCollapsed(true);
 assert.equal(fs(), 'files', 'a terminal keeps the panel fullscreen');
 assert.equal(store().activeRightUtilityTab, 'terminal');
 
+// A New tab from the strip's + keeps fullscreen, and so does the tool
+// picked on it.
+start('files:a', 'files');
+store().openRightUtilityLauncherTab();
+assert.equal(fs(), 'files', 'a New tab opened in a fullscreen panel is fullscreen');
+const launcher = store().activeRightUtilityTab!;
+store().openRightUtilityTab('browser', { newTab: true, replace: launcher });
+assert.equal(fs(), 'browser', 'the tool picked on the New tab is fullscreen');
+assert.equal(store().rightUtilityTabs.includes(launcher), false);
+
+start('files:a', 'files');
+store().openRightUtilityLauncherTab();
+store().openRightUtilityTab('terminal', { replace: store().activeRightUtilityTab! });
+assert.equal(fs(), 'files', 'a terminal picked on the New tab keeps the panel fullscreen');
+
 // Switching between tabs.
 store().setActiveRightUtilityTab('files:a');
 assert.equal(fs(), 'files');
@@ -53,5 +68,32 @@ assert.equal(fs(), null, 'closing the last tab ends fullscreen');
 start('files:a', 'files');
 store().setRightPanelFullscreen(null);
 assert.equal(fs(), null);
+
+// The main session is the fullscreen panel's first tab: showing it keeps
+// fullscreen, and any panel tab taking focus switches back to that tab.
+const chat = () => store().rightPanelFullscreenChat;
+useAppStore.setState({ rightUtilityTabs: ['files:a', 'browser'], activeRightUtilityTab: 'browser', rightUtilityPanelHidden: false, rightPanelFullscreen: 'browser' });
+store().setRightPanelFullscreenChat(true);
+assert.equal(chat(), true);
+assert.equal(fs(), 'browser', 'showing the chat tab keeps the panel fullscreen');
+store().setActiveRightUtilityTab('browser');
+assert.equal(chat(), false, 'clicking the tab that was active shows it again');
+store().setRightPanelFullscreenChat(true);
+store().openProjectFileInRightPanel({ cwd: '/p', filePath: '/p/a.md' });
+assert.equal(chat(), false, 'a file link shows the file');
+store().setRightPanelFullscreenChat(true);
+store().openRightUtilityTab('terminal');
+assert.equal(chat(), false, 'opening a panel tab shows it');
+store().setRightPanelFullscreenChat(true);
+store().closeRightUtilityTab('terminal');
+assert.equal(chat(), true, 'closing a panel tab stays on the chat');
+store().setRightPanelFullscreen(null);
+assert.equal(chat(), false, 'leaving fullscreen drops the chat tab');
+store().setRightPanelFullscreenChat(true);
+store().setRightPanelFullscreen('files');
+assert.equal(chat(), false, 'entering fullscreen shows the panel');
+store().setRightPanelFullscreenChat(true);
+store().closeRightUtilityPanels();
+assert.equal(chat(), false, 'closing the panel drops the chat tab');
 
 console.log('right-panel-fullscreen-tabs: fullscreen survives opening, switching and closing tabs');

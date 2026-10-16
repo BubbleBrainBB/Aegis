@@ -471,6 +471,11 @@ export interface AppState {
   terminalDrawerHeight: number;
   browserPanelOpen: boolean;
   rightPanelFullscreen: 'browser' | 'files' | 'review' | 'images' | 'design' | null;
+  /**
+   * While the right panel is fullscreen, the main session is its first tab:
+   * true when that tab is the one showing. Any panel tab taking focus clears it.
+   */
+  rightPanelFullscreenChat: boolean;
   sessionsLoaded: boolean;
   // 搜索状态
   sidebarSearchQuery: string;
@@ -646,6 +651,7 @@ export interface AppActions {
   setTerminalDrawerHeight: (height: number) => void;
   setBrowserPanelOpen: (open: boolean) => void;
   setRightPanelFullscreen: (target: 'browser' | 'files' | 'review' | 'images' | 'design' | null) => void;
+  setRightPanelFullscreenChat: (active: boolean) => void;
   applyUiResumeState: (state: import('../shared/types').UiResumeState | null) => void;
   clearGlobalError: () => void;
   setPendingStart: (pending: boolean) => void;

@@ -979,6 +979,7 @@ export const useAppStore = create<Store>()(
       terminalDrawerHeight: sanitizeTerminalDrawerHeight(initialUiResumeState?.terminalDrawerHeight),
       browserPanelOpen: false,
       rightPanelFullscreen: null,
+      rightPanelFullscreenChat: false,
       sessionsLoaded: false,
       // 搜索状态
       sidebarSearchQuery: '',
@@ -1935,6 +1936,7 @@ export const useAppStore = create<Store>()(
     set((state) => ({
       activeRightUtilityTab: target,
       rightPanelFullscreen: fullscreenFollowingTab(state.rightPanelFullscreen, target),
+      rightPanelFullscreenChat: false,
       rightUtilityTabs: target ? addRightUtilityTab(state.rightUtilityTabs, target) : state.rightUtilityTabs,
       rightUtilityPanelHidden: target ? false : state.rightUtilityPanelHidden,
     }));
@@ -1951,6 +1953,7 @@ export const useAppStore = create<Store>()(
         activeRightUtilityTab: opened.activeTab,
         rightUtilityPanelHidden: false,
         rightPanelFullscreen: fullscreenFollowingTab(state.rightPanelFullscreen, opened.activeTab),
+        rightPanelFullscreenChat: false,
       };
 
       // Only a reveal has a width tween to skip: the panel is currently
@@ -1986,7 +1989,8 @@ export const useAppStore = create<Store>()(
         rightUtilityTabs: [...state.rightUtilityTabs, tab],
         activeRightUtilityTab: tab,
         rightUtilityPanelHidden: false,
-        rightPanelFullscreen: null,
+        // A New tab opened in a fullscreen panel stays fullscreen.
+        rightPanelFullscreenChat: false,
         browserPanelOpen: false,
         projectTreeCollapsed: true,
       };
@@ -2011,6 +2015,7 @@ export const useAppStore = create<Store>()(
         projectTreeCollapsed: false,
         browserPanelOpen: false,
         rightPanelFullscreen: fullscreenFollowingTab(state.rightPanelFullscreen, opened.activeTab),
+        rightPanelFullscreenChat: false,
         pendingProjectFileOpen: {
           ...request,
           id: projectFileOpenRequestCounter,
@@ -2054,6 +2059,7 @@ export const useAppStore = create<Store>()(
         projectTreeCollapsed: false,
         browserPanelOpen: false,
         rightPanelFullscreen: fullscreenFollowingTab(state.rightPanelFullscreen, opened.activeTab),
+        rightPanelFullscreenChat: false,
       };
     });
   },
@@ -2069,6 +2075,7 @@ export const useAppStore = create<Store>()(
         rightUtilityTabs: addRightUtilityTab(state.rightUtilityTabs, target),
         activeRightUtilityTab: target,
         rightUtilityPanelHidden: false,
+        rightPanelFullscreenChat: false,
         projectTreeCollapsed: true,
         browserPanelOpen: false,
       };
@@ -2093,6 +2100,7 @@ export const useAppStore = create<Store>()(
         rightUtilityTabs: addRightUtilityTab(state.rightUtilityTabs, target),
         activeRightUtilityTab: target,
         rightUtilityPanelHidden: false,
+        rightPanelFullscreenChat: false,
         projectTreeCollapsed: true,
         browserPanelOpen: false,
       };
@@ -2262,6 +2270,7 @@ export const useAppStore = create<Store>()(
       projectTreeCollapsed: true,
       browserPanelOpen: false,
       rightPanelFullscreen: null,
+      rightPanelFullscreenChat: false,
     });
     persistUiResumeStateSnapshot(get());
   },
@@ -2336,12 +2345,18 @@ export const useAppStore = create<Store>()(
   setRightPanelFullscreen: (target) => {
     // Images, a design and review just take the whole window; the panel stays shown.
     if (target === 'images' || target === 'design' || target === 'review') {
-      set({ rightPanelFullscreen: target, rightUtilityPanelHidden: false, browserPanelOpen: false });
+      set({
+        rightPanelFullscreen: target,
+        rightPanelFullscreenChat: false,
+        rightUtilityPanelHidden: false,
+        browserPanelOpen: false,
+      });
       return;
     }
     if (target === 'browser') {
       set((state) => ({
         rightPanelFullscreen: 'browser',
+        rightPanelFullscreenChat: false,
         browserPanelOpen: true,
         projectTreeCollapsed: true,
         rightUtilityTabs: addRightUtilityTab(
@@ -2362,6 +2377,7 @@ export const useAppStore = create<Store>()(
         const opened = resolveRightUtilityTabOpen(state.rightUtilityTabs, 'files');
         return {
           rightPanelFullscreen: 'files',
+          rightPanelFullscreenChat: false,
           projectTreeCollapsed: false,
           browserPanelOpen: false,
           rightUtilityTabs: opened.tabs,
@@ -2371,7 +2387,13 @@ export const useAppStore = create<Store>()(
       });
       return;
     }
-    set({ rightPanelFullscreen: null });
+    set({ rightPanelFullscreen: null, rightPanelFullscreenChat: false });
+  },
+
+  setRightPanelFullscreenChat: (active) => {
+    set((state) =>
+      state.rightPanelFullscreenChat === active ? state : { rightPanelFullscreenChat: active }
+    );
   },
 
   applyUiResumeState: (resumeState) =>
