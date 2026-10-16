@@ -25,7 +25,8 @@ import { canonicalProjectPath } from './libs/project-paths';
 import { setupSessionProjectIPC } from './ipc/session-project';
 import { broadcastSessionEvent } from './ipc/session-windows';
 import { getGitPullRequestInfo, parseGitHubRepoFromRemote } from './libs/git-pull-requests';
-import { setupSessionPullRequestsIPC } from './ipc/session-pull-requests';
+import { notifySessionPullRequestsChanged, setupSessionPullRequestsIPC } from './ipc/session-pull-requests';
+import { attachAgentPullRequest, pullRequestCreatedBy } from './libs/agent-pull-requests';
 import { registerDesignIpc } from './design/ipc';
 import { deleteSessionDesigns, markDesignCommentSent, moveSessionDesigns, settleDesignTurn } from './design/service';
 import { sanitizeDesignPromptRef } from '../shared/design-comment';
@@ -10891,6 +10892,14 @@ function startRunner(
         if (shouldPersistMessage) {
           // 保存消息
           sessions.addMessage(session.id, attributedMessage);
+        }
+        // A PR the agent opened with `gh pr create` belongs to this session,
+        // as if it had been made with the Create PR button.
+        const createdPullRequest = pullRequestCreatedBy(session.id, attributedMessage);
+        if (createdPullRequest) {
+          void attachAgentPullRequest(session.id, createdPullRequest)
+            .then((created) => { if (created) notifySessionPullRequestsChanged(session.id); })
+            .catch(() => undefined);
         }
 
         // Subagent stream_events have no renderer consumer: the store drops

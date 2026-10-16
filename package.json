@@ -115,7 +115,7 @@
     "verify:claude-sdk-signals": "npx tsx scripts/tests/claude-sdk-signals.test.ts",
     "verify:claude-sdk-native": "node scripts/tests/claude-sdk-native.test.mjs",
     "verify:picker-menu-side": "node scripts/verify-picker-menu-side.mjs",
-    "verify:session-pull-requests": "npm run transpile:electron && node scripts/tests/session-pull-requests-electron.test.mjs",
+    "verify:session-pull-requests": "npm run transpile:electron && node scripts/tests/session-pull-requests-electron.test.mjs && node scripts/tests/agent-pull-requests-electron.test.mjs",
     "verify:environment-summary": "node scripts/tests/environment-summary-electron.test.mjs",
     "verify:session-sources": "npm run transpile:electron && npx tsx scripts/tests/session-sources.test.ts && npx tsx scripts/tests/session-source-client.test.ts && node scripts/tests/session-sources-electron.test.mjs && node scripts/tests/session-sources-legacy-electron.test.mjs",
     "verify:environment-hub-anchor": "node scripts/verify-environment-hub-anchor.mjs",
