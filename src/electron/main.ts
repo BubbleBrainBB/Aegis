@@ -215,7 +215,7 @@ function flushPendingProjectEditorDraftForTermination(signal: NodeJS.Signals): v
 process.once('SIGINT', flushPendingProjectEditorDraftForTermination);
 process.once('SIGTERM', flushPendingProjectEditorDraftForTermination);
 
-const RELEASES_URL = 'https://github.com/DylanDDeng/bubble-cowork/releases';
+const RELEASES_URL = 'https://github.com/DylanDDeng/Aegis/releases';
 const PROJECT_EDITOR_FLUSH_REQUEST_CHANNEL = 'project-editor-flush-request';
 const PROJECT_EDITOR_FLUSH_RESPONSE_CHANNEL = 'project-editor-flush-response';
 

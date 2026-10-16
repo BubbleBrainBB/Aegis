@@ -13,9 +13,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/DylanDDeng/bubble-cowork/stargazers"><img src="https://img.shields.io/github/stars/DylanDDeng/bubble-cowork?style=flat-square" alt="GitHub stars" /></a>
-  <a href="https://github.com/DylanDDeng/bubble-cowork/releases/latest"><img src="https://img.shields.io/github/v/release/DylanDDeng/bubble-cowork?style=flat-square" alt="Latest release" /></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/github/license/DylanDDeng/bubble-cowork?style=flat-square" alt="MIT License" /></a>
+  <a href="https://github.com/DylanDDeng/Aegis/stargazers"><img src="https://img.shields.io/github/stars/DylanDDeng/Aegis?style=flat-square" alt="GitHub stars" /></a>
+  <a href="https://github.com/DylanDDeng/Aegis/releases/latest"><img src="https://img.shields.io/github/v/release/DylanDDeng/Aegis?style=flat-square" alt="Latest release" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/github/license/DylanDDeng/Aegis?style=flat-square" alt="MIT License" /></a>
   <img src="https://img.shields.io/badge/macOS-主要平台-111827?style=flat-square&logo=apple&logoColor=white" alt="macOS 主要平台" />
   <img src="https://img.shields.io/badge/Windows-实验性支持-2563eb?style=flat-square&logo=windows&logoColor=white" alt="Windows 实验性支持" />
 </p>
@@ -36,11 +36,11 @@ Aegis 把一个本地项目目录变成可视化的 AI 开发工作台。对话�
 
 ## 快速入口
 
-- [下载最新版本](https://github.com/DylanDDeng/bubble-cowork/releases/latest)
+- [下载最新版本](https://github.com/DylanDDeng/Aegis/releases/latest)
 - [核心能力](#核心能力)
 - [支持的-agent-runtime](#支持的-agent-runtime)
 - [本地开发](#本地开发)
-- [提交 Issue](https://github.com/DylanDDeng/bubble-cowork/issues)
+- [提交 Issue](https://github.com/DylanDDeng/Aegis/issues)
 
 ## 为什么做 Aegis
 
@@ -78,7 +78,7 @@ Runtime 是否可用取决于对应 CLI、账号和本地配置。Aegis 会尽�
 
 ## 下载
 
-桌面安装包发布在 [GitHub Releases](https://github.com/DylanDDeng/bubble-cowork/releases/latest)。
+桌面安装包发布在 [GitHub Releases](https://github.com/DylanDDeng/Aegis/releases/latest)。
 
 | 平台 | 状态 | 构建 |
 | --- | --- | --- |
@@ -113,7 +113,7 @@ Aegis 是一个独立的学习项目，与 OpenAI 没有从属或官方合作关
 
 这个项目完全通过 Vibe Coding 的方式开发。它既是一个能够承担实际工作的工具，也是一次持续进行的实验：尝试与 Coding Agent 一起把想法做成真正的软件。
 
-这也意味着项目里一定还有粗糙、不完善或值得重新思考的地方。如果你发现问题，或者对产品和代码有不同想法，非常欢迎[提交 Issue](https://github.com/DylanDDeng/bubble-cowork/issues)、发起 Pull Request，或者 Fork 仓库并按照自己的方向继续探索。
+这也意味着项目里一定还有粗糙、不完善或值得重新思考的地方。如果你发现问题，或者对产品和代码有不同想法，非常欢迎[提交 Issue](https://github.com/DylanDDeng/Aegis/issues)、发起 Pull Request，或者 Fork 仓库并按照自己的方向继续探索。
 
 ## 本地开发
 
@@ -126,8 +126,8 @@ Aegis 是一个独立的学习项目，与 OpenAI 没有从属或官方合作关
 ### 启动开发环境
 
 ```bash
-git clone https://github.com/DylanDDeng/bubble-cowork.git
-cd bubble-cowork
+git clone https://github.com/DylanDDeng/Aegis.git
+cd Aegis
 npm install
 npm run dev
 ```

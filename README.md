@@ -13,9 +13,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/DylanDDeng/bubble-cowork/stargazers"><img src="https://img.shields.io/github/stars/DylanDDeng/bubble-cowork?style=flat-square" alt="GitHub stars" /></a>
-  <a href="https://github.com/DylanDDeng/bubble-cowork/releases/latest"><img src="https://img.shields.io/github/v/release/DylanDDeng/bubble-cowork?style=flat-square" alt="Latest release" /></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/github/license/DylanDDeng/bubble-cowork?style=flat-square" alt="MIT License" /></a>
+  <a href="https://github.com/DylanDDeng/Aegis/stargazers"><img src="https://img.shields.io/github/stars/DylanDDeng/Aegis?style=flat-square" alt="GitHub stars" /></a>
+  <a href="https://github.com/DylanDDeng/Aegis/releases/latest"><img src="https://img.shields.io/github/v/release/DylanDDeng/Aegis?style=flat-square" alt="Latest release" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/github/license/DylanDDeng/Aegis?style=flat-square" alt="MIT License" /></a>
   <img src="https://img.shields.io/badge/macOS-primary-111827?style=flat-square&logo=apple&logoColor=white" alt="macOS primary platform" />
   <img src="https://img.shields.io/badge/Windows-experimental-2563eb?style=flat-square&logo=windows&logoColor=white" alt="Windows experimental support" />
 </p>
@@ -36,11 +36,11 @@ Aegis turns a local project directory into a visual workspace for AI-assisted de
 
 ## Quick Links
 
-- [Download the latest release](https://github.com/DylanDDeng/bubble-cowork/releases/latest)
+- [Download the latest release](https://github.com/DylanDDeng/Aegis/releases/latest)
 - [Core features](#core-features)
 - [Supported agent runtimes](#supported-agent-runtimes)
 - [Development](#development)
-- [Open an issue](https://github.com/DylanDDeng/bubble-cowork/issues)
+- [Open an issue](https://github.com/DylanDDeng/Aegis/issues)
 
 ## Why Aegis
 
@@ -78,7 +78,7 @@ Runtime availability depends on the corresponding CLI, account, and local config
 
 ## Download
 
-Desktop builds are published on [GitHub Releases](https://github.com/DylanDDeng/bubble-cowork/releases/latest).
+Desktop builds are published on [GitHub Releases](https://github.com/DylanDDeng/Aegis/releases/latest).
 
 | Platform | Status | Builds |
 | --- | --- | --- |
@@ -113,7 +113,7 @@ Aegis is an independent learning project. It is not affiliated with or endorsed 
 
 This project has been developed entirely through a vibe-coding workflow. It is both a working tool and an ongoing experiment in building software with coding agents.
 
-That also means the project will have rough edges and decisions worth revisiting. If something feels wrong, incomplete, or unnecessarily complicated, please [open an issue](https://github.com/DylanDDeng/bubble-cowork/issues), submit a pull request, or fork the repository and take it in your own direction.
+That also means the project will have rough edges and decisions worth revisiting. If something feels wrong, incomplete, or unnecessarily complicated, please [open an issue](https://github.com/DylanDDeng/Aegis/issues), submit a pull request, or fork the repository and take it in your own direction.
 
 ## Development
 
@@ -126,8 +126,8 @@ That also means the project will have rough edges and decisions worth revisiting
 ### Run locally
 
 ```bash
-git clone https://github.com/DylanDDeng/bubble-cowork.git
-cd bubble-cowork
+git clone https://github.com/DylanDDeng/Aegis.git
+cd Aegis
 npm install
 npm run dev
 ```

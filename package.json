@@ -6,7 +6,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/DylanDDeng/bubble-cowork.git"
+    "url": "https://github.com/DylanDDeng/Aegis.git"
   },
   "main": "dist-electron/electron/main.js",
   "scripts": {
