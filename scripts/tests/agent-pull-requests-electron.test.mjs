@@ -51,7 +51,8 @@ app.whenReady().then(async()=>{
   assert.equal(await agent.attachAgentPullRequest(a.id,url),false,'idempotent');
   const [pr]=sessions.listSessionPullRequests(a.id);
   assert.equal(pr.state,'open');assert.equal(pr.headBranch,'fix');assert.equal(pr.repoRoot,fs.realpathSync(repo));
-  assert.equal((await sidebar.listSidebarPullRequests(false))[a.id].number,42,'sidebar shows the PR');
+  assert.equal(pr.additions,21);assert.equal(pr.deletions,1);
+  assert.deepEqual((await sidebar.listSidebarPullRequests(false))[a.id].map(p=>p.number),[42],'sidebar lists the PR');
   assert.equal(sessions.listSessionPullRequests(b.id).length,0);
   sessions.close();console.log('agent-pull-requests: gh pr create detection, repository guard, verification, sidebar association passed');app.exit(0);
  }catch(error){console.error(error);app.exit(1)}
@@ -60,10 +61,10 @@ app.whenReady().then(async()=>{
 const gh = `#!/usr/bin/python3
 import sys, json
 args = sys.argv[1:]
-assert args[:2] == ['pr', 'view'] and args[3:] == ['--json', 'number,title,state,url,headRefName'], args
+assert args[:2] == ['pr', 'view'] and args[3:] == ['--json', 'number,title,state,url,headRefName,isDraft,additions,deletions'], args
 if not args[2].endswith('/pull/42'):
     print('no pull requests found', file=sys.stderr); sys.exit(1)
-print(json.dumps(dict(number=42, title='Agent PR', state='OPEN', url=args[2], headRefName='fix')))
+print(json.dumps(dict(number=42, title='Agent PR', state='OPEN', url=args[2], headRefName='fix', isDraft=False, additions=21, deletions=1)))
 `;
 try {
   await mkdir(path.join(tmp,'bin'));await mkdir(path.join(tmp,'profile'));

@@ -18,6 +18,16 @@ export function parseGitHubRepoFromRemote(remoteUrl: string): { owner: string; r
   return null;
 }
 
+/** Draft flag and line counts from `gh pr view --json`, when present. */
+export function pullRequestExtras(parsed: { isDraft?: unknown; additions?: unknown; deletions?: unknown }) {
+  const count = (value: unknown) => (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined);
+  return {
+    ...(typeof parsed.isDraft === 'boolean' ? { isDraft: parsed.isDraft } : {}),
+    ...(count(parsed.additions) !== undefined ? { additions: count(parsed.additions) } : {}),
+    ...(count(parsed.deletions) !== undefined ? { deletions: count(parsed.deletions) } : {}),
+  };
+}
+
 export async function getGitPullRequestInfo(input: {
   cwd: string | undefined;
   branch: string | null;
@@ -40,7 +50,7 @@ export async function getGitPullRequestInfo(input: {
         '--repo',
         `${input.originRepo.owner}/${input.originRepo.repo}`,
         '--json',
-        'number,title,state,url',
+        'number,title,state,url,isDraft,additions,deletions',
       ],
       {
         cwd: input.cwd,
@@ -54,6 +64,9 @@ export async function getGitPullRequestInfo(input: {
       title?: string;
       state?: string;
       url?: string;
+      isDraft?: unknown;
+      additions?: unknown;
+      deletions?: unknown;
     };
 
     if (
@@ -70,6 +83,7 @@ export async function getGitPullRequestInfo(input: {
           state:
             parsed.state === 'OPEN' ? 'open' : parsed.state === 'MERGED' ? 'merged' : 'closed',
           url: parsed.url,
+          ...pullRequestExtras(parsed),
         },
       };
     }

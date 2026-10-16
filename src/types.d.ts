@@ -448,7 +448,7 @@ declare global {
     getGitChanges: (cwd: string) => Promise<{ ok: boolean; error: string | null; entries: import('./shared/types').GitChangeEntry[] }>;
     getGitWorkingTreeSummary: (cwd: string) => Promise<{ ok: boolean; error: string | null; insertions: number; deletions: number }>;
     listSessionPullRequests: (sessionId: string, refresh?: boolean) => Promise<import('./shared/types').SessionPullRequestView[]>;
-    listSidebarPullRequests: (refresh?: boolean) => Promise<Record<string, import('./shared/types').GitPullRequestSummary>>;
+    listSidebarPullRequests: (refresh?: boolean) => Promise<Record<string, import('./shared/types').GitPullRequestSummary[]>>;
     attachSessionPullRequest: (input: import('./shared/types').AttachSessionPullRequestInput) => Promise<{ created: boolean; pr: import('./shared/types').SessionPullRequest }>;
     detachSessionPullRequest: (sessionId: string, url: string, attachedAt: number) => Promise<void>;
     onSessionPullRequestsChanged: (callback: (sessionId: string) => void) => () => void;

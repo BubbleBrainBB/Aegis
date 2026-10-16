@@ -3,12 +3,12 @@ import { create } from 'zustand';
 import type { GitPullRequestSummary } from '../../shared/types';
 
 /**
- * The PR each sidebar session is tied to, keyed by session id. A runtime
+ * The PRs each sidebar session is tied to, oldest first, keyed by session id. A runtime
  * cache over the main process's answer (explicit associations first, then the
  * PR on a live worktree's branch); nothing here is persisted.
  */
 interface SidebarPullRequestStore {
-  bySession: Record<string, GitPullRequestSummary>;
+  bySession: Record<string, GitPullRequestSummary[]>;
   load: (refresh: boolean) => Promise<void>;
 }
 
@@ -31,7 +31,7 @@ export const useSidebarPullRequestStore = create<SidebarPullRequestStore>()((set
 }));
 
 /** Keeps the cache warm while the sidebar needs PR facts. */
-export function useSidebarPullRequests(enabled: boolean): Record<string, GitPullRequestSummary> {
+export function useSidebarPullRequests(enabled: boolean): Record<string, GitPullRequestSummary[]> {
   const bySession = useSidebarPullRequestStore((state) => state.bySession);
   const load = useSidebarPullRequestStore((state) => state.load);
 
@@ -53,4 +53,10 @@ export function useSidebarPullRequests(enabled: boolean): Record<string, GitPull
   }, [enabled, load]);
 
   return bySession;
+}
+
+/** The PR that speaks for a session: its latest open one, else its latest. */
+export function primaryPullRequest(prs: GitPullRequestSummary[] | null | undefined): GitPullRequestSummary | null {
+  if (!prs?.length) return null;
+  return [...prs].reverse().find((pr) => pr.state === 'open') ?? prs[prs.length - 1];
 }

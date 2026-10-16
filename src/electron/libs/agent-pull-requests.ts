@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { StreamMessage } from '../../shared/types';
 import * as sessions from './session-store';
-import { parseGitHubRepoFromRemote } from './git-pull-requests';
+import { parseGitHubRepoFromRemote, pullRequestExtras } from './git-pull-requests';
 
 const exec = promisify(execFile);
 
@@ -67,10 +67,13 @@ export async function attachAgentPullRequest(sessionId: string, url: string): Pr
   });
   if (!ownsRepo) return false;
 
-  const { stdout } = await exec('gh', ['pr', 'view', url, '--json', 'number,title,state,url,headRefName'], {
+  const { stdout } = await exec('gh', ['pr', 'view', url, '--json', 'number,title,state,url,headRefName,isDraft,additions,deletions'], {
     cwd, timeout: 10000, maxBuffer: 1024 * 1024,
   });
-  const pr = JSON.parse(stdout) as { number?: unknown; title?: unknown; state?: unknown; url?: unknown; headRefName?: unknown };
+  const pr = JSON.parse(stdout) as {
+    number?: unknown; title?: unknown; state?: unknown; url?: unknown; headRefName?: unknown;
+    isDraft?: unknown; additions?: unknown; deletions?: unknown;
+  };
   const state = pr.state === 'OPEN' ? 'open' : pr.state === 'MERGED' ? 'merged' : pr.state === 'CLOSED' ? 'closed' : null;
   if (typeof pr.number !== 'number' || typeof pr.title !== 'string' || typeof pr.url !== 'string' ||
       pr.url.toLowerCase() !== url.toLowerCase() || !state) return false;
@@ -80,6 +83,7 @@ export async function attachAgentPullRequest(sessionId: string, url: string): Pr
     title: pr.title,
     state,
     url: pr.url,
+    ...pullRequestExtras(pr),
     repoRoot,
     headBranch: typeof pr.headRefName === 'string' ? pr.headRefName : '',
     attachedAt: Date.now(),

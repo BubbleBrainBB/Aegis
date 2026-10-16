@@ -33,7 +33,7 @@ app.whenReady().then(async()=>{
   setMode('none');assert.equal((await lookup.getGitPullRequestInfo(query)).status,'not_found');
   setMode('auth');assert.equal((await lookup.getGitPullRequestInfo(query)).status,'unknown');
   setMode('malformed');assert.equal((await lookup.getGitPullRequestInfo(query)).status,'unknown');
-  setMode('found');assert.equal((await lookup.getGitPullRequestInfo(query)).pr.number,42);
+  setMode('found');{const found=(await lookup.getGitPullRequestInfo(query)).pr;assert.equal(found.number,42);assert.equal(found.additions,12);assert.equal(found.deletions,3);assert.equal(found.isDraft,false);}
   assert.equal((await lookup.getGitPullRequestInfo({...query,branch:'HEAD'})).status,'not_found');
   assert.equal((await lookup.getGitPullRequestInfo({...query,originRepo:null})).status,'not_found');
   await assert.rejects(service.attachTaskPullRequest({...input,sessionId:'missing'}),/no longer/);
@@ -87,7 +87,7 @@ import os, sys, json, time
 args = sys.argv[1:]
 if '--head' in args:
     print('unknown flag: --head', file=sys.stderr); sys.exit(1)
-assert args[:2] == ['pr', 'view'] and args[2] and args[3:] == ['--repo', 'test/project', '--json', 'number,title,state,url'], args
+assert args[:2] == ['pr', 'view'] and args[2] and args[3:] == ['--repo', 'test/project', '--json', 'number,title,state,url,isDraft,additions,deletions'], args
 f = json.load(open(os.environ['QA_GH_FIXTURE']))
 time.sleep(f.get('delay', 0))
 mode = f['mode']
@@ -96,7 +96,7 @@ if mode in ['none', 'auth']:
 if mode == 'malformed':
     print('{broken json'); sys.exit(0)
 number = f.get('number', 42)
-print(json.dumps(dict(number=number, title='Verified PR', state='MERGED' if mode == 'merged' else 'OPEN', url='https://github.com/test/project/pull/' + str(number))))
+print(json.dumps(dict(number=number, title='Verified PR', state='MERGED' if mode == 'merged' else 'OPEN', url='https://github.com/test/project/pull/' + str(number), isDraft=False, additions=12, deletions=3)))
 `;
 try {
   await mkdir(path.join(tmp,'bin'));await mkdir(path.join(tmp,'dist-react'));await mkdir(path.join(tmp,'profile'));

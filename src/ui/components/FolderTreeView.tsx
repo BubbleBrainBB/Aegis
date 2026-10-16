@@ -4,6 +4,7 @@ import { textInputDialog } from './ui/text-input-dialog';
 import { useSessionActionsMenu } from '../hooks/useSessionActionsMenu';
 import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react';
 import { Tooltip as TooltipPrimitive } from '@base-ui-components/react/tooltip';
+import { PreviewCard } from '@base-ui-components/react/preview-card';
 import {
   ChevronRight,
   FolderClosed,
@@ -11,6 +12,8 @@ import {
   GitBranch,
   GitMerge,
   GitPullRequest,
+  GitPullRequestClosed,
+  GitPullRequestDraft,
   Loader2,
   MoreHorizontal,
   Pin,
@@ -30,7 +33,7 @@ import { allLeaves } from '../store/layout-tree';
 import { sendEvent } from '../hooks/useIPC';
 import { DEFAULT_WORKSPACE_CHANNEL_ID, type GitPullRequestSummary } from '../../shared/types';
 import { useSidebarViewOptions, useSidebarViewStore } from '../store/useSidebarViewStore';
-import { useSidebarPullRequests } from '../store/useSidebarPullRequests';
+import { primaryPullRequest, useSidebarPullRequests } from '../store/useSidebarPullRequests';
 import {
   deriveSidebarSessionState,
   isWithinActivityWindow,
@@ -369,7 +372,7 @@ export function FolderTreeView({
       for (const session of regularSessions) {
         const state = deriveSidebarSessionState(session, {
           unread: organization.sessions[session.id]?.unread,
-          pullRequest: prsBySession[session.id],
+          pullRequest: primaryPullRequest(prsBySession[session.id]),
         });
         byState.set(state, [...(byState.get(state) ?? []), session]);
       }
@@ -507,7 +510,7 @@ export function FolderTreeView({
         isActive={isSessionActive}
         runtimeBadge={runtimeBadgeFor(session, isSessionActive)}
         depth={0}
-        pullRequest={view.showPullRequests ? prsBySession[session.id] : null}
+        pullRequests={view.showPullRequests ? prsBySession[session.id] : null}
         showProject={view.groupBy === 'date'}
         onClick={() => onSessionClick(session.id)}
         onTogglePin={() => sendEvent({ type: 'session.togglePin', payload: { sessionId: session.id } })}
@@ -700,7 +703,7 @@ export function FolderTreeView({
                           isActive={isSessionActive}
                           runtimeBadge={runtimeBadgeFor(session, isSessionActive)}
                           depth={depth}
-                          pullRequest={view.showPullRequests ? prsBySession[session.id] : null}
+                          pullRequests={view.showPullRequests ? prsBySession[session.id] : null}
                           onClick={() => onSessionClick(session.id)}
                           onTogglePin={() =>
                             sendEvent({ type: 'session.togglePin', payload: { sessionId: session.id } })
@@ -804,20 +807,111 @@ export function FolderTreeView({
   );
 }
 
-const PULL_REQUEST_GLYPH: Record<GitPullRequestSummary['state'], { label: string; className: string }> = {
-  open: { label: 'Open', className: 'text-[var(--success)]' },
-  merged: { label: 'Merged', className: 'text-[#8b5cf6]' },
-  closed: { label: 'Closed', className: 'text-[var(--text-muted)]' },
+type PullRequestStatus = 'open' | 'draft' | 'merged' | 'closed';
+
+const PULL_REQUEST_STATUS: Record<PullRequestStatus, { label: string; className: string; Icon: typeof GitPullRequest }> = {
+  open: { label: 'Open', className: 'text-[var(--success)]', Icon: GitPullRequest },
+  draft: { label: 'Draft', className: 'text-[var(--text-muted)]', Icon: GitPullRequestDraft },
+  merged: { label: 'Merged', className: 'text-[#8b5cf6]', Icon: GitMerge },
+  closed: { label: 'Closed', className: 'text-[var(--text-muted)]', Icon: GitPullRequestClosed },
 };
 
-function SessionPullRequestGlyph({ pullRequest }: { pullRequest: GitPullRequestSummary }) {
-  const meta = PULL_REQUEST_GLYPH[pullRequest.state];
-  const label = `Pull request #${pullRequest.number} · ${meta.label}`;
-  const Icon = pullRequest.state === 'merged' ? GitMerge : GitPullRequest;
+function pullRequestStatus(pr: GitPullRequestSummary): PullRequestStatus {
+  return pr.state === 'open' && pr.isDraft ? 'draft' : pr.state;
+}
+
+function pullRequestRepo(url: string): string {
+  return url.match(/^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//i)?.[1] ?? '';
+}
+
+function pullRequestsLabel(pullRequests: GitPullRequestSummary[]): string {
+  if (pullRequests.length === 1) {
+    return `Pull request #${pullRequests[0].number} · ${PULL_REQUEST_STATUS[pullRequestStatus(pullRequests[0])].label}`;
+  }
+  const counts = new Map<PullRequestStatus, number>();
+  for (const pr of pullRequests) counts.set(pullRequestStatus(pr), (counts.get(pullRequestStatus(pr)) ?? 0) + 1);
+  const parts = (['open', 'draft', 'merged', 'closed'] as const)
+    .filter((status) => counts.has(status))
+    .map((status) => `${counts.get(status)} ${PULL_REQUEST_STATUS[status].label.toLowerCase()}`);
+  return `${pullRequests.length} pull requests · ${parts.join(', ')}`;
+}
+
+/**
+ * The row's PR glyph: the status of the PR that speaks for the session, a
+ * count when there are several, and on hover every PR the session opened.
+ */
+function SessionPullRequestsGlyph({
+  pullRequests,
+  onOpenChange,
+}: {
+  pullRequests: GitPullRequestSummary[];
+  onOpenChange: (open: boolean) => void;
+}) {
+  const primary = primaryPullRequest(pullRequests)!;
+  const meta = PULL_REQUEST_STATUS[pullRequestStatus(primary)];
+  const label = pullRequestsLabel(pullRequests);
   return (
-    <span className={`flex-shrink-0 ${meta.className}`} title={label}>
-      <Icon className="h-3.5 w-3.5" aria-label={label} />
-    </span>
+    <PreviewCard.Root onOpenChange={(open) => onOpenChange(open)}>
+      <PreviewCard.Trigger
+        delay={200}
+        closeDelay={150}
+        render={
+          <span
+            className={`flex flex-shrink-0 items-center gap-0.5 ${meta.className}`}
+            aria-label={label}
+            data-pull-request-count={pullRequests.length}
+          >
+            <meta.Icon className="h-3.5 w-3.5" aria-hidden="true" />
+            {pullRequests.length > 1 ? (
+              <span className="text-[11px] tabular-nums leading-none">{pullRequests.length}</span>
+            ) : null}
+          </span>
+        }
+      />
+      <PreviewCard.Portal>
+        <PreviewCard.Positioner side="right" align="start" sideOffset={8} collisionPadding={12} className="z-[95]">
+          <PreviewCard.Popup
+            className="w-[320px] max-h-[360px] overflow-y-auto rounded-[var(--popover-radius)] border border-[var(--popover-border)] bg-[var(--popover-bg)] p-1 text-left shadow-[var(--popover-shadow-lg)] outline-none transition-[opacity,transform] duration-150 ease-[cubic-bezier(0.22,1,0.36,1)] data-[starting-style]:translate-x-1 data-[starting-style]:opacity-0 data-[ending-style]:translate-x-1 data-[ending-style]:opacity-0"
+            aria-label={label}
+          >
+            {pullRequests.map((pr) => {
+              const status = PULL_REQUEST_STATUS[pullRequestStatus(pr)];
+              return (
+                <button
+                  key={pr.url}
+                  type="button"
+                  className="block w-full rounded-md px-2.5 py-1.5 text-left transition-colors duration-150 hover:bg-[var(--sidebar-item-hover)]"
+                  title={pr.url}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void window.electron.openExternalUrl(pr.url).then((result) => {
+                      if (!result.ok) toast.error(result.message || 'Failed to open pull request.');
+                    });
+                  }}
+                >
+                  <div className="truncate text-[13px] leading-5 text-[var(--text-primary)]">{pr.title}</div>
+                  <div className="flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-[var(--text-muted)]">
+                    <span className={`flex flex-shrink-0 items-center gap-1 ${status.className}`}>
+                      <status.Icon className="h-3 w-3" aria-hidden="true" />
+                      {status.label}
+                    </span>
+                    <span aria-hidden="true">·</span>
+                    <span className="min-w-0 truncate">{pullRequestRepo(pr.url)}</span>
+                    <span className="flex-shrink-0 tabular-nums">#{pr.number}</span>
+                    {pr.additions !== undefined && pr.deletions !== undefined ? (
+                      <span className="flex-shrink-0 tabular-nums">
+                        <span className="text-[var(--success)]">+{pr.additions}</span>{' '}
+                        <span className="text-[var(--error)]">−{pr.deletions}</span>
+                      </span>
+                    ) : null}
+                  </div>
+                </button>
+              );
+            })}
+          </PreviewCard.Popup>
+        </PreviewCard.Positioner>
+      </PreviewCard.Portal>
+    </PreviewCard.Root>
   );
 }
 
@@ -826,7 +920,7 @@ function SessionItem({
   isActive,
   runtimeBadge,
   depth,
-  pullRequest,
+  pullRequests,
   showProject = false,
   onClick,
   onTogglePin,
@@ -835,7 +929,7 @@ function SessionItem({
   isActive: boolean;
   runtimeBadge: 'running' | 'completed' | 'error' | null;
   depth: number;
-  pullRequest?: GitPullRequestSummary | null;
+  pullRequests?: GitPullRequestSummary[] | null;
   /** Second line with the session's project (date-grouped lists). */
   showProject?: boolean;
   onClick: () => void;
@@ -851,6 +945,8 @@ function SessionItem({
     return () => window.cancelAnimationFrame(frame);
   }, [isActive, session.id, session.isDraft]);
   const { openMenu, menuOpen, worktreeAction } = useSessionActionsMenu(session);
+  // The PR list replaces the session preview while it is open.
+  const [pullRequestsOpen, setPullRequestsOpen] = useState(false);
   const [branchLookup, setBranchLookup] = useState<{
     cwd: string;
     branch: string | null;
@@ -904,7 +1000,7 @@ function SessionItem({
   return (
     <TooltipPrimitive.Root
       disableHoverablePopup
-      disabled={menuOpen}
+      disabled={menuOpen || pullRequestsOpen}
       onOpenChange={handlePreviewOpenChange}
     >
       <TooltipPrimitive.Trigger
@@ -981,8 +1077,8 @@ function SessionItem({
                   />
                 </span>
               ) : null}
-              {pullRequest ? (
-                <SessionPullRequestGlyph pullRequest={pullRequest} />
+              {pullRequests?.length ? (
+                <SessionPullRequestsGlyph pullRequests={pullRequests} onOpenChange={setPullRequestsOpen} />
               ) : session.envMode === 'worktree' && session.worktreePath ? (
                 <span
                   className="flex-shrink-0"

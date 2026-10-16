@@ -1318,6 +1318,10 @@ export interface GitPullRequestSummary {
   title: string;
   state: 'open' | 'closed' | 'merged';
   url: string;
+  isDraft?: boolean;
+  /** Lines added and removed, when GitHub has reported them. */
+  additions?: number;
+  deletions?: number;
 }
 
 /** App-owned task association; independent of the currently checked-out branch. */

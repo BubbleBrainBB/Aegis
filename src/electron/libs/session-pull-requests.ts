@@ -91,7 +91,17 @@ let sidebarRefreshedAt = 0;
 let sidebarRefresh: Promise<void> | null = null;
 
 function summary(pr: GitPullRequestSummary): GitPullRequestSummary {
-  return { number: pr.number, title: pr.title, state: pr.state, url: pr.url };
+  return {
+    number: pr.number, title: pr.title, state: pr.state, url: pr.url,
+    ...(pr.isDraft !== undefined ? { isDraft: pr.isDraft } : {}),
+    ...(pr.additions !== undefined ? { additions: pr.additions } : {}),
+    ...(pr.deletions !== undefined ? { deletions: pr.deletions } : {}),
+  };
+}
+
+function changed(before: GitPullRequestSummary, after: GitPullRequestSummary) {
+  return before.state !== after.state || before.title !== after.title || before.isDraft !== after.isDraft ||
+    before.additions !== after.additions || before.deletions !== after.deletions;
 }
 
 async function eachLimited<T>(items: T[], run: (item: T) => Promise<void>) {
@@ -104,18 +114,19 @@ async function eachLimited<T>(items: T[], run: (item: T) => Promise<void>) {
 }
 
 async function refreshSidebarPullRequests() {
-  const latest = new Map<string, ReturnType<typeof sessions.listAllSessionPullRequests>[number]['pr']>();
-  for (const { sessionId, pr } of sessions.listAllSessionPullRequests()) latest.set(sessionId, pr);
-  // Only an open PR can still change state; merged and closed are final.
-  await eachLimited([...latest].filter(([, pr]) => pr.state === 'open'), async ([sessionId, pr]) => {
+  const associations = sessions.listAllSessionPullRequests();
+  // An open PR can still change; a merged or closed one is final once its
+  // line counts are known (associations made before they were recorded).
+  await eachLimited(associations.filter(({ pr }) => pr.state === 'open' || pr.additions === undefined), async ({ sessionId, pr }) => {
     const result = await getGitPullRequestInfo({ cwd: undefined, branch: pr.url, originRepo: pullRequestUrl(pr.url) });
-    if (result.pr && result.pr.url.toLowerCase() === pr.url.toLowerCase() && result.pr.state !== pr.state) {
+    if (result.pr && result.pr.url.toLowerCase() === pr.url.toLowerCase() && changed(pr, result.pr)) {
       sessions.updateSessionPullRequestState(sessionId, { ...pr, ...result.pr });
     }
   });
+  const associated = new Set(associations.map(({ sessionId }) => sessionId));
   // A worktree owns its branch, so a PR on that branch belongs to the session.
   const worktrees = sessions.listSessions().filter(row =>
-    row.env_mode === 'worktree' && row.worktree_path && row.conversation_scope !== 'dm' && !latest.has(row.id));
+    row.env_mode === 'worktree' && row.worktree_path && row.conversation_scope !== 'dm' && !associated.has(row.id));
   const found: Record<string, GitPullRequestSummary> = {};
   await eachLimited(worktrees, async row => {
     const env = await readEnvironment(row.worktree_path!);
@@ -127,16 +138,19 @@ async function refreshSidebarPullRequests() {
 }
 
 /**
- * The PR each sidebar session is tied to: its latest explicit association,
- * else the PR open on its worktree branch. `refresh` re-checks GitHub at most
- * once a minute; without it only stored and cached answers are returned.
+ * The PRs each sidebar session is tied to, oldest first: its explicit
+ * associations, else the PR open on its worktree branch. `refresh` re-checks
+ * GitHub at most once a minute; without it only stored and cached answers are
+ * returned.
  */
-export async function listSidebarPullRequests(refresh = false): Promise<Record<string, GitPullRequestSummary>> {
+export async function listSidebarPullRequests(refresh = false): Promise<Record<string, GitPullRequestSummary[]>> {
   if (refresh && Date.now() - sidebarRefreshedAt > SIDEBAR_REFRESH_TTL_MS) {
     sidebarRefresh ??= refreshSidebarPullRequests().finally(() => { sidebarRefresh = null; });
     await sidebarRefresh;
   }
-  const result: Record<string, GitPullRequestSummary> = { ...branchPullRequests };
-  for (const { sessionId, pr } of sessions.listAllSessionPullRequests()) result[sessionId] = summary(pr);
-  return result;
+  const result: Record<string, GitPullRequestSummary[]> = {};
+  for (const [sessionId, pr] of Object.entries(branchPullRequests)) result[sessionId] = [pr];
+  const associated: Record<string, GitPullRequestSummary[]> = {};
+  for (const { sessionId, pr } of sessions.listAllSessionPullRequests()) (associated[sessionId] ??= []).push(summary(pr));
+  return { ...result, ...associated };
 }
