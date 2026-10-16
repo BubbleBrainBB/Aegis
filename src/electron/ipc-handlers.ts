@@ -4,8 +4,13 @@ import {
   observeTurnMessage,
   recordDeniedTool,
   requestsBackgroundExecution,
-  settleTurn as settleWorkflowTurn,
+  settleTurn as settleWorkflowMemberTurn,
 } from './libs/workflow/session-hooks';
+import { setupFollowUpIPC } from './ipc/follow-up';
+import { FollowUpService } from './libs/follow-up/service';
+import { FollowUpStore } from './libs/follow-up/store';
+import { setFollowUpSessionCheck } from './libs/follow-up/registry';
+import { setFollowUpToolEntry } from './libs/follow-up/tool';
 import { setShortcutCaptureActive } from './libs/keyboard-shortcuts';
 import { getSystemFonts, getSystemFontFamilies } from './libs/system-fonts';
 import { getAppPreferences, setAppPreferences, getTerminalShellOptions, trackTaskPowerState } from './libs/app-preferences';
@@ -340,6 +345,7 @@ import {
   dropStash,
   getCurrentBranch,
   getGitTopLevel,
+  getShortStatus,
   listBranches as listGitBranches,
   removeWorktree,
   stashWorkingTree,
@@ -4747,6 +4753,80 @@ function setupWorkflows(mainWindow: BrowserWindow): void {
   });
 }
 
+let followUps: FollowUpService | null = null;
+
+/** Turn-end observers: workflow members, and follow-up sessions reporting back to their parent. */
+function settleWorkflowTurn(sessionId: string, status: 'completed' | 'error' | 'stopped', error?: string): void {
+  settleWorkflowMemberTurn(sessionId, status, error);
+  const service = followUps;
+  if (!service) return;
+  try {
+    service.onTurnSettled(sessionId, status, error);
+  } catch (failure) {
+    console.error('[follow-up] could not record a turn result:', failure);
+  }
+  // After the rest of this turn's teardown, so the parent reads as idle only once it is.
+  setTimeout(() => {
+    service.deliverAfterTurn(sessionId, status).catch((failure) => {
+      console.error('[follow-up] could not deliver a result:', failure);
+    });
+  }, 0);
+}
+
+/** Follow-up proposals (docs/collaboration/follow-up-sessions.md): Claude sessions propose, the user starts. */
+function setupFollowUps(mainWindow: BrowserWindow): void {
+  const service = new FollowUpService(new FollowUpStore(sessions.getDatabase()), {
+    start: (payload, onCreated) => handleSessionStart(mainWindow, payload, onCreated),
+    continue: (payload) => handleSessionContinue(mainWindow, payload),
+    isBusy: (sessionId) => sessions.getSession(sessionId)?.status === 'running',
+    getSession: (sessionId) => {
+      const row = sessions.getSession(sessionId);
+      return row
+        ? { title: row.title, cwd: row.cwd, provider: row.provider || 'claude', model: row.model ?? null, status: row.status }
+        : null;
+    },
+    history: (sessionId) => sessions.getSessionHistory(sessionId),
+    inheritedOptions: (parentSessionId) => {
+      const row = sessions.getSession(parentSessionId);
+      if (!row) return {};
+      const provider = (row.provider || 'claude') as AgentProvider;
+      return {
+        provider,
+        ...(row.model ? { model: row.model } : {}),
+        channelId: row.workspace_channel_id ?? undefined,
+        ...(provider === 'claude'
+          ? {
+              betas: parseStoredBetas(row.betas),
+              claudeAccessMode: normalizeClaudeAccessMode(row.claude_access_mode),
+              claudeExecutionMode: normalizeClaudeExecutionMode(
+                row.claude_execution_mode,
+                normalizeClaudeAccessMode(row.claude_access_mode),
+              ),
+              claudeReasoningEffort: normalizeClaudeReasoningEffort(row.claude_reasoning_effort),
+            }
+          : {}),
+      };
+    },
+    permissionMode: (parentSessionId) => {
+      const row = sessions.getSession(parentSessionId);
+      return row?.provider === 'claude' || !row?.provider ? row?.claude_access_mode ?? null : null;
+    },
+    provision: (projectCwd, label) => provisionIsolatedWorkspace(projectCwd, label),
+    worktreeExists: (worktreePath) => existsSync(worktreePath),
+    uncommitted: (cwd) => getShortStatus(cwd),
+    broadcast: (view) => broadcast(mainWindow, { type: 'follow-up.updated', payload: view }),
+  });
+  service.recoverOnStartup();
+  followUps = service;
+  setFollowUpSessionCheck((sessionId) => service.isFollowUpSession(sessionId));
+  setFollowUpToolEntry({
+    propose: (callerSessionId, toolUseId, args) => service.propose(callerSessionId, toolUseId, args),
+    withdraw: (callerSessionId, proposalId) => service.withdraw(callerSessionId, proposalId),
+    history: (sessionId) => sessions.getSessionHistory(sessionId),
+  });
+  setupFollowUpIPC(service);
+}
+
 export function setupIPCHandlers(mainWindow: BrowserWindow): void {
   // 初始化数据库
   sessions.initialize();
@@ -5213,6 +5293,7 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
   setupSessionPullRequestsIPC();
   registerDesignIpc();
   setupWorkflows(mainWindow);
+  setupFollowUps(mainWindow);
   setupSessionGoalIPC({
     changeClaudeGoal: async (sessionId, action, settings) => {
       const session = sessions.getSession(sessionId);
@@ -9363,12 +9444,13 @@ async function handleSessionStart(
     broadcastAutomationChanged(mainWindow);
   }
 
-  // 立即广播状态 -> 界面跳转
+  // 立即广播状态 -> 界面跳转（background 的只进侧栏，不跳转）
   broadcast(mainWindow, {
     type: 'session.status',
     payload: {
       sessionId: session.id,
       status: 'running',
+      ...(payload.background ? { background: true } : {}),
       title: session.title,
       scope: normalizeSessionScope(session.conversation_scope),
       agentId: session.agent_id || null,

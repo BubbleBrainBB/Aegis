@@ -2,7 +2,7 @@ import { toast } from 'sonner';
 import { useSessionOrganization, useSessionOrganizationStore, changeSessionOrganization } from '../store/useSessionOrganizationStore';
 import { textInputDialog } from './ui/text-input-dialog';
 import { useSessionActionsMenu } from '../hooks/useSessionActionsMenu';
-import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react';
 import { Tooltip as TooltipPrimitive } from '@base-ui-components/react/tooltip';
 import { PreviewCard } from '@base-ui-components/react/preview-card';
 import {
@@ -10,6 +10,7 @@ import {
   FolderClosed,
   FolderOpen,
   GitBranch,
+  GitFork,
   GitMerge,
   GitPullRequest,
   GitPullRequestClosed,
@@ -29,6 +30,7 @@ import {
   DropdownMenuTrigger,
 } from './ui/dropdown-menu';
 import { useAppStore } from '../store/useAppStore';
+import { findProposalForChild, useFollowUpStore } from '../store/useFollowUpStore';
 import { allLeaves } from '../store/layout-tree';
 import { sendEvent } from '../hooks/useIPC';
 import { DEFAULT_WORKSPACE_CHANNEL_ID, type GitPullRequestSummary } from '../../shared/types';
@@ -222,6 +224,10 @@ export function FolderTreeView({
   onNewSessionForProject,
   projectCwd,
 }: ProjectTreeViewProps) {
+  const followUpsLoaded = useFollowUpStore(s => s.loaded);
+  useEffect(() => {
+    if (!followUpsLoaded) void useFollowUpStore.getState().load();
+  }, [followUpsLoaded]);
   const {
     sessions,
     activeWorkspace,
@@ -936,6 +942,9 @@ function SessionItem({
   onTogglePin: () => void;
 }) {
   const unread = useSessionOrganizationStore(s => s.sessions[session.id]?.unread);
+  // A follow-up task names the conversation it came from (no nesting: it already sits under its branch).
+  const followUpParentId = useFollowUpStore(s => findProposalForChild(s.proposals, session.id)?.parentSessionId ?? null);
+  const followUpParentTitle = useAppStore(s => (followUpParentId ? s.sessions[followUpParentId]?.title : undefined));
   const rowRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     if (!isActive || !session.isDraft) return;
@@ -1162,6 +1171,14 @@ function SessionItem({
                 <div className="pl-[22px] text-[11px] leading-4 text-[var(--text-muted)]">
                   Runs on an isolated branch — changes stay here until you apply them back to the
                   project.
+                </div>
+              ) : null}
+              {followUpParentId ? (
+                <div className="flex min-w-0 items-center gap-2">
+                  <GitFork className="h-3.5 w-3.5 flex-shrink-0 text-[var(--accent)]" />
+                  <span className="min-w-0 flex-1 truncate">
+                    Follow-up from {followUpParentTitle ? `“${followUpParentTitle}”` : 'another conversation'}
+                  </span>
                 </div>
               ) : null}
             </div>

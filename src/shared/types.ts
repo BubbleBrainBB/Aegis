@@ -973,6 +973,7 @@ export interface AppUpdateStatus {
 // Server -> Client 事件
 export type ServerEvent =
   | { type: 'workflow.updated'; payload: import('./workflow').WorkflowRunView }
+  | { type: 'follow-up.updated'; payload: import('./follow-up').FollowUpProposalView }
   | { type: 'session.open'; payload: { sessionId: string } }
   | { type: 'session.list'; payload: { sessions: SessionInfo[] } }
   | { type: 'session.status'; payload: SessionStatusPayload }
@@ -1064,7 +1065,8 @@ export type ServerEvent =
  * `task` is a member session's full brief. The conversation shows neither as
  * a user message.
  */
-export type WorkflowPromptKind = 'event' | 'task';
+/** Prompts Aegis sent rather than the user: workflow events and tasks, and follow-up tasks and results. */
+export type WorkflowPromptKind = 'event' | 'task' | 'follow-up';
 
 export interface SessionStartPayload {
   /** The draft chat this start promotes; its browser pages move to the new id. */
@@ -1078,6 +1080,8 @@ export interface SessionStartPayload {
   workflowPrompt?: WorkflowPromptKind;
   automationRunId?: string;
   skipTitleGeneration?: boolean;
+  /** Started for the user from elsewhere (a follow-up card): open it in the sidebar, do not switch to it. */
+  background?: boolean;
   cwd?: string;
   projectCwd?: string | null;
   envMode?: ThreadEnvironmentMode;
@@ -1550,6 +1554,8 @@ export type SessionStatus = 'idle' | 'running' | 'stopping' | 'completed' | 'err
 export interface SessionStatusPayload {
   sessionId: string;
   status: SessionStatus;
+  /** A new session started in the background: list it without focusing it. */
+  background?: boolean;
   scope?: SessionScope;
   agentId?: string | null;
   source?: SessionSource;

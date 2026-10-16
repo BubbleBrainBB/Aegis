@@ -33,6 +33,7 @@ import { createPromptCancellation } from './claude-prompt-cancellation';
 import { captureGitTreeSnapshot, diffGitTreeSnapshots } from './git-turn-snapshot';
 import { createAegisMemoryMcpServer, buildMemoryContext, MEMORY_SYSTEM_PROMPT } from './memory-mcp';
 import { isDelegateExecutionSession } from './delegate-service';
+import { isFollowUpSession } from './follow-up/registry';
 import { BROWSER_USE_SERVER_NAME, createBrowserUseMcpServer } from './browser-use-mcp';
 import { setBrowserUseSessionFullAccess } from './browser-use-consent';
 import { isBrowserUseEnabled } from './browser-use-permissions';
@@ -822,6 +823,7 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
       (mcpServers as Record<string, unknown>)[SESSION_MCP_SERVER_NAME] = await createSessionSdkMcpServer({
         callerSessionId: session.id,
         workflows: offersWorkflows,
+        followUps: offersWorkflows && !isFollowUpSession(session.id),
       });
       if (workflowPolicy?.readOnly) {
         for (const name of Object.keys(mcpServers)) delete (mcpServers as Record<string, unknown>)[name];

@@ -50,6 +50,8 @@ import { ErrorBoundary } from './ErrorBoundary';
 import { TurnChangesCard } from './TurnChangesCard';
 import { DesignChatCard } from './design/DesignChatCard';
 import { designDocumentIdsInMessages } from '../utils/design-entries';
+import { followUpCallsInMessages, type FollowUpCall } from '../utils/follow-up-entries';
+import { FollowUpCard } from './follow-up/FollowUpCard';
 import { TurnDiffContext, type TurnDiffContextValue } from './TurnDiffContext';
 import { CodexActivePlanCard } from './CodexActivePlanCard';
 import { RewindDialog, type RewindTarget } from './ClaudeRewindDialog';
@@ -1390,6 +1392,20 @@ export function ChatPane({
     return map;
   }, [turnEndByTimelineIndex, session?.messages, toolResultsMap]);
 
+  // Follow-up tasks a finished turn proposed: shown after its answer, not where the call was made.
+  const followUpCardsByTimelineIndex = useMemo(() => {
+    const map = new Map<number, FollowUpCall[]>();
+    if (!session) return map;
+    for (const [index, turn] of turnEndByTimelineIndex) {
+      const calls = followUpCallsInMessages(
+        session.messages.slice(turn.firstMessageIndex, turn.lastMessageIndex + 1),
+        toolResultsMap
+      );
+      if (calls.length) map.set(index, calls);
+    }
+    return map;
+  }, [turnEndByTimelineIndex, session?.messages, toolResultsMap]);
+
   const copyPlacementByTimelineIndex = useMemo(() => {
     const actionTextByCardIndex = new Map<number, string>();
     const hiddenMessageIndices = new Set<number>();
@@ -2056,6 +2072,10 @@ export function ChatPane({
                         <DesignChatCard key={documentId} sessionId={sessionId} documentId={documentId} />
                       ))
                     : null;
+                  const followUpCalls = followUpCardsByTimelineIndex.get(idx);
+                  const followUpCards = followUpCalls
+                    ? followUpCalls.map((call) => <FollowUpCard key={call.toolUseId} {...call} />)
+                    : null;
                   if (item.type === 'work') {
                     const anchor = String(item.group.originalIndices[0]);
                     const highlighted = highlightedHistoryAnchor === anchor;
@@ -2097,6 +2117,7 @@ export function ChatPane({
                           />
                         </div>
                         {designCards}
+                        {followUpCards}
                         {copyActionText ? <AssistantCopyAction text={copyActionText} /> : null}
                       </div>
                     );
@@ -2221,6 +2242,7 @@ export function ChatPane({
                       </div>
                       {designCards}
                       {showTurnChangesCard && turnCard ? <TurnChangesCard summary={turnCard} /> : null}
+                      {followUpCards}
                       {copyActionText ? <AssistantCopyAction text={copyActionText} /> : null}
                     </div>
                   );

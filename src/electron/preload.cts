@@ -1,5 +1,6 @@
 import type { SessionMenuRequest, SessionMenuAction } from '../shared/session-menu';
 import type { WorkflowAction, WorkflowStartRequest } from '../shared/workflow';
+import type { FollowUpAction } from '../shared/follow-up';
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 import type {
   AutomationDefinition,
@@ -233,6 +234,12 @@ contextBridge.exposeInMainWorld('electron', {
     get: (runId: string) => ipcRenderer.invoke('workflow-get', runId),
     setDefaults: (defaults: { permissionModes: Record<string, string> }) => ipcRenderer.invoke('workflow-set-defaults', defaults),
     sessionInfo: (sessionId: string) => ipcRenderer.invoke('workflow-session-info', sessionId),
+  },
+
+  followUps: {
+    list: () => ipcRenderer.invoke('follow-up-list'),
+    act: (action: FollowUpAction) => ipcRenderer.invoke('follow-up-act', action),
+    continueWithReport: (proposalId: string) => ipcRenderer.invoke('follow-up-continue-with-report', proposalId),
   },
 
   sessionHandoff: (payload: { sessionId: string; targetProvider: string }) => {

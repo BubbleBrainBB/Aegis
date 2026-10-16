@@ -1,5 +1,11 @@
 import { isStartWorkflowToolName } from '../../shared/workflow';
 import { isShowWidgetToolName, isWidgetGuideToolName, widgetFromToolInput } from '../../shared/widget';
+import { isProposeFollowUpToolName, isWithdrawFollowUpToolName } from '../../shared/follow-up';
+
+const followUpTitle = (input: unknown) => {
+  const title = (input as { title?: unknown } | null)?.title;
+  return typeof title === 'string' && title.trim() ? title.trim() : 'a follow-up task';
+};
 import { designToolDisplay } from './design-tool-display';
 import type { CanonicalToolKind, ToolStatus } from '../types';
 import {
@@ -50,6 +56,8 @@ export function getToolSummary(name: string, input: unknown): string {
   // The widget's HTML is no summary; its title is.
   if (isShowWidgetToolName(name)) return widgetFromToolInput(input)?.title || 'Widget';
   if (isWidgetGuideToolName(name)) return 'Widget design guide';
+  if (isProposeFollowUpToolName(name)) return `Follow-up: ${followUpTitle(input)}`;
+  if (isWithdrawFollowUpToolName(name)) return 'Withdrew a follow-up task';
   const design = designToolDisplay(name, input, 'success');
   if (design) return design.target;
 
@@ -349,6 +357,12 @@ export function deriveReadableToolDisplay(
   }
   if (isWidgetGuideToolName(name)) {
     return { verb: status === 'pending' ? 'Reading' : 'Read', target: 'the widget design guide' };
+  }
+  if (isProposeFollowUpToolName(name)) {
+    return { verb: status === 'pending' ? 'Proposing follow-up' : 'Proposed follow-up', target: followUpTitle(input) };
+  }
+  if (isWithdrawFollowUpToolName(name)) {
+    return { verb: status === 'pending' ? 'Withdrawing' : 'Withdrew', target: 'a follow-up task' };
   }
   const design = designToolDisplay(name, input, status);
   if (design) return design;

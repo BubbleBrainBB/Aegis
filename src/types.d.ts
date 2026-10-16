@@ -5,6 +5,7 @@ import type {
   WorkflowRunView,
   WorkflowStartRequest,
 } from './shared/workflow';
+import type { FollowUpAction, FollowUpActionResult, FollowUpProposalView } from './shared/follow-up';
 // 全局类型声明（Window 扩展）
 // 实际类型定义在 src/shared/types.ts
 
@@ -131,6 +132,12 @@ declare global {
       setDefaults: (defaults: { permissionModes: Record<string, string> }) => Promise<void>;
       /** A workflow member or planner session (hidden from the thread list). */
       sessionInfo: (sessionId: string) => Promise<SessionInfo | null>;
+    };
+    followUps: {
+      list: () => Promise<FollowUpProposalView[]>;
+      act: (action: FollowUpAction) => Promise<FollowUpActionResult>;
+      /** Send a follow-up's latest result to its parent conversation (a user action). */
+      continueWithReport: (proposalId: string) => Promise<FollowUpActionResult>;
     };
     forkSession: (
       sessionId: string,

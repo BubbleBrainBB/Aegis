@@ -1,4 +1,5 @@
 import { useWorkflowStore } from './useWorkflowStore';
+import { useFollowUpStore } from './useFollowUpStore';
 import { useSessionOrganizationStore, changeSessionOrganization } from './useSessionOrganizationStore';
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
@@ -1210,6 +1211,10 @@ export const useAppStore = create<Store>()(
 
       case 'workflow.updated':
         useWorkflowStore.getState().upsert(event.payload);
+        break;
+
+      case 'follow-up.updated':
+        useFollowUpStore.getState().upsert(event.payload);
         break;
 
       case 'permission.dismissed':
@@ -3219,6 +3224,8 @@ function handleSessionStatus(
     title?: string;
     scope?: SessionInfo['scope'];
     agentId?: SessionInfo['agentId'];
+    /** A new session started in the background: list it without focusing it. */
+    background?: boolean;
     cwd?: string;
     projectCwd?: SessionInfo['projectCwd'];
     envMode?: SessionInfo['envMode'];
@@ -3283,6 +3290,7 @@ function handleSessionStatus(
     channelId,
     teamMode,
     teamId,
+    background,
   } = payload;
   const state = get();
   const session = state.sessions[sessionId];
@@ -3421,7 +3429,8 @@ function handleSessionStatus(
       },
     });
   } else {
-    const pendingDraftSessionId = state.pendingDraftSessionId;
+    // A background start (a follow-up card) never takes over the draft being written.
+    const pendingDraftSessionId = background ? null : state.pendingDraftSessionId;
     const nextSessions = { ...state.sessions };
     if (pendingDraftSessionId && nextSessions[pendingDraftSessionId]?.isDraft) {
       delete nextSessions[pendingDraftSessionId];
@@ -3474,7 +3483,7 @@ function handleSessionStatus(
       updatedAt: Date.now(),
     };
 
-    const shouldFocusNewSession = state.activeWorkspace === 'chat' && hiddenFromThreads !== true;
+    const shouldFocusNewSession = state.activeWorkspace === 'chat' && hiddenFromThreads !== true && !background;
     const sessionsAfter = {
       ...nextSessions,
       [sessionId]: newSession,
@@ -3520,9 +3529,7 @@ function handleSessionStatus(
       activeChannelByProject: applyActiveProjectChannel(state.activeChannelByProject, newSession),
       ...layoutPatch(layout),
       activeSessionId: shouldFocusNewSession ? sessionId : state.activeSessionId,
-      showNewSession: false,
-      pendingStart: false,
-      pendingDraftSessionId: null,
+      ...(background ? {} : { showNewSession: false, pendingStart: false, pendingDraftSessionId: null }),
       rightPanelBySessionId,
       ...(pendingDraftSessionId ? { draftPromotion: { from: pendingDraftSessionId, to: sessionId } } : {}),
     });

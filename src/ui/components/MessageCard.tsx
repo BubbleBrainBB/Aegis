@@ -4,7 +4,7 @@ import { stripLeakedContextTags } from '../utils/leaked-context-tags';
 import { DesignCommentPromptRow } from './design/DesignCommentPromptRow';
 import { DesignSelectionTag } from './design/DesignSelectionChip';
 import { useDesignStore } from '../store/useDesignStore';
-import { ChevronRight, Copy, Check, History, Pencil, RotateCcw, TargetArrow, Workflow } from './icons';
+import { ChevronRight, Copy, Check, History, Lightbulb, Pencil, RotateCcw, TargetArrow, Undo2, Workflow } from './icons';
 import { parseGoalInput, supportsGoalUI, isClaudeGoalClearObjective } from '../../shared/session-goal';
 import type { ThreadGoal } from '../../shared/session-goal';
 import { formatDurationLabel } from '../utils/format-duration';
@@ -75,6 +75,7 @@ export function MessageCard({
       // Prompts the workflow engine sent are not the user's words.
       if (message.workflowPrompt === 'event') return <WorkflowEventRow text={message.prompt} />;
       if (message.workflowPrompt === 'task') return <WorkflowTaskRow text={message.prompt} />;
+      if (message.workflowPrompt === 'follow-up') return <FollowUpPromptChip text={message.prompt} />;
       // A comment sent from a design thread links back to it on the canvas.
       if (message.design && sessionId) {
         return (
@@ -732,6 +733,28 @@ function WorkflowEventRow({ text }: { text: string }) {
       <span className="inline-flex max-w-full items-center gap-1.5 text-[12px] leading-5 text-[var(--text-muted)]">
         <Workflow className="h-3.5 w-3.5 flex-shrink-0 text-[var(--accent)]" />
         <span className="min-w-0 truncate">{text}</span>
+      </span>
+    </div>
+  );
+}
+
+/**
+ * A follow-up result (or task) Aegis sent to this conversation: no row of its
+ * own, just a small chip above the reply naming what the reply answers.
+ */
+function FollowUpPromptChip({ text }: { text: string }) {
+  const match = /^Follow-up (results?|task): ([\s\S]*)$/.exec(text);
+  const isTask = match?.[1] === 'task';
+  const label = match ? match[2] : text;
+  const Icon = isTask ? Lightbulb : Undo2;
+  return (
+    <div className="mb-1.5 mt-4 flex" data-follow-up-prompt>
+      <span
+        className="inline-flex h-6 max-w-full items-center gap-1.5 rounded-full bg-[var(--bg-secondary)] pl-[7px] pr-[9px] text-[11.5px] text-[var(--text-secondary)]"
+        title={text}
+      >
+        <Icon className="h-3 w-3 flex-shrink-0" aria-hidden="true" />
+        <span className="min-w-0 truncate">{label}</span>
       </span>
     </div>
   );
