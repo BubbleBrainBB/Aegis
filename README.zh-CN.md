@@ -89,15 +89,13 @@ Runtime 是否可用取决于对应 CLI、账号和本地配置。Aegis 会尽�
 
 ### macOS 提示“Aegis 已损坏，无法打开”
 
-目前的 macOS 构建尚未签名和公证。Gatekeeper 可能会隔离下载的应用，并显示容易误解的“应用已损坏”提示。
+从 v0.0.65 起，macOS 版本已使用 Apple Developer ID 签名并经过公证，下载后可以直接打开，不再需要任何命令。
 
-把 Aegis 安装到 `/Applications` 后执行：
+如果你用的是 v0.0.64 或更早的版本（未签名），只要下载新版 DMG，把 Aegis 拖进 `/Applications` 覆盖旧版即可。旧版本如果仍提示“已损坏”，可在安装到 `/Applications` 后执行：
 
 ```bash
 xattr -cr /Applications/Aegis.app
 ```
-
-下载新版本后可能需要重新执行一次。
 
 ### Windows 兼容性说明
 

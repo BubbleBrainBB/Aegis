@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- V8 and the Bun-compiled agent CLIs (claude, etc.) JIT-compile code. -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <!-- Native addons (better-sqlite3, node-pty, sharp) and bundled agent
+       runtimes are not all signed by our team. -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+  <!-- Agents run osascript on the user's behalf; under the hardened runtime
+       Apple events are refused without this. -->
+  <key>com.apple.security.automation.apple-events</key>
+  <true/>
+</dict>
+</plist>
