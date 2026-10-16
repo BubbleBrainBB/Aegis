@@ -63,8 +63,8 @@ app.whenReady().then(async()=>{
  ipcMain.on('get-ui-resume-state-sync',e=>{e.returnValue=null});ipcMain.on('renderer-state:get-all-sync',e=>{e.returnValue={}});ipcMain.on('save-ui-resume-state-sync',e=>{e.returnValue=true});
  ipcMain.on('renderer-state:set',()=>{});ipcMain.handle('set-theme',()=>{});
  ipcMain.handle('get-session-organization',()=>({sessions:{s9:{unread:false},s11:{archived:true}},sections:[],projectSources:{}}));
- const pr=(number,state)=>({number,title:'PR '+number,state,url:'https://github.com/o/r/pull/'+number});
- ipcMain.handle('list-sidebar-pull-requests',()=>({s6:pr(41,'open'),s8:pr(38,'merged'),s4:pr(44,'open')}));
+ const pr=(number,state,extra={})=>({number,title:'PR '+number,state,url:'https://github.com/o/r/pull/'+number,...extra});
+ ipcMain.handle('list-sidebar-pull-requests',()=>({s6:[pr(40,'merged',{additions:12,deletions:3}),pr(41,'open')],s8:[pr(38,'merged')],s4:[pr(44,'open')]}));
  ipcMain.handle('get-git-branch',()=>({ok:true,branch:'master'}));ipcMain.handle('get-environment-editor-launchers',()=>[]);
  const win=new BrowserWindow({width:760,height:820,show:true,webPreferences:{backgroundThrottling:false,preload:path.join(root,'dist-electron/electron/preload.cjs')}});
  const errors=[];win.webContents.on('console-message',e=>{if(e.level==='error')errors.push(e.message)});
@@ -88,7 +88,16 @@ app.whenReady().then(async()=>{
   assert.equal(projectRows.includes('s11'),false,'archived threads stay out of Active');
   assert.equal(await js(byText('Archived')+'!==undefined'),true);
   assert.equal(await js('document.body.textContent.includes("Projects")'),true);
-  assert.equal(await js('!!document.querySelector("[data-session-id=s6] [aria-label^=\\\\"Pull request #41\\\\"]")'),true,'PR status shows on the row');
+  assert.equal(await js('!!document.querySelector("[data-session-id=s4] [aria-label^=\\\\"Pull request #44 · Open\\\\"]")'),true,'PR status shows on the row');
+  assert.equal(await js('document.querySelector("[data-session-id=s6] [data-pull-request-count]").getAttribute("aria-label")'),'2 pull requests · 1 open, 1 merged','several PRs show a count');
+  assert.equal(await js('document.querySelector("[data-session-id=s6] [data-pull-request-count]").textContent'),'2');
+  // Hovering the glyph lists every PR the session opened.
+  await hover('document.querySelector("[data-session-id=s6] [data-pull-request-count]")');
+  const card=await js('new Promise(r=>{const t=()=>{const e=document.querySelector("[role=dialog][aria-label^=\\\\"2 pull requests\\\\"],[aria-label^=\\\\"2 pull requests\\\\"]:not([data-pull-request-count])");e?r(e.textContent):setTimeout(t,50)};t()})');
+  for(const text of ['PR 40','Merged','o/r','#40','+12','−3','PR 41','Open','#41'])assert.ok(card.includes(text),'PR list shows '+text);
+  await screenshot('1b-pr-list');
+  await js('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))');
+  win.webContents.sendInputEvent({type:'mouseMove',x:700,y:800});await delay(400);
   assert.equal(await js('!!document.querySelector("[data-session-id=s1] [aria-label=\\\\"Waiting for your approval\\\\"]")'),true);
   await screenshot('1-project');
 
@@ -137,7 +146,7 @@ app.whenReady().then(async()=>{
 
   // PR glyphs are optional decoration.
   await setView({showPullRequests:false});
-  assert.equal(await js('!!document.querySelector("[aria-label^=\\\\"Pull request #\\\\"]")'),false);
+  assert.equal(await js('!!document.querySelector("[aria-label^=\\\\"Pull request #\\\\"],[data-pull-request-count]")'),false);
 
   assert.deepEqual(errors.filter(e=>!/No handler registered/.test(e)),[]);
   console.log(JSON.stringify({ok:true,checks:['project grouping with pinned and archived entry','view menu rows and submenu','derived state groups','collapsed completed','date buckets','activity, project and status filters','PR glyph toggle']}));
