@@ -3,12 +3,14 @@ import { ipcMainHandle } from '../util';
 import { attachTaskPullRequest, detachTaskPullRequest, listSidebarPullRequests, listTaskPullRequests } from '../libs/session-pull-requests';
 import type { AttachSessionPullRequestInput } from '../../shared/types';
 
+export function notifySessionPullRequestsChanged(sessionId: string) {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('session-pull-requests-changed', sessionId);
+  }
+}
+
 export function setupSessionPullRequestsIPC() {
-  const changed = (sessionId: string) => {
-    for (const win of BrowserWindow.getAllWindows()) {
-      if (!win.isDestroyed()) win.webContents.send('session-pull-requests-changed', sessionId);
-    }
-  };
+  const changed = notifySessionPullRequestsChanged;
   ipcMainHandle('list-session-pull-requests', (_, sessionId: string, refresh?: boolean) => listTaskPullRequests(sessionId, refresh === true));
   ipcMainHandle('list-sidebar-pull-requests', (_, refresh?: boolean) => listSidebarPullRequests(refresh === true));
   ipcMainHandle('attach-session-pull-request', async (_, input: AttachSessionPullRequestInput) => {
