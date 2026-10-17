@@ -43,8 +43,8 @@ const prompt = read('src/ui/components/PromptInput.tsx');
 assert.ok(prompt.includes("menuSide = 'top'"), 'PromptInput: menuSide should default to top');
 assert.equal(
   (prompt.match(/menuSide=\{menuSide\}/g) || []).length,
-  12,
-  'PromptInput: model, preset and permission pickers and the background task list should receive menuSide={menuSide}'
+  11,
+  'PromptInput: model, preset and permission pickers should receive menuSide={menuSide}'
 );
 // PromptInput supports a 'landing' surface that wraps the input in a gray tray
 // and renders the context-pill footer inside it.
