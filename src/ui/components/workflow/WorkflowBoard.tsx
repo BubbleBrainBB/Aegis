@@ -264,15 +264,18 @@ function hasRounds(lanes: WorkflowStepView[]): boolean {
 
 /**
  * Short member name for lanes and the plan card. The planner's focus text can
- * be a whole instruction, so it goes in the tooltip; the member key only
- * appears when two members share a provider.
+ * be a whole instruction, so it goes in the tooltip. A pinned model is named;
+ * the member key only appears when two members share a provider and model.
  */
 function memberName(member: WorkflowMemberView | undefined, members: WorkflowMemberView[] = []): string {
   if (!member) return 'Check';
   if (member.agent === CURRENT_SESSION_AGENT) return 'This chat';
   const name = PROVIDER_LABEL[member.provider] ?? member.agent;
-  const shared = members.some((m) => m.key !== member.key && m.provider === member.provider && m.agent !== CURRENT_SESSION_AGENT);
-  return shared ? `${name} (${member.key})` : name;
+  const shared = members.some(
+    (m) => m.key !== member.key && m.provider === member.provider && m.model === member.model && m.agent !== CURRENT_SESSION_AGENT,
+  );
+  const detail = [member.model ? member.modelLabel ?? member.model : null, shared ? member.key : null].filter(Boolean);
+  return detail.length > 0 ? `${name} (${detail.join(', ')})` : name;
 }
 
 /** Assumptions do not stop the run; they stay available behind one line. */

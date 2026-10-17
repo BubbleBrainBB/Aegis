@@ -7,6 +7,7 @@ import type { AgentProvider, SessionStartPayload } from '../../../shared/types';
 import type { MemberRole } from '../../../workflow-engine/spec/workflow-spec';
 import type { MemberConfig } from '../../../workflow-engine/validate/spec-validator';
 import { CURRENT_SESSION_AGENT } from '../../../shared/workflow';
+import type { ModelOption } from './model-catalogs';
 
 export type ReadOnlyMechanism = 'toolAllowlist' | 'readOnlySandbox' | 'permissionGatedWrites' | 'confinedSandbox';
 
@@ -168,16 +169,26 @@ export function degradedFor(declaration: ProviderWorkflowDeclaration): string[] 
 /**
  * Configurations for the providers available on this machine, plus the chat
  * session that started the run when there is one. That session keeps its own
- * permission mode and is never held read-only, so it may only implement.
+ * permission mode and is never held read-only, so it may only implement. It
+ * also keeps its own model: it continues the chat rather than starting anew.
  */
-export function buildMemberConfigs(available: AgentProvider[], parentProvider?: string | null): MemberConfig[] {
-  const configs: MemberConfig[] = PROVIDER_WORKFLOW_DECLARATIONS.filter((d) => available.includes(d.provider)).map((d) => ({
-    name: d.provider,
-    provider: d.provider,
-    roles: rolesFor(d),
-    models: [],
-    degraded: degradedFor(d),
-  }));
+export function buildMemberConfigs(
+  available: AgentProvider[],
+  parentProvider?: string | null,
+  catalogs: Record<string, ModelOption[]> = {},
+): MemberConfig[] {
+  const configs: MemberConfig[] = PROVIDER_WORKFLOW_DECLARATIONS.filter((d) => available.includes(d.provider)).map((d) => {
+    const catalog = catalogs[d.provider] ?? [];
+    const labels = catalog.filter((m) => m.label).map((m) => [m.id, m.label!] as const);
+    return {
+      name: d.provider,
+      provider: d.provider,
+      roles: rolesFor(d),
+      models: catalog.map((m) => m.id),
+      ...(labels.length > 0 ? { modelLabels: Object.fromEntries(labels) } : {}),
+      degraded: degradedFor(d),
+    };
+  });
   const parent = parentProvider ? declarationFor(parentProvider) : undefined;
   if (parent) {
     configs.unshift({

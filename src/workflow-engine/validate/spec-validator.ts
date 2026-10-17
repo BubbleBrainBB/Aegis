@@ -20,6 +20,8 @@ export type MemberConfig = {
   /** Roles this provider has proven it can be held to (plan §6.2). */
   roles: MemberRole[];
   models: string[];
+  /** Display names for some of those ids, so the Planner can match the names users say. */
+  modelLabels?: Record<string, string>;
   /** Degradable capabilities this provider lacks, shown on the plan card. */
   degraded: string[];
 };
