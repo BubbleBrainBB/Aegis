@@ -60,6 +60,7 @@ import {
   updateAddressField,
 } from './address-bar';
 import { useBrowserNativeOverlay } from './browser-native-overlay';
+import { isImeComposing } from '../../utils/ime';
 
 const READOUT_TEXT_CHAR_LIMIT = 6000;
 const READOUT_LINK_LIMIT = 15;
@@ -504,6 +505,7 @@ export function BrowserPanel({
   );
 
   const handleAddressKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (isImeComposing(event)) return;
     if (event.key === 'Enter') {
       event.preventDefault();
       void handleNavigate(address.text);
@@ -701,7 +703,7 @@ export function BrowserPanel({
   useEffect(() => {
     if (!isFullscreen) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !event.defaultPrevented) {
+      if (event.key === 'Escape' && !event.defaultPrevented && !isImeComposing(event)) {
         event.stopPropagation();
         onToggleFullscreen();
       }
@@ -856,6 +858,7 @@ export function BrowserPanel({
               runFind(event.target.value);
             }}
             onKeyDown={(event) => {
+              if (isImeComposing(event)) return;
               if (event.key === 'Enter') {
                 event.preventDefault();
                 runFind(findText, { findNext: true, backward: event.shiftKey });

@@ -49,6 +49,7 @@ import {
 } from './ui/dropdown-menu';
 import * as Dialog from './ui/dialog';
 import { ExpandAllGlyph, GitCommitHorizontalGlyph, SplitDiffGlyph } from './diff-glyphs';
+import { isImeComposing } from '../utils/ime';
 
 // Matches the app's compact menus (13px, tight rows) instead of the roomier
 // DropdownMenuItem default.
@@ -705,6 +706,7 @@ function JumpToFileButton({
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               onKeyDown={(event) => {
+                if (isImeComposing(event)) return;
                 if (event.key === 'ArrowDown') {
                   event.preventDefault();
                   setActiveIndex((current) => Math.min(current + 1, matches.length - 1));

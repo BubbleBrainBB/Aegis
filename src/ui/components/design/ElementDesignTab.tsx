@@ -14,6 +14,7 @@ import {
   type DesignLayer,
   type LayerEdit,
 } from "../../../shared/design-layers";
+import { isImeComposing } from "../../utils/ime";
 
 type Sizing = "fixed" | "hug" | "fill";
 const px = (v: string | undefined) => {
@@ -170,7 +171,7 @@ export function ElementDesignTab({
           placeholder={placeholder}
           disabled={!canEdit}
           onKeyDown={(e) => {
-            if (e.key === "Enter") e.currentTarget.blur();
+            if (e.key === "Enter" && !isImeComposing(e)) e.currentTarget.blur();
           }}
           onBlur={(e) => {
             const next = e.target.value.trim();
@@ -208,7 +209,7 @@ export function ElementDesignTab({
             placeholder={!fallback || fallback === "rgba(0, 0, 0, 0)" ? emptyText : fallback}
             disabled={!canEdit}
             onKeyDown={(e) => {
-              if (e.key === "Enter") e.currentTarget.blur();
+              if (e.key === "Enter" && !isImeComposing(e)) e.currentTarget.blur();
             }}
             onBlur={(e) => {
               const next = e.target.value.trim();
@@ -613,7 +614,7 @@ export function ElementDesignTab({
                   defaultValue={node.name}
                   disabled={!canEdit}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") e.currentTarget.blur();
+                    if (e.key === "Enter" && !isImeComposing(e)) e.currentTarget.blur();
                   }}
                   onBlur={(e) => {
                     if (e.target.value !== node.name) edit({ type: "name", value: e.target.value });

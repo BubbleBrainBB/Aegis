@@ -51,6 +51,7 @@ import type {
   PullRequestListResult,
   PullRequestSummary,
 } from '../types';
+import { isImeComposing } from '../utils/ime';
 
 type RoleTab = 'all' | 'reviewing' | 'authored';
 type DetailTab = 'summary' | 'timeline' | 'code';
@@ -1149,6 +1150,7 @@ export function PullRequestsView() {
                       value={commentDraft}
                       onChange={(event) => setCommentDraft(event.target.value)}
                       onKeyDown={(event) => {
+                        if (isImeComposing(event)) return;
                         if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
                           event.preventDefault();
                           void handlePostComment();

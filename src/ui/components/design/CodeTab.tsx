@@ -6,6 +6,7 @@ import type { DesignAnchor, DesignBoard } from "../../../shared/design-types";
 import { cssText, formatInlineCss, inlineCssText, parseInlineCss, hexColors, swatchColor, type LayerCss } from "./design-css";
 
 import "./design-code.css";
+import { isImeComposing } from "../../utils/ime";
 
 const svg = (path: ReactNode) => (
   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
@@ -192,7 +193,7 @@ export function CodeTab({
         {node && <>
           <textarea aria-label="Inline CSS" spellCheck={false} value={draft} readOnly={!canEdit}
             onChange={(e) => setDraft(e.target.value)} placeholder="color: #333;"
-            onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); void saveInline(); } }} />
+            onKeyDown={(e) => { if (!isImeComposing(e) && (e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); void saveInline(); } }} />
           {stale && dirty && <p className="cx-source-warning" role="status">This board changed while you were editing. Reload its current inline CSS before saving.</p>}
           {error && <p className="cx-source-warning" role="alert">{error}</p>}
           <div className="cx-inline-actions">

@@ -37,6 +37,7 @@ import {
   type ProjectFileRevealTarget,
 } from '../utils/project-file-navigation';
 import { rightPanelSessionKey } from '../utils/session-right-panel';
+import { isImeComposing } from '../utils/ime';
 
 type ProjectPanelTab = 'files';
 type ViewMode = 'view' | 'code' | 'split';
@@ -607,6 +608,7 @@ function CreateEntryRow({
             }
           }}
           onKeyDown={(event) => {
+            if (isImeComposing(event)) return;
             if (event.key === 'Enter') {
               event.preventDefault();
               onSubmit();

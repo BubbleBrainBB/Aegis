@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import * as Dialog from '@/ui/components/ui/dialog';
 import { sendEvent } from '../hooks/useIPC';
+import { isImeComposing } from '../utils/ime';
 
 interface NewFolderDialogProps {
   open: boolean;
@@ -45,6 +46,7 @@ export function NewFolderDialog({ open, sessionId, onOpenChange }: NewFolderDial
             className="w-full px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg text-sm mb-4 focus:outline-none focus:border-[var(--accent)]"
             autoFocus
             onKeyDown={(e) => {
+              if (isImeComposing(e)) return;
               if (e.key === 'Enter') {
                 handleCreate();
               }

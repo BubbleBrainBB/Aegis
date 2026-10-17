@@ -78,6 +78,7 @@ import { PROVIDERS } from "../../utils/provider";
 import "./design.css";
 import "./design-claude.css";
 import { DesignActionMenu, DesignFloatingToolbar, DesignLayersSection } from "./DesignChrome";
+import { isImeComposing } from "../../utils/ime";
 
 /** A board made with the Frame tool starts empty and white. */
 const BLANK_BOARD = '<html><head></head><body style="margin: 0; background: #ffffff"></body></html>';
@@ -1250,6 +1251,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
                 void update([{ type: "title", title, expectedRevision: doc.revision }]);
             }}
             onKeyDown={(e) => {
+              if (isImeComposing(e)) return;
               if (e.key === "Enter") e.currentTarget.blur();
               if (e.key === "Escape") {
                 e.currentTarget.value = doc.title;

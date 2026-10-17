@@ -66,6 +66,12 @@ app.whenReady().then(async()=>{
   await delay(400);
   assert.equal(page().title,'QA /first');
   assert.equal(win.contentView.children.length,1,'a loaded page is placed over the panel');
+  // Enter that commits an IME candidate (e.g. English typed in Chinese Pinyin)
+  // only puts the text in the field; it does not navigate.
+  await js('(()=>{const el='+address+';el.focus();const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set;set.call(el,"github");el.dispatchEvent(new Event("input",{bubbles:true}));el.dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",keyCode:229,isComposing:true,bubbles:true}))})()');
+  await delay(400);
+  assert.equal(await js(address+'.value'),'github','composing Enter keeps the typed text');
+  assert.ok(page().url.endsWith('/first'),'composing Enter does not navigate');
   await go(base+'/second');
   await until('!document.querySelector("[aria-label=Back]").disabled','back enabled after a second page');
   await screenshot('1-loaded');
