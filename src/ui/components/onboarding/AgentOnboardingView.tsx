@@ -14,6 +14,7 @@ import { useBrowserNativeOverlayRegistration } from '../browser/browser-native-o
 import { BubbleProviderLogo } from '../settings/BubbleProviderSettings';
 import * as DropdownMenu from '../ui/dropdown-menu';
 import { announcePreferredProvider, loadPreferredProvider } from '../../utils/provider';
+import { isImeComposing } from '../../utils/ime';
 
 const ONBOARDING_DONE_KEY = 'aegis-onboarding-complete';
 
@@ -619,6 +620,7 @@ function BubbleProviderStep({
   }, [active]);
 
   const onSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (isImeComposing(event)) return;
     if (event.key === 'ArrowDown') {
       event.preventDefault();
       setActive((index) => Math.min(index + 1, matches.length - 1));

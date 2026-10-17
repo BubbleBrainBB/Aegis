@@ -22,6 +22,7 @@ import { Search } from '../icons';
 import { toast } from 'sonner';
 import type { ThemeRecipe, Theme, ThemeTypefaces, AppearanceState, ThemeVariant } from '../../types';
 import { choiceFor, migrateLegacyFonts, resolveThemeMode } from '../../theme/themes';
+import { isImeComposing } from '../../utils/ime';
 
 const SETTINGS_TABS = {
   general: {
@@ -192,6 +193,7 @@ export function Settings() {
           <div className="mb-4 flex h-[30px] shrink-0 items-center gap-2 rounded-lg bg-[var(--sidebar-item-hover)] px-2 focus-within:ring-1 focus-within:ring-[var(--border-focus)]">
             <Search className="h-4 w-4 shrink-0 text-[var(--text-muted)]" />
             <input aria-label="Search settings" role="searchbox" placeholder="Search settings…" value={search} onChange={e => setSearch(e.target.value)} onKeyDown={e => {
+              if (isImeComposing(e)) return;
               if (e.key === 'Escape') setSearch('');
               if (e.key === 'Enter') {
                 const first = searchResults[0];

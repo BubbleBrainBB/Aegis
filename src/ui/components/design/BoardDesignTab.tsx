@@ -2,6 +2,7 @@ import { BoardNameInput } from "./BoardNameInput";
 import { useMemo } from "react";
 import type { DesignBoard, DesignOperation } from "../../../shared/design-types";
 import { readBoardBackground, setBoardBackground } from "../../../shared/design-layers";
+import { isImeComposing } from "../../utils/ime";
 
 export const DEVICES = [
   { name: "Desktop", width: 1440 },
@@ -54,7 +55,7 @@ export function BoardDesignTab({
                 defaultValue={board[key]}
                 disabled={!can}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") e.currentTarget.blur();
+                  if (e.key === "Enter" && !isImeComposing(e)) e.currentTarget.blur();
                 }}
                 onBlur={(e) => {
                   const n = Math.round(Number(e.target.value));
@@ -110,7 +111,7 @@ export function BoardDesignTab({
             placeholder="None"
             disabled={!can}
             onKeyDown={(e) => {
-              if (e.key === "Enter") e.currentTarget.blur();
+              if (e.key === "Enter" && !isImeComposing(e)) e.currentTarget.blur();
             }}
             onBlur={(e) => {
               const v = e.target.value.trim();

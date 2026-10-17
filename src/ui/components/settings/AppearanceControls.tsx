@@ -3,6 +3,7 @@ import type { AppPreferences } from '../../../shared/app-preferences';
 import { useAppPreferences, saveAppPreferences } from '../../store/useAppPreferences';
 import { PreferenceSelect } from './GeneralSettingsContent';
 import { SettingsGroup, SettingsRow, SettingsToggle } from './SettingsPrimitives';
+import { isImeComposing } from '../../utils/ime';
 
 export function AppearanceControls() {
   const prefs = useAppPreferences();
@@ -14,7 +15,7 @@ export function AppearanceControls() {
       if (value !== prefs[key]) save({ [key]: value });
     };
     return <div className="flex items-center gap-2"><input key={prefs[key]} type="number" min={10} max={24} step={1} aria-label={label} defaultValue={prefs[key]}
-      onBlur={e => commit(e.currentTarget)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); commit(e.currentTarget); } }}
+      onBlur={e => commit(e.currentTarget)} onKeyDown={e => { if (!isImeComposing(e) && e.key === 'Enter') { e.preventDefault(); commit(e.currentTarget); } }}
       className="h-8 w-16 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-2 text-[13px] outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]" /><span className="text-[13px] text-[var(--text-muted)]">px</span></div>;
   };
   return <>

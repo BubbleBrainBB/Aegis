@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { MAX_MARK_TEXT, MARK_PALETTE, MARK_STROKE_WIDTHS, markArrowHead, markPath, moveDesignMarkEndpoint, resizeDesignMark, styleDesignMark, translateDesignMark, type DesignMark, type MarkChangeReason } from "./design-marks";
 import "./CanvasMarks.css";
+import { isImeComposing } from "../../utils/ime";
 
 export interface CanvasMarksProps {
   /** Filter to the current page before rendering, in document stacking order. */
@@ -159,7 +160,7 @@ export function CanvasMarks(props: CanvasMarksProps) {
           </>}
         </svg> : <div className="design-mark-note" style={{ background: mark.fill, color: mark.stroke, fontSize: mark.fontSize ?? 14 }}>
           {typing ? <textarea ref={input} value={text} maxLength={MAX_MARK_TEXT} aria-label="Note text" onChange={e => setText(e.target.value)} onBlur={commitText}
-            onPointerDown={e => e.stopPropagation()} onKeyDown={e => { e.stopPropagation(); if (e.key === "Escape") { e.preventDefault(); cancelledText.current = true; setEditing(undefined); current.current.onEditEnd?.(); } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); commitText(); } }} /> : <span className={mark.text ? undefined : "placeholder"}>{mark.text || "Double-click to write a note"}</span>}
+            onPointerDown={e => e.stopPropagation()} onKeyDown={e => { e.stopPropagation(); if (isImeComposing(e)) return; if (e.key === "Escape") { e.preventDefault(); cancelledText.current = true; setEditing(undefined); current.current.onEditEnd?.(); } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); commitText(); } }} /> : <span className={mark.text ? undefined : "placeholder"}>{mark.text || "Double-click to write a note"}</span>}
         </div>}
         {selected && active && !typing && <>
           <div className="design-mark-outline" />

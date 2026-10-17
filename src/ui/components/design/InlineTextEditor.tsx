@@ -1,4 +1,5 @@
 import { useEffect, useRef, type CSSProperties } from "react";
+import { isImeComposing } from "../../utils/ime";
 
 const px = (v: string | undefined, zoom: number) => {
   const n = parseFloat(v ?? "");
@@ -130,6 +131,7 @@ export function InlineTextEditor({
       onBlur={() => finish(true)}
       onKeyDown={(e) => {
         e.stopPropagation();
+        if (isImeComposing(e)) return;
         if (e.key === "Escape" || (e.key === "Enter" && (e.metaKey || e.ctrlKey))) {
           e.preventDefault();
           finish(true);

@@ -4,6 +4,7 @@ import { useAppStore } from '../../store/useAppStore';
 import { useDebounce } from '../../hooks/useDebounce';
 import type { SearchMatch } from '../../types';
 import { getMessageContentBlocks } from '../../utils/message-content';
+import { isImeComposing } from '../../utils/ime';
 
 export function InSessionSearch() {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -82,6 +83,7 @@ export function InSessionSearch() {
 
   // 处理键盘事件
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (isImeComposing(e)) return;
     if (e.key === 'Escape') {
       closeInSessionSearch();
     } else if (e.key === 'Enter') {

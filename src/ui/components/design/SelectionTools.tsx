@@ -7,6 +7,7 @@ import { toHex } from "./ColorSwatch";
 import { readBoardTokens } from "../../../shared/design-tokens";
 import { designLayerPath, findDesignLayer, readDesignLayers, replaceDesignLayerStyle } from "../../../shared/design-layers";
 import type { DesignAnchor, DesignBoard } from "../../../shared/design-types";
+import { isImeComposing } from "../../utils/ime";
 
 /** Local style edits share the inspector's lock, revision, CSS and persistence rules. */
 export function selectionStyleEdit(board: DesignBoard, revision: number, nodeId: string, values: Record<string, string>) {
@@ -69,7 +70,7 @@ function ValueField({ label, value, disabled, onCommit }: { label: string; value
   const commit = () => { if (!canceled.current && draft.trim() !== value) onCommit(draft.trim()); canceled.current = false; };
   return <label className="design-selection-field"><span>{label}</span><input aria-label={label} value={draft} disabled={disabled}
     onChange={e => { canceled.current = false; setDraft(e.target.value); }} onBlur={commit}
-    onKeyDown={e => { if (e.key === "Escape") { canceled.current = true; setDraft(value); } if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); } }}/></label>;
+    onKeyDown={e => { if (isImeComposing(e)) return; if (e.key === "Escape") { canceled.current = true; setDraft(value); } if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); } }}/></label>;
 }
 
 const px = (v: string) => /^-?\d+(\.\d+)?$/.test(v) ? `${v}px` : v;

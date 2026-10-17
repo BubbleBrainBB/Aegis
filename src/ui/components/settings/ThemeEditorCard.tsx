@@ -12,6 +12,7 @@ import type { ThemePreset } from '../../theme/theme-types';
 import * as DropdownMenu from '../ui/dropdown-menu';
 import { Check, ChevronDown } from '../icons';
 import './theme-editor-card.css';
+import { isImeComposing } from '../../utils/ime';
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 
@@ -132,7 +133,7 @@ function ColorControl({ label, value, onChange }: { label: string; value: string
       </Popover.Positioner></Popover.Portal>
     </Popover.Root>
     <input type="text" aria-label={label} value={(draft ?? value).toUpperCase()} spellCheck={false} onBlur={() => setDraft(null)}
-      onKeyDown={event => { if (event.key === 'Enter' || event.key === 'Escape') { setDraft(null); event.currentTarget.blur(); } }}
+      onKeyDown={event => { if (isImeComposing(event)) return; if (event.key === 'Enter' || event.key === 'Escape') { setDraft(null); event.currentTarget.blur(); } }}
       onChange={event => { const next = '#' + event.target.value.toUpperCase().replace(/[^0-9A-F]/g, '').slice(0, 6); if (HEX_COLOR_RE.test(next)) { setDraft(null); onChange(next.toLowerCase()); } else setDraft(next); }} />
   </div>;
 }

@@ -34,6 +34,7 @@ import type {
   ToolStatus,
 } from '../types';
 import type { DesignSelectionRef } from '../../shared/types';
+import { isImeComposing } from '../utils/ime';
 
 type UserPromptPrefixDisplay = PromptPrefixDisplay;
 
@@ -391,6 +392,7 @@ function UserPromptCard({
                 rows={Math.min(8, Math.max(2, draft.split('\n').length))}
                 className="w-full min-w-[320px] bg-transparent text-[13px] text-inherit leading-7 outline-none resize-none whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
                 onKeyDown={(e) => {
+                  if (isImeComposing(e)) return;
                   if (e.key === 'Escape') {
                     e.preventDefault();
                     handleCancelEdit();

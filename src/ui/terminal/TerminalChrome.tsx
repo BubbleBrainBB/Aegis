@@ -5,6 +5,7 @@ import { TerminalViewportPane } from './TerminalViewportPane';
 import { terminalHost, terminalKey, type TerminalHooks, type TerminalSpec } from './terminal-host';
 import type { TerminalActivityState, TerminalAgentKind } from '../../shared/terminal';
 import { Copy, Plus, Search, Trash2, X } from '../components/icons';
+import { isImeComposing } from '../utils/ime';
 
 export type TerminalChromeTab = {
   id: string;
@@ -140,6 +141,7 @@ export function TerminalChrome({
               value={searchQuery}
               onChange={(event) => handleSearch(event.target.value)}
               onKeyDown={(event) => {
+                if (isImeComposing(event)) return;
                 if (event.key === 'Escape') {
                   setSearchOpen(false);
                   setSearchQuery('');
