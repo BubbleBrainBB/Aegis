@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Check, ChevronDown, MoreHorizontal, Plus, X } from '../icons';
 import { DesignActionMenu } from './DesignChrome';
 import type { DesignPage } from '../../../shared/design-types';
+import { isImeComposing } from '../../utils/ime';
 
 /** Page management is versioned; the active page and its camera are viewer state. */
 export function DesignPages({ pages, activeId, editable, onSelect, onCreate, onRename, onDelete, counts }: {
@@ -43,7 +44,7 @@ export function DesignPages({ pages, activeId, editable, onSelect, onCreate, onR
       <div ref={dialogRef} className="design-page-dialog" role="dialog" aria-modal="true" aria-label={dialog.kind === 'rename' ? 'Rename page' : 'Delete page'} tabIndex={-1}
         onKeyDown={e => {
           e.stopPropagation();
-          if (e.key === 'Escape') close();
+          if (e.key === 'Escape' && !isImeComposing(e)) close();
           if (e.key === 'Tab') {
             const items = [...e.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled),input')];
             const index = items.indexOf(document.activeElement as HTMLElement);

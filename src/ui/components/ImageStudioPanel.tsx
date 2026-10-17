@@ -11,6 +11,7 @@ import { CheckSquare, ChevronDown, Download, Image as ImageIcon, LayoutGrid, Max
 import { ImageStudioComposerSlot } from './ImageStudioComposerDock';
 import './image-studio.css';
 import { previewSessionSource } from '../utils/session-source-client';
+import { isImeComposing } from '../utils/ime';
 
 type Preview = { src: string; width: number; height: number };
 const previewCache = new Map<string, Promise<Preview>>();
@@ -336,6 +337,7 @@ export function ImageStudioPanel({ sessionId, hidden = false, fullscreen = false
   for (const image of allImages) groups.set(image.turnId, [...(groups.get(image.turnId) || []), image]);
 
   return <section className="image-studio" data-view={studio.view} data-fullscreen={fullscreen} aria-label="Image workspace" hidden={hidden} onKeyDown={event => {
+    if (isImeComposing(event)) return;
     const typing = (event.target as HTMLElement).closest('input,textarea,[contenteditable]');
     if (event.key === 'Escape') {
       if (editor || menu || tool !== 'pan') { event.stopPropagation(); setEditor(null); setMenu(null); changeTool('pan'); }
