@@ -787,9 +787,15 @@ const messageEvents = (events) => events.filter((event) => event.type === 'messa
     'fetchUsageInfoDetached must resolve the machine CLI'
   );
   const ipcSource = read('src/electron/ipc-handlers.ts');
-  const modelConfigHandler = ipcSource.slice(ipcSource.indexOf("ipcMainHandle('get-qoder-model-config'"));
+  // The picker IPC and workflow catalogs share getQoderModelConfig().
   assert.match(
-    modelConfigHandler.slice(0, 1600),
+    ipcSource,
+    /ipcMainHandle\('get-qoder-model-config', async \(\) => getQoderModelConfig\(\)\)/,
+    'model-config IPC must read through getQoderModelConfig'
+  );
+  const modelConfigReader = ipcSource.slice(ipcSource.indexOf('function getQoderModelConfig('));
+  assert.match(
+    modelConfigReader.slice(0, 1600),
     /if \(!catalog && findMachineQoderCli\(\)\)[\s\S]{0,700}void adapter\?\.warmCatalogDetached\?\.\(\);/,
     'model-config IPC must gate the background warm-up on a machine CLI and never block on it'
   );

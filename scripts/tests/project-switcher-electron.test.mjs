@@ -18,7 +18,7 @@ import { FolderTreeView } from '/src/ui/components/FolderTreeView.tsx';
 import { useAppStore } from '/src/ui/store/useAppStore.ts';
 import { openProjectNewChat } from '/src/ui/utils/project-new-chat.ts';
 import '/src/ui/index.css';
-window.electron = { getRecentCwds: async () => ['/projects/Alpha', '/projects/Beta', '/projects/RecentOnly'], selectDirectory: async () => window.browseResult, gitBranch: async () => null };
+window.electron = { getRecentCwds: async () => ['/projects/Alpha', '/projects/Beta', '/projects/RecentOnly'], selectDirectory: async () => window.browseResult, gitBranch: async () => null, followUps: { list: async () => [] } };
 const a = useAppStore.getState();
 const old = a.createDraftSession('/projects/Beta');
 useAppStore.setState(s => ({ sessions: { ...s.sessions, [old]: {...s.sessions[old], isDraft: false, title: 'Existing conversation', messages: [{id: 'message', role: 'user', content: 'Keep this history'}]} } }));
