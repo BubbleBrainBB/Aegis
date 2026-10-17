@@ -703,7 +703,7 @@ export function BrowserPanel({
   useEffect(() => {
     if (!isFullscreen) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !event.defaultPrevented) {
+      if (event.key === 'Escape' && !event.defaultPrevented && !isImeComposing(event)) {
         event.stopPropagation();
         onToggleFullscreen();
       }
