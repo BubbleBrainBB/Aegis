@@ -2607,7 +2607,7 @@ export function ProjectTreePanel({
   useEffect(() => {
     if (!isFullscreen) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
+      if (event.key === 'Escape' && !isImeComposing(event)) {
         event.stopPropagation();
         onToggleFullscreenRef.current?.();
       }
@@ -2945,7 +2945,7 @@ export function ProjectTreePanel({
                         value={treeFilter}
                         onChange={(event) => setTreeFilter(event.target.value)}
                         onKeyDown={(event) => {
-                          if (event.key === 'Escape') {
+                          if (event.key === 'Escape' && !isImeComposing(event)) {
                             event.preventDefault();
                             event.stopPropagation();
                             setTreeFilter('');
