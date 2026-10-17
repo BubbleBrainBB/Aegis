@@ -2,6 +2,7 @@ import { useDesignAgentName } from "./design-ui";
 import { useEffect, useRef, useState } from "react";
 import { Paperclip, X } from "../icons";
 import type { Attachment } from "../../types";
+import { isImeComposing } from "../../utils/ime";
 
 /**
  * One comment input. Mentioning the agent is on by default: sending hands the
@@ -67,11 +68,11 @@ export function CommentComposer({
           placeholder={placeholder}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+            if (e.key === "Enter" && !e.shiftKey && !isImeComposing(e)) {
               e.preventDefault();
               void submit();
             }
-            if (e.key === "Escape") {
+            if (e.key === "Escape" && !isImeComposing(e)) {
               e.preventDefault();
               onCancel?.();
             }

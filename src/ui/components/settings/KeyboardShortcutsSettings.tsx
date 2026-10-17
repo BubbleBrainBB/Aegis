@@ -7,6 +7,7 @@ import {
   SHORTCUT_COMMANDS, isMacPlatform, normalizeShortcutOverrides, shortcutBindings,
   shortcutConflict, shortcutFromEvent, shortcutIdentity, shortcutKeycaps, type ShortcutOverrides,
 } from '../../../shared/keyboard-shortcuts';
+import { isImeComposing } from '../../utils/ime';
 
 function Keycaps({ binding }: { binding: string }) {
   return <span className="shortcut-keycaps">{shortcutKeycaps(binding).map((key, index) => <kbd key={index}>{key}</kbd>)}</span>;
@@ -79,6 +80,7 @@ export function KeyboardShortcutsSettings() {
         <Search className="h-4 w-4 shrink-0" />
         <input ref={searchRef} aria-label="Search shortcuts" placeholder={keystrokes ? 'Press shortcut to search' : 'Search shortcuts'} value={keystrokes && query ? shortcutKeycaps(query).join(' ') : query}
           readOnly={keystrokes} onFocus={() => setSearchFocused(true)} onBlur={() => setSearchFocused(false)} onChange={e => setQuery(e.target.value)} onKeyDown={e => {
+            if (isImeComposing(e)) return;
             if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); if (query) setQuery(''); else setKeystrokes(false); return; }
             if (!keystrokes) return;
             if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey) return;

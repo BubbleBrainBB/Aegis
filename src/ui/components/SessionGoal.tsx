@@ -12,6 +12,7 @@ import { useAppStore } from '../store/useAppStore';
 import { Target, X, Play, Pause, Pencil, RotateCcw } from './icons';
 import * as Dialog from './ui/dialog';
 import './session-goal.css';
+import { isImeComposing } from '../utils/ime';
 
 export function GoalModePill({ onExit, disabled }: { onExit: () => void; disabled?: boolean }) {
   return (
@@ -258,12 +259,12 @@ export function GoalEditorPanel({ sessionId, hidden }: { sessionId: string; hidd
           if (
             event.key === 'Enter' &&
             (event.metaKey || event.ctrlKey) &&
-            !event.nativeEvent.isComposing
+            !isImeComposing(event)
           ) {
             event.preventDefault();
             void save();
           }
-          if (event.key === 'Escape') {
+          if (event.key === 'Escape' && !isImeComposing(event)) {
             event.preventDefault();
             close();
           }

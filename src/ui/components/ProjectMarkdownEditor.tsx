@@ -59,6 +59,7 @@ import {
 } from './markdown-obsidian-syntax';
 import './markdown-live-preview.css';
 import { collectOutlineItemsFromDoc, type MarkdownOutlineItem } from './markdown-outline';
+import { isImeComposing } from '../utils/ime';
 
 export type { MarkdownOutlineItem } from './markdown-outline';
 
@@ -470,7 +471,7 @@ function MarkdownMetadataCard({
                       setArrayDrafts((current) => ({ ...current, [draftKey]: event.target.value }));
                     }}
                     onKeyDown={(event) => {
-                      if (event.key !== 'Enter') return;
+                      if (event.key !== 'Enter' || isImeComposing(event)) return;
                       event.preventDefault();
                       const draftKey = `${field.key}-${field.line}`;
                       const nextItem = (arrayDrafts[draftKey] || '').trim();

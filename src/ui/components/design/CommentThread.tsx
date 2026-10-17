@@ -3,6 +3,7 @@ import { CommentComposer } from "./CommentComposer";
 import { DesignAvatar, authorName, relativeTime, useDesignAgentName } from "./design-ui";
 import type { DesignComment } from "../../../shared/design-types";
 import type { Attachment } from "../../types";
+import { isImeComposing } from "../../utils/ime";
 
 /** A comment thread beside its pin: messages, the agent's replies, and a reply box. */
 export function CommentThread({
@@ -42,7 +43,7 @@ export function CommentThread({
       onPointerDown={(e) => e.stopPropagation()}
       onKeyDown={(e) => {
         e.stopPropagation();
-        if (e.key === "Escape") onClose();
+        if (e.key === "Escape" && !isImeComposing(e)) onClose();
       }}
     >
       <div className="design-thread-actions">

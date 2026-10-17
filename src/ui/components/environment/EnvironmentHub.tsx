@@ -29,6 +29,7 @@ import { Users, Paperclip } from '../icons';
 import type { Attachment } from '../../types';
 import { SourceRow } from '../SessionSourcesPanel';
 import * as DropdownMenu from '../ui/dropdown-menu';
+import { isImeComposing } from '../../utils/ime';
 
 function EnvironmentListIcon() {
   return (
@@ -336,7 +337,7 @@ export function EnvironmentHub({
       if (context.sessionId) setOverlayOpen(context.sessionId, false);
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
+      if (event.key !== 'Escape' || isImeComposing(event)) return;
       if (document.querySelector('[data-environment-hub-layer]')) return;
       if (context.sessionId) setOverlayOpen(context.sessionId, false);
     };
