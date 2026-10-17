@@ -1495,6 +1495,9 @@ export function PromptInput({
   return (
     <div className="bg-transparent" data-composer-empty={!prompt && attachments.length === 0}>
       <div className="mx-auto max-w-4xl">
+        {activeSession?.backgroundTasks?.length ? (
+          <BackgroundTasksControl sessionId={activeSession.id} tasks={activeSession.backgroundTasks} />
+        ) : null}
         {queuedMessages.length > 0 ? (
           // Codex-Desktop-style queue bar: a card tucked BEHIND the composer
           // (the composer's top edge overlaps its extra bottom padding), one
@@ -1814,13 +1817,6 @@ export function PromptInput({
             </div>
 
             <div className="aegis-composer-trailing-controls flex shrink-0 items-center gap-2">
-              {activeSession?.backgroundTasks?.length ? (
-                <BackgroundTasksControl
-                  sessionId={activeSession.id}
-                  tasks={activeSession.backgroundTasks}
-                  menuSide={menuSide}
-                />
-              ) : null}
               {preferences.showContextUsage && claudeContextSnapshot ? (
                 <ClaudeContextIndicator
                   snapshot={claudeContextSnapshot}
