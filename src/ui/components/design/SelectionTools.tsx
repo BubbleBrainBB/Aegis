@@ -56,7 +56,7 @@ function FormPopover({ label, face, children, disabled }: { label: string; face:
   return <>
     <button ref={trigger} type="button" className="design-selection-chip" aria-label={label} title={label} aria-haspopup="dialog" aria-expanded={open} disabled={disabled} onClick={() => setOpen(!open)}>{face}<ChevronDown size={12}/></button>
     {open && createPortal(<div ref={popup} role="dialog" aria-label={label} className="design-surface design-selection-popover" data-canvas-ui style={position}
-      onPointerDown={e => e.stopPropagation()} onKeyDown={e => { e.stopPropagation(); if (e.key === "Escape") { e.preventDefault(); setOpen(false); trigger.current?.focus(); } }}
+      onPointerDown={e => e.stopPropagation()} onKeyDown={e => { e.stopPropagation(); if (e.key === "Escape" && !isImeComposing(e)) { e.preventDefault(); setOpen(false); trigger.current?.focus(); } }}
       onBlur={e => { if (e.relatedTarget && !e.currentTarget.contains(e.relatedTarget as Node) && !trigger.current?.contains(e.relatedTarget as Node)) setOpen(false); }}>
       <strong>{label}</strong>{children}
     </div>, document.body)}
