@@ -657,6 +657,48 @@ function qoderModelCatalogCachePath(): string {
   return join(app.getPath('userData'), 'qoder-model-catalog.json');
 }
 
+function getQoderModelConfig(): import('../shared/types').QoderModelConfig {
+  // Live catalog lives in the adapter (populated from initializationResult()
+  // at session start); fall back to the disk cache from the last refresh so
+  // the picker has the full list before any session boots this launch.
+  ensureProviderService();
+  const adapter = getProviderService().getAdapter('qoder') as
+    | {
+        getModelCatalog?: () => import('../shared/types').QoderModelConfig | null;
+        warmCatalogDetached?: () => Promise<void>;
+      }
+    | undefined;
+  const catalog = adapter?.getModelCatalog?.() ?? readQoderModelCatalogCache();
+  if (!catalog && findMachineQoderCli()) {
+    // Fresh install, no session yet: kick a single background probe (the
+    // adapter single-flights it, once per launch) instead of blocking this
+    // invoke for a ~7s CLI spawn. The probe lands through the same
+    // model_catalog_updated event as session starts, which persists the
+    // disk cache and broadcasts qoder.modelConfigUpdated to the picker.
+    // The machine-CLI gate keeps qoder-less machines spawn-free.
+    void adapter?.warmCatalogDetached?.();
+  }
+  return catalog ?? { defaultModel: null, options: [], models: [] };
+}
+
+/** A provider's model config, read the way its composer picker reads it. */
+async function workflowModelCatalog(provider: string): Promise<unknown> {
+  switch (provider) {
+    case 'claude': return getClaudeModelConfigWithCatalog();
+    case 'codex': return getCodexModelConfig();
+    case 'opencode': return getOpencodeModelConfig();
+    case 'kimi': return getKimiModelConfig();
+    case 'grok': return getGrokModelConfig();
+    case 'deepseek': return getDeepseekModelConfig();
+    case 'devin': return getDevinModelConfig();
+    case 'mimo': return getMimoModelConfig();
+    case 'pi': return getPiModelConfig();
+    case 'bubble': return getBubbleModelConfig();
+    case 'qoder': return getQoderModelConfig();
+    default: return null;
+  }
+}
+
 function readQoderModelCatalogCache(): import('../shared/types').QoderModelConfig | null {
   try {
     const raw = readFileSync(qoderModelCatalogCachePath(), 'utf8');
@@ -4675,6 +4717,7 @@ function setupWorkflows(mainWindow: BrowserWindow): void {
     provisionIsolated: (projectCwd, label) => provisionIsolatedWorkspace(projectCwd, label),
     applyIsolated: (sessionId) => applyIsolatedWorkspace(sessionId),
     discardIsolated: (sessionId) => discardIsolatedWorkspace(sessionId),
+    modelCatalog: workflowModelCatalog,
   });
   setupWorkflowIPC(service);
   // Workflow sessions are hidden from the thread list, so the board loads
@@ -6700,29 +6743,7 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
     return getDeepseekKeyStatus();
   });
 
-  ipcMainHandle('get-qoder-model-config', async () => {
-    // Live catalog lives in the adapter (populated from initializationResult()
-    // at session start); fall back to the disk cache from the last refresh so
-    // the picker has the full list before any session boots this launch.
-    ensureProviderService();
-    const adapter = getProviderService().getAdapter('qoder') as
-      | {
-          getModelCatalog?: () => import('../shared/types').QoderModelConfig | null;
-          warmCatalogDetached?: () => Promise<void>;
-        }
-      | undefined;
-    const catalog = adapter?.getModelCatalog?.() ?? readQoderModelCatalogCache();
-    if (!catalog && findMachineQoderCli()) {
-      // Fresh install, no session yet: kick a single background probe (the
-      // adapter single-flights it, once per launch) instead of blocking this
-      // invoke for a ~7s CLI spawn. The probe lands through the same
-      // model_catalog_updated event as session starts, which persists the
-      // disk cache and broadcasts qoder.modelConfigUpdated to the picker.
-      // The machine-CLI gate keeps qoder-less machines spawn-free.
-      void adapter?.warmCatalogDetached?.();
-    }
-    return catalog ?? { defaultModel: null, options: [], models: [] };
-  });
+  ipcMainHandle('get-qoder-model-config', async () => getQoderModelConfig());
 
   ipcMainHandle('get-claude-runtime-status', async (_event, model?: string | null) => {
     return getClaudeRuntimeStatus(model);

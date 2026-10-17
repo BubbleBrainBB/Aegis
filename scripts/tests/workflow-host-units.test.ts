@@ -22,6 +22,11 @@ import {
 import type { AgentInstance } from '../../src/workflow-engine/engine/engine';
 import { findPendingStartWorkflowCall } from '../../src/electron/libs/workflow/chat-entry';
 import { buildMemberConfigs, declarationForAgent } from '../../src/electron/libs/workflow/member-configs';
+import { catalogOptions, loadModelCatalogs } from '../../src/electron/libs/workflow/model-catalogs';
+import { listedModels } from '../../src/electron/libs/workflow/planner';
+import { validateSpec } from '../../src/workflow-engine/validate/spec-validator';
+import type { WorkflowSpec } from '../../src/workflow-engine/spec/workflow-spec';
+import { DEFAULT_LIMITS } from '../../src/workflow-engine/limits';
 import { headTree } from '../../src/electron/libs/workflow/workspace-snapshot';
 import { isFullAccessMode, isStartWorkflowToolName } from '../../src/shared/workflow';
 import { splitWorkflowResult } from '../../src/ui/utils/workflow-result';
@@ -293,6 +298,81 @@ test('the chat session joins as the "current" member that can only implement', (
   assert.equal(declarationForAgent('current', 'kimi')?.provider, 'kimi');
   assert.equal(declarationForAgent('current', null), undefined);
   assert.equal(buildMemberConfigs(['claude'] as never).some((c) => c.name === 'current'), false, 'no parent, no current member');
+});
+
+test('model catalogs read every provider config shape and skip models hidden from the picker', () => {
+  // Devin / MiMo: { id, label }
+  assert.deepEqual(
+    catalogOptions({ defaultModel: 'swe-2-high', options: ['swe-2-high', 'claude-opus-5-5'], availableModels: [
+      { id: 'swe-2-high', label: 'SWE-2 High' }, { id: 'claude-opus-5-5', label: 'Claude Opus 5.5' },
+    ] }),
+    [{ id: 'swe-2-high', label: 'SWE-2 High' }, { id: 'claude-opus-5-5', label: 'Claude Opus 5.5' }],
+  );
+  // Codex / OpenCode / Bubble: { name, label?, enabled }
+  assert.deepEqual(
+    catalogOptions({ options: [], availableModels: [
+      { name: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', enabled: true }, { name: 'gpt-old', enabled: false }, { name: 'plain', label: 'plain', enabled: true },
+    ] }),
+    [{ id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol' }, { id: 'plain' }],
+  );
+  // Qoder: { value, displayName, isEnabled }
+  assert.deepEqual(catalogOptions({ options: [], models: [{ value: 'q1', displayName: 'Q One' }, { value: 'q2', isEnabled: false }] }), [{ id: 'q1', label: 'Q One' }]);
+  // DeepSeek: { id, name } where name is the display name.
+  assert.deepEqual(catalogOptions({ options: ['deepseek-flash'], availableModels: [{ id: 'deepseek-flash', name: 'DeepSeek V4.1 Flash' }] }), [{ id: 'deepseek-flash', label: 'DeepSeek V4.1 Flash' }]);
+  // Claude: ids only.
+  assert.deepEqual(catalogOptions({ defaultModel: null, options: ['claude-opus-5-5', 'claude-opus-5-5', ''] }), [{ id: 'claude-opus-5-5' }]);
+  assert.deepEqual(catalogOptions(null), []);
+});
+
+test('a failing or slow catalog leaves that provider without models', async () => {
+  const catalogs = await loadModelCatalogs(
+    ['devin', 'codex', 'kimi', 'devin'],
+    async (provider) => {
+      if (provider === 'codex') throw new Error('no cache');
+      if (provider === 'kimi') return new Promise(() => {});
+      return { options: ['swe-2-high'] };
+    },
+    50,
+  );
+  assert.deepEqual(catalogs, { devin: [{ id: 'swe-2-high' }], codex: [], kimi: [] });
+});
+
+test('members may pin a model from their own catalog; the chat session keeps its own', () => {
+  const configs = buildMemberConfigs(['devin', 'claude'] as never, 'claude', {
+    devin: [{ id: 'swe-2-high' }, { id: 'claude-opus-5-5', label: 'Claude Opus 5.5' }, { id: 'gpt-6.1-sol', label: 'GPT 6.1 Sol' }],
+  });
+  const devin = configs.find((c) => c.name === 'devin')!;
+  assert.deepEqual(devin.models, ['swe-2-high', 'claude-opus-5-5', 'gpt-6.1-sol']);
+  assert.deepEqual(devin.modelLabels, { 'claude-opus-5-5': 'Claude Opus 5.5', 'gpt-6.1-sol': 'GPT 6.1 Sol' });
+  assert.deepEqual(configs.find((c) => c.name === 'claude')!.models, [], 'no catalog read, no models');
+  assert.deepEqual(configs.find((c) => c.name === 'current')!.models, []);
+
+  // The planner only sees the catalogs of agents the request names.
+  const goal = '让 Devin（使用 Claude Opus 5.5 模型）review PR #55';
+  assert.deepEqual(listedModels(devin, goal), devin.models);
+  assert.deepEqual(listedModels(devin, 'Have the reviewer use GPT 6.1 Sol'), []);
+  assert.deepEqual(listedModels(devin, 'ask devin-like agents'), devin.models, 'a hyphen still ends the name');
+  assert.deepEqual(listedModels(devin, 'ask Devins'), []);
+  assert.deepEqual(listedModels(configs.find((c) => c.name === 'current')!, 'claude'), []);
+
+  const review = (key: string, model?: string): WorkflowSpec['members'][number] => ({
+    key, role: 'reviewer', agent: 'devin', ...(model ? { model } : {}), source: 'user',
+  });
+  const spec = (members: WorkflowSpec['members']): WorkflowSpec => ({
+    schemaVersion: 1,
+    name: 'Devin reviews',
+    members,
+    acceptance: [],
+    unsupported: [],
+    assumptions: [],
+    steps: members.map((m) => ({ id: `review-${m.key}`, kind: 'agent', member: m.key, task: [{ goal: true }], workspace: 'snapshot', output: 'review', session: 'fresh' })),
+  } as WorkflowSpec);
+  const context = { memberConfigs: configs, limits: DEFAULT_LIMITS };
+  assert.deepEqual(validateSpec(spec([review('opus', 'claude-opus-5-5'), review('gpt', 'gpt-6.1-sol')]), context).errors, []);
+  assert.deepEqual(
+    validateSpec(spec([review('sonnet', 'claude-sonnet-5-5')]), context).errors.map((e) => e.path),
+    ['members[0].model'],
+  );
 });
 
 test('reviews of existing changes diff against the last commit', async () => {

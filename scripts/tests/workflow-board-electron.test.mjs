@@ -17,7 +17,7 @@ await mkdir(qaRoot, { recursive: true });
 const tmp = await mkdtemp(path.join(qaRoot, 'workflow-board-'));
 
 const member = (key, role, agent, provider, extra = {}) => ({
-  key, role, agent, provider, model: null, focus: null, source: 'user',
+  key, role, agent, provider, model: null, modelLabel: null, focus: null, source: 'user',
   permissionMode: null, permissionModeIsDefault: false,
   readOnlyMechanism: role === 'implementer' ? null : 'confinedSandbox',
   degraded: [], unverified: false, currentSessionId: null, ...extra,

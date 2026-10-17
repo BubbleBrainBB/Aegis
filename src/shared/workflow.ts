@@ -79,6 +79,8 @@ export type WorkflowMemberView = {
   agent: string;
   provider: string;
   model: string | null;
+  /** The model's display name from the agent's catalog, when known. */
+  modelLabel: string | null;
   focus: string | null;
   source: 'user' | 'template' | 'inferred';
   permissionMode: string | null;

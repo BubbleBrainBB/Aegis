@@ -19,12 +19,33 @@ export type PlannerResult =
   | { ok: true; spec: WorkflowSpec; report: ValidationReport; raw: string; warnings: string[]; sessionId: string }
   | { ok: false; error: string; raw: string | null; sessionId: string | null };
 
+/**
+ * Catalogs can hold hundreds of models (OpenCode, Devin), so the Planner only
+ * sees the models of agents the request names: pinning a model means naming
+ * whose model it is. Validation still checks against the full catalogs.
+ */
+export function listedModels(config: MemberConfig, goal: string): string[] {
+  if (config.name === CURRENT_SESSION_AGENT || config.models.length === 0) return [];
+  const named = new RegExp(`(?<![a-z0-9])${config.provider.replace(/[^a-z0-9]/gi, '')}(?![a-z0-9])`, 'i');
+  return named.test(goal) ? config.models : [];
+}
+
+function modelList(config: MemberConfig, goal: string): string {
+  const models = listedModels(config, goal);
+  if (models.length === 0) return '. Its models are not listed, so its "model" must be null.';
+  const names = models.map((id) => {
+    const label = config.modelLabels?.[id];
+    return label ? `"${id}" (${label})` : `"${id}"`;
+  });
+  return `. Models: ${names.join(', ')}`;
+}
+
 function plannerPrompt(goal: string, configs: MemberConfig[], schema: unknown): string {
   const roster = configs
     .map((c) =>
       c.name === CURRENT_SESSION_AGENT
-        ? `- "${c.name}": the chat session that asked for this workflow (a ${c.provider} agent). It can only be the implementer.`
-        : `- "${c.name}": can be ${c.roles.join(', ')}${c.degraded.length ? ` (limitations: ${c.degraded.join(', ')})` : ''}`,
+        ? `- "${c.name}": the chat session that asked for this workflow (a ${c.provider} agent). It can only be the implementer and keeps its own model, so its "model" is null.`
+        : `- "${c.name}": can be ${c.roles.join(', ')}${c.degraded.length ? ` (limitations: ${c.degraded.join(', ')})` : ''}${modelList(c, goal)}`,
     )
     .join('\n');
   const fromChat = configs.some((c) => c.name === CURRENT_SESSION_AGENT)
@@ -49,6 +70,7 @@ How to build the workflow:
 - A "check" step runs a command: give "argv" as an array of words and "timeoutMs". Only add a check if the user named the command or it is clearly the project's standard test/lint command; never invent shell pipelines.
 - Task blocks: {"kind":"text","text":...,"ref":null} for instructions; {"kind":"goal","text":null,"ref":null} to insert the user's request; {"kind":"from","text":null,"ref":{"step":<step id>,"field":null,"iteration":null}} to pass another step's result.
 - "acceptance" lists what must hold at the end: verifyKind "check" with verifyRef = the check step id, "review" with verifyRef = a reviewer member key, or "manual" with verifyRef null.
+- A member's "model" is null to use that agent's default model. When the user names a model for an agent, set "model" to the matching id from that agent's own model list; the same agent may appear as several members with different models. If the agent's list has no such model, keep "model" null and put the requested model into "unsupported".
 - Mark members and acceptance items the user did not ask for as source "inferred"; what the user asked for is "user".
 - Put any part of the request the workflow cannot express (for example committing, opening a pull request, several implementers writing at once, or an agent not in the list) into "unsupported". Put every assumption you made into "assumptions". Never silently drop a requirement.
 
@@ -97,7 +119,10 @@ export async function planWorkflow(input: {
     return { ok: false, error: `${input.plannerAgent} cannot act as the planner (no read-only mode).`, raw: null, sessionId: null };
   }
   await fs.mkdir(input.workDir, { recursive: true });
-  const schema = buildPlannedWorkflowSchema({ agentNames: input.context.memberConfigs.map((c) => c.name), modelIds: [] });
+  const schema = buildPlannedWorkflowSchema({
+    agentNames: input.context.memberConfigs.map((c) => c.name),
+    modelIds: [...new Set(input.context.memberConfigs.flatMap((c) => listedModels(c, input.goal)))],
+  });
   const { payload } = memberSessionPayload(declaration, 'planner', {});
   let sessionId: string | null = null;
   let turnPromise: Promise<TurnOutcome> | null = null;

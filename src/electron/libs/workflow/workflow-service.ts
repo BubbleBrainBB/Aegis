@@ -32,6 +32,7 @@ import {
 import { AegisWorkflowHost, type HostEvent, type RunControl, type SessionBridge } from './aegis-host';
 import { isGroupAlive, processStartTime, terminateGroup } from './check-executor';
 import { buildMemberConfigs, declarationFor, declarationForAgent, memberSessionPayload } from './member-configs';
+import { loadModelCatalogs } from './model-catalogs';
 import { planWorkflow, readProjectScripts } from './planner';
 import { setWorkflowSessionPolicy } from './session-hooks';
 import { captureTree, headTree, repoInfo, retainTree } from './workspace-snapshot';
@@ -54,6 +55,8 @@ export type WorkflowServiceDeps = {
   provisionIsolated: (projectCwd: string, label: string) => Promise<{ repoRoot: string; worktreePath: string; branch: string; baseRef: string }>;
   applyIsolated: (sessionId: string) => Promise<{ ok: boolean; message?: string }>;
   discardIsolated: (sessionId: string) => Promise<{ ok: boolean; message?: string }>;
+  /** A provider's model config as its composer picker reads it; members may only pin these models. */
+  modelCatalog?: (provider: string) => Promise<unknown>;
 };
 
 const OPTION_LABELS: Record<string, string> = {
@@ -73,6 +76,8 @@ const option = (id: string) => ({ id, label: OPTION_LABELS[id] ?? id });
 export class WorkflowService {
   private readonly active = new Map<string, Active>();
   private defaults: { permissionModes: Record<string, string> } = { permissionModes: {} };
+  /** Display names from the catalogs last read, per provider and model id. */
+  private readonly modelLabels = new Map<string, Record<string, string>>();
 
   constructor(private readonly deps: WorkflowServiceDeps) {}
 
@@ -187,8 +192,13 @@ export class WorkflowService {
 
   private async validationContext(runId: string): Promise<ValidationContext> {
     const run = store.getRun(runId)!;
+    const catalogs = this.deps.modelCatalog ? await loadModelCatalogs(run.options.availableAgents, this.deps.modelCatalog) : {};
+    const memberConfigs = buildMemberConfigs(run.options.availableAgents as never, run.options.parent?.provider ?? null, catalogs);
+    for (const config of memberConfigs) {
+      if (config.modelLabels) this.modelLabels.set(config.provider, { ...this.modelLabels.get(config.provider), ...config.modelLabels });
+    }
     return {
-      memberConfigs: buildMemberConfigs(run.options.availableAgents as never, run.options.parent?.provider ?? null),
+      memberConfigs,
       limits: DEFAULT_LIMITS,
       checkAuthorization: {
         projectScripts: await readProjectScripts(run.cwd),
@@ -756,6 +766,7 @@ export class WorkflowService {
           agent: m.agent,
           provider: m.provider,
           model: m.model,
+          modelLabel: (m.model && this.modelLabels.get(m.provider)?.[m.model]) || null,
           focus: m.focus,
           source: m.source,
           permissionMode: m.permissionMode,
