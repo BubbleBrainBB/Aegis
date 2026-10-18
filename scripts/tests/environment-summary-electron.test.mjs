@@ -97,6 +97,8 @@ app.whenReady().then(async()=>{
  const js=code=>win.webContents.executeJavaScript(code,true);
  const click=async label=>{await js('(()=>{const e=[...document.querySelectorAll("button, [role=menuitem]")].find(e=>e.getAttribute("aria-label")==='+JSON.stringify(label)+'||e.textContent.trim()==='+JSON.stringify(label)+'||e.querySelector("span")?.textContent.trim()==='+JSON.stringify(label)+');if(!e)throw Error("Missing button: '+label+'");e.click()})()');await delay(150)};
  const visible=()=>js('document.body.innerText');
+ // PR rows show their state as a colored glyph only; the label carries it in words.
+ const prRows=()=>js('[...document.querySelectorAll("button")].map(e=>e.getAttribute("aria-label")||"").filter(l=>l.startsWith("PR #")).join(" | ")');
  const mode=async value=>{await js('qa.setMode('+JSON.stringify(value)+')');await delay(200)};
  const snap=async name=>{if(process.env.QA_CAPTURE){fs.mkdirSync(process.env.QA_CAPTURE,{recursive:true});fs.writeFileSync(path.join(process.env.QA_CAPTURE,name+'.png'),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG())}};
  try{
@@ -152,17 +154,17 @@ app.whenReady().then(async()=>{
  await js('qa.patch({totalChanges:0,aheadCount:0})');await delay(100);assert.match(await visible(),/Create pull request/);
  assert.equal(await js('[...document.querySelectorAll("button")].find(e=>e.textContent.trim()==="Create pull request").disabled'),false,'known published branch retains PR creation eligibility during refresh');
  await mode('pr');assert.match(await visible(),/Existing pull request/);assert.match(await visible(),/Attach/);await snap('discovered-pr');
- await click('Attach');assert.match(await visible(),/PR #42/);assert.match(await visible(),/Open/);assert.doesNotMatch(await visible(),/Existing pull request/);await snap('attached-pr');
+ await click('Attach');assert.match(await prRows(),/PR #42: .*\(Open\)/);assert.match(await visible(),/Improve environment content/);assert.doesNotMatch(await visible(),/Existing pull request/);await snap('attached-pr');
  await click('Undo');assert.match(await visible(),/Existing pull request/);assert.equal(await js('qa.attached.length'),0);
- await click('Attach');await mode('default');assert.match(await visible(),/PR #42/,'association survives branch change');
- await mode('local');assert.match(await visible(),/PR #42/,'association survives switching to a non-Git directory');assert.doesNotMatch(await visible(),/Commit or push/);
+ await click('Attach');await mode('default');assert.match(await prRows(),/PR #42/,'association survives branch change');
+ await mode('local');assert.match(await prRows(),/PR #42/,'association survives switching to a non-Git directory');assert.doesNotMatch(await visible(),/Commit or push/);
  await click('PR #42 options');await click('Remove from task');assert.equal(await js('qa.attached.length'),0);
  await mode('pr');
- await mode('closed');await click('Attach');assert.match(await visible(),/Closed/);
+ await mode('closed');await click('Attach');assert.match(await prRows(),/PR #42: .*\(Closed\)/);
  await click('PR #42 options');await click('Remove from task');
- await mode('merged');await click('Attach');assert.match(await visible(),/Merged/);
+ await mode('merged');await click('Attach');assert.match(await prRows(),/PR #42: .*\(Merged\)/);
  await click('PR #42 options');await click('Remove from task');
- await mode('non-github');assert.doesNotMatch(await visible(),/pull request|PR #/);
+ await mode('non-github');assert.doesNotMatch(await visible(),/pull request/);assert.equal(await prRows(),'');
  await mode('default');assert.doesNotMatch(await visible(),/Create pull request/);
  await mode('behind');assert.match(await visible(),/Sync/);assert.match(await visible(),/2 behind/);
  await mode('diverged');assert.match(await visible(),/Branch has diverged/);
@@ -240,9 +242,9 @@ app.whenReady().then(async()=>{
  await click('Open environment panel');
  await js('qa.pendingPr=[];window.electron.listSessionPullRequests=id=>new Promise(resolve=>qa.pendingPr.push({id,resolve}));qa.listeners.forEach(fn=>fn("fixture"))');await delay(50);
  await js('qa.setSessionId("second-task")');await delay(100);
- assert.doesNotMatch(await visible(),/PR #42/);
+ assert.doesNotMatch(await prRows(),/PR #42/);
  await js('qa.pendingPr[0].resolve([{...qa.attached[0],number:999,lookupStatus:"found"}])');await delay(100);
- assert.doesNotMatch(await visible(),/PR #999/,'ignore delayed results from previous task');
+ assert.doesNotMatch(await prRows(),/PR #999/,'ignore delayed results from previous task');
  await js('qa.pendingPr[1].resolve([])');await delay(100);
  await js('qa.pendingPr[2].resolve([])');await delay(100);
  // Real layout component: actual pane width, persistent pin, and session overlays.
