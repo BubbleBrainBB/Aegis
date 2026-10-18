@@ -11,10 +11,6 @@ import {
   FolderOpen,
   GitBranch,
   GitFork,
-  GitMerge,
-  GitPullRequest,
-  GitPullRequestClosed,
-  GitPullRequestDraft,
   Loader2,
   MoreHorizontal,
   Pin,
@@ -36,6 +32,7 @@ import { sendEvent } from '../hooks/useIPC';
 import { DEFAULT_WORKSPACE_CHANNEL_ID, type GitPullRequestSummary } from '../../shared/types';
 import { useSidebarViewOptions, useSidebarViewStore } from '../store/useSidebarViewStore';
 import { primaryPullRequest, useSidebarPullRequests } from '../store/useSidebarPullRequests';
+import { PULL_REQUEST_STATUS, pullRequestRepo, pullRequestStatus, type PullRequestStatus } from './pull-request-status';
 import {
   deriveSidebarSessionState,
   isWithinActivityWindow,
@@ -811,23 +808,6 @@ export function FolderTreeView({
       ) : null}
     </div>
   );
-}
-
-type PullRequestStatus = 'open' | 'draft' | 'merged' | 'closed';
-
-const PULL_REQUEST_STATUS: Record<PullRequestStatus, { label: string; className: string; Icon: typeof GitPullRequest }> = {
-  open: { label: 'Open', className: 'text-[var(--success)]', Icon: GitPullRequest },
-  draft: { label: 'Draft', className: 'text-[var(--text-muted)]', Icon: GitPullRequestDraft },
-  merged: { label: 'Merged', className: 'text-[#8b5cf6]', Icon: GitMerge },
-  closed: { label: 'Closed', className: 'text-[var(--text-muted)]', Icon: GitPullRequestClosed },
-};
-
-function pullRequestStatus(pr: GitPullRequestSummary): PullRequestStatus {
-  return pr.state === 'open' && pr.isDraft ? 'draft' : pr.state;
-}
-
-function pullRequestRepo(url: string): string {
-  return url.match(/^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//i)?.[1] ?? '';
 }
 
 function pullRequestsLabel(pullRequests: GitPullRequestSummary[]): string {
