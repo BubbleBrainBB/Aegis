@@ -247,7 +247,8 @@ import { expandClaudeSkillPrompt, listClaudeSkills } from './libs/claude-skills'
 import { captureFeishuEvent, closeFeishu, setupFeishu } from './feishu/integration';
 import { getMemoryWorkspace, saveMemoryDocument } from './libs/memory-store';
 import { formatClaudeRuntimeBlockingMessage, getClaudeRuntimeStatus, getClaudeRuntimeStatusCached } from './libs/claude-runtime-status';
-import { selectClaudeRunnersToReap, type ClaudeRunnerSnapshot } from './libs/claude-runner-pool';
+import { noteClaudeBackgroundTasks, selectClaudeRunnersToReap, type ClaudeRunnerSnapshot } from './libs/claude-runner-pool';
+import { openSelfStartedTurn, settleClaudeResult } from './libs/claude-turn-accounting';
 import {
   markClaudePromptDispatched,
   markClaudeInit,
@@ -3558,6 +3559,16 @@ const runnerHandles = new Map<
     inFlightTurns?: number;
     /** Wall-clock time of the latest `result` — the idle anchor for the reaper. */
     lastTurnEndedAt?: number;
+    /** Background tasks running in the CLI (latest `background_tasks` snapshot). */
+    runningBackgroundTasks?: number;
+    /**
+     * The running turn is one the CLI started on its own — a finished
+     * background task woke the agent (runner onSelfStartedTurn). It counts in
+     * inFlightTurns like a sent prompt (stop, reaper and status treat it as a
+     * live turn) but has no entry in pendingTurnPrompts; its `result` clears
+     * the flag.
+     */
+    selfStartedTurn?: boolean;
     /** Live context is stale or poisoned; abort at the next `result` instead of reusing. */
     doomed?: boolean;
     /** Automation runners auto-approve permissions; never reuse them for human turns. */
@@ -3636,6 +3647,24 @@ function stopStateOf(entry: RunnerEntry): StopStateSnapshot {
 }
 
 /**
+ * Interrupt the active turn of a runner whose stop has not settled, and
+ * (re)arm the hard-abort fallback in case the interrupt goes unanswered.
+ * interrupt() only ever cancels the ACTIVE turn, so a stopped turn that
+ * becomes active later needs its own call.
+ */
+function interruptStoppedTurn(mainWindow: BrowserWindow, sessionId: string, entry: RunnerEntry): void {
+  if (typeof entry.handle.interrupt !== 'function') return;
+  entry.handle.interrupt().catch(() => resolveStopFallback(mainWindow, sessionId, entry));
+  clearStopFallbackTimer(entry);
+  entry.stopFallbackAttempts = undefined;
+  entry.stopFallbackTimer = setTimeout(
+    () => resolveStopFallback(mainWindow, sessionId, entry),
+    STOP_INTERRUPT_FALLBACK_MS
+  );
+  entry.stopFallbackTimer.unref?.();
+}
+
+/**
  * Drop the soft-stop hard-abort fallback. Must run whenever an entry is
  * aborted/deleted through any path so no stale timer outlives its runner.
  */
@@ -3670,10 +3699,15 @@ function snapshotClaudeRunners(): ClaudeRunnerSnapshot[] {
       lastTurnEndedAt: entry.lastTurnEndedAt,
       hasPendingPermissions:
         (sessionStates.get(sessionId)?.pendingPermissions.size ?? 0) > 0,
+      hasBackgroundWork: hasClaudeBackgroundWork(entry),
       prewarmed: entry.prewarmed === true,
     });
   }
   return snapshots;
+}
+
+function hasClaudeBackgroundWork(entry: RunnerEntry): boolean {
+  return (entry.runningBackgroundTasks ?? 0) > 0;
 }
 
 function sweepIdleClaudeRunners(): void {
@@ -3682,7 +3716,7 @@ function sweepIdleClaudeRunners(): void {
     const entry = runnerHandles.get(sessionId);
     // Re-check liveness: a turn may have been dispatched since the snapshot.
     if (!entry || (entry.provider !== 'claude' && entry.prewarmed !== true)) continue;
-    if ((entry.inFlightTurns ?? 0) > 0) continue;
+    if ((entry.inFlightTurns ?? 0) > 0 || hasClaudeBackgroundWork(entry)) continue;
     entry.handle.abort();
     runnerHandles.delete(sessionId);
   }
@@ -10732,6 +10766,27 @@ function startRunner(
       }
       observeTurnMessage(session.id, message);
 
+      // Running background tasks keep the runner alive: the idle reaper must
+      // not kill them. A task that just finished is about to wake the agent
+      // (onSelfStartedTurn), so it restarts the idle clock: the reaper must
+      // not retire the runner in the moment before that turn's first frame.
+      if (provider === 'claude' && message.type === 'system' && message.subtype === 'background_tasks') {
+        const workEntry = runnerHandles.get(session.id);
+        if (workEntry?.handle === handle) {
+          const next = noteClaudeBackgroundTasks(
+            {
+              inFlightTurns: workEntry.inFlightTurns ?? 0,
+              runningBackgroundTasks: workEntry.runningBackgroundTasks ?? 0,
+              lastTurnEndedAt: workEntry.lastTurnEndedAt,
+            },
+            message.tasks.length,
+            Date.now()
+          );
+          workEntry.runningBackgroundTasks = next.runningBackgroundTasks;
+          workEntry.lastTurnEndedAt = next.lastTurnEndedAt;
+        }
+      }
+
       // 提取并保存 claude session id
       if (message.type === 'system' && message.subtype === 'init') {
         initMessage = message;
@@ -11040,18 +11095,29 @@ function startRunner(
         // the runner was created with. A queued second prompt must never be
         // checked against the first turn's result.
         const entryForPrompt = runnerHandles.get(session.id);
-        // Claude Code folds prompts queued during a turn into that turn, so
-        // one result can answer several sends; it says how many.
-        const answeredPrompts = Math.max(1, message.answeredPrompts ?? 1);
-        // Shift once per answered prompt — stopped and suppressed results
+        const ownsEntry = entryForPrompt?.handle === handle;
+        // What this result settles: Claude Code folds prompts queued during a
+        // turn into that turn, so one result can answer several sends (it
+        // names them), and a turn the CLI started itself answers only the
+        // prompts folded into it, often none. Applied to the counters below.
+        const closesSelfStartedTurn = provider === 'claude' && ownsEntry && entryForPrompt.selfStartedTurn === true;
+        const settlement = settleClaudeResult(
+          {
+            inFlightTurns: entryForPrompt?.inFlightTurns ?? 1,
+            stoppedTurns: entryForPrompt?.stoppedTurns ?? 0,
+            selfStartedTurn: closesSelfStartedTurn,
+          },
+          message.answeredPrompts
+        );
+        // Shift once per answered host prompt — stopped and suppressed results
         // included — or the FIFO skews against inFlightTurns. A stale
         // handle's result must NOT shift the replacement entry's queue.
         const queuedTurnPrompt =
-          entryForPrompt?.handle === handle ? entryForPrompt.pendingTurnPrompts?.shift() : undefined;
-        if (entryForPrompt?.handle === handle) {
-          for (let extra = 1; extra < answeredPrompts; extra += 1) entryForPrompt.pendingTurnPrompts?.shift();
+          ownsEntry && settlement.hostPrompts > 0 ? entryForPrompt.pendingTurnPrompts?.shift() : undefined;
+        if (ownsEntry) {
+          for (let extra = 1; extra < settlement.hostPrompts; extra += 1) entryForPrompt.pendingTurnPrompts?.shift();
         }
-        const turnPrompt = queuedTurnPrompt || prompt;
+        const turnPrompt = closesSelfStartedTurn ? queuedTurnPrompt || '' : queuedTurnPrompt || prompt;
         const stoppedByUser = stopClassification.stoppedByUser;
         const slashFailureMessage =
           provider === 'claude' && !stoppedByUser
@@ -11093,10 +11159,7 @@ function startRunner(
         // NOT done: a terminal DB status here would open the git/workspace
         // gates (which trust DB status alone) under a running agent. The last
         // queued result settles the session status.
-        const hasQueuedTurns =
-          provider === 'claude' &&
-          entryForPrompt?.handle === handle &&
-          (entryForPrompt.inFlightTurns ?? 1) > answeredPrompts;
+        const hasQueuedTurns = provider === 'claude' && ownsEntry && settlement.inFlightTurns > 0;
         const pursuingGoal = provider === 'codex' && turnStatus === 'completed' && getCachedSessionGoal(session.id)?.goal?.status === 'active';
         const liveStatus: SessionStatus = hasQueuedTurns || pursuingGoal ? 'running' : turnStatus;
         const status: SessionStatus = stoppedByUser ? 'idle' : liveStatus;
@@ -11189,30 +11252,24 @@ function startRunner(
           // Design comments the turn worked on are answered or reopened.
           settleDesignTurn(session.id, PROVIDER_LABELS[provider]);
           if (provider === 'claude') {
-            // The interrupted turn's result has landed — settle one stopped
-            // turn; the hard-abort fallback stands down once none remain.
-            if ((currentEntry.stoppedTurns ?? 0) > 0) {
-              currentEntry.stoppedTurns = (currentEntry.stoppedTurns ?? 1) - 1 || undefined;
+            // Settle the obligations this result closed — stopped ones first,
+            // as many as it closed — before deciding whether another
+            // interrupted turn remains; the hard-abort fallback stands down
+            // once none do.
+            const hadStoppedTurns = (currentEntry.stoppedTurns ?? 0) > 0;
+            currentEntry.selfStartedTurn = undefined;
+            currentEntry.inFlightTurns = settlement.inFlightTurns;
+            currentEntry.stoppedTurns = settlement.stoppedTurns || undefined;
+            if (hadStoppedTurns) {
               if (!currentEntry.stoppedTurns) {
                 clearStopFallbackTimer(currentEntry);
                 currentEntry.stopFallbackAttempts = undefined;
-              } else if (typeof currentEntry.handle.interrupt === 'function') {
+              } else {
                 // Another user-stopped turn was queued behind the one that
                 // just settled and is becoming active now. interrupt() only
                 // ever cancels the ACTIVE turn, so the stop press that marked
-                // it could not reach it — re-issue the interrupt for it here,
-                // and re-arm the fallback in case even that goes unanswered.
-                const entryToReinterrupt = currentEntry;
-                entryToReinterrupt.handle
-                  .interrupt!()
-                  .catch(() => resolveStopFallback(mainWindow, session.id, entryToReinterrupt));
-                clearStopFallbackTimer(entryToReinterrupt);
-                entryToReinterrupt.stopFallbackAttempts = undefined;
-                entryToReinterrupt.stopFallbackTimer = setTimeout(
-                  () => resolveStopFallback(mainWindow, session.id, entryToReinterrupt),
-                  STOP_INTERRUPT_FALLBACK_MS
-                );
-                entryToReinterrupt.stopFallbackTimer.unref?.();
+                // it could not reach it — re-issue the interrupt for it here.
+                interruptStoppedTurn(mainWindow, session.id, currentEntry);
               }
             }
             // Keep the runner alive for follow-up turns (streaming-input
@@ -11223,7 +11280,6 @@ function startRunner(
             // running here, and aborting then would kill that follow-up. The
             // reuse guard already refuses to dispatch new turns into a
             // doomed entry, so deferring loses nothing.
-            currentEntry.inFlightTurns = Math.max(0, (currentEntry.inFlightTurns ?? 1) - answeredPrompts);
             const drained = (currentEntry.inFlightTurns ?? 0) === 0;
             if (drained && (currentEntry.doomed || currentEntry.autoApprove)) {
               // Retire only once every queued turn has produced its result:
@@ -11265,6 +11321,36 @@ function startRunner(
         localFailureMessage = null;
         sawTurnOutput = false;
       }
+    },
+    onSelfStartedTurn: () => {
+      // A finished background task woke the agent: count the turn as an
+      // obligation so the session shows running, Stop interrupts it and the
+      // reaper spares it. Its result settles it (settleClaudeResult). Under a
+      // stop that has not settled yet it is stopped too (openSelfStartedTurn).
+      const entry = runnerHandles.get(session.id);
+      if (entry?.handle !== handle) return;
+      const opened = openSelfStartedTurn({
+        inFlightTurns: entry.inFlightTurns ?? 0,
+        stoppedTurns: entry.stoppedTurns ?? 0,
+        selfStartedTurn: entry.selfStartedTurn === true,
+      });
+      entry.inFlightTurns = opened.inFlightTurns;
+      entry.stoppedTurns = opened.stoppedTurns || undefined;
+      entry.selfStartedTurn = true;
+      if (opened.interrupt) {
+        interruptStoppedTurn(mainWindow, session.id, entry);
+        return;
+      }
+      if (sessions.getSession(session.id)?.status === 'running') return;
+      sessions.updateSessionStatus(session.id, 'running');
+      broadcast(mainWindow, {
+        type: 'session.status',
+        payload: {
+          sessionId: session.id,
+          status: 'running',
+          hiddenFromThreads: sessions.getSession(session.id)?.hidden_from_threads === 1,
+        },
+      });
     },
     onError: (error) => {
       if (codexGoal) rejectSessionGoalStart(session.id, error instanceof Error ? error : new Error(String(error)));

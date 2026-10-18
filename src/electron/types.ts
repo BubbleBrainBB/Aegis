@@ -150,6 +150,11 @@ export interface RunnerOptions {
   bubblePlanExitMode?: 'default' | 'bypassPermissions';
   bubbleThinkingLevel?: string;
   onMessage: (message: import('../shared/types').StreamMessage) => void;
+  /**
+   * Claude: the CLI started a turn on its own (a finished background task
+   * woke the agent). Called before that turn's first message.
+   */
+  onSelfStartedTurn?: () => void;
   onError?: (error: Error) => void;
   onPermissionRequest: (
     toolUseId: string,

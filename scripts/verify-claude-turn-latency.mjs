@@ -15,8 +15,9 @@ const ipcSource = fs.readFileSync(path.join(root, 'src', 'electron', 'ipc-handle
 // The result handler must keep the Claude entry alive (turn accounting instead
 // of the old unconditional delete) and reset per-turn detection state.
 assert.equal(
-  // A result settles every prompt it answers (Claude folds queued prompts into a turn).
-  ipcSource.includes('currentEntry.inFlightTurns = Math.max(0, (currentEntry.inFlightTurns ?? 1) - answeredPrompts)'),
+  // A result settles every obligation it closes (Claude folds queued prompts
+  // into a turn; a self-started turn is one too): claude-turn-accounting.
+  ipcSource.includes('currentEntry.inFlightTurns = settlement.inFlightTurns'),
   true,
   'result handler must decrement inFlightTurns instead of deleting the Claude entry'
 );

@@ -6,7 +6,10 @@
 // - prompts queued while a turn runs are folded into one later turn whose
 //   result names every one of them in user_message_uuids (turn accounting);
 // - with perTaskStopAffordance, interrupt() spares a background task, which
-//   background_tasks_changed lists until stopTask() stops it.
+//   background_tasks_changed lists until stopTask() stops it;
+// - a background task that finishes after the turn ended starts a turn on its
+//   own; ClaudeTurnOriginTracker (command_lifecycle + init) flags exactly that
+//   turn, even with a prompt sent as the task finishes.
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { execSync } from 'node:child_process';
@@ -14,6 +17,7 @@ import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { ClaudeTurnOriginTracker } from '../../src/electron/libs/claude-turn-origin.ts';
 
 let claudePath = '';
 try {
@@ -30,7 +34,7 @@ const root = await mkdtemp(join(tmpdir(), 'aegis-claude-sdk-native-'));
 const home = join(root, 'home'), cwd = join(root, 'project');
 await mkdir(home);
 await mkdir(cwd);
-let modelRequests = 0, countRequests = 0, responseDelay = 0, backgroundCommand = false;
+let modelRequests = 0, countRequests = 0, responseDelay = 0, backgroundCommand = '';
 const server = createServer(async (req, res) => {
   let raw = '';
   for await (const chunk of req) raw += chunk;
@@ -50,7 +54,7 @@ const server = createServer(async (req, res) => {
     for (const [event, data] of [
       ['message_start', { type: 'message_start', message: call }],
       ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_background', name: 'Bash', input: {} } }],
-      ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ command: 'sleep 30', description: 'Sleep in the background', run_in_background: true }) } }],
+      ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ command: backgroundCommand, description: 'Sleep in the background', run_in_background: true }) } }],
       ['content_block_stop', { type: 'content_block_stop', index: 0 }],
       ['message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 1 } }],
       ['message_stop', { type: 'message_stop' }],
@@ -157,7 +161,7 @@ try {
   // Background tasks under perTaskStopAffordance: interrupt spares them, stopTask stops one.
   {
     responseDelay = 0;
-    backgroundCommand = true;
+    backgroundCommand = 'sleep 30';
     const { q, send } = session({ permissionMode: 'bypassPermissions', allowDangerouslySkipPermissions: true, perTaskStopAffordance: true });
     send('run it', '44444444-4444-4444-8444-444444444444');
     let taskId = null, stage = 'running', notifications = [];
@@ -186,10 +190,51 @@ try {
     }
     clearTimeout(deadline);
     assert.deepEqual(notifications, ['stopped'], 'stopTask stops it');
-    backgroundCommand = false;
+    backgroundCommand = '';
     q.close?.();
   }
-  console.log('claude-sdk-native: summary context usage is local; queued prompts fold into one result naming each; interrupt spares background tasks and stopTask stops one');
+
+  // A background task finishing after the turn ended wakes the agent, and the
+  // turn-origin tracker Aegis runs on the raw stream flags exactly that turn.
+  // Production options; a prompt is sent the moment the task finishes.
+  {
+    backgroundCommand = 'sleep 2';
+    const { q, send } = session({
+      permissionMode: 'bypassPermissions',
+      allowDangerouslySkipPermissions: true,
+      includePartialMessages: true,
+      perTaskStopAffordance: true,
+      forwardSubagentText: true,
+    });
+    const first = '66666666-6666-4666-8666-666666666666', during = '77777777-7777-4777-8777-777777777777';
+    const tracker = new ClaudeTurnOriginTracker();
+    send('run it', first);
+    const turns = []; // { selfStarted, answered }
+    let open = null;
+    const deadline = setTimeout(() => {
+      throw new Error(`wake-up timed out after ${JSON.stringify(turns)}`);
+    }, 30000);
+    for await (const message of q) {
+      if (tracker.observe(message)) open = { selfStarted: true };
+      if (message.type === 'system' && message.subtype === 'init' && !open) open = { selfStarted: false };
+      if (message.type === 'system' && message.subtype === 'task_notification') send('hello', during);
+      if (message.type !== 'result') continue;
+      turns.push({ ...open, answered: message.user_message_uuids ?? [] });
+      open = null;
+      const answered = turns.flatMap((turn) => turn.answered);
+      if (answered.includes(first) && answered.includes(during) && turns.some((turn) => turn.selfStarted)) break;
+    }
+    clearTimeout(deadline);
+    const answered = turns.flatMap((turn) => turn.answered);
+    assert.deepEqual([...answered].sort(), [first, during].sort(), 'each prompt is answered exactly once');
+    assert.equal(turns.filter((turn) => turn.selfStarted).length, 1, `one turn is self-started: ${JSON.stringify(turns)}`);
+    assert.ok(!turns[0].selfStarted && turns[0].answered.includes(first), 'the prompted turn is not self-started');
+    const woken = turns.find((turn) => turn.selfStarted);
+    assert.ok(!woken.answered.includes(first), 'the woken turn does not answer the earlier prompt');
+    backgroundCommand = '';
+    q.close?.();
+  }
+  console.log('claude-sdk-native: summary context usage is local; queued prompts fold into one result naming each; interrupt spares background tasks and stopTask stops one; a finished background task starts a turn the origin tracker flags');
 } finally {
   server.close();
   await rm(root, { recursive: true, force: true });

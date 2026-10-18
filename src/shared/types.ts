@@ -1933,7 +1933,9 @@ export type StreamMessage =
       /**
        * Claude: how many of the host's queued prompts this result answers.
        * Claude Code folds prompts that queue up during a turn into one turn
-       * with one result, so a result can settle several sends. Absent means 1.
+       * with one result, so a result can settle several sends. 0 when it
+       * answers none (a turn the CLI started itself); absent when the CLI
+       * does not say.
        */
       answeredPrompts?: number;
     })

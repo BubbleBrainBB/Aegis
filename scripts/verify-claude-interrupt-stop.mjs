@@ -126,10 +126,17 @@ assert.match(
 // A second stop can mark a QUEUED turn; interrupt() only reaches the active
 // one, so when a stopped turn settles with more still marked, the interrupt
 // must be re-issued for the newly active turn (with the fallback re-armed).
+// A turn the CLI starts on its own under an unsettled stop is interrupted the
+// same way (openSelfStartedTurn).
 assert.match(
   ipcSource,
-  /entryToReinterrupt\.handle\s*\n?\s*\.interrupt!\(\)\s*\n?\s*\.catch\(\(\) => resolveStopFallback\(mainWindow, session\.id, entryToReinterrupt\)\)/,
-  'settling a stopped turn with more stopped turns pending must re-issue interrupt()'
+  /entry\.handle\.interrupt\(\)\.catch\(\(\) => resolveStopFallback\(mainWindow, sessionId, entry\)\);\s*clearStopFallbackTimer\(entry\);[\s\S]{0,200}entry\.stopFallbackTimer = setTimeout\(/,
+  'interruptStoppedTurn must interrupt and re-arm the stop fallback'
+);
+assert.equal(
+  (ipcSource.match(/interruptStoppedTurn\(mainWindow, session\.id, (currentEntry|entry)\)/g) || []).length,
+  2,
+  'a stopped turn becoming active, and a self-started turn under a stop, must both be interrupted'
 );
 
 // Soft stop must settle pending permissions as a clean DENY (the runner and
@@ -302,12 +309,12 @@ assert.equal(
   'a late stopped-turn result must not override a newer running turn status'
 );
 
-// A result settles one stopped turn and stands the fallback down when none
-// remain.
+// A result settles the stopped turns it closed (as many as it closed, see
+// claude-turn-accounting) and stands the fallback down when none remain.
 assert.match(
   ipcSource,
-  /currentEntry\.stoppedTurns = \(currentEntry\.stoppedTurns \?\? 1\) - 1/,
-  'the result handler must settle stopped turns one at a time'
+  /currentEntry\.inFlightTurns = settlement\.inFlightTurns;\s*currentEntry\.stoppedTurns = settlement\.stoppedTurns \|\| undefined;/,
+  'the result handler must settle in-flight and stopped turns together'
 );
 
 // No abort/delete path may leave the fallback timer behind: stop (hard path),
@@ -347,6 +354,8 @@ const compile = spawnSync(
     tmpDir,
     'scripts/tests/claude-stop-reconcile.test.ts',
     'scripts/tests/claude-prompt-cancellation.test.ts',
+    'scripts/tests/claude-turn-origin.test.ts',
+    'scripts/tests/claude-turn-accounting.test.ts',
   ],
   { cwd: root, stdio: 'inherit' }
 );
@@ -358,6 +367,8 @@ if (compile.status !== 0) {
 for (const testFile of [
   'claude-stop-reconcile.test.js',
   'claude-prompt-cancellation.test.js',
+  'claude-turn-origin.test.js',
+  'claude-turn-accounting.test.js',
 ]) {
   const testPath = path.join(tmpDir, 'scripts', 'tests', testFile);
   const run = spawnSync(process.execPath, [testPath], { cwd: root, stdio: 'inherit' });
