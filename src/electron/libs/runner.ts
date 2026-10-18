@@ -30,6 +30,7 @@ import {
 } from './claude-model-selection';
 import { getRequiredClaudeCodeRuntime } from './claude-runtime';
 import { createPromptCancellation } from './claude-prompt-cancellation';
+import { ClaudeTurnOriginTracker } from './claude-turn-origin';
 import { captureGitTreeSnapshot, diffGitTreeSnapshots } from './git-turn-snapshot';
 import { createAegisMemoryMcpServer, buildMemoryContext, MEMORY_SYSTEM_PROMPT } from './memory-mcp';
 import { isDelegateExecutionSession } from './delegate-service';
@@ -546,6 +547,7 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
     claudeExecutionMode,
     claudeReasoningEffort,
     onMessage,
+    onSelfStartedTurn,
     onPermissionRequest,
     onClaudeExecutionModeChange,
     onError,
@@ -1231,11 +1233,15 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
       // to the turn that actually ran, not the one that was enqueued first.
       let previousTurnTree = await initialTurnTreePromise;
 
+      // Before the goal controller: it swallows its control turns' frames.
+      const turnOrigin = new ClaudeTurnOriginTracker();
+
       // 流式处理消息
       for await (const message of result) {
         if (abortController.signal.aborted) {
           break;
         }
+        if (turnOrigin.observe(message as Parameters<typeof turnOrigin.observe>[0])) onSelfStartedTurn?.();
         if (await goalController.receive(message as unknown as Parameters<typeof goalController.receive>[0])) continue;
 
         trackClaudeWidgetDraft(message as SDKMessage, widgetDrafts, widgetDraftBlocks);
@@ -1279,12 +1285,14 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
         if (streamMessage?.type === 'result') {
           // A turn that picked up prompts queued while it ran answers all of
           // them with this one result; count the host's own prompts it names
-          // so the host settles each send. CLIs without the field answer one.
+          // so the host settles each send. CLIs without the field leave it
+          // unset. A turn the CLI started on its own may name none.
           const answeredUuids = (message as { user_message_uuids?: unknown }).user_message_uuids;
-          const answered = Array.isArray(answeredUuids)
-            ? answeredUuids.filter((uuid) => typeof uuid === 'string' && pendingPromptUuids.delete(uuid)).length
-            : 0;
-          if (answered > 1) streamMessage.answeredPrompts = answered;
+          if (Array.isArray(answeredUuids)) {
+            streamMessage.answeredPrompts = answeredUuids.filter(
+              (uuid) => typeof uuid === 'string' && pendingPromptUuids.delete(uuid)
+            ).length;
+          }
         }
         if (streamMessage) {
           // Subagent (Task) activity streams interleaved with the top-level

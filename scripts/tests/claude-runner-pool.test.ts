@@ -4,6 +4,7 @@ import {
   CLAUDE_RUNNER_MAX_IDLE,
   CLAUDE_RUNNER_MIN_IDLE_GRACE_MS,
   CLAUDE_RUNNER_PREWARM_IDLE_TTL_MS,
+  noteClaudeBackgroundTasks,
   selectClaudeRunnersToReap,
   type ClaudeRunnerSnapshot,
 } from '../../src/electron/libs/claude-runner-pool';
@@ -39,6 +40,48 @@ const NOW = 100 * 60 * 1000; // 100 minutes
     NOW
   );
   assert.deepEqual(victims, [], 'pending permissions block reaping');
+}
+
+// Background work (a running background command, or a turn the CLI started
+// when one finished) survives the TTL and the cap: retiring would kill it.
+{
+  const victims = selectClaudeRunnersToReap(
+    [
+      snapshot('watching-ci', { hasBackgroundWork: true, lastTurnEndedAt: 0 }),
+      ...Array.from({ length: CLAUDE_RUNNER_MAX_IDLE }, (_, i) =>
+        snapshot(`idle-${i}`, { lastTurnEndedAt: NOW - CLAUDE_RUNNER_MIN_IDLE_GRACE_MS - 1 - i })
+      ),
+    ],
+    NOW
+  );
+  assert.deepEqual(victims, [], 'background work blocks reaping and does not count toward the cap');
+}
+
+// A background task finishing long after the last result: in the moment
+// before the woken turn's first frame the runner has no tasks and no turn in
+// flight, but the restarted idle clock keeps the reaper away.
+{
+  const watching = { inFlightTurns: 0, runningBackgroundTasks: 1, lastTurnEndedAt: 0 };
+  const finished = noteClaudeBackgroundTasks(watching, 0, NOW);
+  assert.equal(finished.lastTurnEndedAt, NOW, 'a finished task restarts the idle clock');
+  assert.deepEqual(
+    selectClaudeRunnersToReap(
+      [snapshot('waking', { lastTurnEndedAt: finished.lastTurnEndedAt, hasBackgroundWork: false })],
+      NOW + 60_000
+    ),
+    [],
+    'the reaper spares the runner between the task finishing and the woken turn'
+  );
+  assert.equal(
+    noteClaudeBackgroundTasks({ ...watching, inFlightTurns: 1 }, 0, NOW).lastTurnEndedAt,
+    0,
+    'during a turn the clock is the turn result\'s to restart'
+  );
+  assert.equal(
+    noteClaudeBackgroundTasks({ ...watching, runningBackgroundTasks: 0 }, 1, NOW).lastTurnEndedAt,
+    0,
+    'a task starting does not restart it'
+  );
 }
 
 // A first turn that has not produced a result yet has no idle anchor.

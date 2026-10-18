@@ -16,6 +16,11 @@ export interface ClaudeRunnerSnapshot {
   /** A permission dialog is open for this session. */
   hasPendingPermissions: boolean;
   /**
+   * Background tasks are running in the CLI. Retiring the runner would kill
+   * them, and with them the turn the CLI starts when one finishes.
+   */
+  hasBackgroundWork?: boolean;
+  /**
    * Spawned speculatively before any user prompt (prewarm). Holds no
    * conversation context, so it is the cheapest thing in the pool to lose:
    * it expires on a shorter TTL and is always cap-evicted BEFORE any runner
@@ -49,7 +54,7 @@ export const CLAUDE_RUNNER_MIN_IDLE_GRACE_MS = 2 * 60 * 1000;
  * Returns the session ids whose runners should be aborted now.
  *
  * A runner is a candidate only when it is provably idle: zero in-flight
- * turns, no pending permission dialog, and at least one completed turn
+ * turns, no pending permission dialog, no background work, and at least one completed turn
  * (`lastTurnEndedAt` set — a first turn still streaming has none). Candidates
  * are retired when idle past the TTL; beyond that, the oldest candidates past
  * the grace window are retired until at most `maxIdle` idle runners remain.
@@ -68,6 +73,7 @@ export function selectClaudeRunnersToReap(
     (snapshot) =>
       snapshot.inFlightTurns === 0 &&
       !snapshot.hasPendingPermissions &&
+      !snapshot.hasBackgroundWork &&
       typeof snapshot.lastTurnEndedAt === 'number'
   );
 
@@ -104,4 +110,30 @@ export function selectClaudeRunnersToReap(
   }
 
   return Array.from(reap);
+}
+
+export interface ClaudeRunnerBackgroundState {
+  inFlightTurns: number;
+  runningBackgroundTasks: number;
+  lastTurnEndedAt?: number;
+}
+
+/**
+ * Applies a new background task count. A task that finished while no turn is
+ * in flight is about to wake the agent with a turn of its own, whose first
+ * frame comes a moment after the count drops: restart the idle clock so the
+ * reaper cannot retire the runner in that gap. (A stopped task does not wake
+ * the agent; the restarted clock then simply runs out again.)
+ */
+export function noteClaudeBackgroundTasks(
+  state: ClaudeRunnerBackgroundState,
+  runningBackgroundTasks: number,
+  nowMs: number
+): ClaudeRunnerBackgroundState {
+  const finished = runningBackgroundTasks < state.runningBackgroundTasks;
+  return {
+    inFlightTurns: state.inFlightTurns,
+    runningBackgroundTasks,
+    lastTurnEndedAt: finished && state.inFlightTurns === 0 ? nowMs : state.lastTurnEndedAt,
+  };
 }
