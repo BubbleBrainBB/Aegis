@@ -220,7 +220,9 @@ app.whenReady().then(async () => {
     browserManager.dispose();
     for (const window of BrowserWindow.getAllWindows()) window.destroy();
     server.close();
-    fs.rmSync(temp, { recursive: true, force: true });
+    // Best effort: Chromium may still be writing the profile, and a throw here
+    // would skip app.exit and leave the process (and CI) hanging.
+    try { fs.rmSync(temp, { recursive: true, force: true }); } catch {}
     app.exit(code);
   }
 });
