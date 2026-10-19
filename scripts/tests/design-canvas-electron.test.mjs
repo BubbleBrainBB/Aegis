@@ -204,8 +204,10 @@ await click('[aria-label="Close history"]');
 const exportItem=(prefix)=>designMenu(prefix);
 await exportItem('HTML bundle');for(let i=0;i<40&&!fs.existsSync(path.join(process.env.QA_DATA,'Fieldnotes.zip'));i++)await delay(75);assert(fs.existsSync(path.join(process.env.QA_DATA,'Fieldnotes.zip')));
 // PDF: a page per board, each at the board's size.
-await exportItem('PDF');const pdfFile=path.join(process.env.QA_DATA,'Fieldnotes.pdf');for(let i=0;i<120&&!fs.existsSync(pdfFile);i++)await delay(100);
-const pdf=fs.readFileSync(pdfFile).toString('latin1');assert(pdf.startsWith('%PDF'));
+// The file appears before it is fully written: wait for a complete PDF.
+await exportItem('PDF');const pdfFile=path.join(process.env.QA_DATA,'Fieldnotes.pdf');const readPdf=()=>fs.existsSync(pdfFile)?fs.readFileSync(pdfFile).toString('latin1'):'';
+for(let i=0;i<200&&!(readPdf().startsWith('%PDF')&&readPdf().trimEnd().endsWith('%%EOF'));i++)await delay(100);
+const pdf=readPdf();assert(pdf.startsWith('%PDF')&&pdf.trimEnd().endsWith('%%EOF'),'a complete PDF was exported ('+pdf.length+' bytes)');
 const boardsNow=repo.read(a,d.id).boards;const boxes=[...pdf.matchAll(/\/MediaBox\s*\[\s*0\s+0\s+([\d.]+)\s+([\d.]+)\s*\]/g)].map(m=>[Math.round(+m[1]*96/72),Math.round(+m[2]*96/72)]);
 assert.equal(boxes.length,boardsNow.length,'a page per board: '+JSON.stringify(boxes));
 assert.deepEqual(boxes,boardsNow.map(b=>[b.width,b.height]),'pages at board size');

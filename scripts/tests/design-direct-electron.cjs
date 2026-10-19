@@ -132,11 +132,19 @@ exports.run = async ({ w, js, repo, sessionId, documentId, screenshotDir }) => {
   assert(repo.history(sessionId, documentId)[0].summary.startsWith("Redo · "));
 
   // A plain-flow child moves freely like in a Figma frame: no reorder, siblings stay put.
-  const pStyle = () => frame().then((f) => f.executeJavaScript('document.querySelector("main p").getAttribute("style")||""'));
-  const siblings = () => frame().then((f) => f.executeJavaScript('[...document.querySelectorAll("main > :not(p)")].map(e=>Math.round(e.getBoundingClientRect().y)).join()'));
+  const pStyle = () =>
+    frame()
+      .then((f) => f?.executeJavaScript('document.querySelector("main p").getAttribute("style")||""') ?? "")
+      .catch(() => "");
+  // The board frame re-renders after the save lands, so poll it (null while it reloads).
+  const siblings = () =>
+    frame()
+      .then((f) => f?.executeJavaScript('[...document.querySelectorAll("main > :not(p)")].map(e=>Math.round(e.getBoundingClientRect().y)).join()'))
+      .catch(() => null);
   const html = board().html;
   await selectNode("main p");
-  const pinned = await siblings();
+  let pinned;
+  await until(async () => (pinned = await siblings()) != null, "siblings measured");
   revision = board().contentRevision;
   const pFrom = await center(".design-selection");
   w.focus();
@@ -150,11 +158,15 @@ exports.run = async ({ w, js, repo, sessionId, documentId, screenshotDir }) => {
   assert(await js('!document.querySelector(".design-drop-container")'), "plain flow shows no reorder target");
   mouse("mouseUp", { x: pFrom.x + 40, y: pFrom.y + 96 });
   await until(() => board().contentRevision > revision, "free move persisted");
-  assert(/position:\s*absolute/.test(await pStyle()), "plain-flow drag frees the layer: " + (await pStyle()));
+  await until(async () => /position:\s*absolute/.test(await pStyle()), "plain-flow drag frees the layer").catch(async (error) => {
+    assert.fail(error.message + ": " + (await pStyle()));
+  });
   assert(repo.history(sessionId, documentId)[0].summary.startsWith("Made "), repo.history(sessionId, documentId)[0].summary);
   // The freed paragraph leaves flow; following siblings close the gap but never swap order.
   assert.equal(html.replace(/\s*style="[^"]*"/g, "").replace(/<p[^>]*>.*?<\/p>/, ""), board().html.replace(/\s*style="[^"]*"/g, "").replace(/<p[^>]*>.*?<\/p>/, ""), "no layers reordered");
   await pressUntil(false, () => !/position:\s*absolute/.test(board().html.match(/<p[^>]*>/)?.[0] ?? ""), "undo restores flow");
-  assert.equal(await siblings(), pinned, "undo puts the siblings back");
+  await until(async () => (await siblings()) === pinned, "undo puts the siblings back").catch(async (error) => {
+    assert.equal(await siblings(), pinned, error.message);
+  });
   console.log("PASS: undo/redo of canvas edits, element resize handles, Hug on double-click, auto-layout drag reorder with drop indicator, Esc cancel, and free move in plain flow");
 };
