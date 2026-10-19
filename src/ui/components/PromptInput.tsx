@@ -615,7 +615,9 @@ export function PromptInput({
       (runtimeProvider === 'kimi' && activeSession?.kimiRuntime !== 'legacy') ||
       // DeepSeek: mid-turn sends splice into the runtime's inbox and are
       // consumed before the activity settles (adapter steer path).
-      runtimeProvider === 'deepseek') &&
+      runtimeProvider === 'deepseek' ||
+      // Devin folds a session/prompt sent mid-turn into the running turn.
+      runtimeProvider === 'devin') &&
     isRunning &&
     !approvalPending &&
     !delegationPending &&

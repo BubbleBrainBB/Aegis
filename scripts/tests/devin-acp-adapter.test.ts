@@ -33,6 +33,9 @@ const log = (entry) => appendFileSync(LOG, JSON.stringify(entry) + '\\n');
 // own default and swe-2-medium has no thinking select at all (as observed).
 const LEVELS = { 'swe-2-high': ['high', ['medium', 'high', 'max']], 'claude-opus-5-5-high': ['medium', ['low', 'medium', 'high', 'xhigh', 'max']] };
 const state = { model: 'swe-2-high', level: 'high' };
+// A SLOW turn stays open until a prompt arrives mid-turn; Devin folds that
+// prompt into the turn and resolves every prompt of it with one result.
+let openTurn = null;
 const config = () => [
   { id: 'mode', category: 'mode', type: 'select', currentValue: 'accept-edits', options: [] },
   { id: 'model', category: 'model', type: 'select', currentValue: state.model, options: ['swe-2-high', 'swe-2-medium', 'claude-opus-5-5-high'].map((value) => ({ value, name: value })) },
@@ -90,6 +93,16 @@ async function handle(message) {
       state.level = params.value;
     }
     send({ id, result: { configOptions: config() } });
+  } else if (method === 'session/prompt' && openTurn) {
+    openTurn.ids.push(id);
+    openTurn.release();
+  } else if (method === 'session/prompt' && String(params.prompt?.[0]?.text).startsWith('SLOW')) {
+    openTurn = { ids: [id] };
+    await new Promise((resolve) => { openTurn.release = resolve; });
+    update(params.sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Folded.' } });
+    const result = { stopReason: 'end_turn', usage: { totalTokens: 10, inputTokens: 9, outputTokens: 1 }, _meta: { 'cognition.ai/userMessageId': 'user-message-2' } };
+    for (const promptId of openTurn.ids) send({ id: promptId, result });
+    openTurn = null;
   } else if (method === 'session/prompt' && String(params.prompt?.[0]?.text).startsWith('ASK')) {
     const reply = await ask('elicitation/create', {
       mode: 'form',
@@ -330,6 +343,95 @@ async function main(): Promise<void> {
     assert.ok(!readCalls().some((call) => call.method === 'session/set_config_option'));
     assert.equal(warnings.filter((line) => line.includes('swe-9-ultra')).length, 1);
 
+    await adapter.stopAll();
+  }
+
+  // ── Steer: a prompt sent mid-turn folds into the running turn ───────────
+  {
+    resetCalls();
+    const adapter = new DevinAcpAdapter();
+    const events: Event[] = [];
+    adapter.events.on('event', (event: Event) => {
+      events.push(event);
+      if (event.type === 'permission_request') {
+        void adapter.respondToRequest('t6', event.requestId as string, { behavior: 'allow', updatedInput: {} });
+      }
+    });
+    await adapter.startSession({ threadId: 't6', cwd: dir, prompt: '' } as never);
+
+    events.length = 0;
+    resetCalls();
+    // The steer is sent while the primary is still switching models: it must
+    // wait for the primary's prompt and must not change config mid-turn.
+    const primary = adapter.sendTurn({ threadId: 't6', prompt: 'SLOW task', model: 'swe-2-medium' } as never);
+    const steer = adapter.sendTurn({
+      threadId: 't6',
+      prompt: 'also this',
+      model: 'claude-opus-5-5-high',
+      devinPermissionMode: 'plan',
+    } as never);
+    await withTimeout(Promise.all([primary, steer]), 'steered turn');
+
+    assert.deepEqual(
+      readCalls().map((call) => [call.method, (call.params.prompt as Array<{ text?: string }> | undefined)?.[0]?.text]),
+      [
+        ['session/set_config_option', undefined],
+        ['session/prompt', 'SLOW task'],
+        ['session/prompt', 'also this'],
+      ],
+      'the steer follows the primary prompt and leaves config for the next turn'
+    );
+    const statuses = events.filter((event) => event.type === 'status_change').map((event) => event.status);
+    assert.deepEqual(statuses, ['running', 'completed'], 'one running stretch for the primary and its steer');
+    const results = events
+      .filter((event) => event.type === 'message' && (event.message as { type?: string }).type === 'result')
+      .map((event) => event.message as { subtype: string; usage: { input_tokens: number } });
+    assert.equal(results.length, 1, 'the folded turn ends with a single result');
+    assert.equal(results[0].subtype, 'success');
+    assert.equal(results[0].usage.input_tokens, 9, 'prompts sharing a userMessageId are counted once');
+
+    resetCalls();
+    await withTimeout(
+      adapter.sendTurn({ threadId: 't6', prompt: 'next', model: 'claude-opus-5-5-high', devinPermissionMode: 'plan' } as never),
+      'turn after a steer'
+    );
+    assert.deepEqual(
+      readCalls().slice(0, 3).map((call) => call.method),
+      ['session/set_config_option', 'session/set_mode', 'session/prompt'],
+      "the steer's model and mode apply from the next turn"
+    );
+    await adapter.stopAll();
+  }
+
+  // ── Steer into the session's first turn (the one startSession sends) ─────
+  {
+    resetCalls();
+    const adapter = new DevinAcpAdapter();
+    const events: Event[] = [];
+    let completed!: () => void;
+    const turnCompleted = new Promise<void>((resolve) => {
+      completed = resolve;
+    });
+    adapter.events.on('event', (event: Event) => {
+      events.push(event);
+      if (event.type === 'status_change' && event.status === 'completed') completed();
+    });
+    // The agent loop chains later sends off startSession: it must return once
+    // the session is ready, not after the first turn (which here only ends
+    // when the steer arrives).
+    await withTimeout(
+      adapter.startSession({ threadId: 't7', cwd: dir, prompt: 'SLOW first' } as never),
+      'startSession with a first prompt',
+      3_000
+    );
+    await withTimeout(adapter.sendTurn({ threadId: 't7', prompt: 'also this' } as never), 'steer into the first turn');
+    await withTimeout(turnCompleted, 'first turn completion');
+    assert.deepEqual(
+      readCalls().filter((call) => call.method === 'session/prompt').map((call) => (call.params.prompt as Array<{ text: string }>)[0].text),
+      ['SLOW first', 'also this']
+    );
+    const results = events.filter((event) => event.type === 'message' && (event.message as { type?: string }).type === 'result');
+    assert.equal(results.length, 1, 'the steer folds into the first turn: one result');
     await adapter.stopAll();
   }
 
