@@ -81,7 +81,8 @@ const html=(title,subtitle,color)=>'<style>body{font-family:system-ui;background
 const updated=await call('design_update',{documentId:d.id,operationId:'boards',operations:[{type:'add',name:'Home',width:720,height:900,html:html('Some places<br>become a part<br>of you.','Collect the moments, little discoveries and places you want to remember.','#81977b')},{type:'add',name:'Journal',width:720,height:900,html:html('Leave a little<br>room for<br>wonder.','A journal of roads taken slowly. Stories from the coast, mountains and everywhere in between.','#ad9478')}]});
 await until('document.querySelectorAll("iframe").length===2','two live boards');await js('document.querySelector(".design-viewport").dispatchEvent(new KeyboardEvent("keydown",{key:"0",code:"Digit0",metaKey:true,bubbles:true,cancelable:true}))');await delay(350);
 const repo=getDesignRepository();assert.equal(repo.read(a,d.id).boards.length,2);
-const frame=w.webContents.mainFrame.framesInSubtree.find(f=>f.url==='about:srcdoc');assert(frame);
+// The iframes exist before their srcdoc has loaded: wait for the board frame.
+let frame;for(let i=0;i<100&&!(frame=w.webContents.mainFrame.framesInSubtree.find(f=>f.url==='about:srcdoc'));i++)await delay(75);assert(frame,'board frame loaded');
 assert.equal(await frame.executeJavaScript('typeof window.electron'), 'undefined');
 assert.equal(await frame.executeJavaScript('(()=>{try{return typeof parent.electron}catch{return "isolated"}})()'),'isolated');
 await frame.executeJavaScript('document.querySelector("h1").click()');await until('!!document.querySelector(".design-selection")','selection bridge');
