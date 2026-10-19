@@ -3355,6 +3355,14 @@ button.aegis-mdx-metadata-key:hover {
 /* Window drag region */
 .drag-region {
   -webkit-app-region: drag;
+  /* Window chrome: titles in the bar shouldn't join a text selection. */
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.drag-region :is(input, textarea, [contenteditable='true']) {
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .no-drag {
