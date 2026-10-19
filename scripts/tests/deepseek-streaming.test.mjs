@@ -25,12 +25,13 @@ const { DeepseekSdkAdapter } = require('../../dist-electron/electron/libs/provid
 // Each scenario queues the responses for its model requests, in order.
 let responses = [];
 let requestCount = 0;
+const requestBodies = [];
 const server = http.createServer((req, res) => {
   const chunks = [];
   req.on('data', (chunk) => chunks.push(chunk));
   req.on('end', () => {
     const body = JSON.parse(Buffer.concat(chunks).toString());
-    requestCount += 1;
+    requestCount += 1; requestBodies.push(body);
     const next = responses.shift() ?? { text: 'unexpected extra request' };
     void writeMessagesStream(res, { model: body.model, pieceDelayMs: 20, ...next });
   });
@@ -77,6 +78,24 @@ function makeAdapter() {
   });
   return adapter;
 }
+// startSession only dispatches the first turn (so a steer during it can fold
+// in); wait for that turn's terminal status before inspecting it.
+function turnSettled(adapter, threadId) {
+  return new Promise((resolve) => {
+    const onEvent = (event) => {
+      if (event.threadId !== threadId || event.type !== 'status_change') return;
+      if (event.status !== 'completed' && event.status !== 'error') return;
+      adapter.events.off('event', onEvent); resolve(event.status);
+    };
+    adapter.events.on('event', onEvent);
+  });
+}
+async function startAndSettle(adapter, input) {
+  const settled = turnSettled(adapter, input.threadId);
+  const session = await adapter.startSession(input);
+  await settled;
+  return session;
+}
 const joined = (entries, kind) => entries.filter((entry) => entry.kind === kind).map((entry) => entry.text).join('');
 const indexOf = (timeline, predicate) => timeline.findIndex(predicate);
 
@@ -84,7 +103,7 @@ try {
   // 1. Reasoning and answer stream piece by piece before the step commits.
   responses = [{ thinking: ['Let me ', 'think.'], text: ['Hello', ', ', 'world'] }];
   const first = makeAdapter();
-  await first.startSession({ threadId: 'stream', cwd, model: 'deepseek-flash', prompt: 'Say hello.' });
+  await startAndSettle(first, { threadId: 'stream', cwd, model: 'deepseek-flash', prompt: 'Say hello.' });
   const t1 = first.timeline;
   assert.equal(joined(t1, 'thinking'), 'Let me think.', `thinking deltas: ${JSON.stringify(t1)}`);
   assert.equal(joined(t1, 'text'), 'Hello, world');
@@ -113,7 +132,7 @@ try {
   // 3. A failed attempt's partial answer is dropped from the live view.
   responses = [{ text: ['Partial ', 'answer'], dropAfterTextPieces: 1 }, { text: ['Recovered ', 'answer'] }];
   const retry = makeAdapter();
-  await retry.startSession({ threadId: 'retry', cwd, model: 'deepseek-flash', prompt: 'Answer.' });
+  await startAndSettle(retry, { threadId: 'retry', cwd, model: 'deepseek-flash', prompt: 'Answer.' });
   const t3 = retry.timeline;
   const partial = indexOf(t3, (entry) => entry.kind === 'text' && entry.text === 'Partial ');
   assert(partial >= 0, `partial delta streamed: ${JSON.stringify(t3)}`);
@@ -141,7 +160,7 @@ try {
   widget.events.on('event', (event) => {
     for (const block of event.message?.message?.content ?? []) if (block.type === 'tool_use') toolIds.push({ name: block.name, id: block.id });
   });
-  await widget.startSession({ threadId: 'widget', cwd, model: 'deepseek-flash', prompt: 'Draw it.' });
+  await startAndSettle(widget, { threadId: 'widget', cwd, model: 'deepseek-flash', prompt: 'Draw it.' });
   const t4 = widget.timeline;
   const drafts = t4.filter((entry) => entry.kind === 'widget-draft');
   assert(drafts.length >= 2, `widget drafts stream in steps: ${JSON.stringify(drafts.map((d) => d.html.length))}`);
@@ -155,7 +174,25 @@ try {
   assert(indexOf(t4, (entry) => entry.kind === 'widget-draft') < firstTool, 'drafts precede the committed call');
   await widget.stopSession('widget'); adapters.delete(widget);
 
-  console.log(`DeepSeek streaming: ordered reasoning/text deltas, per-step restart, failed-attempt cleanup and widget drafts passed (${retried ? 'retried' : 'turn failed'} after the dropped stream)`);
+  // 5. A steer sent the moment the first turn is dispatched waits for the
+  //    first prompt's admission, then folds into the same turn, in order.
+  responses = [{ text: ['First ', 'answer'] }, { text: ['Steered ', 'answer'] }];
+  const steered = makeAdapter();
+  const bodiesBefore = requestBodies.length;
+  const steerSettled = turnSettled(steered, 'steer');
+  await steered.startSession({ threadId: 'steer', cwd, model: 'deepseek-flash', prompt: 'First prompt.' });
+  await steered.sendTurn({ threadId: 'steer', prompt: 'Steered prompt.' });
+  assert.equal(await steerSettled, 'completed');
+  await new Promise((done) => setTimeout(done, 300));
+  const steerResults = steered.timeline.filter((entry) => entry.kind === 'result');
+  assert.deepEqual(steerResults, [{ kind: 'result', subtype: 'success' }], 'first turn + steer settle as one turn');
+  const finalMessages = JSON.stringify(requestBodies.slice(bodiesBefore).at(-1).messages);
+  assert(finalMessages.indexOf('First prompt.') >= 0, `first prompt reaches the model: ${finalMessages}`);
+  assert(finalMessages.indexOf('Steered prompt.') > finalMessages.indexOf('First prompt.'), `steer follows the first prompt: ${finalMessages}`);
+  responses = [];
+  await steered.stopSession('steer'); adapters.delete(steered);
+
+  console.log(`DeepSeek streaming: ordered reasoning/text deltas, per-step restart, failed-attempt cleanup, widget drafts and first-turn steer passed (${retried ? 'retried' : 'turn failed'} after the dropped stream)`);
 } finally {
   for (const adapter of adapters) for (const id of adapter.sessions.keys()) await adapter.stopSession(id);
   server.closeAllConnections(); await new Promise((done) => server.close(done));

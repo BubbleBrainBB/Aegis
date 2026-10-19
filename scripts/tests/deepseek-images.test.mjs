@@ -67,6 +67,21 @@ function makeAdapter() {
   adapter.events.on('event', event => adapter.observed.push(event));
   return adapter;
 }
+// startSession only dispatches the first turn (so a steer during it can fold
+// in); wait for that turn's terminal status before inspecting it.
+async function startAndSettle(adapter, input) {
+  const settled = new Promise((resolve) => {
+    const onEvent = (event) => {
+      if (event.threadId !== input.threadId || event.type !== 'status_change') return;
+      if (event.status !== 'completed' && event.status !== 'error') return;
+      adapter.events.off('event', onEvent); resolve();
+    };
+    adapter.events.on('event', onEvent);
+  });
+  const session = await adapter.startSession(input);
+  await settled;
+  return session;
+}
 function options(threadId, attachments = [], extra = {}) {
   return { threadId, cwd, prompt: 'Inspect these images.', model: 'deepseek-flash', attachments, ...extra };
 }
@@ -86,7 +101,7 @@ try {
   }
   assert.match(deepseekImageInputError(attachments, 'deepseek-v4-pro', config), /Switch to .*deepseek-flash/);
   const first = makeAdapter();
-  const start = await first.startSession(options('upload', attachments));
+  const start = await startAndSettle(first, options('upload', attachments));
   assert.equal(imageParts(requests.at(-1)).length, 4);
   assert(requests.at(-1).messages.some(m => Array.isArray(m.content) && m.content.some(b => b.text === 'Inspect these images.')));
   assert(!JSON.stringify(requests.at(-1).messages).includes('cannot view images'));
@@ -113,7 +128,7 @@ try {
     nextCall = preset === 'standard' ? { name: 'read_image', args: { file_path: attachments[0].path } }
       : { name: 'run_code', args: { description: 'Read the image', code: `return await tools.read_image({file_path:${JSON.stringify(attachments[0].path)}});` } };
     const requestIndex = requests.length;
-    await adapter.startSession(options(preset, [], { deepseekAgentPreset: preset, prompt: 'Read the local image.' }));
+    await startAndSettle(adapter, options(preset, [], { deepseekAgentPreset: preset, prompt: 'Read the local image.' }));
     assert.equal(imageParts(requests.at(-1)).length, 1, `${preset}: tool image reaches next model request: ${JSON.stringify(requests.at(-1).messages.slice(-3))}; ${JSON.stringify(adapter.observed)}`);
     const result = results(adapter).find(b => b.images?.length);
     assert(result, `${preset}: adapter preserves result image. Events: ${JSON.stringify(adapter.observed)}`);
@@ -137,12 +152,12 @@ try {
   const badPath = join(cwd, 'bad.png'); writeFileSync(badPath, 'not an image');
   const beforeBad = requests.length;
   const invalid = makeAdapter();
-  await invalid.startSession(options('invalid', [{ ...attachments[0], path: badPath }]));
+  await startAndSettle(invalid, options('invalid', [{ ...attachments[0], path: badPath }]));
   assert(invalid.observed.some(e => e.type === 'error'), 'malformed image emits an actionable error');
   assert.equal(requests.length, beforeBad);
   await stop(invalid, 'invalid');
   const mismatch = makeAdapter();
-  await mismatch.startSession(options('mismatch', [{ ...attachments[0], mimeType: 'image/jpeg' }]));
+  await startAndSettle(mismatch, options('mismatch', [{ ...attachments[0], mimeType: 'image/jpeg' }]));
   assert(mismatch.observed.some(e => e.type === 'error'), 'declared MIME must match raster bytes');
   assert.equal(requests.length, beforeBad);
   await stop(mismatch, 'mismatch');
@@ -156,7 +171,7 @@ try {
   await stop(first, 'upload');
   for (const attachment of attachments) rmSync(attachment.path);
   const resumed = makeAdapter();
-  await resumed.startSession(options('resumed', [], { resumeSessionId: start.providerSessionId, prompt: 'Recall the images after a restart.' }));
+  await startAndSettle(resumed, options('resumed', [], { resumeSessionId: start.providerSessionId, prompt: 'Recall the images after a restart.' }));
   assert.equal(imageParts(requests.at(-1)).length, 6, 'native stored images survive source deletion and process restart');
   await stop(resumed, 'resumed');
   console.log('DeepSeek images: real adapter/runtime, 4 formats, image-only + steer, read_image/native + PTC, validation and restart passed');
