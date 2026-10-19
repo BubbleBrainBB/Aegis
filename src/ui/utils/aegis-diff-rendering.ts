@@ -80,8 +80,8 @@ function diffStats(fileDiff: FileDiffMetadata): { addedLines: number; removedLin
   let addedLines = 0;
   let removedLines = 0;
   for (const hunk of fileDiff.hunks) {
-    addedLines += hunk.additionCount || 0;
-    removedLines += hunk.deletionCount || 0;
+    addedLines += hunk.additionLines || 0;
+    removedLines += hunk.deletionLines || 0;
   }
   return { addedLines, removedLines };
 }
