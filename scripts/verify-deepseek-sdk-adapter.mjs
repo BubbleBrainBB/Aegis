@@ -932,17 +932,23 @@ for (const testCase of [
   const settle = async () => { for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve)); };
 
   // A runtime whose primary prompt is only submitted (and spliced into the
-  // inbox) when the test says so. Prompts are logged in inbox order.
+  // inbox) when the test says so. Prompts are logged in inbox order; a run()
+  // settles, like the SDK's, once it saw the session go idle. "late:" steers
+  // are accepted only when the test admits them (slow runtime acceptance,
+  // e.g. image processing).
   const makeRuntime = () => {
     const inbox = [];
     const runs = [];
+    const heldPrompts = [];
     const queue = [];
     let wake;
     let closed = false;
+    let failure;
     const subscription = {
       [Symbol.asyncIterator]() { return this; },
       async next() {
         while (!queue.length) {
+          if (failure) throw failure;
           if (closed) return { done: true, value: undefined };
           await new Promise((resolve) => { wake = resolve; });
         }
@@ -950,34 +956,56 @@ for (const testCase of [
       },
       close() { closed = true; wake?.(); },
     };
+    const notify = (method, params) => {
+      queue.push({ method, params: { sessionId: 'first-turn-session', ...params } });
+      wake?.();
+    };
+    const event = (type, data) => notify('session.event', { event: { type, data } });
+    const idle = () => notify('session.status', { status: 'idle' });
     const splice = (text) => {
       inbox.push(text);
-      queue.push({
-        method: 'session.event',
-        params: {
-          sessionId: 'first-turn-session',
-          event: { type: 'agent/inbox/spliced', data: { target: 'next-step', start: 0, inserted: [{ id: `m${inbox.length}` }] } },
-        },
-      });
-      wake?.();
+      const id = `m${inbox.length}`;
+      event('agent/inbox/spliced', { target: 'next-turn', start: 0, inserted: [{ id }] });
+      return id;
     };
     const harness = {
       session: () => ({
         id: 'first-turn-session',
         run: (blocks) => new Promise((resolve, reject) => {
-          runs.push({ text: textOf(blocks), submit: () => splice(textOf(blocks)), finish: () => resolve({}), fail: reject });
+          runs.push({
+            text: textOf(blocks),
+            submit: () => splice(textOf(blocks)),
+            finish: () => { idle(); resolve({}); },
+            // run() resolving with no idle of its own (its idle came earlier).
+            resolveOnly: () => resolve({}),
+            fail: reject,
+          });
         }),
       }),
       client: {
         subscribeSessionTree: () => subscription,
-        async prompt(_sessionId, blocks) { splice(textOf(blocks)); return `steer-${inbox.length}`; },
+        async prompt(_sessionId, blocks) {
+          const text = textOf(blocks);
+          if (text.startsWith('late:')) {
+            await new Promise((admit, fail) => heldPrompts.push({ text, admit, fail }));
+          }
+          return splice(text);
+        },
       },
       async close() {
         subscription.close();
-        for (const run of runs) run.fail(new Error('DeepSeek Harness runtime is not running'));
+        const error = new Error('DeepSeek Harness runtime is not running');
+        for (const run of runs) run.fail(error);
+        for (const held of heldPrompts) held.fail(error);
       },
     };
-    return { harness, inbox, runs };
+    // The runtime process dies: the subscription rejects, requests fail.
+    const crash = (message) => {
+      failure = new Error(message);
+      wake?.();
+      for (const run of runs) run.fail(failure);
+    };
+    return { harness, inbox, runs, heldPrompts, event, idle, crash };
   };
   const makeAdapter = () => {
     const adapterInstance = new DeepseekSdkAdapter();
@@ -1090,6 +1118,140 @@ for (const testCase of [
     await adapterInstance.stopSession('first-replace');
   }
 
+  // 5. A steer the runtime accepts only after run() went idle starts
+  //    activity no run() owns. The turn stays open until that activity is
+  //    idle: one result with summed usage, one completed status. A send made
+  //    meanwhile steers into it instead of starting an overlapping run(), and
+  //    a send after the result starts the next turn.
+  {
+    const { adapterInstance, emitted, runtimes, results, errors } = makeAdapter();
+    await start(adapterInstance, 'late-steer', 'first prompt');
+    await settle();
+    const [runtime] = runtimes;
+    runtime.runs[0].submit();
+    runtime.event('assistant/message', {
+      turn: 1, step: 0,
+      message: { content: [{ type: 'text', text: 'first answer' }] },
+      usage: { inputTokens: 100, outputTokens: 10 },
+    });
+    const steer = adapterInstance.sendTurn({ threadId: 'late-steer', prompt: 'late: steer' });
+    await settle();
+    assert.equal(runtime.heldPrompts.length, 1, 'the steer is submitted while the turn runs');
+    runtime.runs[0].finish();
+    await settle();
+    assert.deepEqual(results(), [], 'run() settled, but the turn still owns the steer being accepted');
+    const sendB = adapterInstance.sendTurn({ threadId: 'late-steer', prompt: 'B' });
+    await settle();
+    assert.equal(runtime.runs.length, 1, 'a send during the late activity starts no overlapping run()');
+    assert.deepEqual(runtime.inbox, ['first prompt'], 'B waits behind the steer being accepted');
+    runtime.heldPrompts[0].admit();
+    await sendB;
+    assert.deepEqual(runtime.inbox, ['first prompt', 'late: steer', 'B'], 'each prompt reaches the inbox once, in send order');
+    await settle();
+    assert.deepEqual(results(), [], 'no result while the late activity runs');
+    runtime.event('assistant/message', {
+      turn: 2, step: 0,
+      message: { content: [{ type: 'text', text: 'late answer' }] },
+      usage: { inputTokens: 50, outputTokens: 5 },
+    });
+    runtime.idle();
+    await steer;
+    await settle();
+    assert.deepEqual(results(), ['success'], 'the late activity ends the turn with exactly one result');
+    const result = emitted.find((event) => event.message?.type === 'result').message;
+    assert.equal(result.usage.input_tokens, 150, 'the result sums the late activity\'s usage');
+    assert.equal(result.usage.output_tokens, 15);
+    const completed = emitted.filter((event) => event.type === 'status_change' && event.status === 'completed');
+    assert.equal(completed.length, 1, 'one completed status');
+    assert.equal(emitted.indexOf(completed[0]) > emitted.findIndex((event) => event.message?.type === 'result'), true);
+    const next = adapterInstance.sendTurn({ threadId: 'late-steer', prompt: 'next turn' });
+    await settle();
+    assert.equal(runtime.runs.length, 2, 'a send after the result starts the next turn');
+    runtime.runs[1].submit();
+    runtime.runs[1].finish();
+    await next;
+    await settle();
+    assert.deepEqual(results(), ['success', 'success']);
+    assert.deepEqual(runtime.inbox, ['first prompt', 'late: steer', 'B', 'next turn']);
+    assert.deepEqual(errors(), []);
+    await adapterInstance.stopSession('late-steer');
+  }
+
+  // 6. A stop while the turn waits on a steer being accepted ends it quietly.
+  {
+    const { adapterInstance, runtimes, results, errors } = makeAdapter();
+    await start(adapterInstance, 'late-stop', 'first prompt');
+    await settle();
+    const [runtime] = runtimes;
+    runtime.runs[0].submit();
+    const steer = adapterInstance.sendTurn({ threadId: 'late-stop', prompt: 'late: steer' });
+    await settle();
+    runtime.runs[0].finish();
+    await settle();
+    await adapterInstance.stopSession('late-stop');
+    await steer;
+    await settle();
+    assert.deepEqual(results(), []);
+    assert.deepEqual(errors(), []);
+    assert.deepEqual(runtime.inbox, ['first prompt']);
+  }
+
+  // 6b. A stop/dispose that lands after run() resolved but before runTurn
+  //     resumes, while an accepted steer is still owed an idle: the turn ends
+  //     quietly instead of installing a waiter nothing will ever wake.
+  for (const teardown of ['stop', 'dispose']) {
+    const threadId = `late-teardown-${teardown}`;
+    const { adapterInstance, runtimes, results, errors } = makeAdapter();
+    await start(adapterInstance, threadId, 'first prompt');
+    await settle();
+    const [runtime] = runtimes;
+    runtime.runs[0].submit();
+    const steer = adapterInstance.sendTurn({ threadId, prompt: 'late: steer' });
+    await settle();
+    // The primary activity goes idle before the runtime accepts the steer.
+    runtime.idle();
+    await settle();
+    runtime.heldPrompts[0].admit();
+    await steer;
+    await settle();
+    const active = adapterInstance.sessions.get(threadId);
+    assert.equal(active.turn.steers.owed.size, 1, 'the accepted steer is owed an idle');
+    // Same tick: run() resolves, then teardown runs before runTurn resumes.
+    runtime.runs[0].resolveOnly();
+    const stopping = teardown === 'stop' ? adapterInstance.stopSession(threadId) : adapterInstance.disposeSession(threadId);
+    let timer;
+    await Promise.race([
+      active.turnEnded,
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${teardown} before the settle waiter left the turn waiting forever`)), 2000); }),
+    ]).finally(() => clearTimeout(timer));
+    await stopping;
+    await settle();
+    assert.deepEqual(results(), [], `${teardown}: no result`);
+    assert.deepEqual(errors(), [], `${teardown}: no error`);
+  }
+
+  // 7. The runtime dies during the late activity: the turn fails instead of
+  //    waiting forever for an idle that never comes.
+  {
+    const { adapterInstance, runtimes, results, errors } = makeAdapter();
+    await start(adapterInstance, 'late-crash', 'first prompt');
+    await settle();
+    const [runtime] = runtimes;
+    runtime.runs[0].submit();
+    const steer = adapterInstance.sendTurn({ threadId: 'late-crash', prompt: 'late: steer' });
+    await settle();
+    runtime.runs[0].finish();
+    runtime.heldPrompts[0].admit();
+    await steer;
+    await settle();
+    assert.deepEqual(results(), [], 'the accepted steer\'s activity is still running');
+    runtime.crash('DeepSeek Harness runtime exited');
+    await settle();
+    assert.deepEqual(results(), ['error']);
+    assert.deepEqual(errors(), ['DeepSeek Harness runtime exited']);
+    await adapterInstance.stopSession('late-crash');
+  }
+
   // Prompt preparation (image reads/uploads) under test control: "slow:"
   // prompts wait until released, "fail:" prompts reject.
   const images = require('../dist-electron/electron/libs/provider/deepseek-images.js');
@@ -1101,7 +1263,7 @@ for (const testCase of [
     return realBuild(prompt, attachments);
   };
   try {
-    // 5. A steer still preparing when the turn ends keeps its place: a send
+    // 8. A steer still preparing when the turn ends keeps its place: a send
     //    made after it must not start a turn ahead of it.
     {
       const { adapterInstance, runtimes, results } = makeAdapter();
@@ -1131,7 +1293,7 @@ for (const testCase of [
       await adapterInstance.stopSession('idle-boundary');
     }
 
-    // 6. A steer whose preparation fails still waits for the steer before it,
+    // 9. A steer whose preparation fails still waits for the steer before it,
     //    so it cannot let a later steer overtake an earlier one.
     {
       const { adapterInstance, runtimes, results, errors } = makeAdapter();
@@ -1154,6 +1316,89 @@ for (const testCase of [
       await settle();
       assert.deepEqual(results(), ['success'], 'one result for the steered turn');
       await adapterInstance.stopSession('failed-prepare');
+    }
+
+    // 10. A slow first prompt keeps its place ahead of a fast steer.
+    {
+      const { adapterInstance, runtimes, results, errors } = makeAdapter();
+      await start(adapterInstance, 'slow-first', 'slow: first prompt');
+      const steer = adapterInstance.sendTurn({ threadId: 'slow-first', prompt: 'fast steer' });
+      await settle();
+      const [runtime] = runtimes;
+      assert.equal(runtime.runs.length, 0, 'the first prompt is still preparing');
+      assert.deepEqual(runtime.inbox, [], 'the fast steer must not overtake the preparing first prompt');
+      held.get('slow: first prompt')();
+      await settle();
+      assert.equal(runtime.runs.length, 1, 'the first prompt starts the turn; the steer starts none');
+      assert.deepEqual(runtime.inbox, [], 'the steer waits until the first prompt is admitted');
+      runtime.runs[0].submit();
+      await steer;
+      assert.deepEqual(runtime.inbox, ['slow: first prompt', 'fast steer']);
+      runtime.runs[0].finish();
+      await settle();
+      assert.deepEqual(results(), ['success']);
+      assert.deepEqual(errors(), []);
+      await adapterInstance.stopSession('slow-first');
+    }
+
+    // 11. The first prompt's preparation fails: one error result, and the
+    //     queued steer runs as its own turn.
+    {
+      const { adapterInstance, runtimes, results, errors } = makeAdapter();
+      await start(adapterInstance, 'fail-first', 'fail: first prompt');
+      const steer = adapterInstance.sendTurn({ threadId: 'fail-first', prompt: 'steer after failed prepare' });
+      await settle();
+      const [runtime] = runtimes;
+      assert.deepEqual(results(), ['error']);
+      assert.deepEqual(errors(), ['could not prepare fail: first prompt'], 'the failure is reported exactly once');
+      assert.deepEqual(runtime.runs.map((run) => run.text), ['steer after failed prepare'], 'the failed prompt never reached run()');
+      runtime.runs[0].submit();
+      runtime.runs[0].finish();
+      await steer;
+      await settle();
+      assert.deepEqual(results(), ['error', 'success']);
+      assert.deepEqual(runtime.inbox, ['steer after failed prepare']);
+      await adapterInstance.stopSession('fail-first');
+    }
+
+    // 12. A stop while the first prompt is preparing submits nothing.
+    {
+      const { adapterInstance, runtimes, results, errors } = makeAdapter();
+      await start(adapterInstance, 'stop-preparing', 'slow: stopped first');
+      const steer = adapterInstance.sendTurn({ threadId: 'stop-preparing', prompt: 'steer before stop' });
+      await settle();
+      await adapterInstance.stopSession('stop-preparing');
+      held.get('slow: stopped first')();
+      await steer;
+      await settle();
+      assert.equal(runtimes[0].runs.length, 0);
+      assert.deepEqual(runtimes[0].inbox, []);
+      assert.deepEqual(results(), []);
+      assert.deepEqual(errors(), []);
+    }
+
+    // 13. A replacement session while the old first prompt is preparing: the
+    //     old prompt and its steer are dropped; the new first turn runs.
+    {
+      const { adapterInstance, runtimes, results, errors } = makeAdapter();
+      await start(adapterInstance, 'replace-preparing', 'slow: replaced first');
+      const steer = adapterInstance.sendTurn({ threadId: 'replace-preparing', prompt: 'old steer' });
+      await settle();
+      await start(adapterInstance, 'replace-preparing', 'new prompt');
+      held.get('slow: replaced first')();
+      await steer;
+      await settle();
+      assert.equal(runtimes[0].runs.length, 0, 'the replaced first prompt never starts a run()');
+      assert.deepEqual(runtimes[0].inbox, []);
+      const replacement = runtimes[1];
+      assert.deepEqual(replacement.runs.map((run) => run.text), ['new prompt']);
+      replacement.runs[0].submit();
+      replacement.runs[0].finish();
+      await settle();
+      assert.deepEqual(results(), ['success']);
+      assert.deepEqual(errors(), []);
+      assert.deepEqual(replacement.inbox, ['new prompt']);
+      await adapterInstance.stopSession('replace-preparing');
     }
   } finally {
     images.buildDeepseekPromptBlocks = realBuild;
