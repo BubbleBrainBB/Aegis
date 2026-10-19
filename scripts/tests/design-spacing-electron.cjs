@@ -34,10 +34,57 @@ exports.run = async ({ w, js, repo, sessionId, documentId, screenshotDir }) => {
     await wait(150);
     mouse("mouseUp", { x: from.x + delta.x, y: from.y + delta.y }, modifiers);
   };
+  // An element's center in window coordinates: the board's offset plus the
+  // element's position inside the board frame, scaled by the canvas zoom.
+  // (The `.design-selection` box follows the hovered element while the
+  // pointer is over one, so it is not a reliable stand-in for the selection.)
+  const screenCenter = async (selector) => {
+    const r = await (await frame()).executeJavaScript(
+      `(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`
+    );
+    const b = await js(
+      `(()=>{const r=document.querySelector('[data-board-id="${board().id}"]').getBoundingClientRect();return {x:r.x,y:r.y,zoom:+document.querySelector(".design-viewport").dataset.viewZoom}})()`
+    );
+    return { x: b.x + r.x * b.zoom, y: b.y + r.y * b.zoom };
+  };
   const select = async (selector) => {
-    await (await frame()).executeJavaScript(`document.querySelector(${JSON.stringify(selector)}).click()`);
-    await until(() => js('!!document.querySelector(".design-selection [data-element-resize]")'), "selected " + selector);
-    await wait(60);
+    // Wait until the selection box (not a hover box, not the previous
+    // selection) sits on this element; re-click if the first click was missed.
+    const onTarget = async () => {
+      const box = await js('(()=>{const e=document.querySelector(".design-selection:not(.is-hover)");if(!e||!e.querySelector("[data-element-resize]"))return null;const r=e.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()');
+      if (!box) return false;
+      const target = await screenCenter(selector);
+      return Math.abs(box.x - target.x) < 3 && Math.abs(box.y - target.y) < 3;
+    };
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await (await frame()).executeJavaScript(`document.querySelector(${JSON.stringify(selector)}).click()`);
+      for (let i = 0; i < 40; i++) {
+        if (await onTarget()) return wait(60);
+        await wait(50);
+      }
+    }
+    await until(onTarget, "selected " + selector);
+  };
+  // The CI runner can drop synthetic mouse events mid-drag. A drag that saved
+  // nothing is first finished with a mouseUp (in case only that was lost),
+  // then repeated from the element's current position.
+  const dragSaved = async (fromPoint, delta, modifiers, label) => {
+    const revision = board().contentRevision;
+    const saved = async (ms) => {
+      for (let i = 0; i < ms / 50; i++) {
+        if (board().contentRevision > revision) return true;
+        await wait(50);
+      }
+      return board().contentRevision > revision;
+    };
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const from = await fromPoint();
+      await drag(from, delta, modifiers);
+      if (await saved(4000)) return;
+      mouse("mouseUp", { x: from.x + delta.x, y: from.y + delta.y }, modifiers);
+      if (await saved(1500)) return;
+    }
+    throw Error("Spacing timeout: " + label);
   };
   await js('document.querySelector(".design-viewport").focus()');
 
@@ -47,17 +94,14 @@ exports.run = async ({ w, js, repo, sessionId, documentId, screenshotDir }) => {
   assert(await js('document.querySelectorAll(\'[data-spacing^="gap:"]\').length>=1'), "gap handle between children");
   assert(await js('document.querySelectorAll(".design-spacing-band").length>=4'), "padding bands shown");
   const padBefore = parseFloat(await (await frame()).executeJavaScript('getComputedStyle(document.querySelector("nav")).paddingLeft'));
-  let revision = board().contentRevision;
-  await drag(await center('[data-spacing="pad:left"]'), { x: 24, y: 0 });
-  await until(() => board().contentRevision > revision, "padding saved");
+  let revision;
+  await dragSaved(() => center('[data-spacing="pad:left"]'), { x: 24, y: 0 }, [], "padding saved");
   const padAfter = parseFloat(/padding-left:\s*([\d.]+)px/.exec(await styleOf("nav"))?.[1] ?? "0");
   assert(padAfter > padBefore + 10, `padding-left grew: ${padBefore} -> ${padAfter}`);
   assert(history()[0].summary.startsWith("Changed padding"), history()[0].summary);
   await select("nav");
   await until(() => js('!!document.querySelector(\'[data-spacing^="gap:"]\')'), "gap handle again");
-  revision = board().contentRevision;
-  await drag(await center('[data-spacing^="gap:"]'), { x: 16, y: 0 });
-  await until(() => board().contentRevision > revision, "gap saved");
+  await dragSaved(() => center('[data-spacing^="gap:"]'), { x: 16, y: 0 }, [], "gap saved");
   assert(/column-gap:\s*\d+px/.test(await styleOf("nav")), "column-gap written");
   assert(history()[0].summary.startsWith("Changed gap"), history()[0].summary);
 
@@ -95,9 +139,7 @@ exports.run = async ({ w, js, repo, sessionId, documentId, screenshotDir }) => {
 
   // N8: ⌘-drag pulls the button out of flow, then it moves freely with constraints.
   await select("main .land");
-  revision = board().contentRevision;
-  await drag(await center(".design-selection"), { x: 30, y: 24 }, ["meta"]);
-  await until(() => board().contentRevision > revision, "absolute saved");
+  await dragSaved(() => screenCenter("main .land"), { x: 30, y: 24 }, ["meta"], "absolute saved");
   let style = await styleOf("main .land");
   assert(/position:\s*absolute/.test(style), "⌘ drag makes it absolute: " + style);
   // Anchored right/bottom (smaller windows, as on CI), the four offsets serialize as the `inset` shorthand.
@@ -111,7 +153,7 @@ exports.run = async ({ w, js, repo, sessionId, documentId, screenshotDir }) => {
   await select("main .land");
   await until(() => js('document.querySelector(".design-inspector button[aria-label=Position]")?.textContent==="Absolute"'), "inspector shows Absolute");
   revision = board().contentRevision;
-  const from = await center(".design-selection");
+  const from = await screenCenter("main .land");
   w.focus();
   mouse("mouseMove", from);
   mouse("mouseDown", from);

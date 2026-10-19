@@ -187,18 +187,21 @@ exports.run = async ({ w, js, repo, sessionId, documentId, screenshotDir }) => {
   assert(!board().html.includes('data-aegis-node-id="hero"'));
   assert.equal(read().boards.length, 2);
   // Select the copied title and capture the inspector with the live element.
-  await js(
-    '[...document.querySelectorAll(".design-layer-name")].find(b=>b.title==="Hero title").click()',
-  );
-  await delay(350);
+  // Color fields carry a picker; text layers edit in place on the canvas.
+  // The tree re-renders after the delete, so a click can land on a row that is
+  // being replaced: click again until the inspector shows the text color.
+  const pickerShown = () =>
+    js('!!document.querySelector(\'[aria-label="Color color picker"]\')');
+  for (let attempt = 0; attempt < 3 && !(await pickerShown()); attempt++) {
+    await js(
+      '[...document.querySelectorAll(".design-layer-name")].find(b=>b.title==="Hero title")?.click()',
+    );
+    for (let i = 0; i < 40 && !(await pickerShown()); i++) await delay(50);
+  }
+  await until(pickerShown, "color picker beside the text color");
   fs.writeFileSync(
     path.join(screenshotDir, "design-layers.png"),
     (await w.webContents.capturePage()).toPNG(),
-  );
-  // Color fields carry a picker; text layers edit in place on the canvas.
-  await until(
-    () => js('!!document.querySelector(\'[aria-label="Color color picker"]\')'),
-    "color picker beside the text color",
   );
   // The tree lives in the Properties panel now: hide the panel to get it out of the way.
   await click('[aria-label="Hide inspector"]');
