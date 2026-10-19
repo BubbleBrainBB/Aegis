@@ -40,6 +40,7 @@ import {
 } from './deepseek-subagent-trace';
 import {
   loadDeepseekSdk,
+  type DshContentBlock,
   type DshHarness,
   type DshHarnessNotification,
   type DshHarnessSession,
@@ -151,6 +152,18 @@ interface ActiveDeepseekSession {
   >;
   /** True while a primary run() owns the activity — steers enqueue instead. */
   turnInFlight?: boolean;
+  /**
+   * Settles once the primary run's prompt is in the runtime inbox (its
+   * inbox splice) or the run settled. Steers wait on it so none can overtake
+   * a primary prompt that is still preparing images or not yet submitted.
+   */
+  primaryAdmission?: Promise<void>;
+  admitPrimary?: () => void;
+  /**
+   * Tail of the submission queue every send joins in call order, so sends
+   * reach the runtime in the order the user made them.
+   */
+  sendQueue?: Promise<void>;
   /** Set by stopSession/disposeSession so a rejected in-flight run stays silent. */
   closed?: boolean;
   attachmentHome?: string;
@@ -196,6 +209,13 @@ function normalizeDeepseekReasoningEffort(value: unknown): DeepseekReasoningEffo
   return value === 'off' || value === 'low' || value === 'high' || value === 'max' ? value : 'max';
 }
 
+
+/** An inbox splice that inserted messages — the SDK's own prompt receipt. */
+function isInboxInsertion(value: unknown): boolean {
+  const event = getRecord(value);
+  if (event?.type !== 'agent/inbox/spliced') return false;
+  return getArray(getRecord(event.data)?.inserted).length > 0;
+}
 
 function extractUserMessageText(data: Record<string, unknown>): string {
   const message = getRecord(data.message) || data;
@@ -333,12 +353,23 @@ export class DeepseekSdkAdapter implements ProviderAdapter {
       model,
     });
 
+    // Start the first turn without awaiting it: agent-loop chains every later
+    // send off startSession, so awaiting the whole run() here would hold a
+    // steer sent during the first turn until it ends and replay it as a
+    // separate turn instead of folding it in via the steer path.
     if (input.prompt || input.attachments?.length) {
-      await this.sendTurn({
+      void this.sendTurn({
         threadId: input.threadId,
         prompt: input.prompt,
         attachments: input.attachments,
         model,
+      }).catch((error) => {
+        if (this.sessions.get(input.threadId) !== active || active.closed) return;
+        this.emit({
+          type: 'error',
+          threadId: input.threadId,
+          error: error instanceof Error ? error : new Error(String(error)),
+        });
       });
     }
 
@@ -360,15 +391,47 @@ export class DeepseekSdkAdapter implements ProviderAdapter {
     const imageError = deepseekImageInputError(input.attachments, active.model, getDeepseekModelConfig());
     if (imageError) throw new Error(imageError);
 
-    // Steer: while the primary run owns the activity, a follow-up send rides
-    // the runtime's inbox instead of a second run(). The spine splices it and
-    // consumes it before going idle (verified live: the queued instruction
-    // shaped the same activity's final answer), so the in-flight run's
-    // settlement covers it and emits the single turn-terminal result.
-    if (active.turnInFlight) {
-      try {
-        const blocks = await buildDeepseekPromptBlocks(input.prompt, input.attachments);
+    // Every send joins one submission queue, in call order and synchronously
+    // (startSession's first turn included), before its first await. Image
+    // preparation still runs concurrently, but a send reaches the runtime only
+    // after the send before it was submitted. Whether it becomes a turn of its
+    // own or a steer is decided at that point, not when it was made.
+    const previous = active.sendQueue;
+    let release!: () => void;
+    const slot = new Promise<void>((resolve) => { release = resolve; });
+    active.sendQueue = slot;
+    let blocks: DshContentBlock[] = [];
+    let prepareError: unknown;
+    try {
+      blocks = await buildDeepseekPromptBlocks(input.prompt, input.attachments);
+    } catch (error) {
+      prepareError = error;
+    }
+
+    try {
+      // A failed preparation waits too, so it cannot let a later send
+      // overtake an earlier one.
+      await previous;
+      if (this.sessions.get(input.threadId) !== active || active.closed) return;
+      if (active.turnInFlight) {
+        // Wait until the running turn's prompt is in the inbox: a steer must
+        // not overtake a primary prompt that is still being submitted.
+        if (active.primaryAdmission) await active.primaryAdmission;
         if (this.sessions.get(input.threadId) !== active || active.closed) return;
+      }
+      if (!active.turnInFlight) {
+        // No run() owns the activity (idle, or the turn this send was meant
+        // to steer settled first): it becomes a turn of its own.
+        await this.runTurn(active, input, blocks, prepareError, release);
+        return;
+      }
+      // Steer: while the primary run owns the activity, a follow-up send rides
+      // the runtime's inbox instead of a second run(). The spine splices it and
+      // consumes it before going idle (verified live: the queued instruction
+      // shaped the same activity's final answer), so the in-flight run's
+      // settlement covers it and emits the single turn-terminal result.
+      try {
+        if (prepareError) throw prepareError;
         await active.harness.client.prompt(active.providerSessionId, blocks);
       } catch (error) {
         if (this.sessions.get(input.threadId) !== active || active.closed) {
@@ -380,11 +443,25 @@ export class DeepseekSdkAdapter implements ProviderAdapter {
           error: error instanceof Error ? error : new Error(String(error)),
         });
       }
-      return;
+    } finally {
+      release();
+      if (active.sendQueue === slot) active.sendQueue = undefined;
     }
+  }
 
+  /** A send that starts its own run(); `release` lets the next send submit. */
+  private async runTurn(
+    active: ActiveDeepseekSession,
+    input: ProviderSendTurnInput,
+    blocks: DshContentBlock[],
+    prepareError: unknown,
+    release: () => void
+  ): Promise<void> {
     active.status = 'running';
     active.turnInFlight = true;
+    let admitPrimary!: () => void;
+    active.primaryAdmission = new Promise<void>((resolve) => { admitPrimary = resolve; });
+    active.admitPrimary = admitPrimary;
     active.turn = {
       nextBlockIndex: 0,
       usage: { input: 0, output: 0, cacheRead: 0, reasoning: 0 },
@@ -392,10 +469,12 @@ export class DeepseekSdkAdapter implements ProviderAdapter {
       startedAt: Date.now(),
     };
     this.emit({ type: 'status_change', threadId: input.threadId, status: 'running' });
+    // The turn is in flight: the next send may submit now as a steer, and
+    // waits on this turn's admission gate before reaching the inbox.
+    release();
 
     try {
-      const blocks = await buildDeepseekPromptBlocks(input.prompt, input.attachments);
-      if (this.sessions.get(input.threadId) !== active || active.closed) return;
+      if (prepareError) throw prepareError;
       await active.session.run(blocks);
       while (active.pendingImageResults?.size) await Promise.all(active.pendingImageResults);
       if (this.sessions.get(input.threadId) !== active) {
@@ -473,6 +552,8 @@ export class DeepseekSdkAdapter implements ProviderAdapter {
       this.emit({ type: 'status_change', threadId: input.threadId, status: 'error' });
     } finally {
       active.turnInFlight = false;
+      admitPrimary();
+      if (active.admitPrimary === admitPrimary) active.admitPrimary = undefined;
       finishBrowserUseTurn(browserManager, input.threadId);
     }
   }
@@ -717,6 +798,12 @@ export class DeepseekSdkAdapter implements ProviderAdapter {
     const sessionId = getString(notification.params.sessionId);
     const parentToolUseId = active.subagent.parents.get(sessionId) || null;
     const isRoot = sessionId === active.providerSessionId;
+    if (isRoot && active.admitPrimary && isInboxInsertion(notification.params.event)) {
+      // Steers wait behind the primary gate, so the first root insertion
+      // while it is open is the primary prompt entering the inbox.
+      active.admitPrimary();
+      active.admitPrimary = undefined;
+    }
     if (!isRoot && !parentToolUseId) {
       this.bufferUnboundChildEvent(active, sessionId, notification);
       this.absorbChildBindingHints(active, sessionId, notification);
