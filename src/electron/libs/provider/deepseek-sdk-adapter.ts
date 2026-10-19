@@ -111,6 +111,26 @@ interface TurnState {
   latestUsageKey?: string;
   endReason?: { kind: string; message?: string };
   startedAt: number;
+  /**
+   * Steers ride the inbox, and the runtime may accept one only after the
+   * primary run() went idle; it then starts activity no run() owns. The turn
+   * stays open until every steer is accepted and the session went idle after
+   * its inbox receipt.
+   */
+  steers: {
+    /** client.prompt calls the runtime has not answered yet. */
+    submitting: number;
+    /** Accepted steer message ids still owed an idle after their receipt. */
+    owed: Set<string>;
+    /** Root inbox message ids seen this turn; true once an idle followed. */
+    received: Map<string, boolean>;
+  };
+  /** Set once the primary run() settled; the turn may end from then on. */
+  runSettled?: boolean;
+  /** The turn's activity is over: new sends must start their own turn. */
+  closing?: boolean;
+  /** Wakes runTurn once the late steer activity settles (or the runtime fails). */
+  onSettled?: { resolve: () => void; reject: (error: unknown) => void };
 }
 
 interface ActiveDeepseekSession {
@@ -150,8 +170,15 @@ interface ActiveDeepseekSession {
       parentToolUseId: string | null;
     }
   >;
-  /** True while a primary run() owns the activity — steers enqueue instead. */
+  /**
+   * True while a turn owns the activity — from runTurn until its result,
+   * including steer activity after run() settled — so sends steer instead.
+   */
   turnInFlight?: boolean;
+  /** Settles when the current turn emitted its result; sends wait on it. */
+  turnEnded?: Promise<void>;
+  /** Set when the subscription failed (runtime death) while the thread was open. */
+  subscriptionError?: unknown;
   /**
    * Settles once the primary run's prompt is in the runtime inbox (its
    * inbox splice) or the run settled. Steers wait on it so none can overtake
@@ -412,27 +439,40 @@ export class DeepseekSdkAdapter implements ProviderAdapter {
       // A failed preparation waits too, so it cannot let a later send
       // overtake an earlier one.
       await previous;
-      if (this.sessions.get(input.threadId) !== active || active.closed) return;
-      if (active.turnInFlight) {
+      for (;;) {
+        if (this.sessions.get(input.threadId) !== active || active.closed) return;
+        if (!active.turnInFlight) {
+          // No turn owns the activity (idle, or the turn this send was meant
+          // to steer ended first): it becomes a turn of its own.
+          await this.runTurn(active, input, blocks, prepareError, release);
+          return;
+        }
         // Wait until the running turn's prompt is in the inbox: a steer must
         // not overtake a primary prompt that is still being submitted.
-        if (active.primaryAdmission) await active.primaryAdmission;
-        if (this.sessions.get(input.threadId) !== active || active.closed) return;
+        if (active.admitPrimary) await active.primaryAdmission;
+        // A turn whose activity is over is only emitting its result: this
+        // send starts the next turn instead of steering into a finished one.
+        else if (active.turn?.closing) await active.turnEnded;
+        else break;
       }
-      if (!active.turnInFlight) {
-        // No run() owns the activity (idle, or the turn this send was meant
-        // to steer settled first): it becomes a turn of its own.
-        await this.runTurn(active, input, blocks, prepareError, release);
-        return;
-      }
-      // Steer: while the primary run owns the activity, a follow-up send rides
-      // the runtime's inbox instead of a second run(). The spine splices it and
+      // Steer: while a turn owns the activity, a follow-up send rides the
+      // runtime's inbox instead of a second run(). The spine splices it and
       // consumes it before going idle (verified live: the queued instruction
-      // shaped the same activity's final answer), so the in-flight run's
-      // settlement covers it and emits the single turn-terminal result.
+      // shaped the same activity's final answer). If the runtime accepts it
+      // only after run() settled, it starts new activity; the turn stays
+      // open until that goes idle too, so one result covers both.
+      const turn = active.turn!;
       try {
         if (prepareError) throw prepareError;
-        await active.harness.client.prompt(active.providerSessionId, blocks);
+        turn.steers.submitting += 1;
+        let messageId: string | undefined;
+        try {
+          messageId = await active.harness.client.prompt(active.providerSessionId, blocks);
+        } finally {
+          turn.steers.submitting -= 1;
+          if (messageId && turn.steers.received.get(messageId) !== true) turn.steers.owed.add(messageId);
+          this.settleTurnIfIdle(active, turn);
+        }
       } catch (error) {
         if (this.sessions.get(input.threadId) !== active || active.closed) {
           return;
@@ -462,12 +502,16 @@ export class DeepseekSdkAdapter implements ProviderAdapter {
     let admitPrimary!: () => void;
     active.primaryAdmission = new Promise<void>((resolve) => { admitPrimary = resolve; });
     active.admitPrimary = admitPrimary;
-    active.turn = {
+    let endTurn!: () => void;
+    active.turnEnded = new Promise<void>((resolve) => { endTurn = resolve; });
+    const turn: TurnState = {
       nextBlockIndex: 0,
       usage: { input: 0, output: 0, cacheRead: 0, reasoning: 0 },
       usageByStep: new Map(),
       startedAt: Date.now(),
+      steers: { submitting: 0, owed: new Set(), received: new Map() },
     };
+    active.turn = turn;
     this.emit({ type: 'status_change', threadId: input.threadId, status: 'running' });
     // The turn is in flight: the next send may submit now as a steer, and
     // waits on this turn's admission gate before reaching the inbox.
@@ -476,12 +520,25 @@ export class DeepseekSdkAdapter implements ProviderAdapter {
     try {
       if (prepareError) throw prepareError;
       await active.session.run(blocks);
+      // A stop/replace that landed while run() was settling already tried to
+      // wake a waiter that does not exist yet, and no idle will arrive after
+      // teardown: end the turn silently instead of installing one.
+      if (this.sessions.get(input.threadId) !== active || active.closed) return;
+      turn.runSettled = true;
+      this.settleTurnIfIdle(active, turn);
+      if (!turn.closing) {
+        // A steer is still being accepted, or was accepted after run() went
+        // idle and started activity no run() owns: wait until it is idle.
+        await new Promise<void>((resolve, reject) => {
+          turn.onSettled = { resolve, reject };
+          if (active.subscriptionError !== undefined) reject(active.subscriptionError);
+        });
+      }
       while (active.pendingImageResults?.size) await Promise.all(active.pendingImageResults);
-      if (this.sessions.get(input.threadId) !== active) {
+      if (this.sessions.get(input.threadId) !== active || active.closed) {
         return;
       }
-      const turn = active.turn;
-      const failed = turn?.endReason?.kind === 'error';
+      const failed = turn.endReason?.kind === 'error';
       this.emitTokenUsage(active);
       active.status = failed ? 'error' : 'completed';
       this.emit({
@@ -551,11 +608,44 @@ export class DeepseekSdkAdapter implements ProviderAdapter {
       });
       this.emit({ type: 'status_change', threadId: input.threadId, status: 'error' });
     } finally {
+      turn.closing = true;
       active.turnInFlight = false;
       admitPrimary();
       if (active.admitPrimary === admitPrimary) active.admitPrimary = undefined;
+      endTurn();
       finishBrowserUseTurn(browserManager, input.threadId);
     }
+  }
+
+  /**
+   * End the turn's activity once its run() settled, every steer was accepted,
+   * and the session went idle after each accepted steer's inbox receipt.
+   */
+  private settleTurnIfIdle(active: ActiveDeepseekSession, turn: TurnState): void {
+    if (active.turn !== turn || turn.closing || !turn.runSettled) return;
+    if (turn.steers.submitting > 0 || turn.steers.owed.size > 0) return;
+    turn.closing = true;
+    turn.onSettled?.resolve();
+  }
+
+  /** Root inbox insertions this turn; a steer's activity is owed until an idle follows. */
+  private noteRootInsertion(active: ActiveDeepseekSession, event: unknown): void {
+    const turn = active.turn;
+    if (!turn || turn.closing) return;
+    for (const message of getArray(getRecord(getRecord(event)?.data)?.inserted)) {
+      const id = getString(getRecord(message)?.id);
+      if (id) turn.steers.received.set(id, false);
+    }
+  }
+
+  private noteRootIdle(active: ActiveDeepseekSession): void {
+    const turn = active.turn;
+    if (!turn || turn.closing) return;
+    for (const id of turn.steers.received.keys()) turn.steers.received.set(id, true);
+    for (const id of turn.steers.owed) {
+      if (turn.steers.received.get(id)) turn.steers.owed.delete(id);
+    }
+    this.settleTurnIfIdle(active, turn);
   }
 
   /**
@@ -569,8 +659,12 @@ export class DeepseekSdkAdapter implements ProviderAdapter {
         for await (const notification of active.subscription) {
           this.handleNotification(active, notification);
         }
-      } catch {
-        // closed subscription / reaped runtime — nothing left to drain
+      } catch (error) {
+        // A closed subscription is ordinary teardown. A dead runtime while the
+        // thread is open fails a turn still waiting on its steer activity.
+        if (this.sessions.get(active.threadId) !== active || active.closed) return;
+        active.subscriptionError = error;
+        active.turn?.onSettled?.reject(error);
       }
     })();
   }
@@ -583,6 +677,7 @@ export class DeepseekSdkAdapter implements ProviderAdapter {
     active.status = 'stopped';
     active.closed = true;
     this.sessions.delete(threadId);
+    active.turn?.onSettled?.resolve();
     try {
       active.subscription.close();
     } catch {
@@ -611,6 +706,7 @@ export class DeepseekSdkAdapter implements ProviderAdapter {
     }
     active.closed = true;
     this.sessions.delete(threadId);
+    active.turn?.onSettled?.resolve();
     try {
       active.subscription.close();
     } catch (error) {
@@ -791,6 +887,13 @@ export class DeepseekSdkAdapter implements ProviderAdapter {
       }
       return;
     }
+    if (notification.method === 'session.status') {
+      if (getString(notification.params.sessionId) === active.providerSessionId &&
+          notification.params.status === 'idle') {
+        this.noteRootIdle(active);
+      }
+      return;
+    }
     if (notification.method !== 'session.event') {
       return;
     }
@@ -798,6 +901,9 @@ export class DeepseekSdkAdapter implements ProviderAdapter {
     const sessionId = getString(notification.params.sessionId);
     const parentToolUseId = active.subagent.parents.get(sessionId) || null;
     const isRoot = sessionId === active.providerSessionId;
+    if (isRoot && isInboxInsertion(notification.params.event)) {
+      this.noteRootInsertion(active, notification.params.event);
+    }
     if (isRoot && active.admitPrimary && isInboxInsertion(notification.params.event)) {
       // Steers wait behind the primary gate, so the first root insertion
       // while it is open is the primary prompt entering the inbox.
