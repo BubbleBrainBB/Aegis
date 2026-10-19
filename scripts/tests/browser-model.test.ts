@@ -230,14 +230,13 @@ assert.equal(panelShortcutFor(panelKey('BracketLeft', { metaKey: true }), true),
 assert.equal(panelShortcutFor(panelKey('KeyF', { metaKey: true, shiftKey: true }), true), null);
 assert.equal(panelShortcutFor(panelKey('KeyR', { metaKey: true }), true), null, 'Reload/Zoom go through the app menu');
 
-// ── Agent browser actions: reveal, notify or stay quiet ──────────────────────
+// ── Agent browser actions: reveal or stay quiet ──────────────────────
 const reveal = (input: Partial<Parameters<typeof agentBrowserRevealDecision>[0]>) =>
   agentBrowserRevealDecision({ sessionId: 's1', activeSessionId: 's1', browserTabShown: false, settingsOpen: false, now: 0, ...input });
 assert.equal(reveal({ now: 1000 }), 'reveal', 'the current task shows its browser');
 assert.equal(reveal({ now: 2000 }), 'none', 'not again right after the user moved away');
 assert.equal(reveal({ now: 2000 + 91_000 }), 'reveal', 'after a quiet while it shows again');
-assert.equal(reveal({ sessionId: 's2', now: 5000 }), 'notify', 'another task only gets a notice');
-assert.equal(reveal({ sessionId: 's2', now: 6000 }), 'none', 'at most one notice a minute per task');
-assert.equal(reveal({ sessionId: 's3', settingsOpen: true, now: 7000 }), 'notify', 'never pulls the user out of Settings');
+assert.equal(reveal({ sessionId: 's2', now: 5000 }), 'none', 'another task stays quiet');
+assert.equal(reveal({ sessionId: 's3', settingsOpen: true, now: 7000 }), 'none', 'never pulls the user out of Settings');
 
 console.log('browser-model.test.ts passed');

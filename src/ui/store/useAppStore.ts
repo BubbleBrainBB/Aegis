@@ -1471,13 +1471,6 @@ export const useAppStore = create<Store>()(
           now: Date.now(),
         });
         if (decision === 'reveal') reveal();
-        else if (decision === 'notify') {
-          const title = get().sessions[event.payload.sessionId]?.title?.trim() || 'another task';
-          toast(`An agent is using the browser in “${title}”`, {
-            id: `agent-browser:${event.payload.sessionId}`,
-            action: { label: 'Show', onClick: reveal },
-          });
-        }
         break;
       }
     }
