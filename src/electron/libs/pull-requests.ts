@@ -12,7 +12,8 @@ import type {
 /**
  * GitHub pull-request directory backed by the machine's `gh` CLI (reuses its
  * login; no tokens stored). List = two `gh search prs` sweeps (authored +
- * review-requested) enriched per-PR with branch/diffstat via `gh pr view`.
+ * review-requested) enriched per-PR with branch/diffstat/CI/review state via
+ * `gh pr view`.
  */
 
 const GH_TIMEOUT_MS = 20_000;
@@ -22,7 +23,7 @@ const ENRICH_CONCURRENCY = 4;
 const SEARCH_LIMIT = 50;
 
 const SEARCH_FIELDS = 'number,title,repository,author,createdAt,updatedAt,isDraft,url';
-const VIEW_LIST_FIELDS = 'headRefName,baseRefName,additions,deletions,state';
+const VIEW_LIST_FIELDS = 'headRefName,baseRefName,additions,deletions,state,statusCheckRollup,reviewDecision,mergeable';
 const VIEW_DETAIL_FIELDS = [
   'number',
   'title',
@@ -205,8 +206,13 @@ async function enrichSummaries(summaries: PullRequestSummary[]): Promise<void> {
         if (typeof view.state === 'string' && view.state) {
           summary.state = view.state as PullRequestSummary['state'];
         }
+        const checks = rollupChecks(view.statusCheckRollup as Array<Record<string, unknown>> | undefined);
+        summary.checkState = checks.state;
+        summary.checkSummary = checks.summary;
+        summary.reviewDecision = typeof view.reviewDecision === 'string' && view.reviewDecision ? view.reviewDecision : undefined;
+        summary.mergeable = typeof view.mergeable === 'string' && view.mergeable ? view.mergeable : undefined;
       } catch {
-        // Branch/diffstat are decoration — the row still renders without them.
+        // Branch/diffstat/status are decoration — the row still renders without them.
       }
     }
   });

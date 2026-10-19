@@ -2382,6 +2382,13 @@ export interface PullRequestSummary {
   baseRefName?: string;
   additions?: number;
   deletions?: number;
+  /** Rolled-up CI state for the list row; the detail view carries per-check items. */
+  checkState?: PullRequestCheckState;
+  checkSummary?: string;
+  /** GitHub reviewDecision: APPROVED / CHANGES_REQUESTED / REVIEW_REQUIRED; empty when reviews aren't required. */
+  reviewDecision?: string;
+  /** MERGEABLE / CONFLICTING / UNKNOWN */
+  mergeable?: string;
 }
 
 export interface PullRequestComment {

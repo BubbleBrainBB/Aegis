@@ -9,23 +9,30 @@ import {
 } from 'react';
 import { toast } from 'sonner';
 import {
+  AlertTriangle,
   ArrowUp,
   Check,
   CheckCircle2,
   ChevronDown,
   CircleDashed,
   CircleX,
+  Clock,
   CollapseDiagonal,
   ExpandDiagonal,
   ExternalLink,
+  Eye,
   Folders,
   GitBranch,
   GitPullRequest,
+  GitPullRequestDraft,
   Loader2,
   MessageCircle,
   MoreHorizontal,
   RefreshCw,
   Search,
+  UserCheck,
+  UserExclamation,
+  UserQuestion,
   X,
 } from './icons';
 import {
@@ -46,6 +53,7 @@ import {
 } from '../utils/aegis-diff-rendering';
 import type {
   PullRequestCheckItem,
+  PullRequestCheckState,
   PullRequestCommit,
   PullRequestDetail,
   PullRequestListResult,
@@ -236,13 +244,53 @@ function PrDiffFileCard({
   );
 }
 
-function DraftDot({ pr }: { pr: PullRequestSummary }) {
+function PullRequestIcon({ pr }: { pr: PullRequestSummary }) {
   return (
-    <span className="relative mt-0.5 shrink-0 text-[var(--text-muted)]">
-      <GitPullRequest className="h-4 w-4" />
-      {pr.isDraft ? (
-        <span className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border border-[var(--bg-primary)] bg-red-500" />
-      ) : null}
+    <span className="mt-0.5 shrink-0 text-[var(--text-muted)]" title={pr.isDraft ? 'Draft' : undefined}>
+      {pr.isDraft ? <GitPullRequestDraft className="h-4 w-4" /> : <GitPullRequest className="h-4 w-4" />}
+    </span>
+  );
+}
+
+type RowStatus = { key: string; label: string; tone: string; Icon: typeof CheckCircle2 };
+
+const ROW_CHECK_STATUS: Partial<Record<PullRequestCheckState, Omit<RowStatus, 'key' | 'label'>>> = {
+  success: { tone: 'text-emerald-600 dark:text-emerald-400', Icon: CheckCircle2 },
+  failure: { tone: 'text-red-600 dark:text-red-400', Icon: CircleX },
+  pending: { tone: 'text-amber-600 dark:text-amber-400', Icon: Clock },
+};
+
+function rowStatuses(pr: PullRequestSummary): RowStatus[] {
+  const statuses: RowStatus[] = [];
+  const check = pr.checkState ? ROW_CHECK_STATUS[pr.checkState] : undefined;
+  if (check) statuses.push({ key: 'checks', label: pr.checkSummary || 'Checks', ...check });
+
+  if (pr.reviewDecision === 'CHANGES_REQUESTED') {
+    statuses.push({ key: 'review', label: 'Changes requested', tone: 'text-red-600 dark:text-red-400', Icon: UserExclamation });
+  } else if (pr.reviewDecision === 'APPROVED') {
+    statuses.push({ key: 'review', label: 'Approved', tone: 'text-emerald-600 dark:text-emerald-400', Icon: UserCheck });
+  } else if (pr.role !== 'authored') {
+    statuses.push({ key: 'review', label: 'Your review is requested', tone: 'text-[var(--text-primary)]', Icon: Eye });
+  } else if (pr.reviewDecision === 'REVIEW_REQUIRED') {
+    statuses.push({ key: 'review', label: 'Review required', tone: 'text-[var(--text-muted)]', Icon: UserQuestion });
+  }
+
+  if (pr.mergeable === 'CONFLICTING') {
+    statuses.push({ key: 'conflict', label: 'Merge conflicts', tone: 'text-amber-600 dark:text-amber-400', Icon: AlertTriangle });
+  }
+  return statuses;
+}
+
+function PullRequestRowStatus({ pr }: { pr: PullRequestSummary }) {
+  const statuses = rowStatuses(pr);
+  if (statuses.length === 0) return null;
+  return (
+    <span className="flex items-center gap-1">
+      {statuses.map(({ key, label, tone, Icon }) => (
+        <span key={key} role="img" aria-label={label} title={label} className={tone}>
+          <Icon className="h-3.5 w-3.5" />
+        </span>
+      ))}
     </span>
   );
 }
@@ -634,7 +682,7 @@ export function PullRequestsView() {
                     selectedId === pr.id ? 'bg-[var(--bg-tertiary)]' : 'hover:bg-[var(--bg-secondary)]'
                   }`}
                 >
-                  <DraftDot pr={pr} />
+                  <PullRequestIcon pr={pr} />
                   <span className="min-w-0 flex-1">
                     <span className="flex items-baseline justify-between gap-2">
                       <span className="truncate text-[13.5px] font-medium text-[var(--text-primary)]">
@@ -649,12 +697,15 @@ export function PullRequestsView() {
                         {pr.repo}
                         {pr.headRefName ? `  ${pr.headRefName}` : ''}
                       </span>
-                      {typeof pr.additions === 'number' && typeof pr.deletions === 'number' ? (
-                        <span className="shrink-0 tabular-nums">
-                          <span className="text-emerald-600 dark:text-emerald-400">+{pr.additions}</span>{' '}
-                          <span className="text-red-600 dark:text-red-400">-{pr.deletions}</span>
-                        </span>
-                      ) : null}
+                      <span className="flex shrink-0 items-center gap-2">
+                        <PullRequestRowStatus pr={pr} />
+                        {typeof pr.additions === 'number' && typeof pr.deletions === 'number' ? (
+                          <span className="tabular-nums">
+                            <span className="text-emerald-600 dark:text-emerald-400">+{pr.additions}</span>{' '}
+                            <span className="text-red-600 dark:text-red-400">-{pr.deletions}</span>
+                          </span>
+                        ) : null}
+                      </span>
                     </span>
                   </span>
                 </button>
