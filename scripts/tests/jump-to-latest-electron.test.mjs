@@ -26,8 +26,8 @@ useAppStore.setState(s=>({sessions:{...s.sessions,[first]:{...s.sessions[first],
 a.setActiveSession(first);
 window.qa = { first, second, store:useAppStore, scroll: () => document.querySelector('[data-chat-scroll-container]'), snapshot: () => {
  const el=qa.scroll();const button=document.querySelector('[aria-label="Scroll to latest turn"]');
- return {top:el.scrollTop,gap:el.scrollHeight-el.scrollTop-el.clientHeight,visible:!!button,buttonBottom:button?.getBoundingClientRect().bottom,scrollBottom:el.getBoundingClientRect().bottom,composerTop:document.querySelector('.aegis-chat-composer')?.getBoundingClientRect().top};
-}, append:()=>{const s=useAppStore.getState();const id=s.activeSessionId;useAppStore.setState({sessions:{...s.sessions,[id]:{...s.sessions[id],messages:[...s.sessions[id].messages,{type:'user_prompt',prompt:'A new turn has arrived. '+ 'New output. '.repeat(100),createdAt:Date.now()}]}}});} };
+ return {top:el.scrollTop,gap:el.scrollHeight-el.scrollTop-el.clientHeight,visible:!!button,working:!!button?.querySelector('.aegis-jump-working-dots'),arrow:!!button?.querySelector('svg'),buttonBottom:button?.getBoundingClientRect().bottom,scrollBottom:el.getBoundingClientRect().bottom,composerTop:document.querySelector('.aegis-chat-composer')?.getBoundingClientRect().top};
+}, setStatus:(status)=>{const s=useAppStore.getState();const id=s.activeSessionId;useAppStore.setState({sessions:{...s.sessions,[id]:{...s.sessions[id],status}}});}, append:()=>{const s=useAppStore.getState();const id=s.activeSessionId;useAppStore.setState({sessions:{...s.sessions,[id]:{...s.sessions[id],messages:[...s.sessions[id].messages,{type:'user_prompt',prompt:'A new turn has arrived. '+ 'New output. '.repeat(100),createdAt:Date.now()}]}}});} };
 function Harness() {const id=useAppStore(s=>s.activeSessionId);return <Tooltip.Provider><div style={{display:'flex',height:'100vh',background:'var(--bg-primary)'}}><ChatPane paneId="primary" sessionId={id} isActive onActivate={()=>{}} codexModelConfig={{}} showHeader={false}/></div></Tooltip.Provider>;}
 createRoot(document.getElementById('root')).render(<Harness/>);
 `;
@@ -79,6 +79,19 @@ app.whenReady().then(async()=>{
   await js('qa.scroll().scrollTop -= 300');await delay(150);
   await js('qa.scroll().scrollTop=qa.scroll().scrollHeight');await delay(150);
   assert.equal((await snapshot()).visible,false,'manual bottom scroll hides button');
+  // Idle sessions show the arrow; while the agent works the button shows live dots instead.
+  await js('qa.scroll().scrollTop -= 650');await delay(200);
+  let idle=await snapshot();
+  assert.equal(idle.visible,true);assert.equal(idle.arrow,true,'idle: arrow');assert.equal(idle.working,false);
+  await js('qa.setStatus("running")');await delay(200);
+  const working=await snapshot();
+  assert.equal(working.visible,true);assert.equal(working.working,true,'running: working dots');assert.equal(working.arrow,false,'running: no arrow');
+  assert.equal(await js('getComputedStyle(document.querySelector(".aegis-jump-working-dots > span")).animationName'),'aegis-jump-working-dot','dots animate');
+  if(output)fs.writeFileSync(path.join(output,'jump-to-latest-working.png'),(await win.webContents.capturePage()).toPNG());
+  await jump();assert.ok((await snapshot()).gap<2,'working button jumps to the live position');
+  await js('qa.setStatus("completed")');await js('qa.scroll().scrollTop -= 650');await delay(200);
+  idle=await snapshot();
+  assert.equal(idle.arrow,true,'back to the arrow once the agent stops');assert.equal(idle.working,false);
   assert.deepEqual(errors,[]);
   console.log(JSON.stringify({ok:true,scrolled}));app.exit(0);
  }catch(e){console.error(e);app.exit(1);}

@@ -2308,6 +2308,7 @@ export function ChatPane({
             scrollContainerRef={scrollContainerRef}
             threshold={CHAT_SCROLL_BOTTOM_THRESHOLD_PX}
             onJump={jumpToLatestTurn}
+            working={session.status === 'running'}
           />
           </div>
 
