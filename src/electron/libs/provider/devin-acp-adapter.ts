@@ -46,6 +46,9 @@ import type {
  * - Reverse requests use string (UUID) JSON-RPC ids.
  * - Devin's session_info_update titles are derived from raw tool output and
  *   are not usable as thread titles; Aegis keeps its own.
+ * - A session/prompt sent while a turn runs is folded into that turn
+ *   (`cognition.ai/midTurnPrompts`): every prompt of the turn resolves together
+ *   with the same result and userMessageId. That is the steer path.
  */
 
 type PromptBlock =
@@ -62,6 +65,17 @@ interface DevinToolCall {
   /** Latest output snapshot; Devin streams exec output cumulatively. */
   output: string;
   settled: boolean;
+}
+
+/** One Aegis turn: the primary prompt plus any prompts steered into it. */
+interface DevinTurn {
+  startedAt: number;
+  /** session/prompt requests of this turn still awaiting their response. */
+  outstanding: number;
+  /** Usage per Devin user message; prompts folded into one turn share an id. */
+  usage: Map<string, Record<string, unknown>>;
+  refused: boolean;
+  error?: Error;
 }
 
 interface ActiveDevinSession {
@@ -90,6 +104,12 @@ interface ActiveDevinSession {
   nextBlockIndex: number;
   lastCommandsSignature?: string;
   toolCalls: Map<string, DevinToolCall>;
+  turn?: DevinTurn;
+  /**
+   * Settles once the latest send has written its session/prompt. A steer
+   * waits on it so it never overtakes a primary prompt still applying config.
+   */
+  dispatchChain: Promise<void>;
 }
 
 /**
@@ -546,6 +566,7 @@ export class DevinAcpAdapter implements ProviderAdapter {
       rpc,
       nextBlockIndex: 0,
       toolCalls: new Map(),
+      dispatchChain: Promise.resolve(),
     };
 
     try {
@@ -585,13 +606,21 @@ export class DevinAcpAdapter implements ProviderAdapter {
     binding.usage = undefined;
 
     if (input.prompt || input.attachments?.length) {
-      await this.sendTurn({
+      // Not awaited: the agent loop chains every later send off startSession,
+      // so waiting out the first turn here would hold a steer until it ends.
+      void this.sendTurn({
         threadId: input.threadId,
         prompt: input.prompt,
         attachments: input.attachments,
         model: input.model,
         devinPermissionMode: active.permissionMode,
         devinThoughtLevel: active.requestedThoughtLevel,
+      }).catch((error) => {
+        this.emit({
+          type: 'error',
+          threadId: input.threadId,
+          error: error instanceof Error ? error : new Error(String(error)),
+        });
       });
     }
 
@@ -610,75 +639,99 @@ export class DevinAcpAdapter implements ProviderAdapter {
       throw new Error(`No Devin session found for thread "${input.threadId}"`);
     }
 
-    session.status = 'running';
-    session.currentAssistant = undefined;
-    session.currentThinking = undefined;
-    this.emit({ type: 'status_change', threadId: input.threadId, status: 'running' });
-    const startedAt = Date.now();
+    const previous = session.dispatchChain;
+    let release!: () => void;
+    session.dispatchChain = new Promise<void>((resolve) => {
+      release = resolve;
+    });
 
+    let turn: DevinTurn | undefined;
     try {
-      await this.applyModel(session, input.model);
-      await this.applyThoughtLevel(session, input.devinThoughtLevel);
-      await this.applyPermissionMode(session, input.devinPermissionMode);
-      const promptResult = getRecord(
-        await session.rpc.request('session/prompt', {
-          sessionId: session.providerSessionId,
-          prompt: buildPromptBlocks(input.prompt, input.attachments),
-        })
-      );
-      this.finalizeStreaming(session);
-      this.settleOpenToolCalls(session);
-      const usage = getRecord(promptResult?.usage);
-      const inputTokens = getNumber(usage?.inputTokens);
-      const outputTokens = getNumber(usage?.outputTokens);
-      const cacheReadTokens = getNumber(usage?.cachedReadTokens);
-      session.status = 'completed';
-      this.emit({
-        type: 'message',
-        threadId: input.threadId,
-        message: {
-          type: 'result',
-          subtype: getString(promptResult?.stopReason) === 'refusal' ? 'error' : 'success',
-          duration_ms: Date.now() - startedAt,
-          // Devin bills in account credits, not a USD amount per turn.
-          total_cost_usd: 0,
-          costSource: 'unavailable',
-          usage: {
-            input_tokens: inputTokens,
-            output_tokens: outputTokens,
-            cache_read_input_tokens: cacheReadTokens,
-            total_tokens: getNumber(usage?.totalTokens) || inputTokens + outputTokens,
-          },
-          model: session.model,
-        },
-      });
-      this.emit({ type: 'status_change', threadId: input.threadId, status: 'completed' });
-    } catch (error) {
+      await previous;
       // A stop/dispose kills the process, which rejects this turn's RPC — that
       // stale rejection must not land in whatever session now owns the thread.
-      if (this.sessions.get(input.threadId) !== session) {
-        return;
+      if (this.sessions.get(input.threadId) !== session) return;
+      turn = session.turn;
+      if (turn) {
+        // Steer: Devin folds this prompt into the running turn. Config the
+        // composer changed meanwhile is reconciled before the next turn.
+        session.requestedThoughtLevel = normalizeDevinThoughtLevel(input.devinThoughtLevel) ?? session.requestedThoughtLevel;
+        session.permissionMode = normalizeDevinPermissionMode(input.devinPermissionMode) ?? session.permissionMode;
+        turn.outstanding += 1;
+      } else {
+        turn = { startedAt: Date.now(), outstanding: 1, usage: new Map(), refused: false };
+        session.turn = turn;
+        session.status = 'running';
+        session.currentAssistant = undefined;
+        session.currentThinking = undefined;
+        this.emit({ type: 'status_change', threadId: input.threadId, status: 'running' });
+        await this.applyModel(session, input.model);
+        await this.applyThoughtLevel(session, input.devinThoughtLevel);
+        await this.applyPermissionMode(session, input.devinPermissionMode);
       }
-      this.finalizeStreaming(session);
-      this.settleOpenToolCalls(session);
-      session.status = 'error';
-      this.emit({
-        type: 'message',
-        threadId: input.threadId,
-        message: {
-          type: 'result',
-          subtype: 'error',
-          duration_ms: Date.now() - startedAt,
-          total_cost_usd: 0,
-          costSource: 'unavailable',
-          usage: { input_tokens: 0, output_tokens: 0 },
+      const pending = session.rpc.request('session/prompt', {
+        sessionId: session.providerSessionId,
+        prompt: buildPromptBlocks(input.prompt, input.attachments),
+      });
+      release();
+      const promptResult = getRecord(await pending);
+      const usage = getRecord(promptResult?.usage);
+      const userMessageId = getString(getRecord(promptResult?._meta)?.['cognition.ai/userMessageId']) || uuidv4();
+      if (usage) turn.usage.set(userMessageId, usage);
+      if (getString(promptResult?.stopReason) === 'refusal') turn.refused = true;
+    } catch (error) {
+      if (this.sessions.get(input.threadId) !== session) return;
+      if (turn) turn.error ??= error instanceof Error ? error : new Error(String(error));
+    } finally {
+      release();
+    }
+
+    if (!turn || this.sessions.get(input.threadId) !== session) return;
+    turn.outstanding -= 1;
+    this.finalizeStreaming(session);
+    if (turn.outstanding === 0 && session.turn === turn) {
+      this.endTurn(session, turn);
+    }
+  }
+
+  /** The turn's last prompt settled: one result for the primary prompt and its steers. */
+  private endTurn(session: ActiveDevinSession, turn: DevinTurn): void {
+    session.turn = undefined;
+    this.settleOpenToolCalls(session);
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let cacheReadTokens = 0;
+    let totalTokens = 0;
+    for (const usage of turn.usage.values()) {
+      inputTokens += getNumber(usage.inputTokens);
+      outputTokens += getNumber(usage.outputTokens);
+      cacheReadTokens += getNumber(usage.cachedReadTokens);
+      totalTokens += getNumber(usage.totalTokens) || getNumber(usage.inputTokens) + getNumber(usage.outputTokens);
+    }
+    session.status = turn.error ? 'error' : 'completed';
+    this.emit({
+      type: 'message',
+      threadId: session.threadId,
+      message: {
+        type: 'result',
+        subtype: turn.error || turn.refused ? 'error' : 'success',
+        duration_ms: Date.now() - turn.startedAt,
+        // Devin bills in account credits, not a USD amount per turn.
+        total_cost_usd: 0,
+        costSource: 'unavailable',
+        usage: {
+          input_tokens: inputTokens,
+          output_tokens: outputTokens,
+          cache_read_input_tokens: cacheReadTokens,
+          total_tokens: totalTokens,
         },
-      });
-      this.emit({
-        type: 'error',
-        threadId: input.threadId,
-        error: error instanceof Error ? error : new Error(String(error)),
-      });
+        model: session.model,
+      },
+    });
+    if (turn.error) {
+      this.emit({ type: 'error', threadId: session.threadId, error: turn.error });
+    } else {
+      this.emit({ type: 'status_change', threadId: session.threadId, status: 'completed' });
     }
   }
 

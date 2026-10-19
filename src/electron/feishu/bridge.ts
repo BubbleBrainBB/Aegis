@@ -50,7 +50,7 @@ export interface FeishuRuntime {
 }
 
 /** Providers whose running turn accepts a new message (same rule as the desktop composer). */
-const STEERABLE = new Set(["codex", "kimi", "deepseek"]);
+const STEERABLE = new Set(["codex", "kimi", "deepseek", "devin"]);
 const DAY = 24 * 3600 * 1000;
 const RENDER_MS = 500;
 const SHOW_EMPTY_CARD_AFTER_MS = 1200;
