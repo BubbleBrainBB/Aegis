@@ -345,8 +345,13 @@ function shouldPreserveStreamingStateForMessage(
   message: StreamMessage
 ): boolean {
   // Subagent (Task) messages commit while the top-level agent may still be
-  // streaming its own partial — they must not reset that buffer.
-  if (message.parentToolUseId || message.type === 'goal_completed') {
+  // streaming its own partial — they must not reset that buffer. Neither may
+  // a background task ending: the CLI reports it between stream deltas.
+  if (
+    message.parentToolUseId ||
+    message.type === 'goal_completed' ||
+    (message.type === 'system' && message.subtype === 'background_task_ended')
+  ) {
     return true;
   }
   // Grok interleaves tool calls, tool results and command-list pushes with the
@@ -1142,7 +1147,9 @@ export const useAppStore = create<Store>()(
           break;
         }
         if (event.payload.message.type === 'system' && event.payload.message.subtype === 'background_tasks') {
-          // The running background tasks, replaced whole: live state, not transcript.
+          // The running background tasks, replaced whole: live state, not
+          // transcript. Every turn opens with an init, so the list must not
+          // follow inits; the runner clears it when a process starts or ends.
           const { sessionId, message } = event.payload;
           set((state) => {
             const session = state.sessions[sessionId];
@@ -1153,18 +1160,6 @@ export const useAppStore = create<Store>()(
             };
           });
           break;
-        }
-        if (
-          event.payload.message.type === 'system' &&
-          event.payload.message.subtype === 'init' &&
-          get().sessions[event.payload.sessionId]?.backgroundTasks?.length
-        ) {
-          // A new runner process: the previous one's background tasks are gone.
-          const { sessionId } = event.payload;
-          set((state) => {
-            const session = state.sessions[sessionId];
-            return session ? { ...state, sessions: { ...state.sessions, [sessionId]: { ...session, backgroundTasks: [] } } } : state;
-          });
         }
         if (event.payload.message.type === 'system' && event.payload.message.subtype === 'context_usage') {
           // Claude Code's own context window figures: live state, not transcript.

@@ -249,11 +249,18 @@ assert.match(
 // A replaced stopped runner is dead to the session: EVERY message it emits
 // (init, drain, result) is dropped at the top of onMessage, before the init
 // block could overwrite the replacement's session id/model or broadcast
-// stale status.
+// stale status. (Background task snapshots are settled just before, by
+// runner ownership: only the current runner, or a retired one clearing with
+// no successor, may touch the chips.)
 assert.match(
   ipcSource,
-  /onMessage: \(message\) => \{\s*\/\/[\s\S]{0,700}?if \(userStoppedRunnerHandles\.has\(handle\) && runnerHandles\.get\(session\.id\)\?\.handle !== handle\) \{\s*return;/,
+  /onMessage: \(message\) => \{[\s\S]{0,1400}?if \(userStoppedRunnerHandles\.has\(handle\) && runnerHandles\.get\(session\.id\)\?\.handle !== handle\) \{\s*return;/,
   'onMessage must drop all messages from replaced user-stopped handles before init handling'
+);
+assert.match(
+  ipcSource,
+  /onMessage: \(message\) => \{\s*(?:\/\/[^\n]*\n\s*)*if \(message\.type === 'system' && message\.subtype === 'background_tasks'\) \{\s*const owner = runnerHandles\.get\(session\.id\)\?\.handle;\s*if \(owner !== handle\) \{\s*if \(!owner && message\.tasks\.length === 0\) \{\s*broadcastSessionEvent\([^;]*;\s*\}\s*return;/,
+  'background task snapshots from a runner that no longer owns the session must not touch its chips'
 );
 
 // A permission request emitted after the stop (the runner stays alive now)

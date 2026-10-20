@@ -1,4 +1,5 @@
 import { isCompactionMessage, type WorkstreamMessage } from './compaction';
+import { isBackgroundTaskEndedMessage } from './background-task-ended';
 import { getAssistantPhase } from '../../shared/assistant-phase';
 import type { ContentBlock, StreamMessage } from '../types';
 import type { ThreadGoal } from '../../shared/session-goal';
@@ -151,6 +152,21 @@ function attachWorkToPreviousAssistant(
   return true;
 }
 
+/**
+ * A turn the CLI started on its own (a finished background task woke the
+ * agent) has no prompt to open it: it opens at the task's outcome when that
+ * came after the previous turn finished, else at its own init. The previous
+ * turn keeps its answer. `turnFinished`: the current turn already has a result.
+ */
+function opensWokenTurn(item: TranscriptTimelineItem, turnFinished: boolean): boolean {
+  return (
+    turnFinished &&
+    item.type === 'message' &&
+    (isBackgroundTaskEndedMessage(item.message) ||
+      (item.message.type === 'system' && item.message.subtype === 'init' && item.message.selfStarted === true))
+  );
+}
+
 function markAssistantMessagePresentation(items: TranscriptTimelineItem[]): void {
   let currentTurnAssistantItems: Array<
     Extract<TranscriptTimelineItem, { type: 'message' }> & { message: AssistantMessage }
@@ -168,17 +184,20 @@ function markAssistantMessagePresentation(items: TranscriptTimelineItem[]): void
     currentTurnAssistantItems = [];
   };
   let currentRunBoundaryKey: string | null = null;
+  let turnFinished = false;
 
   for (const item of items) {
     if (item.type !== 'message') {
       continue;
     }
 
-    if (item.message.type === 'user_prompt') {
+    if (item.message.type === 'user_prompt' || opensWokenTurn(item, turnFinished)) {
       flushTurn();
       currentRunBoundaryKey = null;
-      continue;
+      turnFinished = false;
+      if (item.message.type === 'user_prompt') continue;
     }
+    if (item.message.type === 'result') turnFinished = true;
 
     if (item.message.type === 'assistant') {
       const nextRunBoundaryKey = getAssistantRunBoundaryKey(item.message);
@@ -338,6 +357,14 @@ function collapseTurnWorkBeforeAnswer(
       continue;
     }
 
+    // A background task that ended after this turn's work began is part of
+    // that work: the trace shows it where it happened. One that opens the
+    // turn stays its own row, ahead of the work it woke.
+    if (isBackgroundTaskEndedMessage(item.message) && workGroups.length > 0 && answerVisibleIndex < 0) {
+      workGroups.push(createWorkGroup([item.message], [item.originalIndex]));
+      continue;
+    }
+
     if (item.message.type === 'assistant' && (!hasTerminalAnswer || index !== answerSourceIndex)) {
       if (item.inlineWorkGroup) {
         workGroups.push(item.inlineWorkGroup);
@@ -469,6 +496,9 @@ function collapseWorkBeforeTerminalAnswers(
   let currentTurnItems: TranscriptTimelineItem[] = [];
   let currentTurnStartedAt: number | undefined;
   let endedGoalTurn = false;
+  // The current chunk already holds a `result` (kept as a flag: scanning the
+  // chunk per item would be quadratic in long turns).
+  let currentTurnFinished = false;
 
   const flushTurn = () => {
     if (currentTurnItems.length === 0) {
@@ -477,6 +507,7 @@ function collapseWorkBeforeTerminalAnswers(
     chunks.push({ kind: 'turn', items: currentTurnItems, startedAt: currentTurnStartedAt });
     currentTurnItems = [];
     endedGoalTurn = false;
+    currentTurnFinished = false;
   };
 
   let currentRunBoundaryKey: string | null = null;
@@ -488,6 +519,12 @@ function collapseWorkBeforeTerminalAnswers(
     if (endedGoalTurn && (item.type === 'work' || item.message.type === 'assistant')) {
       flushTurn();
       currentTurnStartedAt = undefined;
+      currentRunBoundaryKey = null;
+      hasAssistantRunBoundary = false;
+    }
+    if (item.type === 'message' && opensWokenTurn(item, currentTurnFinished)) {
+      flushTurn();
+      currentTurnStartedAt = getMessageCreatedAt(item.message);
       currentRunBoundaryKey = null;
       hasAssistantRunBoundary = false;
     }
@@ -514,6 +551,7 @@ function collapseWorkBeforeTerminalAnswers(
     }
 
     currentTurnItems.push(item);
+    if (item.type === 'message' && item.message.type === 'result') currentTurnFinished = true;
     if (item.type === 'message' && item.completedGoals?.length) endedGoalTurn = true;
   }
 

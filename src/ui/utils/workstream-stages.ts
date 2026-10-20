@@ -122,7 +122,7 @@ function classifyStageKind(entry: WorkstreamEntry, ignoreToolError = false): Wor
   if (entry.type === 'approval') {
     return entry.state === 'denied' && !ignoreToolError ? 'error' : 'approval';
   }
-  if (entry.type === 'thinking' || entry.type === 'note' || entry.type === 'compaction') return null;
+  if (entry.type === 'thinking' || entry.type === 'note' || entry.type === 'compaction' || entry.type === 'backgroundTaskEnded') return null;
 
   // Task entries stay in the task stage even on failure — the subagent lane
   // renders the error state in place, keeping parallel runs visually grouped.
@@ -159,6 +159,7 @@ function entryStatus(entry: WorkstreamEntry): WorkstreamStageStatus {
     return 'success';
   }
   if (entry.type === 'compaction') return entry.state === 'inProgress' ? 'pending' : entry.state === 'interrupted' ? 'interrupted' : 'success';
+  if (entry.type === 'backgroundTaskEnded') return entry.outcome.status === 'failed' ? 'error' : 'success';
   if (entry.type === 'thinking') {
     return entry.state === 'active' ? 'pending' : 'success';
   }

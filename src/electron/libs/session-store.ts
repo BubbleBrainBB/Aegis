@@ -760,6 +760,9 @@ function extractSearchableMessageText(message: StreamMessage): string {
     if (message.subtype === 'compact_boundary') {
       return 'Conversation compacted';
     }
+    if (message.subtype === 'background_task_ended') {
+      return message.outcome.summary || message.outcome.description || '';
+    }
     if (message.subtype === 'available_commands_update') {
       return message.availableCommands.map((command) => `${command.name} ${command.description}`).join('\n');
     }

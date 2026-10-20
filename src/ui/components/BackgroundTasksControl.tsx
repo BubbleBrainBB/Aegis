@@ -9,17 +9,17 @@ import type { StreamMessage } from '../types';
 /** Chips shown before the rest fold into "+N". */
 const VISIBLE_TASKS = 3;
 
-function taskKind(task: BackgroundTaskInfo): string {
-  if (task.taskType === 'local_agent') return task.subagentType ? `Subagent · ${task.subagentType}` : 'Subagent';
-  if (task.taskType === 'local_bash') return 'Command';
-  if (task.taskType === 'local_workflow') return 'Workflow';
-  return task.taskType.replace(/^local_/, '').replace(/_/g, ' ');
+export function backgroundTaskKind(taskType: string | undefined, subagentType?: string): string {
+  if (!taskType) return 'Background task';
+  if (taskType === 'local_agent') return subagentType ? `Subagent · ${subagentType}` : 'Subagent';
+  if (taskType === 'local_bash') return 'Command';
+  if (taskType === 'local_workflow') return 'Workflow';
+  return taskType.replace(/^local_/, '').replace(/_/g, ' ');
 }
 
-function TaskIcon({ task }: { task: BackgroundTaskInfo }) {
-  const className = 'h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]';
-  if (task.taskType === 'local_agent') return <Bot className={className} aria-hidden="true" />;
-  if (task.taskType === 'local_workflow') return <Workflow className={className} aria-hidden="true" />;
+export function BackgroundTaskIcon({ taskType, className = 'h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]' }: { taskType?: string; className?: string }) {
+  if (taskType === 'local_agent') return <Bot className={className} aria-hidden="true" />;
+  if (taskType === 'local_workflow') return <Workflow className={className} aria-hidden="true" />;
   return <Terminal className={className} aria-hidden="true" />;
 }
 
@@ -33,6 +33,20 @@ function toolCallCreatedAt(messages: StreamMessage[], toolUseId: string): number
     return typeof createdAt === 'number' && Number.isFinite(createdAt) ? createdAt : null;
   }
   return null;
+}
+
+/** Opens a task's detail: a subagent's trace panel, or the tool call that started it. */
+export function openBackgroundTaskDetail(sessionId: string, task: { taskType?: string; toolUseId?: string }): void {
+  if (!task.toolUseId) return;
+  const state = useAppStore.getState();
+  if (task.taskType === 'local_agent') {
+    state.openSubagentPanel(task.toolUseId);
+    return;
+  }
+  const createdAt = toolCallCreatedAt(state.sessions[sessionId]?.messages ?? [], task.toolUseId);
+  if (createdAt !== null) {
+    state.setHistoryNavigationTarget({ sessionId, messageCreatedAt: createdAt, nonce: Date.now() });
+  }
 }
 
 /**
@@ -65,19 +79,6 @@ export function BackgroundTasksControl({
     sendEvent({ type: 'session.stopBackgroundTask', payload: { sessionId, taskId } });
   };
 
-  const openDetail = (task: BackgroundTaskInfo) => {
-    if (!task.toolUseId) return;
-    const state = useAppStore.getState();
-    if (task.taskType === 'local_agent') {
-      state.openSubagentPanel(task.toolUseId);
-      return;
-    }
-    const createdAt = toolCallCreatedAt(state.sessions[sessionId]?.messages ?? [], task.toolUseId);
-    if (createdAt !== null) {
-      state.setHistoryNavigationTarget({ sessionId, messageCreatedAt: createdAt, nonce: Date.now() });
-    }
-  };
-
   const shown = expanded ? tasks : tasks.slice(0, VISIBLE_TASKS);
   const hidden = tasks.length - shown.length;
 
@@ -90,7 +91,7 @@ export function BackgroundTasksControl({
       <LoaderCircle className="h-3.5 w-3.5 animate-spin text-[var(--text-muted)]" aria-hidden="true" />
       {shown.map((task) => {
         const isStopping = stopping.has(task.taskId);
-        const hint = `${task.description}\n${taskKind(task)}${task.toolUseId ? '' : ' · no details'}`;
+        const hint = `${task.description}\n${backgroundTaskKind(task.taskType, task.subagentType)}${task.toolUseId ? '' : ' · no details'}`;
         return (
           <span
             key={task.taskId}
@@ -98,12 +99,12 @@ export function BackgroundTasksControl({
           >
             <button
               type="button"
-              onClick={() => openDetail(task)}
+              onClick={() => openBackgroundTaskDetail(sessionId, task)}
               disabled={!task.toolUseId}
               title={hint}
               className="inline-flex min-w-0 items-center gap-1.5 rounded-l-full py-1 pl-2.5 pr-1 transition-colors hover:text-[var(--text-primary)] enabled:hover:bg-[var(--bg-tertiary)] disabled:cursor-default"
             >
-              <TaskIcon task={task} />
+              <BackgroundTaskIcon taskType={task.taskType} />
               <span className="truncate">{isStopping ? 'Stopping…' : task.description}</span>
             </button>
             <button

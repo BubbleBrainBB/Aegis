@@ -1,9 +1,10 @@
 import type { StreamMessage } from '../types';
+import type { BackgroundTaskEndedMessage } from './background-task-ended';
 
 export type CompactionMessage = Extract<StreamMessage, {
   type: 'system'; subtype: 'compact_status' | 'compact_boundary';
 }>;
-export type WorkstreamMessage = Extract<StreamMessage, { type: 'assistant' }> | CompactionMessage;
+export type WorkstreamMessage = Extract<StreamMessage, { type: 'assistant' }> | CompactionMessage | BackgroundTaskEndedMessage;
 export interface CompactionEntry {
   id: string;
   type: 'compaction';
