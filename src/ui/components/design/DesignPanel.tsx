@@ -1275,6 +1275,13 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
               else if (e.detail === 1) titleClick.current = setTimeout(() => setExportMenu((open) => (open ? undefined : true)), 220);
             }}
             onDoubleClick={() => editable && startRename()}
+            // Rename lives on the title itself: double click, or F2 from the keyboard.
+            onKeyDown={(e) => {
+              if (e.key === "F2" && editable) {
+                e.preventDefault();
+                startRename();
+              }
+            }}
           >
             <span className="design-title-text">{doc.title}</span>
             <ChevronDown size={14} />
@@ -2060,7 +2067,6 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
     {exportMenu &&
       doc &&
       <DesignActionMenu trigger={exportTrigger} onClose={() => setExportMenu(undefined)} label="Design actions" align="start" className="design-export-actions">
-            {editable && <button role="menuitem" disabled={busy} onClick={startRename}>Rename <span>Double-click the title</span></button>}
             <button className="design-menu-icon-action" role="menuitem" disabled={!editable || busy} onClick={() => { setExportMenu(undefined); void update([{ type: "add", pageId: activePageId, name: nextBoardName(doc?.boards ?? []) }]); }}><Plus size={16} />New artboard</button>
             <button className="design-menu-icon-action" role="menuitem" onClick={() => { setExportMenu(undefined); setHistoryOpen(v => !v); setHistorical(undefined); }}><History size={16} />{historyOpen ? "Close history" : "History"}</button>
             {sessionId && <button className="design-menu-icon-action" role="menuitem" onClick={() => { setExportMenu(undefined); setStylesOpen(true); }}><Sparkles size={16} />{composerChoice?.styleName ? `Style · ${composerChoice.styleName}` : "Styles"}</button>}

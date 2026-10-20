@@ -95,7 +95,8 @@ app.whenReady().then(async()=>{
   const titleAt=JSON.parse(await js('JSON.stringify((r=>({x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}))(document.querySelector("[data-design-titlebar] .design-title-button").getBoundingClientRect()))'));
   const mouse=(clickCount)=>{for(const type of ['mouseDown','mouseUp'])win.webContents.sendInputEvent({type,x:titleAt.x,y:titleAt.y,button:'left',clickCount})};
   mouse(1);await until('!!document.querySelector(".design-export-actions [role=menuitem]")','one click opens the design menu');
-  assert.match(await js('document.querySelector(".design-export-actions").textContent'),/^Rename/);
+  assert.match(await js('document.querySelector(".design-export-actions").textContent'),/^New artboard/,'rename is not a menu item');
+  assert.equal(await js('document.querySelector("[data-design-titlebar] .design-title-button").title'),'Double-click to rename');
   mouse(1);await until('!document.querySelector(".design-export-actions")','a second click closes it');
   mouse(1);mouse(2);await until('document.activeElement?.matches("[data-design-titlebar] input.design-title")','double click renames in place');
   await delay(350);assert.equal(await js('!!document.querySelector(".design-export-actions")'),false,'a double click never opens the menu');
@@ -111,7 +112,10 @@ app.whenReady().then(async()=>{
   mouse(1);mouse(2);await until('document.activeElement?.matches("[data-design-titlebar] input.design-title")','rename again');
   win.webContents.insertText('Not kept');await delay(100);key('Escape');await until('!!document.querySelector("[data-design-titlebar] .design-title-button")','Escape keeps the title');
   assert.equal(repoRead().title,'Atlas site');
-  mouse(1);mouse(2);await until('document.activeElement?.matches("[data-design-titlebar] input.design-title")','rename back');
+  // Keyboard path: F2 on the focused title renames, and does not open the menu.
+  await js('document.querySelector("[data-design-titlebar] .design-title-button").focus()');key('F2');
+  await until('document.activeElement?.matches("[data-design-titlebar] input.design-title")','F2 renames');
+  assert.equal(await js('!!document.querySelector(".design-export-actions")'),false,'F2 never opens the menu');
   await renameTo('Atlas website');await until('document.querySelector("[data-design-titlebar] .design-title-text")?.textContent==="Atlas website"','renamed back');
   await until('!!document.querySelector("[data-design-dock=composer] [data-design-dock-composer]")','composer dock');
   assert.equal(await js('document.querySelector("[data-design-dock]").dataset.designDockCorner'),'br');
