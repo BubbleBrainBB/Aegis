@@ -1,4 +1,5 @@
 import { CompactionActivity } from './CompactionActivity';
+import { BackgroundTaskEndedRow } from './BackgroundTaskEndedRow';
 import { useWorkstreamDisclosure } from './WorkstreamDisclosureState';
 import { ToolResultContent, ToolOutputPanel } from './ToolResultContent';
 import { WorkstreamActivityLabel, WorkstreamCollapse, WorkstreamScrollArea, WorkstreamElapsed } from './WorkstreamPrimitives';
@@ -150,6 +151,8 @@ export function AssistantWorkstream({
           <TraceWidget key={groupKey} draft={group.draft} />
         ) : group.kind === 'compaction' ? (
           <CompactionActivity key={group.entry.id} entry={group.entry} />
+        ) : group.kind === 'backgroundTaskEnded' ? (
+          <BackgroundTaskEndedEntryRow key={group.entry.id} entry={group.entry} />
         ) : group.kind === 'thinking' ? (
           <ThinkingRow key={group.entry.id} entry={group.entry} />
         ) : (
@@ -188,6 +191,7 @@ export function AssistantWorkstream({
 
 type EntryGroup =
   | { kind: 'compaction'; entry: Extract<WorkstreamEntry, { type: 'compaction' }> }
+  | { kind: 'backgroundTaskEnded'; entry: Extract<WorkstreamEntry, { type: 'backgroundTaskEnded' }> }
   | { kind: 'text'; entry: Extract<WorkstreamEntry, { type: 'note' }> }
   | { kind: 'thinking'; entry: Extract<WorkstreamEntry, { type: 'thinking' }> }
   | { kind: 'widget'; entry: WidgetEntry }
@@ -235,6 +239,9 @@ function groupEntries(entries: WorkstreamEntry[]): EntryGroup[] {
     if (entry.type === 'compaction') {
       flush();
       groups.push({ kind: 'compaction', entry });
+    } else if (entry.type === 'backgroundTaskEnded') {
+      flush();
+      groups.push({ kind: 'backgroundTaskEnded', entry });
     } else if (entry.type === 'note') {
       flush();
       groups.push({ kind: 'text', entry });
@@ -973,6 +980,7 @@ function getTaskDescription(entry: TaskEntry): string | null {
 function EntryRow({ entry, showChangeHint = true }: { entry: WorkstreamEntry; showChangeHint?: boolean }) {
   const workflowsOutside = useContext(WorkflowBoardsOutside);
   if (entry.type === 'compaction') return <CompactionActivity entry={entry} />;
+  if (entry.type === 'backgroundTaskEnded') return <BackgroundTaskEndedEntryRow entry={entry} />;
   if (entry.type === 'task') {
     if (isStartWorkflowToolName(entry.toolName)) return workflowsOutside ? null : <WorkflowEntryBoard entry={entry} />;
     // Task entries render as a subagent chip row rather than a generic tool
@@ -1371,3 +1379,9 @@ export function ResponseDivider({ durationMs }: { durationMs: number | undefined
 
 // Re-export utility types for callers that import alongside.
 export type { ToolResultBlock, ToolUseBlock };
+
+/** A background task that ended mid-turn, at its place in the trace. */
+function BackgroundTaskEndedEntryRow({ entry }: { entry: Extract<WorkstreamEntry, { type: 'backgroundTaskEnded' }> }) {
+  const sessionId = useContext(ImageStudioSessionContext);
+  return <BackgroundTaskEndedRow sessionId={sessionId} outcome={entry.outcome} />;
+}

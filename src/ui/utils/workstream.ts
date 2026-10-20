@@ -1,5 +1,6 @@
 import { isStartWorkflowToolName } from '../../shared/workflow';
 import { deriveCompactionEntries, type CompactionEntry, type WorkstreamMessage } from './compaction';
+import { backgroundTaskEndedEntry, isBackgroundTaskEndedMessage, type BackgroundTaskEndedEntry } from './background-task-ended';
 import type { ToolExecutionMetadata } from '../../shared/types';
 import type {
   AskUserQuestionInput,
@@ -67,6 +68,7 @@ export interface SubagentTrace {
 
 export type WorkstreamEntry =
   | CompactionEntry
+  | BackgroundTaskEndedEntry
   | {
       id: string;
       type: 'thinking';
@@ -152,6 +154,7 @@ export interface WorkstreamModel {
 
 type TraceEntry =
   | CompactionEntry
+  | BackgroundTaskEndedEntry
   | { type: 'thinking'; id: string; content: string; streaming?: boolean; interrupted?: boolean }
   | { type: 'note'; id: string; content: string; streaming?: boolean }
   | { type: 'tool'; id: string; block: ToolUseBlock; messageUuid?: string; startedAt?: number };
@@ -514,6 +517,7 @@ export function extractTraceEntries(
     const isLast = msgIdx === lastMsgIndex;
     const compaction = compactions.get(msgIdx);
     if (compaction) entries.push(compaction);
+    if (isBackgroundTaskEndedMessage(msg)) entries.push(backgroundTaskEndedEntry(msg));
     if (msg.type !== 'assistant') continue;
 
     for (const [blockIndex, block] of getMessageContentBlocks(msg).entries()) {
@@ -725,6 +729,7 @@ function createEntryFromTrace(
   if (entry.type === 'compaction') {
     return { ...entry, state: entry.state === 'inProgress' && pendingFallbackStatus !== 'pending' ? 'interrupted' : entry.state };
   }
+  if (entry.type === 'backgroundTaskEnded') return entry;
   if (entry.type === 'thinking') {
     return {
       id: entry.id,

@@ -1664,6 +1664,19 @@ export interface BackgroundTaskInfo {
   subagentType?: string;
 }
 
+/** A Claude background task that ended, as its transcript row shows it. */
+export interface BackgroundTaskOutcome {
+  taskId: string;
+  /** The tool call that started it, when there is one. */
+  toolUseId?: string;
+  status: 'completed' | 'failed' | 'stopped';
+  /** The CLI's one-line account, e.g. `Background command "…" completed (exit code 0)`. */
+  summary: string;
+  /** The description the task started with, when the reporting process saw it start. */
+  description?: string;
+  taskType?: string;
+}
+
 export interface ClaudeContextUsage {
   model: string;
   totalTokens: number;
@@ -1818,6 +1831,8 @@ export type StreamMessage =
       slash_commands?: string[];
       skills?: string[];
       mcp_servers?: McpServerStatus[];
+      /** Opens a turn the CLI started on its own (a finished background task woke the agent). */
+      selfStarted?: boolean;
     })
   | (StreamMessageBase & {
       type: 'system';
@@ -1854,6 +1869,15 @@ export type StreamMessage =
       uuid: string;
       session_id: string;
       tasks: BackgroundTaskInfo[];
+    })
+  // A Claude background task ended (completed, failed or stopped): a
+  // transcript row, so the outcome shows whether or not the agent mentions it.
+  | (StreamMessageBase & {
+      type: 'system';
+      subtype: 'background_task_ended';
+      uuid: string;
+      session_id: string;
+      outcome: BackgroundTaskOutcome;
     })
   // Claude Code's own context window usage after a turn (getContextUsage,
   // summary detail). Live state for the composer's context ring: never

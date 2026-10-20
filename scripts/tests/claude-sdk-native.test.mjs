@@ -9,7 +9,9 @@
 //   background_tasks_changed lists until stopTask() stops it;
 // - a background task that finishes after the turn ended starts a turn on its
 //   own; ClaudeTurnOriginTracker (command_lifecycle + init) flags exactly that
-//   turn, even with a prompt sent as the task finishes.
+//   turn, even with a prompt sent as the task finishes;
+// - a turn opened while a background task runs keeps its chip, and the task's
+//   end yields one transcript outcome (ClaudeBackgroundTasks).
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { execSync } from 'node:child_process';
@@ -18,6 +20,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { ClaudeTurnOriginTracker } from '../../src/electron/libs/claude-turn-origin.ts';
+import { ClaudeBackgroundTasks } from '../../src/electron/libs/claude-background-tasks.ts';
 
 let claudePath = '';
 try {
@@ -234,6 +237,52 @@ try {
     backgroundCommand = '';
     q.close?.();
   }
+  // A prompt sent while a background task runs opens a turn with its own init;
+  // the chips Aegis derives (ClaudeBackgroundTasks) must survive it, and the
+  // task's end yields exactly one transcript outcome.
+  {
+    backgroundCommand = 'sleep 4';
+    const { q, send } = session({
+      permissionMode: 'bypassPermissions',
+      allowDangerouslySkipPermissions: true,
+      includePartialMessages: true,
+      perTaskStopAffordance: true,
+    });
+    const tasks = new ClaudeBackgroundTasks();
+    const chipLists = [], outcomes = [];
+    let results = 0, resultsAfterOutcome = 0;
+    send('run it', '88888888-8888-4888-8888-888888888888');
+    const deadline = setTimeout(() => {
+      throw new Error(`background outcome timed out: ${JSON.stringify({ chipLists, outcomes, results })}`);
+    }, 30000);
+    for await (const message of q) {
+      for (const event of tasks.observe(message).events) {
+        if (event.kind === 'tasks') chipLists.push(event.tasks.map((task) => task.toolUseId ?? task.taskId));
+        else outcomes.push(event.outcome);
+      }
+      if (message.type === 'system' && message.subtype === 'init') chipLists.push('init');
+      if (message.type !== 'result') continue;
+      results += 1;
+      if (results === 1) send('next', '99999999-9999-4999-8999-999999999999');
+      if (outcomes.length) resultsAfterOutcome += 1;
+      if (resultsAfterOutcome >= 1) break;
+    }
+    clearTimeout(deadline);
+    const shownAt = chipLists.findIndex((list) => Array.isArray(list) && list.length === 1);
+    const clearedAt = chipLists.findIndex((list, i) => i > shownAt && Array.isArray(list) && list.length === 0);
+    assert.ok(shownAt >= 0 && clearedAt > shownAt, `chips shown then cleared: ${JSON.stringify(chipLists)}`);
+    assert.ok(
+      chipLists.slice(shownAt + 1, clearedAt).includes('init'),
+      `a turn opened while the task ran without clearing it: ${JSON.stringify(chipLists)}`
+    );
+    assert.equal(outcomes.length, 1, `one outcome: ${JSON.stringify(outcomes)}`);
+    assert.equal(outcomes[0].status, 'completed');
+    assert.equal(outcomes[0].toolUseId, 'toolu_background');
+    assert.equal(outcomes[0].description, 'Sleep in the background');
+    backgroundCommand = '';
+    q.close?.();
+  }
+  console.log('claude-sdk-native: a background task outlives the turns opened while it runs and ends in one outcome');
   console.log('claude-sdk-native: summary context usage is local; queued prompts fold into one result naming each; interrupt spares background tasks and stopTask stops one; a finished background task starts a turn the origin tracker flags');
 } finally {
   server.close();

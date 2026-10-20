@@ -22,6 +22,7 @@ import {
   type PromptPrefixDisplay,
 } from './PromptPrefixChip';
 import { ToolExecutionBatch } from './ToolExecutionBatch';
+import { BackgroundTaskEndedRow } from './BackgroundTaskEndedRow';
 import { getContentBlocks, isAnyToolUseBlockType } from '../utils/message-content';
 import { buildProviderSlashCommands, getSessionSlashCommands, parseSelectedSlashCommandPrompt } from '../utils/claude-slash';
 import type { ClaudeSkillSummary } from '../types';
@@ -100,8 +101,8 @@ export function MessageCard({
       );
 
     case 'system':
-      if (message.subtype === 'init') {
-        return null;
+      if (message.subtype === 'background_task_ended') {
+        return <BackgroundTaskEndedRow sessionId={sessionId} outcome={message.outcome} />;
       }
       return null;
 

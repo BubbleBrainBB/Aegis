@@ -10756,6 +10756,19 @@ function startRunner(
     bubbleThinkingLevel,
     workflowPolicy: getWorkflowSessionPolicy(session.id),
     onMessage: (message) => {
+      // The composer's background task chips belong to the session's current
+      // runner. A retired one (restarted, reaped, stopped) may only clear
+      // them, and only when nothing replaced it: its tasks died with it and
+      // no new process will clear them, while a successor's would be wiped.
+      if (message.type === 'system' && message.subtype === 'background_tasks') {
+        const owner = runnerHandles.get(session.id)?.handle;
+        if (owner !== handle) {
+          if (!owner && message.tasks.length === 0) {
+            broadcastSessionEvent(mainWindow, { type: 'stream.message', payload: { sessionId: session.id, message } });
+          }
+          return;
+        }
+      }
       // A runner the user stopped that has since been retired or replaced is
       // dead to this session: NOTHING it emits may touch session state again
       // — not its drain, not its interrupted result, and especially not a
@@ -11683,6 +11696,16 @@ function startRunner(
     prewarmed: prewarmRunner || undefined,
     autoApprove: autoApprovePermissions || undefined,
     cwd: runnerSession.cwd || null,
+  });
+  // A new runner owns the session with no background tasks. Its predecessor's
+  // closing snapshot, if late, is no longer the owner's and gets dropped — and
+  // only Claude runners report tasks at all — so clear the chips here.
+  broadcastSessionEvent(mainWindow, {
+    type: 'stream.message',
+    payload: {
+      sessionId: session.id,
+      message: { type: 'system', subtype: 'background_tasks', uuid: uuidv4(), session_id: session.id, tasks: [] },
+    },
   });
 
   if (provider === 'claude') {

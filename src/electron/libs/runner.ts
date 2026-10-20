@@ -39,6 +39,7 @@ import { BROWSER_USE_SERVER_NAME, createBrowserUseMcpServer } from './browser-us
 import { setBrowserUseSessionFullAccess } from './browser-use-consent';
 import { isBrowserUseEnabled } from './browser-use-permissions';
 import { browserManager } from '../browserManager';
+import { ClaudeBackgroundTasks, type BackgroundTaskEvent } from './claude-background-tasks';
 import { shouldExtractMemory, hasMemoryWritesInTurn, extractMemories } from './memory-extractor';
 import {
   AEGIS_BLOCKED_BROWSER_OPEN_MESSAGE,
@@ -565,10 +566,14 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
   // Uuids of the prompts this runner sent for the host, until a result names
   // them in user_message_uuids (hidden goal sends are not among them).
   const pendingPromptUuids = new Set<string>();
-  // task_id -> the tool call that started it (task_started carries it; the
-  // background_tasks_changed snapshot does not).
-  const taskToolUseIds = new Map<string, string>();
-  let backgroundTasksShown = false;
+  const backgroundTasks = new ClaudeBackgroundTasks();
+  const emitBackgroundTaskEvent = (event: BackgroundTaskEvent) => {
+    onMessage(
+      event.kind === 'tasks'
+        ? { type: 'system', subtype: 'background_tasks', uuid: uuidv4(), session_id: currentSessionId, tasks: event.tasks }
+        : { type: 'system', subtype: 'background_task_ended', uuid: uuidv4(), session_id: currentSessionId, outcome: event.outcome }
+    );
+  };
   const sessionApprovedExternalAccess = new Set<string>();
   const sessionApprovedToolAccess = new Set<string>();
   let currentPermissionMode: ClaudeSdkPermissionMode = workflowPolicy?.readOnly
@@ -1241,47 +1246,25 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
         if (abortController.signal.aborted) {
           break;
         }
-        if (turnOrigin.observe(message as Parameters<typeof turnOrigin.observe>[0])) onSelfStartedTurn?.();
+        const selfStartedTurn = turnOrigin.observe(message as Parameters<typeof turnOrigin.observe>[0]);
+        if (selfStartedTurn) onSelfStartedTurn?.();
+        // Background tasks: the composer lists the running ones, each with
+        // its own Stop; one that ends leaves a row in the transcript. Seen
+        // before the /goal controller, which swallows frames while its own
+        // control command runs.
+        const taskFrame = backgroundTasks.observe(message as Parameters<typeof backgroundTasks.observe>[0]);
+        for (const event of taskFrame.events) emitBackgroundTaskEvent(event);
         if (await goalController.receive(message as unknown as Parameters<typeof goalController.receive>[0])) continue;
+        if (taskFrame.consumed) continue;
 
         trackClaudeWidgetDraft(message as SDKMessage, widgetDrafts, widgetDraftBlocks);
 
-        // Background tasks: the composer lists the running ones, each with
-        // its own Stop. The snapshot replaces the list whole on every change.
-        const system = message as {
-          type?: string;
-          subtype?: string;
-          task_id?: string;
-          tool_use_id?: string;
-          tasks?: Array<{ task_id: string; task_type: string; description: string; subagent_type?: string; ambient?: boolean }>;
-        };
-        if (system.type === 'system' && system.subtype === 'task_started' && system.task_id && system.tool_use_id) {
-          taskToolUseIds.set(system.task_id, system.tool_use_id);
-        }
-        if (system.type === 'system' && system.subtype === 'background_tasks_changed' && Array.isArray(system.tasks)) {
-          const running = system.tasks.filter((task) => !task.ambient);
-          backgroundTasksShown = running.length > 0;
-          for (const id of [...taskToolUseIds.keys()]) {
-            if (!system.tasks.some((task) => task.task_id === id)) taskToolUseIds.delete(id);
-          }
-          onMessage({
-            type: 'system',
-            subtype: 'background_tasks',
-            uuid: uuidv4(),
-            session_id: currentSessionId,
-            tasks: running.map((task) => ({
-              taskId: task.task_id,
-              toolUseId: taskToolUseIds.get(task.task_id),
-              description: task.description,
-              taskType: task.task_type,
-              subagentType: task.subagent_type,
-            })),
-          });
-          continue;
-        }
-
         // 转换 SDK 消息为内部格式并发送
         const streamMessage = convertSDKMessage(message as SDKMessage);
+        // The transcript starts a new turn at a woken turn's init: no prompt does.
+        if (selfStartedTurn && streamMessage?.type === 'system' && streamMessage.subtype === 'init') {
+          streamMessage.selfStarted = true;
+        }
         if (streamMessage?.type === 'result') {
           // A turn that picked up prompts queued while it ran answers all of
           // them with this one result; count the host's own prompts it names
@@ -1491,9 +1474,7 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
       releaseClaudeGoalController(session.id, goalController);
       inputQueue.close();
       // Background tasks end with the process.
-      if (taskToolUseIds.size > 0 || backgroundTasksShown) {
-        onMessage({ type: 'system', subtype: 'background_tasks', uuid: uuidv4(), session_id: currentSessionId, tasks: [] });
-      }
+      for (const event of backgroundTasks.end()) emitBackgroundTaskEvent(event);
     }
   })();
 
