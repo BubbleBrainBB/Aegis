@@ -105,6 +105,18 @@ export const PROVIDER_WORKFLOW_DECLARATIONS: ProviderWorkflowDeclaration[] = [
     verified: true,
   },
   {
+    provider: 'minimax',
+    label: 'MiniMax Code',
+    // MiniMax Code's Ask mode still edits inside the workspace; its plan mode
+    // is the read-only one.
+    readOnly: 'permissionGatedWrites',
+    readOnlyPayload: { minimaxPermissionMode: 'plan' },
+    permissionField: 'minimaxPermissionMode',
+    structuredOutput: 'json-tail',
+    resumeTurns: true,
+    verified: false,
+  },
+  {
     provider: 'qoder',
     label: 'Qoder',
     readOnly: 'permissionGatedWrites',

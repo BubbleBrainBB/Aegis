@@ -229,7 +229,8 @@ function normalizeAutomationProvider(value?: string | null): AgentProvider {
     value === 'bubble' ||
     value === 'deepseek' ||
     value === 'devin' ||
-    value === 'mimo'
+    value === 'mimo' ||
+    value === 'minimax'
     ? value
     : 'claude';
 }
@@ -379,6 +380,7 @@ export function initialize(): void {
       deepseek_agent_preset TEXT DEFAULT 'standard',
       devin_session_id TEXT,
       mimo_session_id TEXT,
+      minimax_session_id TEXT,
       provider TEXT NOT NULL DEFAULT 'claude',
       model TEXT,
       conversation_scope TEXT DEFAULT 'project',
@@ -560,6 +562,7 @@ export function initialize(): void {
   ensureColumn('sessions', 'deepseek_agent_preset', "TEXT DEFAULT 'standard'");
   ensureColumn('sessions', 'devin_session_id', 'TEXT');
   ensureColumn('sessions', 'mimo_session_id', 'TEXT');
+  ensureColumn('sessions', 'minimax_session_id', 'TEXT');
   ensureColumn('sessions', 'provider', "TEXT NOT NULL DEFAULT 'claude'");
   ensureColumn('sessions', 'model', 'TEXT');
   ensureColumn('sessions', 'conversation_scope', "TEXT DEFAULT 'project'");
@@ -834,6 +837,9 @@ function getSessionSourceOrigin(sessionId: string): SessionSource {
   if (row.provider === 'mimo') {
     return 'mimo_local';
   }
+  if (row.provider === 'minimax') {
+    return 'minimax_local';
+  }
   return 'aegis';
 }
 
@@ -1095,7 +1101,9 @@ function backfillMessageMetadata(): void {
                               ? 'devin_local'
                               : row.provider === 'mimo'
                                 ? 'mimo_local'
-                                : 'aegis';
+                                : row.provider === 'minimax'
+                                  ? 'minimax_local'
+                                  : 'aegis';
         const searchText = normalizeSearchText(extractSearchableMessageText(parsed));
         updateStmt.run(extractMessageType(parsed), sourceOrigin, searchText, row.created_at, row.id);
         upsertSearchIndexStmt.run(row.id, row.session_id, sourceOrigin, searchText, row.created_at);
@@ -1365,7 +1373,7 @@ export function createSession(params: {
   associatedWorktreeRef?: string | null;
   allowedTools?: string;
   prompt?: string;
-  provider?: 'claude' | 'codex' | 'opencode' | 'kimi' | 'grok' | 'pi' | 'qoder' | 'bubble' | 'deepseek' | 'devin' | 'mimo';
+  provider?: 'claude' | 'codex' | 'opencode' | 'kimi' | 'grok' | 'pi' | 'qoder' | 'bubble' | 'deepseek' | 'devin' | 'mimo' | 'minimax';
   model?: string;
   scope?: SessionScope;
   agentId?: string | null;
@@ -2032,8 +2040,17 @@ export function updateMimoSessionId(sessionId: string, mimoSessionId: string): v
   stmt.run(mimoSessionId, now, sessionId);
 }
 
+// 更新 MiniMax Code Session ID
+export function updateMinimaxSessionId(sessionId: string, minimaxSessionId: string): void {
+  const now = Date.now();
+  const stmt = getDb().prepare(`
+    UPDATE sessions SET minimax_session_id = ?, updated_at = ? WHERE id = ?
+  `);
+  stmt.run(minimaxSessionId, now, sessionId);
+}
+
 // 更新 Session Provider
-export function updateSessionProvider(sessionId: string, provider: 'claude' | 'codex' | 'opencode' | 'kimi' | 'grok' | 'pi' | 'qoder' | 'bubble' | 'deepseek' | 'devin' | 'mimo'): void {
+export function updateSessionProvider(sessionId: string, provider: 'claude' | 'codex' | 'opencode' | 'kimi' | 'grok' | 'pi' | 'qoder' | 'bubble' | 'deepseek' | 'devin' | 'mimo' | 'minimax'): void {
   const now = Date.now();
   const stmt = getDb().prepare(`
     UPDATE sessions SET provider = ?, updated_at = ? WHERE id = ?
@@ -2403,6 +2420,7 @@ export function addMessage(sessionId: string, message: StreamMessage): void {
 
   if (
     message.type === 'result' ||
+    message.type === 'usage_record' ||
     (message.type === 'system' && message.subtype === 'init')
   ) {
     invalidateClaudeUsageReportCache();
@@ -2411,7 +2429,9 @@ export function addMessage(sessionId: string, message: StreamMessage): void {
 
 export function replaceSessionHistory(sessionId: string, messages: StreamMessage[]): void {
   const previousArtifacts = listMessagePayloadArtifactsForSession(sessionId);
-  const deleteStmt = getDb().prepare('DELETE FROM messages WHERE session_id = ?');
+  // Usage records are not history (getSessionHistory leaves them out), so a
+  // rewrite (rewind, compaction, edit) keeps them: the usage was incurred.
+  const deleteStmt = getDb().prepare("DELETE FROM messages WHERE session_id = ? AND message_type IS NOT 'usage_record'");
   const deleteArtifactsStmt = getDb().prepare('DELETE FROM artifacts WHERE session_id = ? AND kind = ?');
   const deleteSearchIndexStmt = getDb().prepare('DELETE FROM search_index WHERE session_id = ?');
   const insertStmt = getDb().prepare(`
@@ -2514,7 +2534,7 @@ export function getSessionReferencePage(sessionId: string, cursor?: string, limi
   const count = Math.max(1, Math.min(20, Math.floor(limit)));
   const rows = getDb().prepare(`
     SELECT id, data, created_at, COALESCE(sort_key, created_at) AS sort_value FROM messages
-    WHERE session_id = ? ${anchor ? 'AND (COALESCE(sort_key, created_at), created_at, id) < (?, ?, ?)' : ''}
+    WHERE session_id = ? AND message_type IS NOT 'usage_record' ${anchor ? 'AND (COALESCE(sort_key, created_at), created_at, id) < (?, ?, ?)' : ''}
     ORDER BY COALESCE(sort_key, created_at) DESC, created_at DESC, id DESC LIMIT ?
   `).all(...[sessionId, ...(anchor ? [anchor.sort, anchor.created, anchor.id] : []), count + 1]) as
     Array<{ id: string; data: string; created_at: number; sort_value: number }>;
@@ -2531,9 +2551,33 @@ export function getSessionReferencePage(sessionId: string, cursor?: string, limi
   };
 }
 
+/** Stores a stopped turn's incurred usage for its session, if the session still exists. */
+export function addUsageRecord(sessionId: string, message: StreamMessage): boolean {
+  if (message.type !== 'usage_record' || !getSession(sessionId)) return false;
+  addMessage(sessionId, message);
+  return true;
+}
+
+/** Accounting-only usage records of a session (stopped turns' incurred usage). */
+export function getSessionUsageRecords(sessionId: string): Array<Extract<StreamMessage, { type: 'usage_record' }>> {
+  const rows = getDb().prepare(`
+    SELECT data, created_at FROM messages WHERE session_id = ? AND message_type = 'usage_record' ORDER BY created_at ASC
+  `).all(sessionId) as { data: string; created_at: number }[];
+  return rows.flatMap((row) => {
+    try {
+      const message = readStoredMessagePayload(row.data, row.created_at);
+      return message.type === 'usage_record' ? [message] : [];
+    } catch {
+      return [];
+    }
+  });
+}
+
+/** The conversation as transcript, agents and copies see it: accounting-only usage records are not part of it. */
 export function getSessionHistory(sessionId: string): StreamMessage[] {
   const stmt = getDb().prepare(`
-    SELECT data, created_at FROM messages WHERE session_id = ? ORDER BY COALESCE(sort_key, created_at) ASC, created_at ASC
+    SELECT data, created_at FROM messages WHERE session_id = ? AND message_type IS NOT 'usage_record'
+    ORDER BY COALESCE(sort_key, created_at) ASC, created_at ASC
   `);
   const rows = stmt.all(sessionId) as { data: string; created_at: number }[];
 
@@ -3310,6 +3354,7 @@ const USAGE_PROVIDER_MODEL_FALLBACK: Partial<Record<AgentProvider, string>> = {
   deepseek: 'DeepSeek',
   devin: 'Devin',
   mimo: 'MiMo',
+  minimax: 'MiniMax',
 };
 
 function looksLikeClaudeModelAlias(value: string): boolean {
@@ -3336,7 +3381,10 @@ function resolveUsageRowModel(
   for (const candidate of candidates) {
     const trimmed = candidate?.trim();
     if (trimmed && !looksLikeClaudeModelAlias(trimmed)) {
-      return trimmed;
+      // MiniMax Code records its select value, `m:<provider>:<model>:v:<variant>`;
+      // variants of one model share its row (and its price).
+      const mcodeModel = provider === 'minimax' ? /^m:[^:]+:([^:]+):[uv](?::|$)/.exec(trimmed)?.[1] : undefined;
+      return mcodeModel ? decodeURIComponent(mcodeModel) : trimmed;
     }
   }
 
@@ -3441,7 +3489,7 @@ function getClaudeProtocolUsageReport(
     INNER JOIN sessions s ON s.id = m.session_id
     WHERE s.provider = ?
       AND m.created_at >= ?
-      AND m.message_type = 'result'
+      AND m.message_type IN ('result', 'usage_record')
     ORDER BY m.created_at ASC
   `).all(provider, rangeStart) as JoinedClaudeMessageRow[];
 
@@ -3479,6 +3527,10 @@ function getClaudeProtocolUsageReport(
       continue;
     }
 
+    // A usage record is accounted like the result row of a stopped turn.
+    if (parsed.type === 'usage_record') {
+      parsed = { ...parsed, type: 'result', subtype: 'error_during_execution' } as StreamMessage;
+    }
     if (parsed.type !== 'result' || parsed.sourceProvider || parsed.parentToolUseId || parsed.agentId) {
       continue;
     }

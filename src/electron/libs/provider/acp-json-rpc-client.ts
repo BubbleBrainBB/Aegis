@@ -52,6 +52,8 @@ export class AcpJsonRpcError extends Error {
 export class AcpJsonRpcClient {
   private nextId = 1;
   private buffer = '';
+  /** The process exited or failed: nothing will ever answer a new request. */
+  private closed = false;
   private readonly pending = new Map<
     number,
     { method: string; resolve: (value: unknown) => void; reject: (error: Error) => void }
@@ -65,11 +67,22 @@ export class AcpJsonRpcClient {
   ) {
     this.proc.stdout.setEncoding('utf8');
     this.proc.stdout.on('data', (chunk) => this.handleChunk(String(chunk)));
-    this.proc.on('exit', () => this.rejectAll(new Error('ACP process exited')));
-    this.proc.on('error', (error) => this.rejectAll(error instanceof Error ? error : new Error(String(error))));
+    this.proc.on('exit', () => {
+      this.closed = true;
+      this.rejectAll(new Error('ACP process exited'));
+    });
+    this.proc.on('error', (error) => {
+      this.closed = true;
+      this.rejectAll(error instanceof Error ? error : new Error(String(error)));
+    });
   }
 
   request(method: string, params?: Record<string, unknown>): Promise<unknown> {
+    // The exit already rejected everything pending; a request registered
+    // afterwards would wait forever.
+    if (this.closed || !this.proc.stdin.writable) {
+      return Promise.reject(new Error(`${method}: ACP process exited`));
+    }
     const id = this.nextId++;
     const payload: AcpJsonRpcRequest = { jsonrpc: '2.0', id, method, params };
     this.send(payload);

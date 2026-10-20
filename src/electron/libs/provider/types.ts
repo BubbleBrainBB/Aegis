@@ -28,6 +28,7 @@ import type {
   DeepseekReasoningEffort,
   DevinPermissionMode,
   MimoPermissionMode,
+  MinimaxPermissionMode,
   OpenCodePermissionMode,
   QoderPermissionMode,
   BubblePermissionMode,
@@ -51,7 +52,7 @@ import type { SessionRow } from '../../types';
 
 // ── Provider Identity ──────────────────────────────────────────────────────
 
-export type ProviderKind = 'claude' | 'codex' | 'opencode' | 'kimi' | 'grok' | 'pi' | 'qoder' | 'bubble' | 'deepseek' | 'devin' | 'mimo';
+export type ProviderKind = 'claude' | 'codex' | 'opencode' | 'kimi' | 'grok' | 'pi' | 'qoder' | 'bubble' | 'deepseek' | 'devin' | 'mimo' | 'minimax';
 
 export interface ProviderAdapterCapabilities {
   /** Supports switching model mid-session */
@@ -100,6 +101,8 @@ export interface ProviderSessionStartInput {
   devinThoughtLevel?: string;
   mimoPermissionMode?: MimoPermissionMode;
   mimoReasoningEffort?: string;
+  minimaxPermissionMode?: MinimaxPermissionMode;
+  minimaxThinkingEffort?: string;
   codexSkills?: ProviderInputReference[];
   codexMentions?: ProviderInputReference[];
   opencodePermissionMode?: OpenCodePermissionMode;
@@ -133,6 +136,8 @@ export interface ProviderSendTurnInput {
   devinThoughtLevel?: string;
   mimoPermissionMode?: MimoPermissionMode;
   mimoReasoningEffort?: string;
+  minimaxPermissionMode?: MinimaxPermissionMode;
+  minimaxThinkingEffort?: string;
   opencodePermissionMode?: OpenCodePermissionMode;
   qoderPermissionMode?: QoderPermissionMode;
   bubblePermissionMode?: BubblePermissionMode;
@@ -213,7 +218,11 @@ export type ProviderRuntimeEvent =
   // The agent switched its own permission mode mid-turn (e.g. Bubble's plan
   // approval calls setMode('default')) — lets the composer pill follow the
   // runtime instead of staying stuck on the mode it last sent.
-  | { type: 'permission_mode_changed'; threadId: string; provider: ProviderKind; mode: string };
+  | { type: 'permission_mode_changed'; threadId: string; provider: ProviderKind; mode: string }
+  // Usage a stopped turn already incurred, as a usage_record to persist for
+  // accounting only (no status, transcript or turn bookkeeping). Process-wide:
+  // a stop has already detached the runner's forwarder.
+  | { type: 'usage_unreported'; threadId: string; provider: ProviderKind; message: StreamMessage };
 
 // ── Adapter Contract ───────────────────────────────────────────────────────
 

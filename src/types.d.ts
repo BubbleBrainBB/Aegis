@@ -40,6 +40,9 @@ import type {
   DevinThoughtLevels,
   MimoModelConfig,
   MimoRuntimeStatus,
+  MinimaxModelConfig,
+  MinimaxRuntimeStatus,
+  MinimaxThinkingEfforts,
   DeepseekKeyStatus,
   BrowserUsePermissionSettings,
   PiModelConfig,
@@ -284,6 +287,9 @@ declare global {
     getDevinThoughtLevels: (model: string | null) => Promise<DevinThoughtLevels>;
     getMimoModelConfig: () => Promise<MimoModelConfig>;
     getMimoRuntimeStatus: () => Promise<MimoRuntimeStatus>;
+    getMinimaxModelConfig: () => Promise<MinimaxModelConfig>;
+    getMinimaxRuntimeStatus: () => Promise<MinimaxRuntimeStatus>;
+    getMinimaxThinkingEfforts: (model: string | null) => Promise<MinimaxThinkingEfforts>;
     getDeepseekKeyStatus: () => Promise<DeepseekKeyStatus>;
     getDeepseekApiKey: () => Promise<string>;
     setDeepseekApiKey: (apiKey: string) => Promise<DeepseekKeyStatus>;

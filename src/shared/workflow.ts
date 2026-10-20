@@ -65,6 +65,7 @@ const FULL_ACCESS_MODES: Record<string, string[]> = {
   deepseek: ['danger-full-access'],
   devin: ['bypass'],
   mimo: ['build'],
+  minimax: ['bypassPermissions'],
   bubble: ['bypassPermissions'],
   qoder: ['bypassPermissions'],
 };

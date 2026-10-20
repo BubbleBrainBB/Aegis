@@ -82,6 +82,7 @@ const AGENT_LABELS: Record<string, string> = {
   deepseek: 'DeepSeek',
   devin: 'Devin',
   mimo: 'MiMo Code',
+  minimax: 'MiniMax Code',
 };
 
 /** One-line notice the chat shows for a workflow turn of the session itself (the agent gets the full brief). */

@@ -11,6 +11,8 @@ const PERMISSION_MODES: Record<string, string[]> = {
   devin: ["accept-edits", "smart", "ask", "plan", "bypass"],
   // MiMo's plan is one of its agents, like Devin's.
   mimo: ["ask", "plan", "build"],
+  // MiniMax Code's plan is a session mode picked in the same menu.
+  minimax: ["default", "auto", "plan", "bypassPermissions"],
 };
 const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 
@@ -48,6 +50,10 @@ export function remoteTaskPayload(
     payload.mimoPermissionMode = (mode ?? "ask") as SessionContinuePayload["mimoPermissionMode"];
     // Variants are an open set per model; the desktop validates them.
     payload.mimoReasoningEffort = s.effort || undefined;
+  } else if (provider === "minimax") {
+    payload.minimaxPermissionMode = (mode ?? "default") as SessionContinuePayload["minimaxPermissionMode"];
+    // Thinking efforts are an open set per model; the desktop validates them.
+    payload.minimaxThinkingEffort = s.effort || undefined;
   }
   return payload;
 }

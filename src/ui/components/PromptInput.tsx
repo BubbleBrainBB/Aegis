@@ -66,6 +66,7 @@ import {
   DEEPSEEK_PERMISSION_MODE_OPTIONS,
   DEVIN_PERMISSION_MODE_OPTIONS,
   MIMO_PERMISSION_MODE_OPTIONS,
+  MINIMAX_PERMISSION_MODE_OPTIONS,
   KIMI_PERMISSION_MODE_OPTIONS,
   OPENCODE_PERMISSION_MODE_OPTIONS,
   QODER_PERMISSION_MODE_OPTIONS,
@@ -495,6 +496,7 @@ export function PromptInput({
   const isDeepseekContextVisible = runtimeProvider === 'deepseek' && activeSession?.provider === 'deepseek';
   const isDevinContextVisible = runtimeProvider === 'devin' && activeSession?.provider === 'devin';
   const isMimoContextVisible = runtimeProvider === 'mimo' && activeSession?.provider === 'mimo';
+  const isMinimaxContextVisible = runtimeProvider === 'minimax' && activeSession?.provider === 'minimax';
   const claudeContextModel = isClaudeContextVisible ? selectedModel || activeSession?.model || null : null;
   const openCodeContextModel = isOpenCodeContextVisible ? selectedModel || activeSession?.model || null : null;
   const piContextModel = isPiContextVisible ? selectedModel || activeSession?.model || null : null;
@@ -514,10 +516,10 @@ export function PromptInput({
 
   const codexContextSnapshot = useMemo(
     () =>
-      isCodexContextVisible || isKimiContextVisible || isGrokContextVisible || isDeepseekContextVisible || isDevinContextVisible || isMimoContextVisible
+      isCodexContextVisible || isKimiContextVisible || isGrokContextVisible || isDeepseekContextVisible || isDevinContextVisible || isMimoContextVisible || isMinimaxContextVisible
         ? getLatestCodexContextSnapshot(activeSession.messages)
         : null,
-    [activeSession?.messages, isCodexContextVisible, isKimiContextVisible, isGrokContextVisible, isDeepseekContextVisible, isDevinContextVisible, isMimoContextVisible]
+    [activeSession?.messages, isCodexContextVisible, isKimiContextVisible, isGrokContextVisible, isDeepseekContextVisible, isDevinContextVisible, isMimoContextVisible, isMinimaxContextVisible]
   );
   const claudeContextSnapshot = useMemo(() => {
     if (!isClaudeContextVisible) {
@@ -617,7 +619,9 @@ export function PromptInput({
       // consumed before the activity settles (adapter steer path).
       runtimeProvider === 'deepseek' ||
       // Devin folds a session/prompt sent mid-turn into the running turn.
-      runtimeProvider === 'devin') &&
+      runtimeProvider === 'devin' ||
+      // MiniMax Code takes a text steer (mcode/session/steer) into the running turn.
+      runtimeProvider === 'minimax') &&
     isRunning &&
     !approvalPending &&
     !delegationPending &&
@@ -1011,6 +1015,14 @@ export function PromptInput({
             runtimeProvider === 'mimo'
               ? agentSelection.mimoReasoningEffort || undefined
               : undefined,
+          minimaxPermissionMode:
+            runtimeProvider === 'minimax'
+              ? agentSelection.minimaxPermissionMode
+              : undefined,
+          minimaxThinkingEffort:
+            runtimeProvider === 'minimax'
+              ? agentSelection.minimaxThinkingEffort || undefined
+              : undefined,
           bubblePermissionMode:
             runtimeProvider === 'bubble'
               ? agentSelection.bubbleExecutionMode === 'plan'
@@ -1153,6 +1165,14 @@ export function PromptInput({
         mimoReasoningEffort:
           runtimeProvider === 'mimo'
             ? agentSelection.mimoReasoningEffort || undefined
+            : undefined,
+        minimaxPermissionMode:
+          runtimeProvider === 'minimax'
+            ? agentSelection.minimaxPermissionMode
+            : undefined,
+        minimaxThinkingEffort:
+          runtimeProvider === 'minimax'
+            ? agentSelection.minimaxThinkingEffort || undefined
             : undefined,
         bubblePermissionMode:
           runtimeProvider === 'bubble'
@@ -1795,6 +1815,15 @@ export function PromptInput({
                   menuSide={menuSide}
                 />
               )}
+              {agentSelection.provider === 'minimax' && (
+                <PermissionModePicker
+                  value={agentSelection.minimaxPermissionMode}
+                  options={MINIMAX_PERMISSION_MODE_OPTIONS}
+                  menuMinWidthClass="min-w-[176px]"
+                  onChange={agentSelection.setMinimaxPermissionMode}
+                  menuSide={menuSide}
+                />
+              )}
               {agentSelection.provider === 'bubble' && (
                 <PermissionModePicker
                   value={agentSelection.bubblePermissionMode}
@@ -1891,6 +1920,9 @@ export function PromptInput({
                 mimoReasoningEfforts={agentSelection.mimoReasoningEfforts}
                 mimoReasoningEffort={agentSelection.mimoReasoningEffort}
                 onMimoReasoningEffortChange={agentSelection.setMimoReasoningEffort}
+                minimaxThinkingEfforts={agentSelection.minimaxThinkingEfforts}
+                minimaxThinkingEffort={agentSelection.minimaxThinkingEffort}
+                onMinimaxThinkingEffortChange={agentSelection.setMinimaxThinkingEffort}
                 codexFastMode={agentSelection.codexFastMode}
                 onCodexFastModeChange={(enabled) =>
                   handleAgentConfigurationChange({ provider: 'codex', codexFastMode: enabled })

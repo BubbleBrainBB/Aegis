@@ -21,6 +21,9 @@ import { useDevinThoughtLevels } from './useDevinThoughtLevels';
 import { resolveDevinThoughtLevel, savePreferredDevinThoughtLevel } from '../utils/devin-reasoning';
 import { useMimoModelConfig } from './useMimoModelConfig';
 import { resolveMimoReasoningEffort, savePreferredMimoReasoningEffort } from '../utils/mimo-reasoning';
+import { formatMinimaxModelLabel, useMinimaxModelConfig } from './useMinimaxModelConfig';
+import { useMinimaxThinkingEfforts } from './useMinimaxThinkingEfforts';
+import { resolveMinimaxThinkingEffort, savePreferredMinimaxThinkingEffort } from '../utils/minimax-reasoning';
 import { loadPreferredProvider, PREFERRED_PROVIDER_EVENT, savePreferredProvider } from '../utils/provider';
 import {
   canonicalizeClaudeModel,
@@ -53,6 +56,7 @@ import {
   DeepseekReasoningEffort,
   DevinPermissionMode,
   MimoPermissionMode,
+  MinimaxPermissionMode,
   BubblePermissionMode,
 } from '../../shared/types';
 import {
@@ -126,6 +130,10 @@ import {
   savePreferredMimoPermissionMode,
 } from '../utils/mimo-permission';
 import {
+  loadPreferredMinimaxPermissionMode,
+  savePreferredMinimaxPermissionMode,
+} from '../utils/minimax-permission';
+import {
   loadPreferredDeepseekReasoningEffort,
   savePreferredDeepseekReasoningEffort,
 } from '../utils/deepseek-reasoning';
@@ -141,6 +149,7 @@ const QODER_MODEL_STORAGE_KEY = 'cowork.preferredQoderModel';
 const DEEPSEEK_MODEL_STORAGE_KEY = 'cowork.preferredDeepseekModel';
 const DEVIN_MODEL_STORAGE_KEY = 'cowork.preferredDevinModel';
 const MIMO_MODEL_STORAGE_KEY = 'cowork.preferredMimoModel';
+const MINIMAX_MODEL_STORAGE_KEY = 'cowork.preferredMinimaxModel';
 
 export interface ComposerModelOption {
   key: string;
@@ -226,6 +235,21 @@ function savePreferredMimoModel(model: string | null): void {
     return;
   }
   rendererStateStorage.setItem(MIMO_MODEL_STORAGE_KEY, model);
+}
+
+function loadPreferredMinimaxModel(): string | null {
+  if (typeof window === 'undefined') return null;
+  const raw = rendererStateStorage.getItem(MINIMAX_MODEL_STORAGE_KEY);
+  return raw?.trim() || null;
+}
+
+function savePreferredMinimaxModel(model: string | null): void {
+  if (typeof window === 'undefined') return;
+  if (!model) {
+    rendererStateStorage.removeItem(MINIMAX_MODEL_STORAGE_KEY);
+    return;
+  }
+  rendererStateStorage.setItem(MINIMAX_MODEL_STORAGE_KEY, model);
 }
 
 function loadPreferredGrokModel(): string | null {
@@ -508,6 +532,48 @@ function resolveConfiguredMimoModel(
   );
 }
 
+/** `m:<provider>:<model>:v:<variant>` (mcode's select value) → `provider/model#variant`. */
+function formatMinimaxModelId(id: string): string {
+  const [prefix, provider, model, kind, variant] = id.split(':');
+  if (prefix !== 'm' || !provider || !model) return id;
+  const base = `${decodeURIComponent(provider)}/${decodeURIComponent(model)}`;
+  return kind === 'v' && variant ? `${base}#${decodeURIComponent(variant)}` : base;
+}
+
+// MiniMax Code's catalog is its ACP session's model select (the values mcode
+// accepts, its labels); nothing is hardcoded here.
+function buildMinimaxModelOptions(config: ReturnType<typeof useMinimaxModelConfig>): ComposerModelOption[] {
+  const defaultModel = config.availableModels.find((entry) => entry.id === config.defaultModel);
+  const defaultOption: ComposerModelOption = {
+    key: 'minimax:default',
+    value: '',
+    label: 'Default',
+    description: defaultModel ? `Use ${defaultModel.label}` : 'Use the MiniMax Code default model',
+  };
+  const explicitOptions = config.options.map((id) => {
+    const model = config.availableModels.find((entry) => entry.id === id);
+    return {
+      key: `minimax:${id}`,
+      value: id,
+      label: model?.label || id,
+      details: formatMinimaxModelId(id),
+    };
+  });
+  return [defaultOption, ...explicitOptions];
+}
+
+function resolveConfiguredMinimaxModel(
+  requestedModel: string | null | undefined,
+  config: ReturnType<typeof useMinimaxModelConfig>
+): string | null {
+  return resolveListedOrPendingModel(
+    requestedModel,
+    loadPreferredMinimaxModel(),
+    config.defaultModel,
+    buildMinimaxModelOptions(config).map((option) => option.value)
+  );
+}
+
 function buildOpencodeComposerModelOptions(config: ReturnType<typeof useOpencodeModelConfig>): ComposerModelOption[] {
   const defaultOption: ComposerModelOption = {
     key: 'opencode:default',
@@ -687,6 +753,7 @@ export function useComposerAgentSelection(input?: {
   const deepseekModelConfig = useDeepseekModelConfig();
   const devinModelConfig = useDevinModelConfig();
   const mimoModelConfig = useMimoModelConfig();
+  const minimaxModelConfig = useMinimaxModelConfig();
   const [provider, setProviderState] = useState<AgentProvider>(() => input?.provider || loadPreferredProvider());
   const [model, setModelState] = useState<string | null>(() => {
     const initialProvider = input?.provider || loadPreferredProvider();
@@ -707,6 +774,7 @@ export function useComposerAgentSelection(input?: {
     if (initialProvider === 'deepseek') return loadPreferredDeepseekModel();
     if (initialProvider === 'devin') return loadPreferredDevinModel();
     if (initialProvider === 'mimo') return loadPreferredMimoModel();
+    if (initialProvider === 'minimax') return loadPreferredMinimaxModel();
     if (initialProvider === 'claude') return loadPreferredClaudeModel();
     return null;
   });
@@ -750,8 +818,9 @@ export function useComposerAgentSelection(input?: {
       deepseek: buildDeepseekModelOptions(deepseekModelConfig),
       devin: buildDevinModelOptions(devinModelConfig),
       mimo: buildMimoModelOptions(mimoModelConfig),
+      minimax: buildMinimaxModelOptions(minimaxModelConfig),
     };
-  }, [claudeModelConfig, codexModelConfig, opencodeModelConfig, kimiModelConfig, grokModelConfig, piModelConfig, bubbleModelConfig, qoderModelConfig, deepseekModelConfig, devinModelConfig, mimoModelConfig]);
+  }, [claudeModelConfig, codexModelConfig, opencodeModelConfig, kimiModelConfig, grokModelConfig, piModelConfig, bubbleModelConfig, qoderModelConfig, deepseekModelConfig, devinModelConfig, mimoModelConfig, minimaxModelConfig]);
 
   const modelOptions = useMemo<ComposerModelOption[]>(() => {
     if (provider === 'claude') {
@@ -816,8 +885,12 @@ export function useComposerAgentSelection(input?: {
       return buildMimoModelOptions(mimoModelConfig);
     }
 
+    if (provider === 'minimax') {
+      return buildMinimaxModelOptions(minimaxModelConfig);
+    }
+
     return [];
-  }, [claudeModelConfig, codexModelConfig, opencodeModelConfig, kimiModelConfig, grokModelConfig, piModelConfig, bubbleModelConfig, qoderModelConfig, deepseekModelConfig, devinModelConfig, mimoModelConfig, provider]);
+  }, [claudeModelConfig, codexModelConfig, opencodeModelConfig, kimiModelConfig, grokModelConfig, piModelConfig, bubbleModelConfig, qoderModelConfig, deepseekModelConfig, devinModelConfig, mimoModelConfig, minimaxModelConfig, provider]);
 
   const resolveModelForProvider = useCallback(
     (
@@ -897,11 +970,17 @@ export function useComposerAgentSelection(input?: {
         };
       }
 
+      if (nextProvider === 'minimax') {
+        return {
+          model: resolveConfiguredMinimaxModel(normalizedRequestedModel, minimaxModelConfig),
+        };
+      }
+
       return {
         model: null,
       };
     },
-    [claudeModelConfig, codexModelConfig, opencodeModelConfig, kimiModelConfig, grokModelConfig, piModelConfig, bubbleModelConfig, qoderModelConfig, deepseekModelConfig, devinModelConfig, mimoModelConfig]
+    [claudeModelConfig, codexModelConfig, opencodeModelConfig, kimiModelConfig, grokModelConfig, piModelConfig, bubbleModelConfig, qoderModelConfig, deepseekModelConfig, devinModelConfig, mimoModelConfig, minimaxModelConfig]
   );
 
   const decorateAgentSelection = useCallback(
@@ -996,6 +1075,24 @@ export function useComposerAgentSelection(input?: {
       setMimoReasoningEffortRevision((revision) => revision + 1);
     },
     [mimoLevelsModel]
+  );
+
+  // MiniMax Code thinking efforts follow the model in its submenu (also when
+  // another agent is active) and are read from mcode per model.
+  const minimaxEffortsModel = modelValueByProvider.minimax ?? null;
+  const minimaxThinkingEfforts = useMinimaxThinkingEfforts(minimaxEffortsModel, minimaxModelConfig.options.length > 0);
+  const [minimaxThinkingEffortRevision, setMinimaxThinkingEffortRevision] = useState(0);
+  const minimaxThinkingEffort = useMemo(
+    () => resolveMinimaxThinkingEffort(minimaxEffortsModel, minimaxThinkingEfforts),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [minimaxEffortsModel, minimaxThinkingEfforts, minimaxThinkingEffortRevision]
+  );
+  const setMinimaxThinkingEffort = useCallback(
+    (effort: string) => {
+      savePreferredMinimaxThinkingEffort(minimaxEffortsModel, effort);
+      setMinimaxThinkingEffortRevision((revision) => revision + 1);
+    },
+    [minimaxEffortsModel]
   );
 
   // Apply session switches during render so the first painted frame already
@@ -1165,6 +1262,8 @@ export function useComposerAgentSelection(input?: {
         savePreferredDevinModel(nextModel);
       } else if (targetProvider === 'mimo') {
         savePreferredMimoModel(nextModel);
+      } else if (targetProvider === 'minimax') {
+        savePreferredMinimaxModel(nextModel);
       }
 
       input?.onSelectionChange?.(nextSelection);
@@ -1243,7 +1342,9 @@ export function useComposerAgentSelection(input?: {
         ? formatKimiModelLabel(model, kimiModelConfig)
         : provider === 'grok'
           ? formatGrokModelLabel(model, grokModelConfig)
-          : model
+          : provider === 'minimax'
+            ? formatMinimaxModelLabel(model, minimaxModelConfig)
+            : model
       : provider === 'grok'
         ? formatGrokModelLabel(
             resolveConfiguredGrokModel(null, grokModelConfig) || '',
@@ -1521,6 +1622,10 @@ export function useComposerAgentSelection(input?: {
   const [mimoPermissionMode, setMimoPermissionModeState] = useState<MimoPermissionMode>(() =>
     loadPreferredMimoPermissionMode()
   );
+  // MiniMax Code likewise: the adapter reconciles mode and permission config per turn.
+  const [minimaxPermissionMode, setMinimaxPermissionModeState] = useState<MinimaxPermissionMode>(() =>
+    loadPreferredMinimaxPermissionMode()
+  );
   const [deepseekAgentPreset, setDeepseekAgentPresetState] = useState<DeepseekAgentPreset>(() =>
     input?.deepseekAgentPreset || loadPreferredDeepseekAgentPreset()
   );
@@ -1619,6 +1724,11 @@ export function useComposerAgentSelection(input?: {
   const setMimoPermissionMode = useCallback((mode: MimoPermissionMode) => {
     setMimoPermissionModeState(mode);
     savePreferredMimoPermissionMode(mode);
+  }, []);
+
+  const setMinimaxPermissionMode = useCallback((mode: MinimaxPermissionMode) => {
+    setMinimaxPermissionModeState(mode);
+    savePreferredMinimaxPermissionMode(mode);
   }, []);
 
   const setDeepseekAgentPreset = useCallback((preset: DeepseekAgentPreset) => {
@@ -1802,6 +1912,11 @@ export function useComposerAgentSelection(input?: {
     mimoReasoningEffort,
     mimoReasoningEfforts,
     setMimoReasoningEffort,
+    minimaxPermissionMode,
+    setMinimaxPermissionMode,
+    minimaxThinkingEffort,
+    minimaxThinkingEfforts,
+    setMinimaxThinkingEffort,
     bubblePermissionMode,
     setBubblePermissionMode,
     bubbleExecutionMode,

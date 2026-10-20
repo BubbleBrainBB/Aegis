@@ -5,6 +5,7 @@ import type {
   DeepseekPermissionMode,
   DevinPermissionMode,
   MimoPermissionMode,
+  MinimaxPermissionMode,
   KimiPermissionMode,
   OpenCodePermissionMode,
   QoderPermissionMode,
@@ -101,4 +102,14 @@ export const MIMO_PERMISSION_MODE_OPTIONS: ReadonlyArray<PermissionModeOption<Mi
   { mode: 'ask', label: 'Ask' },
   { mode: 'plan', label: 'Plan' },
   { mode: 'build', label: 'Full Access', tone: 'full-access' },
+];
+
+// MiniMax Code: Ask/Auto/Full Access are its `permissionMode` config option,
+// Plan its `plan` session mode; all applied live before each turn. Ask still
+// lets it edit inside the workspace; commands ask.
+export const MINIMAX_PERMISSION_MODE_OPTIONS: ReadonlyArray<PermissionModeOption<MinimaxPermissionMode>> = [
+  { mode: 'default', label: 'Ask' },
+  { mode: 'auto', label: 'Auto' },
+  { mode: 'plan', label: 'Plan' },
+  { mode: 'bypassPermissions', label: 'Full Access', tone: 'full-access' },
 ];

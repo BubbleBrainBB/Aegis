@@ -64,6 +64,7 @@ const PROVIDER_LABEL: Record<string, string> = {
   deepseek: 'DeepSeek',
   devin: 'Devin',
   mimo: 'MiMo Code',
+  minimax: 'MiniMax Code',
 };
 
 const NEEDS_TITLE: Record<string, string> = {

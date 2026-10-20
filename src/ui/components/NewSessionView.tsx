@@ -33,6 +33,7 @@ import {
   DEEPSEEK_PERMISSION_MODE_OPTIONS,
   DEVIN_PERMISSION_MODE_OPTIONS,
   MIMO_PERMISSION_MODE_OPTIONS,
+  MINIMAX_PERMISSION_MODE_OPTIONS,
   KIMI_PERMISSION_MODE_OPTIONS,
   OPENCODE_PERMISSION_MODE_OPTIONS,
   QODER_PERMISSION_MODE_OPTIONS,
@@ -333,6 +334,14 @@ export function NewSessionView() {
         mimoReasoningEffort:
           agentSelection.provider === 'mimo'
             ? agentSelection.mimoReasoningEffort || undefined
+            : undefined,
+        minimaxPermissionMode:
+          agentSelection.provider === 'minimax'
+            ? agentSelection.minimaxPermissionMode
+            : undefined,
+        minimaxThinkingEffort:
+          agentSelection.provider === 'minimax'
+            ? agentSelection.minimaxThinkingEffort || undefined
             : undefined,
         bubblePermissionMode:
           agentSelection.provider === 'bubble'
@@ -695,6 +704,16 @@ export function NewSessionView() {
                         menuSide="top"
                       />
                     )}
+                    {agentSelection.provider === 'minimax' && (
+                      <PermissionModePicker
+                        value={agentSelection.minimaxPermissionMode}
+                        options={MINIMAX_PERMISSION_MODE_OPTIONS}
+                        menuMinWidthClass="min-w-[176px]"
+                        onChange={agentSelection.setMinimaxPermissionMode}
+                        disabled={pendingStart}
+                        menuSide="top"
+                      />
+                    )}
                     {agentSelection.provider === 'bubble' && (
                       <PermissionModePicker
                         value={agentSelection.bubblePermissionMode}
@@ -751,6 +770,9 @@ export function NewSessionView() {
                       mimoReasoningEfforts={agentSelection.mimoReasoningEfforts}
                       mimoReasoningEffort={agentSelection.mimoReasoningEffort}
                       onMimoReasoningEffortChange={agentSelection.setMimoReasoningEffort}
+                      minimaxThinkingEfforts={agentSelection.minimaxThinkingEfforts}
+                      minimaxThinkingEffort={agentSelection.minimaxThinkingEffort}
+                      onMinimaxThinkingEffortChange={agentSelection.setMinimaxThinkingEffort}
                       codexFastMode={agentSelection.codexFastMode}
                       onCodexFastModeChange={(enabled) =>
                         agentSelection.selectAgentConfiguration({ provider: 'codex', codexFastMode: enabled })

@@ -16,8 +16,9 @@ import { ChatPane } from '/src/ui/components/ChatPane.tsx';
 import { useAppStore } from '/src/ui/store/useAppStore.ts';
 import '/src/ui/index.css';
 window.electron = { getSessionUserPrompts: async () => [], sendClientEvent: () => {}, getRecentCwds: async () => [] };
-for (const provider of ['Claude','Codex','Kimi','Grok','Opencode','Pi','Bubble','Qoder','Deepseek','Devin','Mimo']) {window.electron['get'+provider+'ModelConfig'] = async () => ({defaultModel:null, options:[], availableModels:[]});}
+for (const provider of ['Claude','Codex','Kimi','Grok','Opencode','Pi','Bubble','Qoder','Deepseek','Devin','Mimo','Minimax']) {window.electron['get'+provider+'ModelConfig'] = async () => ({defaultModel:null, options:[], availableModels:[]});}
 window.electron.getDevinThoughtLevels = async () => ({model:null, levels:[], defaultLevel:null});
+window.electron.getMinimaxThinkingEfforts=async()=>({model:null,levels:[],defaultLevel:null});
 const a = useAppStore.getState();
 const first = a.createDraftSession('');
 const second = a.createDraftSession('');

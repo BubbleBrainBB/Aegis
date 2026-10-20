@@ -49,13 +49,28 @@ const CLAUDE_PRICES: Record<string, [number, number, number]> = {
   'claude-haiku-4-5': [1, 0.1, 5],
 };
 
+/** MiniMax pay-as-you-go text rates, USD / million [input, cache read, output],
+ * standard service tier, verified 2026-10-20:
+ * https://platform.minimax.io/docs/pricing/overview
+ * Mainland rates (https://platform.minimaxi.com/docs/pricing/overview) are the
+ * same list in CNY at 7x. Thinking and non-thinking bill alike; no cache-write
+ * tier is listed, so written tokens bill as input. M3 doubles every rate once
+ * a request's input (cache hits included) exceeds 512K tokens. */
+const MINIMAX_PRICES: Record<string, { rates: [number, number, number]; longContext?: [number, number, number] }> = {
+  'minimax-m3': { rates: [0.3, 0.06, 1.2], longContext: [0.6, 0.12, 2.4] },
+  'minimax-m3.1-flash': { rates: [0.15, 0.015, 0.6] },
+};
+const MINIMAX_LONG_CONTEXT_TOKENS = 512_000;
+
 export function estimateAgentApiCost(
   provider: AgentProvider, model: string, usage: Usage | null | undefined,
   atMs = Date.now(), perRequest = false,
 ): number | null {
   if (!usage) return null;
   const qualifiedModel = model.trim().toLowerCase();
-  const rawId = qualifiedModel.split(/[/:]/).pop() || '';
+  // MiniMax Code records its select value, `m:<provider>:<model>:v:<variant>`.
+  const mcodeModel = /^m:[^:]+:([^:]+):[uv]\b/.exec(qualifiedModel)?.[1];
+  const rawId = mcodeModel ? decodeURIComponent(mcodeModel) : qualifiedModel.split(/[/:]/).pop() || '';
   const kimiModel = provider === 'kimi' || /^(kimi-code|kimi-for-coding|moonshot(?:-cn|-ai)?)[/:]/.test(qualifiedModel);
   const id = kimiModel ? KIMI_ESTIMATE_MODELS[rawId] || rawId : rawId;
   const count = (n: unknown) => validUsd(n) ? n : 0;
@@ -98,6 +113,14 @@ export function estimateAgentApiCost(
   const deepseek = write === 0 ? estimateDeepseekUsageCost(id,
     { inputTokens: input, outputTokens: output, cacheReadTokens: read }, atMs) : null;
   if (deepseek !== null) return deepseek;
+  const minimax = MINIMAX_PRICES[id];
+  if (minimax) {
+    const long = allInput > MINIMAX_LONG_CONTEXT_TOKENS;
+    // A turn aggregate cannot tell whether one request crossed the boundary.
+    if (long && minimax.longContext && !perRequest) return null;
+    const rates = long && minimax.longContext ? minimax.longContext : minimax.rates;
+    return ((input + write) * rates[0] + read * rates[1] + output * rates[2]) / 1_000_000;
+  }
   const price = API_PRICES[id];
   if (id === 'kimi-k3' && price) {
     const cache = (usage as Usage & { cache_creation?: { ephemeral_1h_input_tokens?: number } }).cache_creation;
