@@ -85,7 +85,8 @@ function isCodexTokenUsageMessage(
       message.provider === 'grok' ||
       message.provider === 'deepseek' ||
       message.provider === 'devin' ||
-      message.provider === 'mimo')
+      message.provider === 'mimo' ||
+      message.provider === 'minimax')
   );
 }
 

@@ -17,6 +17,7 @@ import { getCodexModelConfig } from "../libs/codex-settings";
 import { getBubbleModelConfig } from "../libs/bubble-settings";
 import { getDevinModelConfig, getDevinThoughtLevels } from "../libs/devin-cli";
 import { getMimoModelConfig } from "../libs/mimo-cli";
+import { getMinimaxModelConfig, getMinimaxThinkingEfforts } from "../libs/minimax-cli";
 import { importAttachmentBytes } from "../libs/file-attachments";
 import { composerCapabilities } from "./capabilities";
 export { codexReferences } from "./capabilities";
@@ -50,12 +51,31 @@ async function mimoOptions(): Promise<RemoteAgentOptions["mimo"] | null> {
   };
 }
 
+/** MiniMax Code's catalog with thinking efforts per model (both cached by minimax-cli). */
+async function minimaxOptions(): Promise<RemoteAgentOptions["minimax"] | null> {
+  const config = await getMinimaxModelConfig();
+  if (!config.availableModels.length) return null;
+  const thoughtLevels: NonNullable<RemoteAgentOptions["minimax"]>["thoughtLevels"] = {};
+  await Promise.race([
+    Promise.all(
+      config.availableModels.map(async ({ id }) => {
+        const efforts = await getMinimaxThinkingEfforts(id);
+        if (efforts.failed) return;
+        thoughtLevels[id] = { levels: efforts.levels, defaultLevel: efforts.defaultLevel };
+      }),
+    ),
+    new Promise((resolve) => setTimeout(resolve, 8000)),
+  ]);
+  return { defaultModel: config.defaultModel, availableModels: config.availableModels, thoughtLevels };
+}
+
 async function agentOptions(): Promise<RemoteAgentOptions> {
-  const [claude, bubble, devin, mimo] = await Promise.all([
+  const [claude, bubble, devin, mimo, minimax] = await Promise.all([
     getClaudeModelConfigWithCatalog().catch(() => null),
     getBubbleModelConfig().catch(() => null),
     devinOptions().catch(() => null),
     mimoOptions().catch(() => null),
+    minimaxOptions().catch(() => null),
   ]);
   let codex: ReturnType<typeof getCodexModelConfig> | null = null;
   try {
@@ -86,6 +106,7 @@ async function agentOptions(): Promise<RemoteAgentOptions> {
       : {}),
     ...(devin ? { devin } : {}),
     ...(mimo ? { mimo } : {}),
+    ...(minimax ? { minimax } : {}),
     ...(bubble
       ? {
           bubble: {

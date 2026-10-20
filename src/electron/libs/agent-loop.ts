@@ -11,6 +11,7 @@ import { QoderSdkAdapter } from './provider/qoder-sdk-adapter';
 import { DeepseekSdkAdapter } from './provider/deepseek-sdk-adapter';
 import { DevinAcpAdapter } from './provider/devin-acp-adapter';
 import { MimoAcpAdapter } from './provider/mimo-acp-adapter';
+import { MinimaxAcpAdapter } from './provider/minimax-acp-adapter';
 import { isDev } from '../util';
 
 let providerServiceInitialized = false;
@@ -36,6 +37,7 @@ export function ensureProviderService(): void {
   service.registerAdapter(new DeepseekSdkAdapter());
   service.registerAdapter(new DevinAcpAdapter());
   service.registerAdapter(new MimoAcpAdapter());
+  service.registerAdapter(new MinimaxAcpAdapter());
 
   if (isDev()) {
     console.log('[ProviderService] initialized with adapters:', service.listAdapters().map((a) => a.provider));
@@ -186,6 +188,8 @@ function runProviderServiceAgent(options: RunnerOptions): RunnerHandle {
       devinThoughtLevel: options.devinThoughtLevel,
       mimoPermissionMode: options.mimoPermissionMode,
       mimoReasoningEffort: options.mimoReasoningEffort,
+      minimaxPermissionMode: options.minimaxPermissionMode,
+      minimaxThinkingEffort: options.minimaxThinkingEffort,
       opencodePermissionMode: options.opencodePermissionMode,
       qoderPermissionMode: options.qoderPermissionMode,
       bubblePermissionMode: options.bubblePermissionMode,
@@ -319,6 +323,8 @@ function runProviderServiceAgent(options: RunnerOptions): RunnerHandle {
             devinThoughtLevel: sendOptions?.devinThoughtLevel ?? options.devinThoughtLevel,
             mimoPermissionMode: sendOptions?.mimoPermissionMode ?? options.mimoPermissionMode,
             mimoReasoningEffort: sendOptions?.mimoReasoningEffort ?? options.mimoReasoningEffort,
+            minimaxPermissionMode: sendOptions?.minimaxPermissionMode ?? options.minimaxPermissionMode,
+            minimaxThinkingEffort: sendOptions?.minimaxThinkingEffort ?? options.minimaxThinkingEffort,
             opencodePermissionMode:
               sendOptions?.opencodePermissionMode ?? options.opencodePermissionMode,
             qoderPermissionMode: sendOptions?.qoderPermissionMode ?? options.qoderPermissionMode,

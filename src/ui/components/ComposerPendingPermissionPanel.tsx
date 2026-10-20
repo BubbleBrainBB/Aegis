@@ -370,7 +370,9 @@ function parsePermissionRequest(request: PermissionRequestPayload): ParsedPermis
                 ? 'DEVIN'
                 : input.provider === 'mimo'
                   ? 'MIMO'
-                  : 'KIMI ACP',
+                  : input.provider === 'minimax'
+                    ? 'MINIMAX'
+                    : 'KIMI ACP',
       tool: input.toolName || request.toolName,
       fileName: null,
       fileDir: null,

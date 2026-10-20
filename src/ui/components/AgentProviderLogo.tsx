@@ -6,6 +6,7 @@ import piLogo from '../assets/pi-logo-auto.svg';
 import bubbleLogo from '../assets/bubble-logo-auto.svg';
 import qoderLogo from '../assets/qoder.svg';
 import devinLogo from '../assets/devin-color.svg';
+import minimaxLogo from '../assets/minimax-color.svg';
 import { OpenCodeLogo } from './OpenCodeLogo';
 import { DeepseekLogo } from './DeepseekLogo';
 import { MimoLogo } from './MimoLogo';
@@ -19,6 +20,7 @@ const PROVIDER_LOGO_SRC: Record<Exclude<AgentProvider, 'opencode' | 'deepseek' |
   pi: piLogo,
   qoder: qoderLogo,
   devin: devinLogo,
+  minimax: minimaxLogo,
 };
 
 // Black single-colour marks; the host surface inverts `.provider-monochrome-logo` in dark mode.

@@ -698,6 +698,15 @@ contextBridge.exposeInMainWorld('electron', {
   getMimoRuntimeStatus: () => {
     return ipcRenderer.invoke('get-mimo-runtime-status');
   },
+  getMinimaxModelConfig: () => {
+    return ipcRenderer.invoke('get-minimax-model-config');
+  },
+  getMinimaxRuntimeStatus: () => {
+    return ipcRenderer.invoke('get-minimax-runtime-status');
+  },
+  getMinimaxThinkingEfforts: (model: string | null) => {
+    return ipcRenderer.invoke('get-minimax-thinking-efforts', model);
+  },
 
   getPiModelConfig: () => {
     return ipcRenderer.invoke('get-pi-model-config');

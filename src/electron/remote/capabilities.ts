@@ -38,7 +38,7 @@ async function providerSkills(provider: RemoteProvider, cwd: string, history: St
     ensureProviderService();
     return toSlashSkills((await getProviderService().listSkills({ provider: "bubble", cwd })).skills);
   }
-  // Devin and MiMo report their commands (skills included) over ACP.
+  // Devin, MiMo and MiniMax Code report their commands (skills included) over ACP.
   return [];
 }
 

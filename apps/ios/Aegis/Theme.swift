@@ -57,10 +57,10 @@ extension Font {
 let providerLabels: [String: String] = [
     "claude": "Claude", "codex": "Codex", "bubble": "Bubble", "kimi": "Kimi", "grok": "Grok",
     "opencode": "OpenCode", "pi": "Pi", "qoder": "Qoder", "deepseek": "DeepSeek", "devin": "Devin",
-    "mimo": "MiMo",
+    "mimo": "MiMo", "minimax": "MiniMax",
 ]
 func providerLabel(_ id: String) -> String { providerLabels[id] ?? id }
-let agentProviders = ["claude", "codex", "bubble", "devin", "mimo"]
+let agentProviders = ["claude", "codex", "bubble", "devin", "mimo", "minimax"]
 
 struct ProviderGlyph: View {
     let provider: String
@@ -70,8 +70,8 @@ struct ProviderGlyph: View {
         if UIImage(named: "provider-\(provider)") != nil {
             Image("provider-\(provider)")
                 .resizable()
-                // Devin's mark keeps its brand colors, like on the desktop.
-                .renderingMode(provider == "devin" ? .original : .template)
+                // Devin's and MiniMax's marks keep their brand colors, like on the desktop.
+                .renderingMode(provider == "devin" || provider == "minimax" ? .original : .template)
                 .aspectRatio(contentMode: .fit)
                 .frame(width: size, height: size)
         } else {

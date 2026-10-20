@@ -62,6 +62,7 @@ const USAGE_PROVIDERS: Array<{ id: AgentProvider; title: string; logoSrc?: strin
   { id: 'deepseek', title: 'DeepSeek Harness', logoSrc: deepseekLogo },
   { id: 'devin', title: 'Devin', logoSrc: devinLogo },
   { id: 'mimo', title: 'MiMo Code', logoSrc: mimoLogo },
+  { id: 'minimax', title: 'MiniMax Code', logoSrc: minimaxLogo },
 ];
 
 type ActivityViewMode = 'daily' | 'weekly' | 'cumulative';
@@ -515,13 +516,13 @@ function ModelLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDai
         <div className="px-5 py-5 text-[13px] text-[var(--text-muted)]">No model activity in this range.</div>
       ) : (
         <div className="overflow-x-auto px-2 pb-1">
-          <table className="w-full min-w-[880px] table-fixed border-collapse text-[13px]">
+          <table className="w-full min-w-[912px] table-fixed border-collapse text-[13px]">
             {/* Fixed numeric columns; the model column takes the rest, one line, cut with an ellipsis. */}
             <colgroup>
               <col />
               <col className="w-[124px]" />
               <col className="w-[60px]" />
-              <col className="w-[104px]" />
+              <col className="w-[136px]" />
               <col className="w-[68px]" />
               <col className="w-[72px]" />
               <col className="w-[76px]" />
@@ -533,7 +534,7 @@ function ModelLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDai
                 <th className={`${header} text-left`}>Model</th>
                 <th className={`${header} text-right`}>Tokens</th>
                 <th className={`${header} text-right`}>Share</th>
-                <th className={`${header} text-right`} data-usage-cost-label>{costColumnLabel(report)}</th>
+                <th className={`${header} whitespace-nowrap text-right`} data-usage-cost-label>{costColumnLabel(report)}</th>
                 <th className={`${header} text-right`}>Per 1M</th>
                 <th className={`${header} text-right`}>Sessions</th>
                 <th className={`${header} text-right`}>Cache hit</th>
@@ -1412,7 +1413,8 @@ function getProviderLogoForModel(model: string): string | null {
     return devinLogo;
   }
 
-  if (normalized.startsWith('minimax')) {
+  // MiniMax Code stores its select value, `m:<provider>:<model>:v:<variant>`.
+  if (normalized.startsWith('minimax') || normalized.startsWith('m:minimax:')) {
     return minimaxLogo;
   }
 

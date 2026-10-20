@@ -16,6 +16,7 @@ import { getKimiRuntimeStatus } from './kimi-runtime-status';
 import { getGrokRuntimeStatus } from './grok-runtime-status';
 import { DEVIN_DOCS_URL, DEVIN_INSTALL_COMMAND, getDevinRuntimeStatus } from './devin-cli';
 import { getMimoRuntimeStatus, MIMO_DOCS_URL } from './mimo-cli';
+import { getMinimaxRuntimeStatus, MINIMAX_DOCS_URL, MINIMAX_INSTALL_COMMAND } from './minimax-cli';
 import { resolvePiAgentDir } from './provider/pi-sdk-loader';
 import { resolveBubbleHome } from './provider/bubble-sdk-loader';
 import { findMachineQoderCli } from './provider/qoder-sdk-loader';
@@ -88,6 +89,11 @@ const PROVIDER_META: Record<
     title: 'MiMo Code',
     npmPackage: null,
     docsUrl: MIMO_DOCS_URL,
+  },
+  minimax: {
+    title: 'MiniMax Code',
+    npmPackage: null,
+    docsUrl: MINIMAX_DOCS_URL,
   },
 };
 
@@ -381,6 +387,26 @@ async function probeMimo(): Promise<AgentRuntimeEntry> {
   });
 }
 
+async function probeMinimax(): Promise<AgentRuntimeEntry> {
+  const status = await getMinimaxRuntimeStatus();
+  if (!status.cliAvailable) {
+    return entry('minimax', 'not_installed', {
+      detail: `Install MiniMax Code with \`${MINIMAX_INSTALL_COMMAND}\`, then re-detect.`,
+    });
+  }
+  const state: AgentRuntimeState = status.ready
+    ? 'ready'
+    : status.authState === 'login_required'
+      ? 'login_required'
+      : 'error';
+  return entry('minimax', state, {
+    version: status.cliVersion,
+    summary: status.summary,
+    detail: status.detail,
+    loginCommand: status.loginCommand,
+  });
+}
+
 export async function getAgentRuntimeDirectory(force = false): Promise<AgentRuntimeDirectoryReport> {
   const probes: Array<[AgentProvider, Promise<AgentRuntimeEntry>]> = [
     ['claude', probeClaude(force)],
@@ -394,6 +420,7 @@ export async function getAgentRuntimeDirectory(force = false): Promise<AgentRunt
     ['deepseek', probeDeepseek()],
     ['devin', probeDevin()],
     ['mimo', probeMimo()],
+    ['minimax', probeMinimax()],
   ];
 
   const entries = await Promise.all(

@@ -22,6 +22,17 @@ assert.equal(estimateAgentApiCost('pi', 'openai/gpt-5.5', {input_tokens: 300000,
 near(estimateAgentApiCost('pi', 'openai/gpt-5.5', {input_tokens: 300000, output_tokens: 100}, Date.now(), true), 3.0045);
 near(estimateAgentApiCost('grok', 'grok-4.6', {input_tokens: 200000, output_tokens: 100}, Date.now(), true), .8012);
 assert.equal(estimateAgentApiCost('grok', 'grok-4.6', usage), null);
+// MiniMax: mcode's select value names the model; M3 doubles past 512K input per request.
+const minimaxUsage = { input_tokens: 21937, output_tokens: 179, cache_read_input_tokens: 66048 };
+near(estimateAgentApiCost('minimax', 'm:minimax:MiniMax-M3.1-Flash:v:thinking', minimaxUsage), (21937 * .15 + 66048 * .015 + 179 * .6) / 1e6);
+near(estimateAgentApiCost('minimax', 'MiniMax-M3.1-Flash', minimaxUsage), (21937 * .15 + 66048 * .015 + 179 * .6) / 1e6);
+near(estimateAgentApiCost('minimax', 'm:minimax:MiniMax-M3:v:', minimaxUsage), (21937 * .3 + 66048 * .06 + 179 * 1.2) / 1e6);
+near(estimateAgentApiCost('minimax', 'MiniMax-M3', {...minimaxUsage, cache_creation_input_tokens: 1000}), (22937 * .3 + 66048 * .06 + 179 * 1.2) / 1e6);
+const longM3 = { input_tokens: 100000, output_tokens: 1000, cache_read_input_tokens: 450000 };
+near(estimateAgentApiCost('minimax', 'MiniMax-M3', longM3, Date.now(), true), (100000 * .6 + 450000 * .12 + 1000 * 2.4) / 1e6);
+assert.equal(estimateAgentApiCost('minimax', 'MiniMax-M3', longM3), null, 'a turn aggregate past 512K cannot be tiered');
+near(estimateAgentApiCost('minimax', 'MiniMax-M3.1-Flash', longM3), (100000 * .15 + 450000 * .015 + 1000 * .6) / 1e6);
+assert.equal(estimateAgentApiCost('minimax', 'm:minimax:MiniMax-M4:v:', minimaxUsage), null, 'unknown models stay unpriced');
 const details = emptyCostDetails();
 addAgentCost(details, 'bubble', 'openai:gpt-5.5', usage, 42);
 addAgentCost(details, 'bubble', 'openai:gpt-5.5', usage, undefined);

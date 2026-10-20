@@ -26,6 +26,7 @@ import {
   CODEX_PERMISSION_MODE_OPTIONS,
   DEVIN_PERMISSION_MODE_OPTIONS,
   MIMO_PERMISSION_MODE_OPTIONS,
+  MINIMAX_PERMISSION_MODE_OPTIONS,
 } from "../../../src/ui/utils/permission-modes";
 import { orderedEfforts } from "../../../src/ui/utils/effort-order";
 
@@ -124,6 +125,31 @@ export function catalogFor(provider: string, options?: RemoteAgentOptions): Agen
       // Plan is one of MiMo's agents, listed in this menu instead of a toggle.
       permissionModes: visible(MIMO_PERMISSION_MODE_OPTIONS),
       defaultPermission: "ask",
+      supportsPlan: false,
+    };
+  }
+  if (provider === "minimax") {
+    // Models and thinking efforts come from MiniMax Code's ACP session on the Mac.
+    const config = options?.minimax;
+    const models = config?.availableModels ?? [];
+    const efforts = (model: string) => config?.thoughtLevels[model || config.defaultModel || ""];
+    const labels = new Map<string, string>();
+    for (const entry of Object.values(config?.thoughtLevels ?? {}))
+      for (const level of entry.levels) labels.set(level.id, level.label);
+    return {
+      provider,
+      models: [
+        { value: "", label: "Default", description: "Do not override the default model" },
+        ...models.map((m) => ({ value: m.id, label: m.label || m.id })),
+      ],
+      defaultModel: "",
+      effortsFor: (model) => (efforts(model)?.levels ?? []).map((l) => l.id),
+      defaultEffortFor: (model) => efforts(model)?.defaultLevel ?? null,
+      effortLabel: (e) => labels.get(e) ?? e.charAt(0).toUpperCase() + e.slice(1),
+      fastFor: () => false,
+      // Plan is one of MiniMax Code's modes, listed in this menu instead of a toggle.
+      permissionModes: visible(MINIMAX_PERMISSION_MODE_OPTIONS),
+      defaultPermission: "default",
       supportsPlan: false,
     };
   }

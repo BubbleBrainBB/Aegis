@@ -61,7 +61,7 @@ export interface McpServerStatus {
   /** Codex: the server needs a fresh OAuth login (mcpServer/oauth/login). */
   failureReason?: 'reauthenticationRequired';
   /** Which agent reported this status. Used to avoid cross-agent name collisions. */
-  tool?: 'claude' | 'codex' | 'opencode' | 'kimi' | 'grok' | 'pi' | 'qoder' | 'bubble' | 'deepseek' | 'devin' | 'mimo';
+  tool?: 'claude' | 'codex' | 'opencode' | 'kimi' | 'grok' | 'pi' | 'qoder' | 'bubble' | 'deepseek' | 'devin' | 'mimo' | 'minimax';
 }
 
 // Claude Skills 摘要
@@ -122,6 +122,12 @@ export type DevinPermissionMode = 'accept-edits' | 'smart' | 'ask' | 'plan' | 'b
  * MIMOCODE_CONFIG_CONTENT. Applied live via session/set_mode before every turn.
  */
 export type MimoPermissionMode = 'ask' | 'build' | 'plan';
+/**
+ * MiniMax Code ACP: `default` (Ask), `auto` and `bypassPermissions` (Full
+ * access) are the `permissionMode` config option; `plan` is the `plan`
+ * session mode. Applied live before every turn.
+ */
+export type MinimaxPermissionMode = 'default' | 'auto' | 'bypassPermissions' | 'plan';
 export type OpenCodePermissionMode = 'defaultPermissions' | 'plan' | 'fullAccess';
 // Mirrors Bubble SDK's PermissionMode union (runTurn({ mode })).
 export type BubblePermissionMode = 'default' | 'plan' | 'bypassPermissions';
@@ -482,6 +488,7 @@ export interface GrokRuntimeStatus {
 
 export type DevinRuntimeStatus = GrokRuntimeStatus;
 export type MimoRuntimeStatus = GrokRuntimeStatus;
+export type MinimaxRuntimeStatus = GrokRuntimeStatus;
 
 /**
  * Thinking levels Devin offers for one model, read from the ACP session's
@@ -491,6 +498,20 @@ export interface DevinThoughtLevels {
   model: string | null;
   levels: Array<{ id: string; label: string }>;
   defaultLevel: string | null;
+}
+
+/**
+ * Model catalog for MiniMax Code, read from an ACP session's `model` config
+ * option. Ids are mcode's own select values (`m:<provider>:<model>:v:<variant>`).
+ */
+export type MinimaxModelConfig = DevinModelConfig;
+/**
+ * Thinking efforts MiniMax Code offers for one model (its `thinkingEffort`
+ * select). Empty `levels` = the model has no effort control, unless
+ * `failed` says the read itself failed (not to be cached).
+ */
+export interface MinimaxThinkingEfforts extends DevinThoughtLevels {
+  failed?: boolean;
 }
 
 export type ClaudeRuntimeStatusKind = 'ready' | 'login_required' | 'install_required' | 'error';
@@ -653,7 +674,7 @@ export interface WorkspaceChannel {
 }
 
 // Agent 提供商 / runtime
-export type AgentProvider = 'claude' | 'codex' | 'opencode' | 'kimi' | 'grok' | 'pi' | 'qoder' | 'bubble' | 'deepseek' | 'devin' | 'mimo';
+export type AgentProvider = 'claude' | 'codex' | 'opencode' | 'kimi' | 'grok' | 'pi' | 'qoder' | 'bubble' | 'deepseek' | 'devin' | 'mimo' | 'minimax';
 export type SessionSource =
   | 'aegis'
   | 'claude_remote'
@@ -666,7 +687,8 @@ export type SessionSource =
   | 'bubble_local'
   | 'deepseek_local'
   | 'devin_local'
-  | 'mimo_local';
+  | 'mimo_local'
+  | 'minimax_local';
 
 export interface ProviderComposerCapabilities {
   provider: AgentProvider;
@@ -1116,6 +1138,9 @@ export interface SessionStartPayload {
   mimoPermissionMode?: MimoPermissionMode;
   /** MiMo model variant (reasoning effort); open set, read per model from the CLI. */
   mimoReasoningEffort?: string;
+  minimaxPermissionMode?: MinimaxPermissionMode;
+  /** MiniMax Code ACP `thinkingEffort` value; open set, valid values vary per model. */
+  minimaxThinkingEffort?: string;
   codexSkills?: ProviderInputReference[];
   codexMentions?: ProviderInputReference[];
   opencodePermissionMode?: OpenCodePermissionMode;
@@ -1253,6 +1278,9 @@ export interface SessionContinuePayload {
   mimoPermissionMode?: MimoPermissionMode;
   /** MiMo model variant (reasoning effort); open set, read per model from the CLI. */
   mimoReasoningEffort?: string;
+  minimaxPermissionMode?: MinimaxPermissionMode;
+  /** MiniMax Code ACP `thinkingEffort` value; open set, valid values vary per model. */
+  minimaxThinkingEffort?: string;
   codexSkills?: ProviderInputReference[];
   codexMentions?: ProviderInputReference[];
   opencodePermissionMode?: OpenCodePermissionMode;
@@ -1527,6 +1555,9 @@ export interface SessionInfo {
   mimoPermissionMode?: MimoPermissionMode;
   /** MiMo model variant (reasoning effort); open set, read per model from the CLI. */
   mimoReasoningEffort?: string;
+  minimaxPermissionMode?: MinimaxPermissionMode;
+  /** MiniMax Code ACP `thinkingEffort` value; open set, valid values vary per model. */
+  minimaxThinkingEffort?: string;
   opencodePermissionMode?: OpenCodePermissionMode;
   qoderPermissionMode?: QoderPermissionMode;
   bubblePermissionMode?: BubblePermissionMode;
@@ -1592,6 +1623,9 @@ export interface SessionStatusPayload {
   mimoPermissionMode?: MimoPermissionMode;
   /** MiMo model variant (reasoning effort); open set, read per model from the CLI. */
   mimoReasoningEffort?: string;
+  minimaxPermissionMode?: MinimaxPermissionMode;
+  /** MiniMax Code ACP `thinkingEffort` value; open set, valid values vary per model. */
+  minimaxThinkingEffort?: string;
   opencodePermissionMode?: OpenCodePermissionMode;
   qoderPermissionMode?: QoderPermissionMode;
   bubblePermissionMode?: BubblePermissionMode;
@@ -1714,7 +1748,7 @@ export interface AcpPermissionOption {
 
 export interface AcpPermissionInput {
   kind: 'acp-permission';
-  provider: 'kimi' | 'grok' | 'opencode' | 'bubble' | 'deepseek' | 'devin' | 'mimo';
+  provider: 'kimi' | 'grok' | 'opencode' | 'bubble' | 'deepseek' | 'devin' | 'mimo' | 'minimax';
   question: string;
   title: string;
   toolName: string;
@@ -1931,7 +1965,7 @@ export type StreamMessage =
       subtype: 'token_usage';
       uuid: string;
       session_id: string;
-      provider: 'codex' | 'kimi' | 'grok' | 'deepseek' | 'bubble' | 'devin' | 'mimo';
+      provider: 'codex' | 'kimi' | 'grok' | 'deepseek' | 'bubble' | 'devin' | 'mimo' | 'minimax';
       model?: string;
       usage: CodexContextUsage;
     })
@@ -1983,6 +2017,19 @@ export type StreamMessage =
       uuid: string;
       planMarkdown: string;
       turnId?: string;
+    })
+  // Usage a stopped turn already incurred, kept for accounting only: the Usage
+  // report and /cost count it, but it is no turn result and never part of the
+  // transcript (history reads exclude it; history rewrites keep it).
+  | (StreamMessageBase & {
+      type: 'usage_record';
+      uuid: string;
+      duration_ms: number;
+      total_cost_usd: number;
+      costSource?: 'reported' | 'estimated' | 'unavailable';
+      costDetails?: ProviderCostDetails;
+      usage: Usage;
+      model?: string;
     })
   | (StreamMessageBase & { type: 'stream_event'; event: StreamEvent })
   // A show_widget call's HTML while the model is still writing it. Transient:

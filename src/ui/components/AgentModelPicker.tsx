@@ -10,6 +10,7 @@ import { QoderLogo } from './QoderLogo';
 import { DeepseekLogo } from './DeepseekLogo';
 import { DevinLogo } from './DevinLogo';
 import { MimoLogo } from './MimoLogo';
+import { MinimaxLogo } from './MinimaxLogo';
 
 export function ProviderIcon({ provider }: { provider: AgentProvider }) {
   if (provider === 'claude') {
@@ -47,6 +48,9 @@ export function ProviderIcon({ provider }: { provider: AgentProvider }) {
   }
   if (provider === 'mimo') {
     return <MimoLogo />;
+  }
+  if (provider === 'minimax') {
+    return <MinimaxLogo />;
   }
 
   return null;

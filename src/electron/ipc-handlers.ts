@@ -225,6 +225,13 @@ import {
 import { normalizeDevinPermissionMode, normalizeDevinThoughtLevel } from './libs/provider/devin-acp-adapter';
 import { formatMimoRuntimeBlockingMessage, getMimoModelConfig, getMimoRuntimeStatus } from './libs/mimo-cli';
 import { normalizeMimoPermissionMode, normalizeMimoReasoningEffort } from './libs/provider/mimo-acp-adapter';
+import {
+  formatMinimaxRuntimeBlockingMessage,
+  getMinimaxModelConfig,
+  getMinimaxRuntimeStatus,
+  getMinimaxThinkingEfforts,
+} from './libs/minimax-cli';
+import { normalizeMinimaxPermissionMode, normalizeMinimaxThinkingEffort } from './libs/provider/minimax-acp-adapter';
 import { AutomationScheduler } from './libs/automation-scheduler';
 import { recycleSessionWorktree } from './libs/worktree-hygiene';
 import {
@@ -693,6 +700,7 @@ async function workflowModelCatalog(provider: string): Promise<unknown> {
     case 'deepseek': return getDeepseekModelConfig();
     case 'devin': return getDevinModelConfig();
     case 'mimo': return getMimoModelConfig();
+    case 'minimax': return getMinimaxModelConfig();
     case 'pi': return getPiModelConfig();
     case 'bubble': return getBubbleModelConfig();
     case 'qoder': return getQoderModelConfig();
@@ -1914,6 +1922,7 @@ function formatProviderLabel(provider: SessionInfo['provider']): string {
   if (provider === 'deepseek') return 'DeepSeek Harness';
   if (provider === 'devin') return 'Devin';
   if (provider === 'mimo') return 'MiMo Code';
+  if (provider === 'minimax') return 'MiniMax Code';
   return 'Claude Code';
 }
 
@@ -1983,8 +1992,10 @@ function buildSessionCostSummary(session: ReturnType<typeof sessions.getSession>
   const resultMessages = history.filter(
     (message): message is StreamMessage & { type: 'result' } => message.type === 'result'
   );
+  // Stopped turns' incurred usage counts toward tokens and cost, not turns.
+  const usageMessages = [...resultMessages, ...sessions.getSessionUsageRecords(session.id)];
 
-  if (resultMessages.length === 0) {
+  if (usageMessages.length === 0) {
     return [
       '**Session usage**',
       '',
@@ -1994,20 +2005,20 @@ function buildSessionCostSummary(session: ReturnType<typeof sessions.getSession>
     ].join('\n');
   }
 
-  const totalInputTokens = resultMessages.reduce(
+  const totalInputTokens = usageMessages.reduce(
     (sum, message) => sum + (message.usage?.input_tokens || 0),
     0
   );
-  const totalOutputTokens = resultMessages.reduce(
+  const totalOutputTokens = usageMessages.reduce(
     (sum, message) => sum + (message.usage?.output_tokens || 0),
     0
   );
   const totalTokens = totalInputTokens + totalOutputTokens;
-  const totalCostUsd = resultMessages.reduce(
+  const totalCostUsd = usageMessages.reduce(
     (sum, message) => sum + (message.total_cost_usd || 0),
     0
   );
-  const totalDurationMs = resultMessages.reduce(
+  const totalDurationMs = usageMessages.reduce(
     (sum, message) => sum + (message.duration_ms || 0),
     0
   );
@@ -3530,7 +3541,7 @@ const runnerHandles = new Map<
   string,
   {
     handle: RunnerHandle;
-    provider: 'claude' | 'codex' | 'opencode' | 'kimi' | 'grok' | 'pi' | 'qoder' | 'bubble' | 'deepseek' | 'devin' | 'mimo';
+    provider: 'claude' | 'codex' | 'opencode' | 'kimi' | 'grok' | 'pi' | 'qoder' | 'bubble' | 'deepseek' | 'devin' | 'mimo' | 'minimax';
     claudeAccessMode?: import('../shared/types').ClaudeAccessMode;
     claudeExecutionMode?: import('../shared/types').ClaudeExecutionMode;
     claudeReasoningEffort?: import('../shared/types').ClaudeReasoningEffort;
@@ -3549,6 +3560,8 @@ const runnerHandles = new Map<
     devinThoughtLevel?: string;
     mimoPermissionMode?: import('../shared/types').MimoPermissionMode;
     mimoReasoningEffort?: string;
+    minimaxPermissionMode?: import('../shared/types').MinimaxPermissionMode;
+    minimaxThinkingEffort?: string;
     opencodePermissionMode?: import('../shared/types').OpenCodePermissionMode;
     qoderPermissionMode?: import('../shared/types').QoderPermissionMode;
     bubblePermissionMode?: import('../shared/types').BubblePermissionMode;
@@ -4978,6 +4991,9 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
   ensureProviderService();
   getProviderService().events.on('event', (event) => {
     if (event.type === 'goal_changed') publishSessionGoal(event.threadId, event.goal, true, event.resumeConfirmation);
+    // A stopped turn's incurred usage: an accounting-only usage_record that
+    // the Usage report and /cost count, outside the transcript and turn state.
+    if (event.type === 'usage_unreported') sessions.addUsageRecord(event.threadId, event.message);
     if (event.type === 'status_change' && event.status === 'running' && getCachedSessionGoal(event.threadId)?.goal?.status === 'active') {
       sessions.updateSessionStatus(event.threadId, 'running');
       broadcast(mainWindow, { type: 'session.status', payload: { sessionId: event.threadId, status: 'running' } });
@@ -5184,6 +5200,9 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
       }
       if (row.provider === 'mimo' && runner?.provider === 'mimo') {
         return runner.mimoPermissionMode === 'build';
+      }
+      if (row.provider === 'minimax' && runner?.provider === 'minimax') {
+        return runner.minimaxPermissionMode === 'bypassPermissions';
       }
       if (row.provider === 'qoder' && runner?.provider === 'qoder') {
         return runner.qoderPermissionMode === 'bypassPermissions';
@@ -6713,6 +6732,18 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
 
   ipcMainHandle('get-mimo-runtime-status', async () => {
     return getMimoRuntimeStatus();
+  });
+
+  ipcMainHandle('get-minimax-model-config', async () => {
+    return getMinimaxModelConfig();
+  });
+
+  ipcMainHandle('get-minimax-runtime-status', async () => {
+    return getMinimaxRuntimeStatus();
+  });
+
+  ipcMainHandle('get-minimax-thinking-efforts', async (_event, model?: string | null) => {
+    return getMinimaxThinkingEfforts(typeof model === 'string' ? model : null);
   });
 
   ipcMainHandle('get-pi-model-config', async () => {
@@ -9200,7 +9231,9 @@ function buildSessionInfoFromRow(
                           ? 'devin_local'
                           : row.provider === 'mimo'
                             ? 'mimo_local'
-                            : 'aegis',
+                            : row.provider === 'minimax'
+                              ? 'minimax_local'
+                              : 'aegis',
     readOnly: row.session_origin === 'claude_remote',
     cwd: row.cwd || undefined,
     projectCwd: row.project_cwd || row.cwd || null,
@@ -9319,6 +9352,8 @@ async function handleSessionStart(
     devinThoughtLevel,
     mimoPermissionMode,
     mimoReasoningEffort,
+    minimaxPermissionMode,
+    minimaxThinkingEffort,
     opencodePermissionMode,
     qoderPermissionMode,
     bubblePermissionMode,
@@ -9430,6 +9465,10 @@ async function handleSessionStart(
     chosenProvider === 'mimo' ? normalizeMimoPermissionMode(mimoPermissionMode) : undefined;
   const selectedMimoReasoningEffort =
     chosenProvider === 'mimo' ? normalizeMimoReasoningEffort(mimoReasoningEffort) : undefined;
+  const selectedMinimaxPermissionMode =
+    chosenProvider === 'minimax' ? normalizeMinimaxPermissionMode(minimaxPermissionMode) : undefined;
+  const selectedMinimaxThinkingEffort =
+    chosenProvider === 'minimax' ? normalizeMinimaxThinkingEffort(minimaxThinkingEffort) : undefined;
   const normalizedTeamMode = normalizeSessionTeamMode(teamMode);
   const normalizedTeamId =
     normalizedTeamMode === 'team' || normalizedTeamMode === 'manual'
@@ -9537,6 +9576,7 @@ async function handleSessionStart(
       deepseekAgentPreset: selectedDeepseekAgentPreset,
       devinPermissionMode: selectedDevinPermissionMode,
       mimoPermissionMode: selectedMimoPermissionMode,
+      minimaxPermissionMode: selectedMinimaxPermissionMode,
       hiddenFromThreads: session.hidden_from_threads === 1,
       channelId: normalizeWorkspaceChannelId(session.workspace_channel_id),
       teamMode: normalizeSessionTeamMode(session.team_mode),
@@ -9681,6 +9721,22 @@ async function handleSessionStart(
       });
       return null;
     }
+  } else if (chosenProvider === 'minimax') {
+    const runtimeStatus = await getMinimaxRuntimeStatus();
+    if (!runtimeStatus.ready) {
+      sessions.updateSessionStatus(session.id, 'error');
+      if (automationRunId) {
+        sessions.finishAutomationRun(automationRunId, 'failed', formatMinimaxRuntimeBlockingMessage(runtimeStatus));
+        broadcastAutomationChanged(mainWindow);
+      }
+      broadcast(mainWindow, {
+        type: 'runner.error',
+        payload: {
+          message: formatMinimaxRuntimeBlockingMessage(runtimeStatus),
+        },
+      });
+      return null;
+    }
   }
 
   // 异步生成更好的标题（不阻塞）
@@ -9764,7 +9820,9 @@ async function handleSessionStart(
     selectedDevinPermissionMode,
     selectedDevinThoughtLevel,
     selectedMimoPermissionMode,
-    selectedMimoReasoningEffort
+    selectedMimoReasoningEffort,
+    selectedMinimaxPermissionMode,
+    selectedMinimaxThinkingEffort
   );
   return session.id;
 }
@@ -9818,6 +9876,8 @@ async function handleSessionContinueImpl(
     devinThoughtLevel,
     mimoPermissionMode,
     mimoReasoningEffort,
+    minimaxPermissionMode,
+    minimaxThinkingEffort,
     opencodePermissionMode,
     qoderPermissionMode,
     bubblePermissionMode,
@@ -10022,6 +10082,12 @@ async function handleSessionContinueImpl(
     : undefined;
   const nextMimoReasoningEffort = nextProvider === 'mimo'
     ? normalizeMimoReasoningEffort(mimoReasoningEffort)
+    : undefined;
+  const nextMinimaxPermissionMode = nextProvider === 'minimax'
+    ? normalizeMinimaxPermissionMode(minimaxPermissionMode)
+    : undefined;
+  const nextMinimaxThinkingEffort = nextProvider === 'minimax'
+    ? normalizeMinimaxThinkingEffort(minimaxThinkingEffort)
     : undefined;
   const nextTeamMode = teamMode !== undefined
     ? normalizeSessionTeamMode(teamMode)
@@ -10304,6 +10370,19 @@ async function handleSessionContinueImpl(
       });
       return false;
     }
+  } else if (nextProvider === 'minimax') {
+    const runtimeStatus = await getMinimaxRuntimeStatus();
+    if (!runtimeStatus.ready) {
+      sessions.updateSessionStatus(sessionId, 'error');
+      broadcast(mainWindow, {
+        type: 'runner.error',
+        payload: {
+          message: formatMinimaxRuntimeBlockingMessage(runtimeStatus),
+          sessionId,
+        },
+      });
+      return false;
+    }
   }
 
   // While a codex turn is still streaming, a follow-up send becomes a
@@ -10417,6 +10496,8 @@ async function handleSessionContinueImpl(
         devinThoughtLevel: nextDevinThoughtLevel,
         mimoPermissionMode: nextMimoPermissionMode,
         mimoReasoningEffort: nextMimoReasoningEffort,
+        minimaxPermissionMode: nextMinimaxPermissionMode,
+        minimaxThinkingEffort: nextMinimaxThinkingEffort,
         opencodePermissionMode: nextOpenCodePermissionMode,
         qoderPermissionMode: nextQoderPermissionMode,
         bubblePermissionMode: nextBubblePermissionMode,
@@ -10468,6 +10549,13 @@ async function handleSessionContinueImpl(
       if (nextProvider === 'mimo' && nextMimoReasoningEffort !== undefined) {
         existingEntry.mimoReasoningEffort = nextMimoReasoningEffort;
       }
+      // MiniMax Code: model, effort and permission via set_config_option, plan via set_mode.
+      if (nextProvider === 'minimax' && nextMinimaxPermissionMode !== undefined) {
+        existingEntry.minimaxPermissionMode = nextMinimaxPermissionMode;
+      }
+      if (nextProvider === 'minimax' && nextMinimaxThinkingEffort !== undefined) {
+        existingEntry.minimaxThinkingEffort = nextMinimaxThinkingEffort;
+      }
       return true;
     }
   }
@@ -10506,7 +10594,9 @@ async function handleSessionContinueImpl(
                           ? session.devin_session_id ?? undefined
                           : nextProvider === 'mimo'
                             ? session.mimo_session_id ?? undefined
-                            : undefined;
+                            : nextProvider === 'minimax'
+                              ? session.minimax_session_id ?? undefined
+                              : undefined;
   let nextResumeSessionId = resumeSessionId;
 
   if (
@@ -10589,7 +10679,9 @@ async function handleSessionContinueImpl(
     nextDevinPermissionMode,
     nextDevinThoughtLevel,
     nextMimoPermissionMode,
-    nextMimoReasoningEffort
+    nextMimoReasoningEffort,
+    nextMinimaxPermissionMode,
+    nextMinimaxThinkingEffort
   );
   return true;
 }
@@ -10601,7 +10693,7 @@ function startRunner(
   prompt: string,
   resumeSessionId?: string,
   attachments?: Attachment[],
-  providerOverride?: 'claude' | 'codex' | 'opencode' | 'kimi' | 'grok' | 'pi' | 'qoder' | 'bubble' | 'deepseek' | 'devin' | 'mimo',
+  providerOverride?: 'claude' | 'codex' | 'opencode' | 'kimi' | 'grok' | 'pi' | 'qoder' | 'bubble' | 'deepseek' | 'devin' | 'mimo' | 'minimax',
   modelOverride?: string,
   betasOverride?: string[],
   claudeAccessMode?: import('../shared/types').ClaudeAccessMode,
@@ -10642,7 +10734,9 @@ function startRunner(
   devinPermissionMode?: import('../shared/types').DevinPermissionMode,
   devinThoughtLevel?: string,
   mimoPermissionMode?: import('../shared/types').MimoPermissionMode,
-  mimoReasoningEffort?: string
+  mimoReasoningEffort?: string,
+  minimaxPermissionMode?: import('../shared/types').MinimaxPermissionMode,
+  minimaxThinkingEffort?: string
 ): void {
   if (!session) return;
 
@@ -10686,7 +10780,7 @@ function startRunner(
           ? 'codex-app-server'
           : provider === 'kimi'
             ? 'kimi acp'
-            : provider === 'devin' || provider === 'mimo'
+            : provider === 'devin' || provider === 'mimo' || provider === 'minimax'
               ? `${provider} acp`
               : 'opencode sdk',
       model: resolvedModelOverride,
@@ -10747,6 +10841,8 @@ function startRunner(
     devinThoughtLevel,
     mimoPermissionMode,
     mimoReasoningEffort,
+    minimaxPermissionMode,
+    minimaxThinkingEffort,
     codexSkills: provider === 'codex' ? codexSkills : undefined,
     codexMentions: provider === 'codex' ? codexMentions : undefined,
     opencodePermissionMode,
@@ -10850,6 +10946,11 @@ function startRunner(
           }
         } else if (provider === 'mimo') {
           sessions.updateMimoSessionId(session.id, message.session_id);
+          if (message.model) {
+            sessions.updateSessionModel(session.id, message.model);
+          }
+        } else if (provider === 'minimax') {
+          sessions.updateMinimaxSessionId(session.id, message.session_id);
           if (message.model) {
             sessions.updateSessionModel(session.id, message.model);
           }
@@ -11682,6 +11783,8 @@ function startRunner(
     devinThoughtLevel: provider === 'devin' ? normalizeDevinThoughtLevel(devinThoughtLevel) : undefined,
     mimoPermissionMode: provider === 'mimo' ? normalizeMimoPermissionMode(mimoPermissionMode) : undefined,
     mimoReasoningEffort: provider === 'mimo' ? normalizeMimoReasoningEffort(mimoReasoningEffort) : undefined,
+    minimaxPermissionMode: provider === 'minimax' ? normalizeMinimaxPermissionMode(minimaxPermissionMode) : undefined,
+    minimaxThinkingEffort: provider === 'minimax' ? normalizeMinimaxThinkingEffort(minimaxThinkingEffort) : undefined,
     activeAgentId: normalizedActiveAgentId,
     activeAgentRunId: normalizedActiveAgentRunId,
     onTurnDone,

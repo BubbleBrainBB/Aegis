@@ -62,7 +62,7 @@ app.whenReady().then(async()=>{
  const rows='[data-usage-provider]';
  const rowText=provider=>js('document.querySelector('+JSON.stringify(row(provider))+').textContent');
  const rowStatus=provider=>js('document.querySelector('+JSON.stringify(row(provider)+' .usage-status')+')?.getAttribute("title")||""');
- const ALL=11;
+ const ALL=12;
  const open=async()=>{await click(trigger);const u=await js('[...document.querySelectorAll("[role=menuitem]")].find(e=>e.textContent.trim()==="Usage").getBoundingClientRect().toJSON()');win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(u.x+30),y:Math.round(u.y+15)});await textClick('Usage');await until('document.querySelectorAll("[data-usage-provider]").length==='+ALL)};
  const outside=async()=>{win.webContents.sendInputEvent({type:'mouseMove',x:900,y:100});win.webContents.sendInputEvent({type:'mouseDown',x:900,y:100,button:'left',clickCount:1});win.webContents.sendInputEvent({type:'mouseUp',x:900,y:100,button:'left',clickCount:1});await delay(400)};
  const list='document.querySelector("[data-usage-provider]").closest(".overflow-y-auto")';
@@ -89,7 +89,7 @@ app.whenReady().then(async()=>{
   assert.ok((await rowText('bubble')).includes('1.2M'),'tokens in the ledger');
   assert.ok((await rowText('kimi')).includes('—'),'sessions without token counts');
   assert.ok((await rowText('deepseek')).includes('—') && (await rowStatus('deepseek')).includes('Unavailable'),'unavailable usage is flagged');
-  assert.deepEqual(await js('[...document.querySelectorAll(".usage-idle [data-usage-provider]")].map(e=>e.dataset.usageProvider)'),['opencode','pi','devin','mimo'],'providers with no usage collapse into logos');
+  assert.deepEqual(await js('[...document.querySelectorAll(".usage-idle [data-usage-provider]")].map(e=>e.dataset.usageProvider)'),['opencode','pi','devin','mimo','minimax'],'providers with no usage collapse into logos');
   const submenu=await rect('[data-usage-provider="claude"]');
   win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(usageTrigger.right+4),y:Math.round(usageTrigger.y+15)});await delay(70);
   win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(submenu.x+30),y:Math.round(submenu.y+15)});await delay(300);
@@ -146,7 +146,7 @@ app.whenReady().then(async()=>{
   assert.equal(await js('document.querySelector("[aria-label=\\"Usage provider\\"]").textContent.includes("Codex CLI")'),true);
   assert.equal(await js('qa.calls.filter(c=>c==="codex").length'),detailQuotaCalls,'detail shares quota cache with menu');
   // Every provider routes to its own selection: plan rows, ledger rows and idle logos.
-  for(const provider of ['claude','opencode','kimi','grok','pi','qoder','bubble','deepseek','devin','mimo']){
+  for(const provider of ['claude','opencode','kimi','grok','pi','qoder','bubble','deepseek','devin','mimo','minimax']){
    await js('qa.store.getState().setShowSettings(false)');await delay(150);await open();await click(row(provider));
    await until('document.querySelector("h1")?.textContent==="Usage"');
    assert.equal(await js('qa.store.getState().usageSettingsProvider'),provider);
@@ -159,7 +159,7 @@ app.whenReady().then(async()=>{
   assert.ok((await rowStatus('codex')).includes('Saved'),'stale values include timestamp');
   await shot('usage-dark-stale');
   await textClick('Usage details');await until('document.querySelector("h1")?.textContent==="Usage"');
-  assert.equal(await js('qa.store.getState().usageSettingsProvider'),'mimo','full usage preserves last selection');
+  assert.equal(await js('qa.store.getState().usageSettingsProvider'),'minimax','full usage preserves last selection');
   await js('qa.store.getState().setShowSettings(false)');await delay(150);
   await click(trigger);await js('[...document.querySelectorAll("[role=menuitem]")].find(e=>e.textContent.startsWith("Settings")).click()');await delay(150);assert.equal(await js('qa.store.getState().showSettings'),true,'Settings still opens');
   await js('qa.store.getState().setShowSettings(false)');await delay(150);

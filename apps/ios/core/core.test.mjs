@@ -178,6 +178,28 @@ test("Devin catalog: models and thinking levels from the Mac, plan as a mode", (
   assert.equal(devin.supportsPlan, false);
 });
 
+test("MiniMax Code catalog: models and thinking efforts from the Mac, plan as a mode", () => {
+  const flash = "m:minimax:MiniMax-M3.1-Flash:v:thinking";
+  const m3 = "m:minimax:MiniMax-M3:v:";
+  const minimax = call("catalog", {
+    provider: "minimax",
+    options: {
+      minimax: {
+        defaultModel: flash,
+        availableModels: [{ id: flash, label: "M3.1-Flash · thinking" }, { id: m3, label: "M3" }],
+        thoughtLevels: { [flash]: { levels: [{ id: "low", label: "Low" }, { id: "max", label: "Max" }], defaultLevel: "max" }, [m3]: { levels: [], defaultLevel: null } },
+      },
+    },
+  });
+  assert.deepEqual(minimax.models.map((m) => m.label), ["Default", "M3.1-Flash · thinking", "M3"]);
+  assert.deepEqual(minimax.perModel[""].efforts.map((e) => e.value), ["low", "max"], "the Default row uses the default model's efforts");
+  assert.deepEqual(minimax.perModel[m3].efforts, []);
+  assert.equal(minimax.perModel[flash].defaultEffort, "max");
+  assert.equal(minimax.defaultPermission, "default");
+  assert.ok(minimax.permissionModes.some((p) => p.mode === "plan"));
+  assert.equal(minimax.supportsPlan, false);
+});
+
 test("MiMo catalog: models and variant levels from the Mac, plan as a mode", () => {
   const mimo = call("catalog", {
     provider: "mimo",

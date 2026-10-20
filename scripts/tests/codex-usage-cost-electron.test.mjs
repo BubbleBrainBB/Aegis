@@ -168,6 +168,26 @@ app.whenReady().then(async()=>{
   store.addMessage(kimi.id,result({model:'moonshot-cn/kimi-k2.7-code-highspeed',usage:{input_tokens:0,output_tokens:0}}));
   const kimiReport=store.getAgentUsageReport('kimi',365);assert.equal(kimiReport.costMode,'estimated');near(kimiReport.totals.totalCostUsd,1.316);
   store.close();store.initialize();near(store.getAgentUsageReport('kimi',365).totals.totalCostUsd,1.316);
+  // MiniMax Code records its select value; a row is the model, priced at MiniMax list rates.
+  const minimax=store.createSession({provider:'minimax',model:'m:minimax:MiniMax-M3.1-Flash:v:thinking',cwd:temp,title:'MiniMax estimate'});
+  for(const model of ['m:minimax:MiniMax-M3.1-Flash:v:thinking','m:minimax:MiniMax-M3.1-Flash:v:thinking','m:minimax:MiniMax-M3:v:'])
+    store.addMessage(minimax.id,result({model,costSource:'unavailable',usage:{input_tokens:21937,output_tokens:179,cache_read_input_tokens:66048,cache_creation_input_tokens:0}}));
+  // A stopped batch's incurred usage (usage_unreported) is stored as an accounting-only usage_record.
+  const usageRecord={type:'usage_record',uuid:'minimax-usage-qa',duration_ms:5,model:'m:minimax:MiniMax-M3.1-Flash:v:thinking',costSource:'estimated',total_cost_usd:(170*.15)/1e6,
+    costDetails:{reportedUsd:0,estimatedUsd:(170*.15)/1e6,reportedCount:0,estimatedCount:2,unpricedCount:0},usage:{input_tokens:170,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0}};
+  assert.equal(store.addUsageRecord('missing-session',usageRecord),false,'a deleted session gets no record');
+  assert.equal(store.addUsageRecord(minimax.id,result()),false,'only usage records are stored this way');
+  assert.equal(store.addUsageRecord(minimax.id,usageRecord),true);
+  const minimaxHistory=store.getSessionHistory(minimax.id);
+  assert(!minimaxHistory.some(m=>m.type==='usage_record'),'not part of the transcript or of what agents read');
+  assert.equal(minimaxHistory.filter(m=>m.type==='result').length,3,'no extra turn result');
+  store.replaceSessionHistory(minimax.id,minimaxHistory);
+  assert.equal(store.getSessionUsageRecords(minimax.id).length,1,'a history rewrite keeps the incurred usage');
+  const minimaxReport=store.getAgentUsageReport('minimax',365);
+  assert.deepEqual(minimaxReport.models.map(m=>m.model).sort(),['MiniMax-M3','MiniMax-M3.1-Flash'],'select values collapse to model names');
+  assert.equal(minimaxReport.costMode,'estimated');
+  near(minimaxReport.totals.totalCostUsd,(2*(21937*.15+66048*.015+179*.6)+(21937*.3+66048*.06+179*1.2)+170*.15)/1e6);
+  assert.equal(minimaxReport.models.find(m=>m.model==='MiniMax-M3.1-Flash').inputTokens,2*21937+170,'the stopped usage row counts toward its model');
   const win=new BrowserWindow({width:1140,height:900,show:false,webPreferences:{backgroundThrottling:false}});
   const errors=[];win.webContents.on('console-message',e=>{if(e.level==='error')errors.push(e.message)});
   const js=code=>win.webContents.executeJavaScript(code);
@@ -200,6 +220,13 @@ app.whenReady().then(async()=>{
   assert(!copy.includes('usage record(s)'));assert(!copy.includes('No reliable USD cost'));
   assert(!(await js('!!document.querySelector("[data-usage-api-basis], [data-usage-cost-note], [data-usage-cost-coverage]")')));
   await shot('kimi-estimated-clean');
+  await load(minimaxReport,'minimax');await until('document.body.innerText.includes("MiniMax-M3.1-Flash")');
+  copy=await js('document.body.innerText');assert(copy.includes('Estimated cost'));assert(!copy.includes('m:minimax:'));
+  // Every cost label stays on one line: the cost header is as tall as its neighbours.
+  const oneLine='(()=>{const c=document.querySelector("[data-usage-cost-label]"),m=c.parentElement.firstElementChild;return c.getBoundingClientRect().height===m.getBoundingClientRect().height})()';
+  assert(await js(oneLine),'Estimated cost fits on one line');await shot('minimax-estimated');
+  await load(current);await until('document.body.innerText.includes("API equivalent cost")');assert(await js(oneLine),'API equivalent cost fits on one line');
+  await load(mixed);await until('document.body.innerText.includes("Priced usage only")');assert(await js(oneLine),'Priced usage only fits on one line');
   assert.deepEqual(errors,[]);store.close();db.close();
   console.log('codex-usage-cost: persisted rollouts, mixed/unknown/known/empty/range coverage, cache and Electron UI passed');app.exit(0);
  }catch(error){console.error(error);store?.close();db?.close();app.exit(1)}
