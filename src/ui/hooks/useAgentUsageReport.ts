@@ -1,4 +1,4 @@
-import { useEffect, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useSyncExternalStore } from 'react';
 import type { AgentProvider, ClaudeUsageReport, ClaudeUsageRangeDays } from '../types';
 import { createPlanUsageCache } from '../utils/plan-usage-cache';
 
@@ -36,4 +36,45 @@ export function useAgentUsageReport(provider: AgentProvider, days: ClaudeUsageRa
     return () => window.clearInterval(timer);
   }, [cache, enabled]);
   return snapshot;
+}
+
+type UsageSnapshot = ReturnType<ReturnType<typeof getCache>['getSnapshot']>;
+
+/**
+ * Several providers' reports for one range at once (the usage menu ranks them).
+ * Only enabled providers fetch; the rest still report their cached snapshot.
+ */
+export function useAgentUsageReports(
+  requests: ReadonlyArray<{ provider: AgentProvider; enabled: boolean }>,
+  days: ClaudeUsageRangeDays,
+): UsageSnapshot[] {
+  const caches = requests.map(({ provider }) => getCache(provider, days));
+  const key = requests.map(({ provider }) => provider).join(',');
+  const enabledKey = requests.map(({ provider, enabled }) => (enabled ? provider : '')).join(',');
+  const store = useMemo(() => {
+    let last: UsageSnapshot[] = [];
+    return {
+      subscribe: (listener: () => void) => {
+        const unsubscribes = caches.map((cache) => cache.subscribe(listener));
+        return () => unsubscribes.forEach((unsubscribe) => unsubscribe());
+      },
+      // Stable identity until one of the snapshots changes.
+      getSnapshot: () => {
+        const next = caches.map((cache) => cache.getSnapshot());
+        if (next.length !== last.length || next.some((snapshot, index) => snapshot !== last[index])) last = next;
+        return last;
+      },
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, days]);
+  const snapshots = useSyncExternalStore(store.subscribe, store.getSnapshot);
+  useEffect(() => {
+    const enabled = caches.filter((_, index) => requests[index].enabled);
+    if (!enabled.length) return;
+    enabled.forEach((cache) => { void cache.refresh(); });
+    const timer = window.setInterval(() => enabled.forEach((cache) => { void cache.refresh(); }), 60_000);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, enabledKey, days]);
+  return snapshots;
 }

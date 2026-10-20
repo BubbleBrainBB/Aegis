@@ -11,7 +11,7 @@ import React from 'react';
 import {createRoot} from 'react-dom/client';
 import {Tooltip} from '@base-ui-components/react/tooltip';
 import {Toaster} from 'sonner';
-import {Sidebar,AppTitlebar} from '/src/ui/components/Sidebar';
+import {Sidebar} from '/src/ui/components/Sidebar';
 import {Settings} from '/src/ui/components/settings/Settings';
 import {useAppStore} from '/src/ui/store/useAppStore';
 import '/src/ui/index.css';
@@ -20,7 +20,11 @@ const calls=[];let fail=false,hold=false,resolveClaude;const pending=[];let hist
 let profile={displayName:'BubbleBrain',handle:'bubblebrain',customized:true};
 const claude=()=>({source:'claude-agent-sdk',fetchedAt:Date.now(),rateLimitsAvailable:true,subscriptionType:'pro',fiveHour:{utilization:28,resetsAt:null},sevenDay:{utilization:62,resetsAt:null},sevenDayOpus:null,sevenDaySonnet:null,modelScoped:[],extraUsage:null});
 const counted=(name,load)=>{calls.push(name);const run=()=>fail?Promise.reject(Error('Offline')):Promise.resolve(load());return hold?new Promise((resolve,reject)=>pending.push(()=>run().then(resolve,reject))):run()};
-window.electron={
+// Anything the sidebar asks for beyond what this test drives resolves empty.
+// The result is both awaitable (empty list) and callable (an unsubscribe).
+const emptyResult=()=>{const done=()=>{};const result=Promise.resolve([]);for(const key of ['then','catch','finally'])done[key]=result[key].bind(result);return done};
+const autoStub=()=>new Proxy(function(){},{get:(_,k)=>k==='then'?undefined:autoStub(),apply:emptyResult});
+const stubs={
  getUserProfile:async()=>profile,saveUserProfile:async p=>(profile={...profile,...p}),
  getBubbleProvidersConfig:async()=>({providers:[]}),getGitBranch:async()=>({ok:false}),
  getKimiModelConfig:async()=>({defaultModel:null,options:[],availableModels:[]}),
@@ -30,10 +34,11 @@ window.electron={
  getQoderPlanUsage:()=>counted('qoder',()=>({source:'qoder-sdk',fetchedAt:Date.now(),totalUsagePercentage:40,userQuota:null,addOnQuota:null,orgResourcePackage:null,expiresAt:null,userType:'pro'})),
  getAgentUsageReport:async(provider,days)=>{calls.push(provider+':'+days);if(days===365&&historyHold)await new Promise(resolve=>pendingHistory.push(resolve));if(fail||provider==='deepseek')throw Error('Unavailable');const tokens=provider==='bubble'?(days===365?12000000:1200000):provider==='claude'&&days===365?7800000:0;return {rangeDays:days,totals:{inputTokens:tokens,outputTokens:0,totalTokens:tokens,totalCostUsd:0,sessionCount:provider==='kimi'?2:tokens?1:0,cacheReadTokens:0,cacheHitRate:0},models:[],daily:[{date:new Date().toISOString().slice(0,10),totalTokens:tokens,byModel:{}}]};},
 };
+window.electron=new Proxy(stubs,{get:(t,k)=>k in t?t[k]:autoStub()});
 useAppStore.setState({sessions:{},sidebarCollapsed:false,sidebarWidth:280,showSettings:false,activeSettingsTab:'profile'});
 useAppStore.getState().setTheme('light');
 window.qa={store:useAppStore,calls,holdHistory:()=>historyHold=true,settleHistory:value=>{fail=value;historyHold=false;pendingHistory.splice(0).forEach(resolve=>resolve())},resolveClaude:()=>resolveClaude(),expire:()=>window.qaTimeOffset+=61000,fail:()=>fail=true,hold:()=>hold=true,settle:value=>{fail=value;hold=false;pending.splice(0).forEach(run=>run())},refresh:()=>{window.qaTimeOffset+=61000;window.qaRefreshers.forEach(run=>run())}};
-function Harness(){const settings=useAppStore(s=>s.showSettings);return <Tooltip.Provider><div style={{height:'100vh',display:'flex',background:'var(--bg-primary)',color:'var(--text-primary)'}}>{settings?<Settings/>:<><Sidebar/><main style={{padding:24,flex:1}}><AppTitlebar/><h1>Workspace</h1></main></>}</div><Toaster/></Tooltip.Provider>}
+function Harness(){const settings=useAppStore(s=>s.showSettings);return <Tooltip.Provider><div style={{height:'100vh',display:'flex',background:'var(--bg-primary)',color:'var(--text-primary)'}}>{settings?<Settings/>:<><Sidebar/><main style={{padding:24,flex:1}}><h1>Workspace</h1></main></>}</div><Toaster/></Tooltip.Provider>}
 createRoot(document.getElementById('root')).render(<Harness/>);
 `;
 const main=String.raw`
@@ -54,9 +59,13 @@ app.whenReady().then(async()=>{
  const shot=async name=>{await delay(250);fs.writeFileSync(path.join(process.env.QA_CAPTURE,name+'.png'),(await win.webContents.capturePage()).toPNG())};
  const rect=async selector=>js('(()=>{const r=document.querySelector('+JSON.stringify(selector)+').getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,bottom:r.bottom,right:r.right}})()');
  const row=provider=>'[data-usage-provider="'+provider+'"]';
+ const rows='[data-usage-provider]';
  const rowText=provider=>js('document.querySelector('+JSON.stringify(row(provider))+').textContent');
- const open=async()=>{await click(trigger);const u=await js('[...document.querySelectorAll("[role=menuitem]")].find(e=>e.textContent.trim()==="Usage").getBoundingClientRect().toJSON()');win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(u.x+30),y:Math.round(u.y+15)});await textClick('Usage');await until('document.querySelectorAll("[data-usage-provider]").length===9')};
+ const rowStatus=provider=>js('document.querySelector('+JSON.stringify(row(provider)+' .usage-status')+')?.getAttribute("title")||""');
+ const ALL=11;
+ const open=async()=>{await click(trigger);const u=await js('[...document.querySelectorAll("[role=menuitem]")].find(e=>e.textContent.trim()==="Usage").getBoundingClientRect().toJSON()');win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(u.x+30),y:Math.round(u.y+15)});await textClick('Usage');await until('document.querySelectorAll("[data-usage-provider]").length==='+ALL)};
  const outside=async()=>{win.webContents.sendInputEvent({type:'mouseMove',x:900,y:100});win.webContents.sendInputEvent({type:'mouseDown',x:900,y:100,button:'left',clickCount:1});win.webContents.sendInputEvent({type:'mouseUp',x:900,y:100,button:'left',clickCount:1});await delay(400)};
+ const list='document.querySelector("[data-usage-provider]").closest(".overflow-y-auto")';
  try{
   await win.loadURL(process.env.QA_URL);await until('document.querySelector('+JSON.stringify(trigger)+')?.getAttribute("aria-label").includes("BubbleBrain")');
   assert.equal(await js('qa.calls.length'),0,'no usage requests before menu opens');
@@ -64,54 +73,64 @@ app.whenReady().then(async()=>{
   // Exercise a real hover into the submenu, including the gap between menus.
   const usageTrigger=await js('[...document.querySelectorAll("[role=menuitem]")].find(e=>e.textContent.trim()==="Usage").getBoundingClientRect().toJSON()');
   win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(usageTrigger.x+30),y:Math.round(usageTrigger.y+15)});
-  await until('document.querySelectorAll("[data-usage-provider]").length===9');
-  await until('document.querySelector('+JSON.stringify(row('bubble'))+').textContent.includes("1.2M tokens")');
-  assert.ok((await rowText('claude')).includes('Loading usage'),'slow provider does not block others');
-  assert.ok((await rowText('kimi')).includes('Tokens not reported'));
-  assert.ok((await rowText('pi')).includes('No usage in last 30 days'));
-  assert.ok((await rowText('deepseek')).includes('Usage unavailable'));
-  const initialHeight=await js('document.querySelector("[data-usage-provider]").closest("[role=menu]").getBoundingClientRect().height');
-  await js('qa.resolveClaude()');await until('document.querySelector('+JSON.stringify(row('claude'))+').textContent.includes("72%")');
-  assert.ok((await rowText('codex')).includes('5h 85% · Weekly 64%'));
-  assert.equal(await js('document.querySelector("[data-usage-provider]").closest("[role=menu]").getBoundingClientRect().height'),initialHeight,'initial load preserves menu height');
+  // First open: plan providers are known up front; Claude is still loading.
+  await until('document.querySelectorAll("[data-usage-provider]").length===4');
+  await until('document.querySelector('+JSON.stringify(row('codex'))+').textContent.includes("85%")');
+  assert.equal(await js('!!document.querySelector('+JSON.stringify(row('claude')+' .usage-skeleton')+')'),true,'slow provider shows a skeleton without blocking others');
+  assert.ok((await rowText('codex')).includes('64%') && (await rowText('codex')).includes('Pro'),'codex windows and tier');
+  assert.equal(await js('document.querySelectorAll("[aria-label=\\"Tokens, last 30 days\\"] .usage-skeleton").length>0'),true,'ledger waits behind placeholders');
+  assert.equal(await js('!!document.querySelector(".usage-refresh-line")'),false,'first load is not a refresh');
+  await shot('usage-loading');
+  await js('qa.resolveClaude()');await until('document.querySelectorAll("[data-usage-provider]").length==='+ALL);
+  assert.ok((await rowText('claude')).includes('72%') && (await rowText('claude')).includes('38%'),'claude 5-hour and weekly');
+  assert.equal(await js('document.querySelector('+JSON.stringify(row('claude')+' .usage-tier')+').textContent'),'Pro');
+  assert.equal(await js('document.querySelector('+JSON.stringify(row('claude')+' [data-tone]')+').dataset.tone'),'ok');
+  assert.equal(await js('[...document.querySelectorAll('+JSON.stringify(row('claude')+' [data-tone]')+')].map(e=>e.dataset.tone).join()'),'ok,watch','meter tone follows what is left');
+  assert.ok((await rowText('bubble')).includes('1.2M'),'tokens in the ledger');
+  assert.ok((await rowText('kimi')).includes('—'),'sessions without token counts');
+  assert.ok((await rowText('deepseek')).includes('—') && (await rowStatus('deepseek')).includes('Unavailable'),'unavailable usage is flagged');
+  assert.deepEqual(await js('[...document.querySelectorAll(".usage-idle [data-usage-provider]")].map(e=>e.dataset.usageProvider)'),['opencode','pi','devin','mimo'],'providers with no usage collapse into logos');
   const submenu=await rect('[data-usage-provider="claude"]');
   win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(usageTrigger.right+4),y:Math.round(usageTrigger.y+15)});await delay(70);
   win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(submenu.x+30),y:Math.round(submenu.y+15)});await delay(300);
-  assert.equal(await js('document.querySelectorAll("[data-usage-provider]").length'),9,'pointer crosses submenu gap');
+  assert.equal(await js('document.querySelectorAll("[data-usage-provider]").length'),ALL,'pointer crosses submenu gap');
   const menuBounds=await js('document.querySelector("[data-usage-provider]").closest("[role=menu]").getBoundingClientRect().toJSON()');
-  assert.ok(menuBounds.x>=270 && menuBounds.bottom<=768 && menuBounds.y>=0,'submenu opens beside parent inside viewport');
+  const parentBounds=await js('[...document.querySelectorAll("[role=menuitem]")].find(e=>e.textContent.trim()==="Usage").closest("[role=menu]").getBoundingClientRect().toJSON()');
+  assert.ok(menuBounds.x>=parentBounds.right && menuBounds.bottom<=768 && menuBounds.y>=0,'submenu opens beside parent inside viewport: '+JSON.stringify({menuBounds,parentBounds}));
+  assert.equal(await js('(()=>{const l='+list+';return l.scrollWidth<=l.clientWidth})()'),true,'no horizontal overflow');
   await shot('usage-light');
   // Sample geometry every animation frame while mounted queries refresh, fail and recover.
-  await js('qa.geometry=()=>{const rows=[...document.querySelectorAll("[data-usage-provider]")];const menu=rows[0].closest("[role=menu]").getBoundingClientRect();return [menu.x,menu.y,menu.width,menu.height,rows[0].parentElement.scrollTop,...rows.flatMap(row=>{const r=row.getBoundingClientRect();return [r.y,r.height]})]};qa.layoutSamples=[];qa.sampling=true;const sample=()=>{if(!qa.sampling)return;qa.layoutSamples.push(qa.geometry());requestAnimationFrame(sample)};sample()');
+  await js('qa.geometry=()=>{const rows=[...document.querySelectorAll("[data-usage-provider]")];const menu=rows[0].closest("[role=menu]").getBoundingClientRect();return [menu.x,menu.y,menu.width,menu.height,rows[0].closest(".overflow-y-auto").scrollTop,...rows.flatMap(row=>{const r=row.getBoundingClientRect();return [r.y,r.height]})]};qa.layoutSamples=[];qa.sampling=true;const sample=()=>{if(!qa.sampling)return;qa.layoutSamples.push(qa.geometry());requestAnimationFrame(sample)};sample()');
   const stable=await js('qa.geometry()');
   await js('qa.hold();qa.refresh()');
-  await until('document.querySelector('+JSON.stringify(row('codex'))+').textContent.includes("Refreshing")');
+  await until('!!document.querySelector(".usage-refresh-line")');
   assert.ok((await rowText('codex')).includes('85%'),'refresh retains quota');
   await delay(200);assert.deepEqual(await js('qa.geometry()'),stable,'pending refresh preserves geometry');
   await js('qa.settle(true)');
-  await until('document.querySelector('+JSON.stringify(row('codex'))+').textContent.includes("Update failed")');
+  await until('!document.querySelector(".usage-refresh-line")');
+  assert.ok((await rowStatus('codex')).includes('Update failed'),'failure is flagged on the row');
   await delay(150);assert.deepEqual(await js('qa.geometry()'),stable,'failure preserves geometry');
   await shot('usage-refresh-failed');
   await js('qa.hold();qa.refresh()');
-  await until('document.querySelector('+JSON.stringify(row('codex'))+').textContent.includes("Refreshing")');
+  await until('!!document.querySelector(".usage-refresh-line")');
   await js('qa.settle(false)');
-  await until('document.querySelector('+JSON.stringify(row('codex'))+').querySelector("[role=status]").textContent===""');
+  await until('!document.querySelector(".usage-refresh-line")');
+  await until('document.querySelector('+JSON.stringify(row('codex')+' .usage-status')+').getAttribute("title")===null');
   await delay(150);await js('qa.sampling=false');
   const samples=await js('qa.layoutSamples');assert.ok(samples.length>10);
   for(const sample of samples)assert.deepEqual(sample,stable,'no frame resizes or repositions menu/rows');
-  const codexCalls=await js('qa.calls.filter(c=>c==="codex").length');
   const calls=await js('qa.calls.length');await outside();await open();assert.equal(await js('qa.calls.length'),calls,'reopen uses cached reports');
   // Full usage uses the yearly report prefetched by the menu, without a loading frame.
   assert.equal(await js('qa.calls.filter(c=>c==="claude:365").length'),3,'only the selected yearly report was refreshed with the menu');
   assert.equal(await js('qa.calls.filter(c=>c.endsWith(":365")&&!c.startsWith("claude:")).length'),0,'other providers do not gate the selected report');
   await js('qa.detailFrames=[];qa.detailObserver=new MutationObserver(()=>{const main=document.querySelector(".aegis-settings main");if(main)qa.detailFrames.push(main.textContent)});qa.detailObserver.observe(document.getElementById("root"),{subtree:true,childList:true,characterData:true})');
-  await textClick('View full usage');await until('document.querySelector("h1")?.textContent==="Usage"');
+  await textClick('Usage details');await until('document.querySelector("h1")?.textContent==="Usage"');
   assert.equal(await js('document.querySelector(".aegis-settings main").textContent.includes("7.8M")'),true,'first detail paint has prefetched yearly data');
   assert.equal(await js('qa.detailFrames.some(t=>t.includes("Loading usage"))'),false,'full usage does not paint a loading placeholder');
   // A slow refresh may outlive the page. Reopening joins it and keeps the charts.
   await js('qa.holdHistory();qa.refresh()');await until('document.querySelector("[data-usage-report-status]").textContent.includes("Refreshing")');
   const yearlyCalls=await js('qa.calls.filter(c=>c==="claude:365").length');
-  await js('qa.store.getState().setShowSettings(false)');await delay(150);await open();await textClick('View full usage');
+  await js('qa.store.getState().setShowSettings(false)');await delay(150);await open();await textClick('Usage details');
   assert.equal(await js('qa.calls.filter(c=>c==="claude:365").length'),yearlyCalls,'remount deduplicates the pending yearly request');
   assert.equal(await js('document.querySelector(".aegis-settings main").textContent.includes("7.8M")'),true,'cached charts survive remount during refresh');
   await js('qa.settleHistory(true)');await until('document.querySelector("[data-usage-report-status]").textContent.includes("Update failed")');
@@ -126,37 +145,37 @@ app.whenReady().then(async()=>{
   assert.equal(await js('qa.store.getState().usageSettingsProvider'),'codex');
   assert.equal(await js('document.querySelector("[aria-label=\\"Usage provider\\"]").textContent.includes("Codex CLI")'),true);
   assert.equal(await js('qa.calls.filter(c=>c==="codex").length'),detailQuotaCalls,'detail shares quota cache with menu');
-  // Every provider routes to its own selection, including providers with no quota API.
-  for(const provider of ['claude','opencode','kimi','grok','pi','qoder','bubble','deepseek']){
+  // Every provider routes to its own selection: plan rows, ledger rows and idle logos.
+  for(const provider of ['claude','opencode','kimi','grok','pi','qoder','bubble','deepseek','devin','mimo']){
    await js('qa.store.getState().setShowSettings(false)');await delay(150);await open();await click(row(provider));
    await until('document.querySelector("h1")?.textContent==="Usage"');
    assert.equal(await js('qa.store.getState().usageSettingsProvider'),provider);
    if(provider==='bubble'){await until('document.querySelector(".aegis-settings main").textContent.includes("12M")');assert.equal(await js('document.querySelector(".aegis-settings main").textContent.includes("1.2M")'),false,'30-day totals never stand in for yearly detail');}
   }
   await js('qa.store.getState().setShowSettings(false);qa.store.getState().setTheme("dark");qa.expire();qa.fail()');await delay(150);await open();
-  await until('document.querySelector('+JSON.stringify(row('codex'))+').textContent.includes("Update failed")');
+  await until('(document.querySelector('+JSON.stringify(row('codex')+' .usage-status')+')?.getAttribute("title")||"").includes("Update failed")');
   assert.ok((await rowText('codex')).includes('85%'),'failed refresh keeps quota');
   assert.ok((await rowText('bubble')).includes('1.2M'),'failed refresh keeps local usage');
-  assert.ok((await rowText('codex')).includes('Saved'),'stale values include timestamp');
+  assert.ok((await rowStatus('codex')).includes('Saved'),'stale values include timestamp');
   await shot('usage-dark-stale');
-  await textClick('View full usage');await until('document.querySelector("h1")?.textContent==="Usage"');
-  assert.equal(await js('qa.store.getState().usageSettingsProvider'),'deepseek','full usage preserves last selection');
+  await textClick('Usage details');await until('document.querySelector("h1")?.textContent==="Usage"');
+  assert.equal(await js('qa.store.getState().usageSettingsProvider'),'mimo','full usage preserves last selection');
   await js('qa.store.getState().setShowSettings(false)');await delay(150);
   await click(trigger);await js('[...document.querySelectorAll("[role=menuitem]")].find(e=>e.textContent.startsWith("Settings")).click()');await delay(150);assert.equal(await js('qa.store.getState().showSettings'),true,'Settings still opens');
   await js('qa.store.getState().setShowSettings(false)');await delay(150);
-  await js('document.querySelector('+JSON.stringify(trigger)+').focus()');await key('Return');await key('Right');await until('document.querySelectorAll("[data-usage-provider]").length===9');
+  await js('document.querySelector('+JSON.stringify(trigger)+').focus()');await key('Return');await key('Right');await until('document.querySelectorAll("[data-usage-provider]").length==='+ALL);
   await key('Escape');assert.equal(await js('document.querySelectorAll("[data-usage-provider]").length'),0);assert.equal(await js('document.querySelectorAll("[role=menu]").length'),1);
   await key('Escape');assert.equal(await js('document.querySelectorAll("[role=menu]").length'),0);
   win.setSize(760,480);await delay(200);await open();
   const small=await js('document.querySelector("[data-usage-provider]").closest("[role=menu]").getBoundingClientRect().toJSON()');
   assert.ok(small.y>=0 && small.bottom<=448,'small window clamps submenu height');
-  assert.equal(await js('(()=>{const l=document.querySelector("[data-usage-provider]").parentElement;return l.scrollHeight>l.clientHeight})()'),true,'provider list scrolls');
+  assert.equal(await js('(()=>{const l='+list+';return l.scrollHeight>l.clientHeight})()'),true,'provider list scrolls');
   await shot('usage-small-window');
-  await js('document.querySelector("[data-usage-provider]").parentElement.scrollTop=100');
+  await js(list+'.scrollTop=100');
   const scrolled=await js('qa.geometry()');await js('qa.hold();qa.refresh()');await delay(150);
   assert.deepEqual(await js('qa.geometry()'),scrolled,'refresh preserves scroll position');
   await js('qa.settle(false)');await delay(200);assert.deepEqual(await js('qa.geometry()'),scrolled,'recovery preserves scroll position');
-  assert.deepEqual(errors,[]);console.log('PASS: lazy/independent usage, hover and keyboard submenus, 9 provider routes, prefetched/persistent yearly details without loading flashes, shared quotas, cache reopen/failure, stable geometry throughout refresh/failure/recovery, Settings, collapsed peek and small window scrolling');app.exit(0);
+  assert.deepEqual(errors,[]);console.log('PASS: lazy/independent usage with loading skeleton, plan windows with tiers and tones, token ledger and idle logos, hover and keyboard submenus, every provider routes, prefetched/persistent yearly details without loading flashes, shared quotas, cache reopen/failure, stable geometry throughout refresh/failure/recovery, Settings and small window scrolling');app.exit(0);
  }catch(e){console.error(e,errors);await shot('failure');app.exit(1)}
 });
 `;

@@ -99,7 +99,7 @@
     "verify:grok-permissions-native": "npm run transpile:electron && node scripts/tests/grok-permissions-native.test.cjs",
     "verify:review-diff-panel": "node scripts/verify-review-diff-panel.mjs",
     "verify:codex-usage-cost": "npm run transpile:electron && npx tsx scripts/tests/codex-pricing.test.ts && npx tsx scripts/tests/agent-cost.test.ts && node scripts/tests/codex-usage-cost-electron.test.mjs",
-    "verify:sidebar-usage": "npx tsx scripts/tests/usage-menu-summary.test.ts && npx tsx scripts/tests/plan-usage-cache.test.ts && node scripts/tests/sidebar-profile-usage-electron.test.mjs",
+    "verify:sidebar-usage": "npx tsx scripts/tests/usage-menu-model.test.ts && npx tsx scripts/tests/plan-usage-cache.test.ts && node scripts/tests/sidebar-profile-usage-electron.test.mjs",
     "verify:session-continue-permissions": "npx tsx scripts/tests/session-continue-permissions.test.ts",
     "verify:workstream-stages": "node scripts/verify-workstream-stages.mjs",
     "verify:workstream-preamble-order": "node scripts/verify-workstream-preamble-order.mjs",

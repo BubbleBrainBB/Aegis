@@ -6,3 +6,232 @@
 .dark .sidebar-usage-monochrome img {
   filter: brightness(0) invert(1);
 }
+
+/* ---------- Usage menu ---------- */
+
+.usage-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 0;
+}
+
+.usage-section-label {
+  padding: 4px 8px 2px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 16px;
+  color: var(--text-muted);
+}
+
+.usage-mark {
+  display: flex;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+}
+
+.usage-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.usage-status {
+  display: flex;
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  color: var(--warning);
+}
+
+/* Plan rows: agent, plan tier, then one line per limit window. */
+.usage-plan-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.usage-plan-name {
+  flex: 0 1 auto;
+}
+
+/* The tier sits on the agent's name, tinted by the provider's own brand. */
+.usage-tier {
+  margin-right: auto;
+  flex-shrink: 0;
+  border-radius: 4px;
+  padding: 0 5px;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 16px;
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--text-primary) 7%, transparent);
+}
+
+.usage-tier[data-provider='claude'] {
+  color: #b5532f;
+  background: rgba(217, 119, 87, 0.15);
+}
+
+.usage-tier[data-provider='qoder'] {
+  color: #15803d;
+  background: rgba(34, 197, 94, 0.14);
+}
+
+.dark .usage-tier[data-provider='claude'] {
+  color: #e8a083;
+  background: rgba(217, 119, 87, 0.18);
+}
+
+.dark .usage-tier[data-provider='qoder'] {
+  color: #4ade80;
+  background: rgba(34, 197, 94, 0.16);
+}
+
+.usage-plan-head .usage-status {
+  margin-left: auto;
+}
+
+.usage-tier + .usage-status,
+.usage-skeleton-tier + .usage-status {
+  margin-left: 0;
+}
+
+.usage-window {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) 34px 62px;
+  align-items: center;
+  gap: 8px;
+  padding-left: 24px;
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.usage-window-label {
+  color: var(--text-secondary);
+}
+
+.usage-meter {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+}
+
+.usage-meter i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+}
+
+/* Remaining: 60% or more is fine, 25-60% is worth watching, under 25% is close to the limit. */
+.usage-meter i[data-tone='ok'] { background: var(--success); }
+.usage-meter i[data-tone='watch'] { background: var(--warning); }
+.usage-meter i[data-tone='low'] { background: var(--error); }
+
+.usage-window-pct,
+.usage-window-reset {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.usage-window-pct { color: var(--text-primary); }
+.usage-window-reset { color: var(--text-muted); }
+
+/* Token ledger. */
+.usage-ledger-value {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.usage-idle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px 4px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--text-muted);
+}
+
+.usage-idle-logos {
+  display: flex;
+  align-items: center;
+}
+
+.usage-idle-logo .usage-mark {
+  width: 14px;
+  height: 14px;
+  filter: grayscale(1);
+  opacity: 0.5;
+}
+
+.usage-idle-logo .usage-mark.sidebar-usage-monochrome {
+  opacity: 0.35;
+}
+
+.usage-idle-logo[data-highlighted] .usage-mark {
+  filter: none;
+  opacity: 1;
+}
+
+/* Loading: the loaded layout, with quiet placeholders where values land. */
+.usage-skeleton {
+  display: block;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+  animation: usage-skeleton-pulse 1.1s ease-in-out infinite alternate;
+}
+
+.usage-skeleton-logo { width: 16px; height: 16px; }
+.usage-skeleton-tier { width: 30px; height: 16px; margin-right: auto; }
+.usage-skeleton-end { justify-self: end; }
+
+@keyframes usage-skeleton-pulse {
+  from { opacity: 1; }
+  to { opacity: 0.45; }
+}
+
+/* Refreshing: a hairline along the top edge while saved values update. */
+.usage-refresh-line {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 1;
+  height: 2px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--text-primary) 4%, transparent);
+  pointer-events: none;
+}
+
+.usage-refresh-line i {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -34%;
+  width: 34%;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--text-primary) 35%, transparent);
+  animation: usage-refresh-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes usage-refresh-slide {
+  to { left: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .usage-skeleton { animation: none; opacity: 0.7; }
+  .usage-refresh-line i { animation: none; left: 0; width: 100%; opacity: 0.5; }
+}
