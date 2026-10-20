@@ -132,6 +132,12 @@
 .design-board.is-selected.has-layer-selection {
   outline: calc(1px / var(--design-zoom)) solid #0000000d;
 }
+/* Board names keep their screen size while boards are readable; zoomed out
+ * further they shrink with the board, so a page of thumbnails stays a page
+ * of thumbnails instead of a pile of labels and icons. */
+.design-viewport {
+  --design-label-scale: min(1, calc(var(--design-zoom) / 0.5));
+}
 .design-board-heading {
   position: absolute;
   bottom: 100%;
@@ -139,9 +145,9 @@
   display: flex;
   align-items: center;
   gap: 5px;
-  width: calc(100% * var(--design-zoom));
+  width: calc(100% * var(--design-zoom) / var(--design-label-scale));
   height: 28px;
-  transform: scale(calc(1 / var(--design-zoom)));
+  transform: scale(calc(var(--design-label-scale) / var(--design-zoom)));
   transform-origin: bottom left;
   font-size: 11px;
   color: var(--text-secondary);
@@ -175,6 +181,15 @@
 }
 .design-panel .design-board-preview:hover:not(:disabled) {
   color: var(--text-primary);
+}
+/* Board actions show on the board being pointed at, selected or focused. */
+.design-panel .design-board-preview {
+  opacity: 0;
+}
+.design-board:hover .design-board-preview,
+.design-board.is-selected .design-board-preview,
+.design-board-heading:focus-within .design-board-preview {
+  opacity: 1;
 }
 .design-selection {
   position: absolute;
