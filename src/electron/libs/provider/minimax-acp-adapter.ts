@@ -1,3 +1,4 @@
+import { splitJoinedAnswer } from '../../../shared/question-answers';
 import { getWorkflowSessionPolicy } from '../workflow/session-hooks';
 import { getSessionReaderHttpConfig, SESSION_MCP_SERVER_NAME } from '../session-http-server';
 import { createBrowserUseSessionMcpDescriptor } from '../browser-use-http-server';
@@ -430,39 +431,6 @@ export function parseMinimaxElicitation(params: unknown): MinimaxElicitation | n
  * ids; what remains is the user's own text, which goes to the question's
  * `__other` field when it has one.
  */
-/**
- * A comma-joined answer (callers without the card's structured answers,
- * e.g. the phone or Feishu) split back into option labels and the user's own
- * text. Labels may contain commas: whole labels are matched first, longest
- * first, at comma boundaries; anything else is custom text, commas kept.
- */
-export function splitJoinedAnswer(raw: string, labels: readonly string[]): { selected: string[]; other: string } {
-  const byLength = [...labels].sort((left, right) => right.length - left.length);
-  const selected: string[] = [];
-  const custom: string[] = [];
-  let index = 0;
-  while (index < raw.length) {
-    // Spaces are skipped to match a label, but kept in the user's own text.
-    const segmentStart = index;
-    while (raw[index] === ' ') index += 1;
-    if (index >= raw.length) break;
-    const label = byLength.find(
-      (candidate) => raw.startsWith(candidate, index) && /^\s*(,|$)/.test(raw.slice(index + candidate.length))
-    );
-    if (label) {
-      selected.push(label);
-      index += label.length;
-    } else {
-      const end = raw.indexOf(',', index);
-      custom.push(raw.slice(segmentStart, end < 0 ? raw.length : end));
-      index = end < 0 ? raw.length : end;
-    }
-    while (raw[index] === ' ') index += 1;
-    if (raw[index] === ',') index += 1;
-  }
-  return { selected, other: custom.join(',').trim() };
-}
-
 /**
  * Card answers → the reply's typed content. `structured` (the card's
  * questionAnswers) carries the exact option labels and the "Other" text, so

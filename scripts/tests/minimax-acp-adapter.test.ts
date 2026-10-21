@@ -290,6 +290,7 @@ function messagesOf(events: Event[]): Array<Record<string, unknown>> {
 async function main(): Promise<void> {
   const adapterModule = await import('../../src/electron/libs/provider/minimax-acp-adapter');
   const cli = await import('../../src/electron/libs/minimax-cli');
+  const questionAnswers = await import('../../src/shared/question-answers');
   const { MinimaxAcpAdapter } = adapterModule;
 
   // ── Pure helpers ───────────────────────────────────────────────────────────
@@ -361,9 +362,9 @@ async function main(): Promise<void> {
       adapterModule.buildMinimaxElicitationContent(commaQuestion, { Pick: 'A, B,C,also, this' }),
       { pick: ['ab', 'c'], pick__other: 'also, this' }
     );
-    assert.deepEqual(adapterModule.splitJoinedAnswer('C,A, B', ['A, B', 'C']), { selected: ['C', 'A, B'], other: '' });
-    assert.deepEqual(adapterModule.splitJoinedAnswer('A, Bx', ['A, B', 'C']), { selected: [], other: 'A, Bx' }, 'a label must end at a comma');
-    assert.deepEqual(adapterModule.splitJoinedAnswer('', ['A, B']), { selected: [], other: '' });
+    assert.deepEqual(questionAnswers.splitJoinedAnswer('C,A, B', ['A, B', 'C']), { selected: ['C', 'A, B'], other: '' });
+    assert.deepEqual(questionAnswers.splitJoinedAnswer('A, Bx', ['A, B', 'C']), { selected: [], other: 'A, Bx' }, 'a label must end at a comma');
+    assert.deepEqual(questionAnswers.splitJoinedAnswer('', ['A, B']), { selected: [], other: '' });
   }
 
   // ── New session + one turn ────────────────────────────────────────────────

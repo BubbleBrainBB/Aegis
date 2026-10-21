@@ -311,7 +311,11 @@ try {
     bridge.capture({ type: "permission.request", payload: { sessionId: "s1", toolUseId: "q1", toolName: "AskUserQuestion", input: question } });
     await wait(20);
     click(bridge, transport.calls.cards.at(-1).card, "q:1");
-    assert.deepEqual(runtime.log.responses.at(-1).result, { behavior: "allow", updatedInput: { ...question, answers: { "Which env?": "prod" } } });
+    assert.deepEqual(runtime.log.responses.at(-1).result, {
+      behavior: "allow",
+      updatedInput: { ...question, answers: { "Which env?": "prod" } },
+      questionAnswers: { "Which env?": { selected: ["prod"] } },
+    });
 
     const multi = { questions: [{ question: "Targets?", multiSelect: true, options: [{ label: "web" }, { label: "ios" }] }, { question: "Notify?", options: [{ label: "yes" }, { label: "no" }] }] };
     bridge.capture({ type: "permission.request", payload: { sessionId: "s1", toolUseId: "q2", toolName: "AskUserQuestion", input: multi } });
@@ -320,6 +324,14 @@ try {
     assert.equal(click(bridge, form, "submit", OWNER, "oc_dm", { q0: ["web"] }).toast.type, "warning", "every question needs an answer");
     click(bridge, form, "submit", OWNER, "oc_dm", { q0: ["web", "ios"], q1: "no" });
     assert.deepEqual(runtime.log.responses.at(-1).result.updatedInput.answers, { "Targets?": "web,ios", "Notify?": "no" });
+    assert.deepEqual(runtime.log.responses.at(-1).result.questionAnswers, { "Targets?": { selected: ["web", "ios"] }, "Notify?": { selected: ["no"] } });
+
+    // A label containing a comma travels whole in the structured answers.
+    const commaLabels = { questions: [{ question: "Cities?", multiSelect: true, options: [{ label: "Paris, France" }, { label: "Tokyo" }] }] };
+    bridge.capture({ type: "permission.request", payload: { sessionId: "s1", toolUseId: "q3", toolName: "AskUserQuestion", input: commaLabels } });
+    await wait(20);
+    click(bridge, transport.calls.cards.at(-1).card, "submit", OWNER, "oc_dm", { q0: ["Paris, France", "Tokyo"] });
+    assert.deepEqual(runtime.log.responses.at(-1).result.questionAnswers, { "Cities?": { selected: ["Paris, France", "Tokyo"] } });
 
     // Plan approval uses the plan text from the stream.
     bridge.capture({ type: "stream.message", payload: { sessionId: "s1", message: { type: "assistant", uuid: "pl", message: { content: [{ type: "tool_use", id: "ep", name: "ExitPlanMode", input: { plan: "1. Build\n2. Ship" } }] } } } });

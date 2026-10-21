@@ -1,3 +1,4 @@
+import { questionAnswerValues, resolveQuestionAnswer } from '../../../shared/question-answers';
 import { CompactionTracker } from './compaction-tracker';
 import { validUsd } from '../agent-cost';
 import { isProjectDirectoryApproval } from './project-access';
@@ -354,14 +355,18 @@ export function buildOpenCodeFormAnswer(
   fields: OpenCodeFormFieldDescriptor[],
   decision: PermissionResult
 ): Record<string, unknown> {
-  const answers = getRecord(decision.updatedInput?.answers);
   const answer: Record<string, unknown> = {};
   for (const field of fields) {
-    const raw = getString(answers?.[field.question]).trim();
+    // Labels and the user's own text may contain commas: resolved whole.
+    const resolved = resolveQuestionAnswer(decision, field.question, field.options.map((option) => option.label));
+    const values = questionAnswerValues(resolved);
+    const raw = values.join(',').trim();
     if (!raw) continue;
     const toValue = (label: string) => field.options.find((option) => option.label === label)?.value ?? label;
     if (field.type === 'multiselect') {
-      answer[field.key] = raw.split(',').map((part) => part.trim()).filter(Boolean).map(toValue);
+      answer[field.key] = values.map(toValue);
+    } else if (field.options.length > 0 && values.length > 0) {
+      answer[field.key] = field.type === 'boolean' ? /^(true|yes|y|1)$/i.test(values[0]) : toValue(values[0]);
     } else if (field.type === 'number' || field.type === 'integer') {
       const parsed = Number(raw);
       answer[field.key] = Number.isFinite(parsed) ? parsed : raw;

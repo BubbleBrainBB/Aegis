@@ -1,3 +1,4 @@
+import { questionAnswerValues, resolveQuestionAnswer } from '../../../shared/question-answers';
 import { CompactionTracker } from './compaction-tracker';
 import { addAgentCost, costFields, emptyCostDetails } from '../agent-cost';
 import { assertBubbleSessionReader, bubbleHostTools } from '../bubble-session-reader';
@@ -328,21 +329,17 @@ function buildQuestionInput(request: BubbleQuestionRequest): AskUserQuestionInpu
   };
 }
 
-function splitQuestionAnswer(value: string): string[] {
-  return value
-    .split(',')
-    .map((answer) => answer.trim())
-    .filter(Boolean);
-}
-
-function buildQuestionAnswers(
+/**
+ * Per question: the picked option labels, then the user's own text. Labels
+ * and that text may contain commas (resolveQuestionAnswer keeps them whole).
+ */
+export function buildQuestionAnswers(
   questions: BubbleQuestionPrompt[],
   decision: PermissionResult
 ): string[][] {
-  const answers = isRecord(decision.updatedInput?.answers)
-    ? (decision.updatedInput.answers as Record<string, unknown>)
-    : null;
-  return questions.map((question) => splitQuestionAnswer(getString(answers?.[question.question])));
+  return questions.map((question) =>
+    questionAnswerValues(resolveQuestionAnswer(decision, question.question, question.options.map((option) => option.label)))
+  );
 }
 
 export class BubbleSdkAdapter implements ProviderAdapter {
