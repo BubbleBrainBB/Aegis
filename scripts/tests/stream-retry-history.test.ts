@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { StreamRetryTracker } from '../../src/electron/libs/stream-retry-tracker';
+import { toClaudeContentBlocks } from '../../src/electron/libs/claude-message-content';
 import { restoreRetryHistory } from '../../src/ui/utils/stream-retry';
 import { deriveTranscriptTimelineItems } from '../../src/ui/utils/transcript-timeline';
 import { useAppStore } from '../../src/ui/store/useAppStore';
@@ -113,6 +114,15 @@ assert.equal(snapshots().length, 1, 'earlier interrupted attempts stay visible d
 assert.equal(read().streaming.thinking, 'Second attempt');
 reload('error');
 assert.equal(snapshots().length, 2, 'multiple attempts each survive reopening a failed task');
+
+// `/compact` output and compact summaries arrive from the SDK with a string body.
+const compactOutput = '<local-command-stdout>Compacted </local-command-stdout>';
+assert.deepEqual(toClaudeContentBlocks(compactOutput), [{ type: 'text', text: compactOutput }]);
+assert.deepEqual(toClaudeContentBlocks(''), []);
+assert.deepEqual(toClaudeContentBlocks(undefined), []);
+reset(); emit(delta('Before compact')); emit(retry(1));
+emit({ type: 'user', uuid: 'compact-stdout', message: { content: toClaudeContentBlocks(compactOutput) } }); reload();
+assert.equal(read().streaming.retry, undefined, 'compact output settles a pending retry without throwing');
 
 // Support existing installations whose recorded retries have no snapshots/markers.
 reload('running', [retry(5)]);
