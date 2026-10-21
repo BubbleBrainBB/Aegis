@@ -331,7 +331,7 @@ async function main(): Promise<void> {
     });
     assert.deepEqual(cli.parseMinimaxThinkingEfforts([{ id: 'model', options: [] }]), { levels: [], defaultLevel: null });
 
-    // Option labels with commas survive the card's comma-joined answers.
+    // Option labels may contain commas: shown as mcode sends them.
     const commaQuestion = adapterModule.parseMinimaxElicitation({
       mode: 'form',
       message: 'MiniMax Code needs your input',
@@ -345,12 +345,25 @@ async function main(): Promise<void> {
     });
     assert.ok(commaQuestion);
     const labels = commaQuestion.questions[0].options.map((option) => option.label);
-    assert.deepEqual(labels, ['A\u201a B', 'C'], 'a comma in a label is shown as a look-alike');
-    // DecisionPanel: selections joined with ",", then ",<other text>".
+    assert.deepEqual(labels, ['A, B', 'C'], 'labels keep their commas');
+    // The card's structured answers: exact labels and the Other text, apart.
     assert.deepEqual(
-      adapterModule.buildMinimaxElicitationContent(commaQuestion, { Pick: `${labels[0]},C,also, this` }),
+      adapterModule.buildMinimaxElicitationContent(
+        commaQuestion,
+        { Pick: 'A, B,C,also, this' },
+        { Pick: { selected: ['A, B', 'C'], other: 'also, this' } }
+      ),
       { pick: ['ab', 'c'], pick__other: 'also, this' }
     );
+    // Callers with only the comma-joined string (phone, Feishu): whole labels
+    // are matched first, so a comma inside one does not split it.
+    assert.deepEqual(
+      adapterModule.buildMinimaxElicitationContent(commaQuestion, { Pick: 'A, B,C,also, this' }),
+      { pick: ['ab', 'c'], pick__other: 'also, this' }
+    );
+    assert.deepEqual(adapterModule.splitJoinedAnswer('C,A, B', ['A, B', 'C']), { selected: ['C', 'A, B'], other: '' });
+    assert.deepEqual(adapterModule.splitJoinedAnswer('A, Bx', ['A, B', 'C']), { selected: [], other: 'A, Bx' }, 'a label must end at a comma');
+    assert.deepEqual(adapterModule.splitJoinedAnswer('', ['A, B']), { selected: [], other: '' });
   }
 
   // ── New session + one turn ────────────────────────────────────────────────
@@ -523,7 +536,9 @@ async function main(): Promise<void> {
       assert.equal(input.questions[1].multiSelect, true);
       void adapter.respondToRequest('t1', event.requestId as string, {
         behavior: 'allow',
-        updatedInput: { answers: { 'Which language?': 'Rust, maybe', 'Which tools?': 'Lint, Test' } },
+        // The joined string disagrees on purpose: the structured answer must win.
+        updatedInput: { answers: { 'Which language?': 'Rust, maybe', 'Which tools?': 'Lint' } },
+        questionAnswers: { 'Which language?': { selected: [], other: 'Rust, maybe' }, 'Which tools?': { selected: ['Lint', 'Test'] } },
       });
     };
     await withTimeout(adapter.sendTurn({ threadId: 't1', prompt: 'ASK me' } as never), 'question turn');

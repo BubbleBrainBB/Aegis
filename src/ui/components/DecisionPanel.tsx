@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Check } from './icons';
-import type { AskUserQuestionInput, AskUserQuestion, PermissionResult } from '../types';
+import type { AskUserQuestionInput, AskUserQuestion, PermissionResult, QuestionAnswerSelection } from '../types';
 
 interface DecisionPanelProps {
   input: AskUserQuestionInput;
@@ -10,7 +10,9 @@ interface DecisionPanelProps {
 }
 
 export function DecisionPanel({ input, onSubmit, chrome = 'card' }: DecisionPanelProps) {
-  const [answers, setAnswers] = useState<Record<string, string>>({});
+  // Picked option labels per question, kept as an array so a label may
+  // itself contain commas.
+  const [selections, setSelections] = useState<Record<string, string[]>>({});
   const [otherInputs, setOtherInputs] = useState<Record<string, string>>({});
 
   const handleOptionSelect = (question: AskUserQuestion, label: string) => {
@@ -18,20 +20,14 @@ export function DecisionPanel({ input, onSubmit, chrome = 'card' }: DecisionPane
 
     if (question.multiSelect) {
       // 多选：切换选项
-      const current = answers[key] || '';
-      const selected = current.split(',').filter(Boolean);
-      const idx = selected.indexOf(label);
-
-      if (idx === -1) {
-        selected.push(label);
-      } else {
-        selected.splice(idx, 1);
-      }
-
-      setAnswers({ ...answers, [key]: selected.join(',') });
+      const current = selections[key] || [];
+      const next = current.includes(label)
+        ? current.filter((picked) => picked !== label)
+        : [...current, label];
+      setSelections({ ...selections, [key]: next });
     } else {
       // 单选
-      setAnswers({ ...answers, [key]: label });
+      setSelections({ ...selections, [key]: [label] });
     }
   };
 
@@ -41,18 +37,19 @@ export function DecisionPanel({ input, onSubmit, chrome = 'card' }: DecisionPane
   };
 
   const handleSubmit = () => {
-    // 合并选项答案和 "Other" 输入
-    const finalAnswers: Record<string, string> = { ...answers };
+    // AskUserQuestion takes one comma-joined string per question (options,
+    // then "Other" text); questionAnswers keeps the parts apart for adapters
+    // that map labels back to option ids.
+    const finalAnswers: Record<string, string> = {};
+    const questionAnswers: Record<string, QuestionAnswerSelection> = {};
 
-    for (const [key, value] of Object.entries(otherInputs)) {
-      if (value.trim()) {
-        const existing = finalAnswers[key];
-        if (existing) {
-          finalAnswers[key] = `${existing},${value.trim()}`;
-        } else {
-          finalAnswers[key] = value.trim();
-        }
-      }
+    for (const question of input.questions) {
+      const key = question.question;
+      const selected = selections[key] || [];
+      const other = otherInputs[key]?.trim() || '';
+      if (selected.length === 0 && !other) continue;
+      finalAnswers[key] = [...selected, ...(other ? [other] : [])].join(',');
+      questionAnswers[key] = { selected, ...(other ? { other } : {}) };
     }
 
     onSubmit({
@@ -61,6 +58,7 @@ export function DecisionPanel({ input, onSubmit, chrome = 'card' }: DecisionPane
         ...input,
         answers: finalAnswers,
       },
+      questionAnswers,
     });
   };
 
@@ -71,19 +69,12 @@ export function DecisionPanel({ input, onSubmit, chrome = 'card' }: DecisionPane
     });
   };
 
-  const isOptionSelected = (question: AskUserQuestion, label: string): boolean => {
-    const key = question.question;
-    const current = answers[key] || '';
-
-    if (question.multiSelect) {
-      return current.split(',').includes(label);
-    }
-    return current === label;
-  };
+  const isOptionSelected = (question: AskUserQuestion, label: string): boolean =>
+    (selections[question.question] || []).includes(label);
 
   const hasAnswer = input.questions.every((q) => {
     const key = q.question;
-    return answers[key] || otherInputs[key]?.trim();
+    return selections[key]?.length || otherInputs[key]?.trim();
   });
 
   const wrapperClass =
