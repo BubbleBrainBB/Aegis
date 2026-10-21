@@ -16,14 +16,20 @@ import path from 'node:path';
 
 const dir = mkdtempSync(path.join(tmpdir(), 'devin-acp-test-'));
 const logPath = path.join(dir, 'calls.jsonl');
+const pidsPath = path.join(dir, 'pids');
+const failSwitchPath = path.join(dir, 'fail-next-model-switch');
 const fakeAgentPath = path.join(dir, 'devin');
 
 writeFileSync(
   fakeAgentPath,
   `#!/usr/bin/env node
-const { appendFileSync } = require('node:fs');
+const { appendFileSync, existsSync, unlinkSync } = require('node:fs');
 const LOG = ${JSON.stringify(logPath)};
+const FAIL_SWITCH = ${JSON.stringify(failSwitchPath)};
 const FAIL_LOAD = process.env.FAKE_DEVIN_FAIL_LOAD === '1';
+const SLOW_INIT = process.env.FAKE_DEVIN_SLOW_INIT === '1';
+const HANG_INIT = process.env.FAKE_DEVIN_HANG_INIT === '1';
+appendFileSync(${JSON.stringify(pidsPath)}, process.pid + '\\n');
 let buffer = '';
 const pending = new Map();
 const send = (message) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\\n');
@@ -61,6 +67,8 @@ async function handle(message) {
   const { id, method, params } = message;
   log({ method, params });
   if (method === 'initialize') {
+    if (HANG_INIT) return;
+    if (SLOW_INIT) await new Promise((resolve) => setTimeout(resolve, 1500));
     send({ id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true }, authMethods: [] } });
   } else if (method === 'session/new') {
     update('fresh-session', { sessionUpdate: 'current_mode_update', currentModeId: 'accept-edits' });
@@ -82,6 +90,12 @@ async function handle(message) {
     update(params.sessionId, { sessionUpdate: 'current_mode_update', currentModeId: params.modeId });
     send({ id, result: {} });
   } else if (method === 'session/set_config_option') {
+    if (params.configId === 'model' && existsSync(FAIL_SWITCH)) {
+      // One transient failure (the marker is consumed), then switches work.
+      unlinkSync(FAIL_SWITCH);
+      send({ id, error: { code: -32603, message: 'Internal error', data: 'transient' } });
+      return;
+    }
     if (params.configId === 'model') {
       state.model = params.value;
       state.level = LEVELS[params.value]?.[0];
@@ -190,6 +204,31 @@ function withTimeout<T>(promise: Promise<T>, label: string, ms = 10_000): Promis
       timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
     }),
   ]).finally(() => clearTimeout(timer));
+}
+
+function readPids(): number[] {
+  try {
+    return readFileSync(pidsPath, 'utf8').trim().split('\n').filter(Boolean).map(Number);
+  } catch {
+    return [];
+  }
+}
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitFor(condition: () => boolean, label: string, ms = 5_000): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error(`${label} did not happen within ${ms}ms`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
 }
 
 async function main(): Promise<void> {
@@ -681,6 +720,148 @@ async function main(): Promise<void> {
       console.warn = warn;
       delete process.env.FAKE_DEVIN_FAIL_LOAD;
       await adapter.stopAll();
+    }
+  }
+
+  // ── Stopping a session while it is still starting ─────────────────────────
+  {
+    resetCalls();
+    process.env.FAKE_DEVIN_SLOW_INIT = '1';
+    try {
+      for (const teardown of ['stop', 'dispose'] as const) {
+        resetCalls();
+        writeFileSync(pidsPath, '');
+        const adapter = new DevinAcpAdapter();
+        const start = adapter.startSession({ threadId: 't8', cwd: dir, prompt: 'should never run' } as never);
+        start.catch(() => undefined);
+        await waitFor(() => readCalls().some((call) => call.method === 'initialize'), 'initialize reaching the CLI');
+        const [pid] = readPids();
+        if (teardown === 'stop') await adapter.stopSession('t8');
+        else assert.equal(adapter.disposeSession('t8'), true, 'dispose reports the cancelled start');
+        await assert.rejects(start, /cancelled|exited/, `a ${teardown}ped start fails instead of registering`);
+        await waitFor(() => !isAlive(pid), `the starting process exiting after ${teardown}`);
+        // Past the delayed initialize response: nothing may follow it.
+        await new Promise((resolve) => setTimeout(resolve, 1600));
+        assert.equal(adapter.hasSession('t8'), false);
+        assert.deepEqual(readCalls().map((call) => call.method), ['initialize'], 'no session is created and no prompt sent');
+      }
+    } finally {
+      delete process.env.FAKE_DEVIN_SLOW_INIT;
+    }
+  }
+
+  // ── Devin exiting between turns: the next send reconnects and reloads ─────
+  {
+    resetCalls();
+    writeFileSync(pidsPath, '');
+    const adapter = new DevinAcpAdapter();
+    const events: Event[] = [];
+    adapter.events.on('event', (event: Event) => {
+      events.push(event);
+      if (event.type === 'permission_request') {
+        void adapter.respondToRequest('t9', event.requestId as string, { behavior: 'allow', updatedInput: {} });
+      }
+    });
+    await adapter.startSession({ threadId: 't9', cwd: dir, prompt: '' } as never);
+    await withTimeout(adapter.sendTurn({ threadId: 't9', prompt: 'go' } as never), 'turn before the exit');
+    const [firstPid] = readPids();
+    process.kill(firstPid, 'SIGKILL');
+    await waitFor(() => !isAlive(firstPid), 'the killed CLI exiting');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(adapter.hasSession('t9'), true, 'an exit between turns keeps the session');
+
+    events.length = 0;
+    resetCalls();
+    await withTimeout(adapter.sendTurn({ threadId: 't9', prompt: 'go again' } as never), 'turn after Devin exited');
+    const calls = readCalls();
+    assert.deepEqual(calls.slice(0, 2).map((call) => call.method), ['initialize', 'session/load'], 'a fresh process reloads the session');
+    assert.equal(calls[1].params.sessionId, 'fresh-session');
+    assert.ok(calls.some((call) => call.method === 'session/prompt'), 'the turn runs in the new process');
+    const pids = readPids();
+    assert.equal(pids.length, 2);
+    assert.ok(isAlive(pids[1]), 'the new process serves the session');
+    const serialized = JSON.stringify(events);
+    assert.ok(!serialized.includes('REPLAYED ANSWER'), 'the reload replay must not re-enter the thread');
+    assert.ok(!events.some((event) => event.type === 'system_init'), 'the reloaded session keeps its id');
+    const result = events
+      .filter((event) => event.type === 'message' && (event.message as { type?: string }).type === 'result')
+      .map((event) => event.message as { subtype: string })
+      .at(-1);
+    assert.equal(result?.subtype, 'success');
+    await adapter.stopAll();
+    await waitFor(() => !isAlive(pids[1]), 'stopAll killing the reconnected process');
+  }
+
+  // ── Stopping while a reconnect is still starting kills it ─────────────────
+  {
+    resetCalls();
+    writeFileSync(pidsPath, '');
+    const adapter = new DevinAcpAdapter();
+    adapter.events.on('event', (event: Event) => {
+      if (event.type === 'permission_request') {
+        void adapter.respondToRequest('t10', event.requestId as string, { behavior: 'allow', updatedInput: {} });
+      }
+    });
+    await withTimeout(adapter.startSession({ threadId: 't10', cwd: dir, prompt: '' } as never), 'startSession');
+    await withTimeout(adapter.sendTurn({ threadId: 't10', prompt: 'go' } as never), 'turn before the exit');
+    const [firstPid] = readPids();
+    process.kill(firstPid, 'SIGKILL');
+    await waitFor(() => !isAlive(firstPid), 'the killed CLI exiting');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    resetCalls();
+    process.env.FAKE_DEVIN_SLOW_INIT = '1';
+    try {
+      const pending = adapter.sendTurn({ threadId: 't10', prompt: 'go again' } as never);
+      await waitFor(() => readPids().length === 2, 'the reconnect spawning');
+      const reconnectingPid = readPids()[1];
+      await adapter.stopSession('t10');
+      await withTimeout(pending, 'send whose reconnect was stopped', 1_000);
+      await waitFor(() => !isAlive(reconnectingPid), 'the reconnecting process killed by the stop', 1_000);
+      await new Promise((resolve) => setTimeout(resolve, 1_600));
+      assert.ok(!readCalls().some((call) => call.method === 'session/load' || call.method === 'session/prompt'), 'the stopped reconnect never reloads or prompts');
+      assert.equal(adapter.hasSession('t10'), false);
+    } finally {
+      delete process.env.FAKE_DEVIN_SLOW_INIT;
+    }
+  }
+
+  // ── Probe close: a probe stuck in initialize is still killed ─────────────
+  {
+    const { DevinProbeSession } = await import('../../src/electron/libs/devin-cli');
+    writeFileSync(pidsPath, '');
+    process.env.FAKE_DEVIN_HANG_INIT = '1';
+    try {
+      const probe = new DevinProbeSession(300);
+      await assert.rejects(probe.run(async () => 'never'), /timed out/);
+      const [pid] = readPids();
+      assert.ok(pid, 'the probe spawned the CLI');
+      await waitFor(() => !isAlive(pid), 'the stuck probe process exiting', 4_000);
+    } finally {
+      delete process.env.FAKE_DEVIN_HANG_INIT;
+    }
+  }
+
+  // ── Thinking levels: a failed read is not cached by the renderer ─────────
+  {
+    const { getDevinThoughtLevels } = await import('../../src/electron/libs/devin-cli');
+    (globalThis as { window?: unknown }).window = { electron: { getDevinThoughtLevels } };
+    const { requestDevinThoughtLevels } = await import('../../src/ui/hooks/useDevinThoughtLevels');
+    writeFileSync(pidsPath, '');
+    writeFileSync(failSwitchPath, '');
+    const warn = console.warn;
+    console.warn = () => {};
+    try {
+      const failed = await withTimeout(requestDevinThoughtLevels('claude-opus-5-5-high'), 'failing level read');
+      assert.equal(failed.failed, true, 'a failed read is marked failed, not "no thinking control"');
+      assert.deepEqual(failed.levels, []);
+      const retried = await withTimeout(requestDevinThoughtLevels('claude-opus-5-5-high'), 'level read after a failure');
+      assert.equal(retried.failed, undefined);
+      assert.deepEqual(retried.levels.map((level) => level.id), ['low', 'medium', 'high', 'xhigh', 'max']);
+      assert.equal(retried.defaultLevel, 'medium');
+    } finally {
+      console.warn = warn;
+      // The shared probe idles for 45s before closing itself.
+      for (const pid of readPids()) if (isAlive(pid)) process.kill(pid, 'SIGTERM');
     }
   }
 

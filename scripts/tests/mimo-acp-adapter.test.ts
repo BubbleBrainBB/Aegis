@@ -20,6 +20,7 @@ import Database from 'better-sqlite3';
 
 const dir = mkdtempSync(path.join(tmpdir(), 'mimo-acp-test-'));
 const logPath = path.join(dir, 'calls.jsonl');
+const pidsPath = path.join(dir, 'pids');
 const fakeAgentPath = path.join(dir, 'mimo');
 const dbPath = path.join(dir, 'mimocode.db');
 
@@ -28,6 +29,8 @@ writeFileSync(
   `#!/usr/bin/env node
 const { appendFileSync } = require('node:fs');
 const LOG = ${JSON.stringify(logPath)};
+const SLOW_INIT = process.env.FAKE_MIMO_SLOW_INIT === '1';
+appendFileSync(${JSON.stringify(pidsPath)}, process.pid + '\\n');
 let buffer = '';
 const pending = new Map();
 let nextId = 0;
@@ -56,6 +59,7 @@ async function handle(message) {
   const { id, method, params } = message;
   log({ method, params, ...(method === 'initialize' ? { configContent: process.env.MIMOCODE_CONFIG_CONTENT } : {}) });
   if (method === 'initialize') {
+    if (SLOW_INIT) await new Promise((resolve) => setTimeout(resolve, 1500));
     send({ id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true }, authMethods: [] } });
   } else if (method === 'session/new') {
     send({ id, result: { sessionId: 'ses_fresh', configOptions: config(), modes: { currentModeId: state.mode, availableModes: [] } } });
@@ -201,6 +205,31 @@ function contentBlocks(events: Event[], type: string): Array<Record<string, unkn
     .filter((message) => message.type === 'assistant')
     .flatMap((message) => ((message.message as { content: Array<Record<string, unknown>> }).content))
     .filter((block) => block.type === type);
+}
+
+function readPids(): number[] {
+  try {
+    return readFileSync(pidsPath, 'utf8').trim().split('\n').filter(Boolean).map(Number);
+  } catch {
+    return [];
+  }
+}
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitFor(condition: () => boolean, label: string, ms = 5_000): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error(`${label} did not happen within ${ms}ms`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
 }
 
 async function main(): Promise<void> {
@@ -456,6 +485,103 @@ async function main(): Promise<void> {
     assert.equal((ring?.usage as Record<string, number>).totalTokens, 4321);
     assert.equal(readCalls().filter((call) => call.method === 'session/set_mode').length, 0, 'no mode requested, none set');
     await adapter.stopAll();
+  }
+
+  // ── Stopping a session while it is still starting ─────────────────────────
+  {
+    process.env.FAKE_MIMO_SLOW_INIT = '1';
+    try {
+      for (const teardown of ['stop', 'dispose'] as const) {
+        resetCalls();
+        writeFileSync(pidsPath, '');
+        const adapter = new MimoAcpAdapter();
+        const start = adapter.startSession({ threadId: 't3', cwd: dir, prompt: 'should never run' });
+        start.catch(() => undefined);
+        await waitFor(() => readCalls().some((call) => call.method === 'initialize'), 'initialize reaching the CLI');
+        const [pid] = readPids();
+        if (teardown === 'stop') await adapter.stopSession('t3');
+        else assert.equal(adapter.disposeSession('t3'), true, 'dispose reports the cancelled start');
+        await assert.rejects(start, /cancelled|exited/, `a ${teardown}ped start fails instead of registering`);
+        await waitFor(() => !isAlive(pid), `the starting process exiting after ${teardown}`);
+        // Past the delayed initialize response: nothing may follow it.
+        await new Promise((resolve) => setTimeout(resolve, 1600));
+        assert.equal(adapter.hasSession('t3'), false);
+        assert.deepEqual(readCalls().map((call) => call.method), ['initialize'], 'no session is created and no prompt sent');
+      }
+    } finally {
+      delete process.env.FAKE_MIMO_SLOW_INIT;
+    }
+  }
+
+  // ── MiMo exiting between turns: the next send reconnects and reloads ──────
+  {
+    resetCalls();
+    writeFileSync(pidsPath, '');
+    const adapter = new MimoAcpAdapter();
+    const events: Event[] = [];
+    adapter.events.on('event', (event: Event) => {
+      events.push(event);
+      if (event.type === 'permission_request') {
+        void adapter.respondToRequest('t4', event.requestId as string, { behavior: 'allow', updatedInput: {} });
+      }
+    });
+    await withTimeout(adapter.startSession({ threadId: 't4', cwd: dir, prompt: '' }), 'startSession');
+    await withTimeout(adapter.sendTurn({ threadId: 't4', prompt: 'go' }), 'turn before the exit');
+    const [firstPid] = readPids();
+    process.kill(firstPid, 'SIGKILL');
+    await waitFor(() => !isAlive(firstPid), 'the killed CLI exiting');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(adapter.hasSession('t4'), true, 'an exit between turns keeps the session');
+
+    events.length = 0;
+    resetCalls();
+    await withTimeout(adapter.sendTurn({ threadId: 't4', prompt: 'go again' }), 'turn after MiMo exited');
+    const calls = readCalls();
+    assert.deepEqual(calls.slice(0, 2).map((call) => call.method), ['initialize', 'session/load'], 'a fresh process reloads the session');
+    assert.equal(calls[1].params.sessionId, 'ses_fresh');
+    assert.ok(calls.some((call) => call.method === 'session/prompt'), 'the turn runs in the new process');
+    const pids = readPids();
+    assert.equal(pids.length, 2);
+    assert.ok(isAlive(pids[1]), 'the new process serves the session');
+    assert.ok(!JSON.stringify(events).includes('REPLAYED ANSWER'), 'the reload replay must not re-enter the thread');
+    assert.ok(!events.some((event) => event.type === 'system_init'), 'the reloaded session keeps its id');
+    const result = messages(events).filter((message) => message.type === 'result').at(-1) as { subtype: string } | undefined;
+    assert.equal(result?.subtype, 'success');
+    await adapter.stopAll();
+    await waitFor(() => !isAlive(pids[1]), 'stopAll killing the reconnected process');
+  }
+
+  // ── Stopping while a reconnect is still starting kills it ─────────────────
+  {
+    resetCalls();
+    writeFileSync(pidsPath, '');
+    const adapter = new MimoAcpAdapter();
+    adapter.events.on('event', (event: Event) => {
+      if (event.type === 'permission_request') {
+        void adapter.respondToRequest('t5', event.requestId as string, { behavior: 'allow', updatedInput: {} });
+      }
+    });
+    await withTimeout(adapter.startSession({ threadId: 't5', cwd: dir, prompt: '' } as never), 'startSession');
+    await withTimeout(adapter.sendTurn({ threadId: 't5', prompt: 'go' } as never), 'turn before the exit');
+    const [firstPid] = readPids();
+    process.kill(firstPid, 'SIGKILL');
+    await waitFor(() => !isAlive(firstPid), 'the killed CLI exiting');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    resetCalls();
+    process.env.FAKE_MIMO_SLOW_INIT = '1';
+    try {
+      const pending = adapter.sendTurn({ threadId: 't5', prompt: 'go again' } as never);
+      await waitFor(() => readPids().length === 2, 'the reconnect spawning');
+      const reconnectingPid = readPids()[1];
+      await adapter.stopSession('t5');
+      await withTimeout(pending, 'send whose reconnect was stopped', 1_000);
+      await waitFor(() => !isAlive(reconnectingPid), 'the reconnecting process killed by the stop', 1_000);
+      await new Promise((resolve) => setTimeout(resolve, 1_600));
+      assert.ok(!readCalls().some((call) => call.method === 'session/load' || call.method === 'session/prompt'), 'the stopped reconnect never reloads or prompts');
+      assert.equal(adapter.hasSession('t5'), false);
+    } finally {
+      delete process.env.FAKE_MIMO_SLOW_INIT;
+    }
   }
 
   console.log('mimo-acp-adapter: all checks passed');

@@ -271,6 +271,7 @@ export function parseDevinThoughtLevels(configOptions: unknown): Pick<DevinThoug
 
 const PROBE_OPERATION_TIMEOUT_MS = 30_000;
 const PROBE_IDLE_MS = 45_000;
+const PROBE_CLOSE_MS = 2_000;
 
 interface ProbeHandle {
   rpc: AcpJsonRpcClient;
@@ -287,11 +288,14 @@ interface ProbeHandle {
  * model's levels cost one set_config_option round trip), then deleted so it
  * never shows up in `devin list`.
  */
-class DevinProbeSession {
+export class DevinProbeSession {
   private handle: Promise<ProbeHandle> | null = null;
   private proc: ChildProcessWithoutNullStreams | null = null;
   private queue: Promise<unknown> = Promise.resolve();
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** The timeout is a parameter so tests can hit it without waiting 30s. */
+  constructor(private readonly operationTimeoutMs = PROBE_OPERATION_TIMEOUT_MS) {}
 
   run<T>(operation: (probe: ProbeHandle) => Promise<T>): Promise<T> {
     const next = this.queue.then(async () => {
@@ -301,7 +305,7 @@ class DevinProbeSession {
         return await Promise.race([
           (async () => operation(await this.open()))(),
           new Promise<never>((_, reject) => {
-            timer = setTimeout(() => reject(new Error('Devin ACP probe timed out.')), PROBE_OPERATION_TIMEOUT_MS);
+            timer = setTimeout(() => reject(new Error('Devin ACP probe timed out.')), this.operationTimeoutMs);
           }),
         ]);
       } catch (error) {
@@ -355,15 +359,19 @@ class DevinProbeSession {
     this.proc = null;
     this.handle = null;
     if (!proc) return;
-    void (handle ?? Promise.reject(new Error('no probe')))
-      .then(({ rpc, sessionId }) =>
-        Promise.race([
-          rpc.request('session/delete', { sessionId }),
-          new Promise((resolve) => setTimeout(resolve, 2000)),
-        ])
-      )
+    // A probe stuck in initialize or session/new never settles its handle,
+    // so termination must not wait on it: delete the session if one is up,
+    // and kill the process either way once the bound passes.
+    void Promise.race([
+      (handle ?? Promise.reject(new Error('no probe'))).then(({ rpc, sessionId }) =>
+        rpc.request('session/delete', { sessionId })
+      ),
+      new Promise((resolve) => setTimeout(resolve, PROBE_CLOSE_MS)),
+    ])
       .catch(() => undefined)
-      .finally(() => proc.kill('SIGTERM'));
+      .finally(() => {
+        if (proc.exitCode === null && proc.signalCode === null) proc.kill('SIGTERM');
+      });
   }
 }
 
@@ -389,7 +397,7 @@ const thoughtLevelsCache = new Map<string, Pick<DevinThoughtLevels, 'levels' | '
 
 /**
  * Thinking levels for one model (null/'' = the account default model). An
- * empty list means the model has no thinking control.
+ * empty list means the model has no thinking control, unless `failed` is set.
  */
 export async function getDevinThoughtLevels(model: string | null | undefined): Promise<DevinThoughtLevels> {
   const config = await getDevinModelConfig();
@@ -410,7 +418,8 @@ export async function getDevinThoughtLevels(model: string | null | undefined): P
     return { model: resolved, ...parsed };
   } catch (error) {
     console.warn('[Devin] failed to read thinking levels:', error instanceof Error ? error.message : error);
-    return { model: resolved, levels: [], defaultLevel: null };
+    // Not "no thinking control": callers must not cache a failed read.
+    return { model: resolved, levels: [], defaultLevel: null, failed: true };
   }
 }
 

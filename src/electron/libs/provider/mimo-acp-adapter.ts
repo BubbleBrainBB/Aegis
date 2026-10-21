@@ -69,6 +69,8 @@ interface MimoToolCall {
 }
 
 interface ActiveMimoSession {
+  /** The process a reconnect is starting, so a stop can kill it mid-start. */
+  connectingProc?: ChildProcessWithoutNullStreams;
   threadId: string;
   providerSessionId: string;
   status: ProviderSessionStatus;
@@ -95,6 +97,22 @@ interface ActiveMimoSession {
   toolCalls: Map<string, MimoToolCall>;
   /** Anything streamed this turn; a silent turn may be a swallowed error. */
   turnHadOutput: boolean;
+  /** MiMo exited outside a stop; the next turn reconnects and reloads. */
+  dead?: boolean;
+}
+
+/** An in-flight startSession; stop/dispose cancel it and kill its process. */
+interface PendingStart {
+  cancelled: boolean;
+  proc?: ChildProcessWithoutNullStreams;
+}
+
+interface MimoConnection {
+  proc: ChildProcessWithoutNullStreams;
+  rpc: AcpJsonRpcClient;
+  binding: SessionBinding;
+  providerSessionId: string;
+  sessionRecord: Record<string, unknown> | null;
 }
 
 /** See DevinAcpAdapter: pre-bind notifications are startup state or load replay. */
@@ -345,14 +363,28 @@ export class MimoAcpAdapter implements ProviderAdapter {
     { threadId: string; rpc: AcpJsonRpcClient; request: AcpJsonRpcIncomingRequest; options: AcpPermissionOption[] }
   >();
 
-  async startSession(input: ProviderSessionStartInput): Promise<ProviderSession> {
+  private starting = new Map<string, PendingStart>();
+
+  /**
+   * Spawns `mimo acp`, initializes it and opens (or loads) the ACP session.
+   * `guard` runs after every await and throws once the start was cancelled;
+   * every failure path kills the process it spawned. The load replay is
+   * dropped: the binding has no session until bindConnection.
+   */
+  private async connect(
+    threadId: string,
+    cwd: string,
+    resumeSessionId: string | undefined,
+    guard: (proc?: ChildProcessWithoutNullStreams) => void
+  ): Promise<MimoConnection> {
     const binary = await resolveMimoBinary();
+    guard();
     if (!binary) {
       throw new Error('MiMo Code CLI was not found. Install MiMo Code or set MIMO_CLI_PATH.');
     }
 
     const proc = spawn(binary, ['acp'], {
-      cwd: input.cwd,
+      cwd,
       env: buildMimoEnv({ MIMOCODE_CONFIG_CONTENT: JSON.stringify(MIMO_AEGIS_CONFIG) }),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -378,34 +410,49 @@ export class MimoAcpAdapter implements ProviderAdapter {
       terminateProcess(proc);
       throw error instanceof Error ? error : new Error(String(error));
     };
+    const step = async <T>(work: Promise<T>): Promise<T> => {
+      let value: T;
+      try {
+        value = await work;
+      } catch (error) {
+        return fail(error);
+      }
+      try {
+        guard(proc);
+      } catch (error) {
+        return fail(error);
+      }
+      return value;
+    };
+    await step(Promise.resolve());
 
-    await rpc
-      .request('initialize', {
+    await step(
+      rpc.request('initialize', {
         protocolVersion: 1,
         clientInfo: { name: 'aegis', title: 'Aegis', version: '0.0.32' },
         // No fs/terminal: MiMo then runs its own file and shell tools.
         clientCapabilities: {},
       })
-      .catch(fail);
+    );
 
     // Aegis's session tools for chat sessions (MiMo's ACP accepts http MCP
     // servers); workflow members get none.
-    const mcpServers = getWorkflowSessionPolicy(input.threadId)
+    const mcpServers = getWorkflowSessionPolicy(threadId)
       ? []
-      : [createGrokAcpHttpMcpServer(SESSION_MCP_SERVER_NAME, await getSessionReaderHttpConfig({ sessionId: input.threadId }))];
+      : [createGrokAcpHttpMcpServer(SESSION_MCP_SERVER_NAME, await step(getSessionReaderHttpConfig({ sessionId: threadId })))];
 
     let sessionRecord: Record<string, unknown> | null = null;
     let providerSessionId = '';
-    if (input.resumeSessionId) {
+    if (resumeSessionId) {
       try {
         sessionRecord = getRecord(
           await rpc.request('session/load', {
-            sessionId: input.resumeSessionId,
-            cwd: input.cwd,
+            sessionId: resumeSessionId,
+            cwd,
             mcpServers,
           })
         );
-        providerSessionId = input.resumeSessionId;
+        providerSessionId = resumeSessionId;
       } catch (error) {
         // A session MiMo no longer has must not brick the thread.
         console.warn('[MiMo ACP] session/load failed; starting a new session:', error instanceof Error ? error.message : error);
@@ -413,72 +460,116 @@ export class MimoAcpAdapter implements ProviderAdapter {
         binding.usage = undefined;
         binding.currentMode = undefined;
       }
+      await step(Promise.resolve());
     }
     if (!providerSessionId) {
-      sessionRecord = getRecord(await rpc.request('session/new', { cwd: input.cwd, mcpServers }).catch(fail));
+      sessionRecord = getRecord(await step(rpc.request('session/new', { cwd, mcpServers })));
       providerSessionId = getString(sessionRecord?.sessionId);
       if (!providerSessionId) {
         fail(new Error('MiMo ACP did not return a sessionId.'));
       }
     }
+    return { proc, rpc, binding, providerSessionId, sessionRecord };
+  }
 
-    const active: ActiveMimoSession = {
-      threadId: input.threadId,
-      providerSessionId,
-      status: 'running',
-      cwd: input.cwd,
-      modelValue: extractConfigValue(sessionRecord?.configOptions, 'model'),
-      modelValues: extractModelValues(sessionRecord?.configOptions),
-      requestedModel: input.model?.trim() || undefined,
-      requestedEffort: normalizeMimoReasoningEffort(input.mimoReasoningEffort),
-      currentMode:
-        extractConfigValue(sessionRecord?.configOptions, 'mode') ||
-        getString(getRecord(sessionRecord?.modes)?.currentModeId) ||
-        binding.currentMode ||
-        undefined,
-      permissionMode: normalizeMimoPermissionMode(input.mimoPermissionMode),
-      sessionCostUsd: getNumber(getRecord(binding.usage?.cost)?.amount),
-      proc,
-      rpc,
-      nextBlockIndex: 0,
-      toolCalls: new Map(),
-      turnHadOutput: false,
-    };
+  /** Session config as the (re)opened ACP session reports it. */
+  private adoptSessionRecord(session: ActiveMimoSession, connection: MimoConnection): void {
+    const configOptions = connection.sessionRecord?.configOptions;
+    session.modelValue = extractConfigValue(configOptions, 'model');
+    session.modelValues = extractModelValues(configOptions);
+    session.rejectedModelValue = undefined;
+    session.currentMode =
+      extractConfigValue(configOptions, 'mode') ||
+      getString(getRecord(connection.sessionRecord?.modes)?.currentModeId) ||
+      connection.binding.currentMode ||
+      undefined;
+    // A reloaded session reports its running cost again: the turn's delta base.
+    session.sessionCostUsd = getNumber(getRecord(connection.binding.usage?.cost)?.amount);
+  }
 
-    try {
-      await this.applyModel(active, input.model, input.mimoReasoningEffort);
-      await this.applyPermissionMode(active, active.permissionMode);
-    } catch (error) {
-      fail(error);
-    }
-
-    // Never orphan a predecessor for the same thread — it would leak its process.
-    this.disposeSession(input.threadId);
-    this.sessions.set(input.threadId, active);
-    binding.session = active;
+  /** Binds a connection to its session: routing, exit handling, startup state. */
+  private bindConnection(session: ActiveMimoSession, connection: MimoConnection): void {
+    const { proc, binding } = connection;
+    session.proc = proc;
+    session.rpc = connection.rpc;
+    session.dead = false;
+    binding.session = session;
 
     proc.on('exit', () => {
-      const current = this.sessions.get(input.threadId);
-      if (current?.proc === proc) {
-        current.status = current.status === 'stopped' ? 'stopped' : 'completed';
-        this.emit({ type: 'status_change', threadId: input.threadId, status: current.status });
-      }
+      if (this.sessions.get(session.threadId) !== session || session.proc !== proc) return;
+      // Not a stop (that removes the session first): MiMo exited on its own.
+      // A running turn fails through its rejected RPC; the next send
+      // reconnects and reloads rather than writing into a dead pipe.
+      session.dead = true;
+      this.dismissPermissions(session.threadId);
     });
 
-    this.emit({
-      type: 'system_init',
-      threadId: input.threadId,
-      sessionId: providerSessionId,
-      model: this.currentModel(active),
-    });
     if (binding.commands) {
-      this.emitAvailableCommands(active, binding.commands);
+      this.emitAvailableCommands(session, binding.commands);
     }
     if (binding.usage) {
-      this.emitTokenUsage(active, binding.usage);
+      this.emitTokenUsage(session, binding.usage);
     }
     binding.commands = undefined;
     binding.usage = undefined;
+  }
+
+  async startSession(input: ProviderSessionStartInput): Promise<ProviderSession> {
+    // A newer start for the thread supersedes one still connecting.
+    this.cancelPendingStart(input.threadId);
+    const pending: PendingStart = { cancelled: false };
+    this.starting.set(input.threadId, pending);
+    const guard = (proc?: ChildProcessWithoutNullStreams) => {
+      if (proc) pending.proc = proc;
+      if (pending.cancelled) throw new Error('MiMo session start was cancelled.');
+    };
+
+    let connection: MimoConnection;
+    let active: ActiveMimoSession;
+    try {
+      connection = await this.connect(input.threadId, input.cwd, input.resumeSessionId, guard);
+      active = {
+        threadId: input.threadId,
+        providerSessionId: connection.providerSessionId,
+        status: 'running',
+        cwd: input.cwd,
+        modelValues: new Set(),
+        requestedModel: input.model?.trim() || undefined,
+        requestedEffort: normalizeMimoReasoningEffort(input.mimoReasoningEffort),
+        permissionMode: normalizeMimoPermissionMode(input.mimoPermissionMode),
+        sessionCostUsd: 0,
+        proc: connection.proc,
+        rpc: connection.rpc,
+        nextBlockIndex: 0,
+        toolCalls: new Map(),
+        turnHadOutput: false,
+      };
+      this.adoptSessionRecord(active, connection);
+      try {
+        // Guarded between steps: a cancelled start kills the process, and a
+        // request written after it exited would never be answered.
+        await this.applyModel(active, input.model, input.mimoReasoningEffort);
+        guard();
+        await this.applyPermissionMode(active, active.permissionMode);
+        guard();
+      } catch (error) {
+        terminateProcess(connection.proc);
+        throw error;
+      }
+    } finally {
+      if (this.starting.get(input.threadId) === pending) this.starting.delete(input.threadId);
+    }
+
+    // Never orphan a predecessor for the same thread — it would leak its process.
+    this.retireSession(input.threadId);
+    this.sessions.set(input.threadId, active);
+    this.emit({
+      type: 'system_init',
+      threadId: input.threadId,
+      sessionId: active.providerSessionId,
+      model: this.currentModel(active),
+    });
+    this.bindConnection(active, connection);
 
     if (input.prompt || input.attachments?.length) {
       await this.sendTurn({
@@ -494,10 +585,33 @@ export class MimoAcpAdapter implements ProviderAdapter {
     return {
       threadId: input.threadId,
       provider: 'mimo',
-      providerSessionId,
+      providerSessionId: active.providerSessionId,
       status: 'running',
       model: this.currentModel(active),
     };
+  }
+
+  /** MiMo exited between turns: reload the same session in a fresh process. */
+  private async reconnect(session: ActiveMimoSession): Promise<void> {
+    const owned = (proc?: ChildProcessWithoutNullStreams) => {
+      if (proc) session.connectingProc = proc;
+      if (this.sessions.get(session.threadId) !== session) throw new Error('MiMo session was stopped.');
+    };
+    let connection: Awaited<ReturnType<typeof this.connect>>;
+    try {
+      connection = await this.connect(session.threadId, session.cwd, session.providerSessionId, owned);
+    } finally {
+      session.connectingProc = undefined;
+    }
+    const changed = connection.providerSessionId !== session.providerSessionId;
+    session.providerSessionId = connection.providerSessionId;
+    this.adoptSessionRecord(session, connection);
+    if (changed) {
+      // session/load failed and MiMo opened a fresh session: the thread must
+      // resume this one from now on.
+      this.emit({ type: 'system_init', threadId: session.threadId, sessionId: session.providerSessionId, model: this.currentModel(session) });
+    }
+    this.bindConnection(session, connection);
   }
 
   async sendTurn(input: ProviderSendTurnInput): Promise<void> {
@@ -512,9 +626,13 @@ export class MimoAcpAdapter implements ProviderAdapter {
     session.turnHadOutput = false;
     this.emit({ type: 'status_change', threadId: input.threadId, status: 'running' });
     const startedAt = Date.now();
-    const costAtStart = session.sessionCostUsd;
+    let costAtStart = session.sessionCostUsd;
 
     try {
+      if (session.dead) {
+        await this.reconnect(session);
+        costAtStart = session.sessionCostUsd;
+      }
       await this.applyModel(session, input.model, input.mimoReasoningEffort);
       await this.applyPermissionMode(session, input.mimoPermissionMode);
       const promptResult = getRecord(
@@ -598,6 +716,7 @@ export class MimoAcpAdapter implements ProviderAdapter {
   }
 
   async stopSession(threadId: string): Promise<void> {
+    this.cancelPendingStart(threadId);
     const session = this.sessions.get(threadId);
     if (!session) return;
     session.status = 'stopped';
@@ -606,27 +725,45 @@ export class MimoAcpAdapter implements ProviderAdapter {
     } catch {
       // ignore shutdown cancellation errors
     }
-    this.dismissPermissions(threadId);
-    this.sessions.delete(threadId);
-    terminateProcess(session.proc);
+    this.retireSession(threadId);
   }
 
   disposeSession(threadId: string): boolean {
+    const cancelled = this.cancelPendingStart(threadId);
+    return this.retireSession(threadId) || cancelled;
+  }
+
+  /** A start still connecting: mark it cancelled and kill what it spawned. */
+  private cancelPendingStart(threadId: string): boolean {
+    const pending = this.starting.get(threadId);
+    if (!pending) return false;
+    this.starting.delete(threadId);
+    pending.cancelled = true;
+    if (pending.proc) terminateProcess(pending.proc);
+    return true;
+  }
+
+  /** Tears down the thread's registered session, if any. */
+  private retireSession(threadId: string): boolean {
     const session = this.sessions.get(threadId);
     if (!session) {
       return false;
     }
     try {
       this.dismissPermissions(threadId);
+      // Map entry first: the exit handler is identity-guarded, so the async
+      // exit then emits nothing.
       this.sessions.delete(threadId);
       terminateProcess(session.proc);
+      if (session.connectingProc) terminateProcess(session.connectingProc);
     } catch (error) {
-      console.warn('[MimoAcpAdapter] disposeSession cleanup failed:', error);
+      console.warn('[MimoAcpAdapter] session teardown failed:', error);
     }
     return true;
   }
 
   async stopAll(): Promise<void> {
+    for (const threadId of Array.from(this.starting.keys())) this.cancelPendingStart(threadId);
     await Promise.all(Array.from(this.sessions.keys()).map((threadId) => this.stopSession(threadId)));
   }
 
