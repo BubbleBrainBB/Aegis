@@ -1,3 +1,4 @@
+import { splitJoinedAnswer } from '../../../shared/question-answers';
 import { getWorkflowSessionPolicy } from '../workflow/session-hooks';
 import { getSessionReaderHttpConfig, SESSION_MCP_SERVER_NAME } from '../session-http-server';
 import { createGrokAcpHttpMcpServer } from './grok-acp-mcp';
@@ -403,9 +404,8 @@ export function buildDevinElicitationContent(
       selected = picked.selected.filter((label) => labels.has(label));
       custom = picked.other?.trim() || '';
     } else {
-      const parts = raw.split(',').map((part) => part.trim());
-      selected = parts.filter((part) => labels.has(part));
-      custom = parts.filter((part) => part && !labels.has(part)).join(', ');
+      // Whole labels first, so a label containing a comma stays one answer.
+      ({ selected, other: custom } = splitJoinedAnswer(raw, [...labels]));
     }
     if (question.multiSelect) {
       content[question.key] = [...selected, ...(custom && elicitation.allowOther ? [custom] : [])];

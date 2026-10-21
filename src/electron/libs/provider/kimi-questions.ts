@@ -4,7 +4,8 @@
 //   single {option_id} | multi {option_ids} | other {text}
 //   | multi_with_other {option_ids, other_text} | skipped
 
-import type { AskUserQuestionInput } from '../../../shared/types';
+import type { AskUserQuestionInput, PermissionResult } from '../../../shared/types';
+import { resolveQuestionAnswer } from '../../../shared/question-answers';
 
 export interface KimiQuestionItem {
   id: string;
@@ -62,25 +63,25 @@ export function kimiQuestionInput(items: KimiQuestionItem[]): AskUserQuestionInp
 }
 
 /**
- * The card's answers (keyed by question text; choices and free text joined
- * with commas) as Kimi answers keyed by item id. Text that matches no option
- * becomes free text when the item allows it and is dropped otherwise.
+ * The card's answers as Kimi answers keyed by item id: the card's structured
+ * answers when present, else its comma-joined strings split back with whole
+ * option labels matched first (labels may contain commas). Text that matches
+ * no option becomes free text when the item allows it and is dropped
+ * otherwise.
  */
 export function kimiQuestionAnswers(
   items: KimiQuestionItem[],
-  answers: Record<string, unknown>
+  decision: Pick<PermissionResult, 'updatedInput' | 'questionAnswers'>
 ): Record<string, KimiQuestionAnswer> {
   const out: Record<string, KimiQuestionAnswer> = {};
   for (const item of items) {
-    const parts = text(answers[item.question]).split(',').map((part) => part.trim()).filter(Boolean);
+    const answer = resolveQuestionAnswer(decision, item.question, item.options.map((option) => option.label), { ignoreCase: true });
     const optionIds: string[] = [];
-    const other: string[] = [];
-    for (const part of parts) {
-      const option = item.options.find((candidate) => candidate.label.toLowerCase() === part.toLowerCase());
+    for (const label of answer.selected) {
+      const option = item.options.find((candidate) => candidate.label === label);
       if (option && !optionIds.includes(option.id)) optionIds.push(option.id);
-      else if (!option) other.push(part);
     }
-    const otherText = item.allowOther ? other.join(', ') : '';
+    const otherText = item.allowOther ? answer.other : '';
     if (!item.multiSelect) {
       out[item.id] = optionIds.length
         ? { kind: 'single', option_id: optionIds[0] }

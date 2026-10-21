@@ -664,9 +664,9 @@ export class KimiServerAdapter implements ProviderAdapter {
       const optionId = getString(decision.updatedInput?.optionId);
       if (pending.kind === 'question') {
         const answers = decision.updatedInput?.answers;
-        if (decision.behavior === 'allow' && pending.questionItems && isRecord(answers)) {
+        if (decision.behavior === 'allow' && pending.questionItems && (isRecord(answers) || decision.questionAnswers)) {
           await this.manager.resolveQuestion(session.providerSessionId, pending.serverInteractionId, {
-            answers: kimiQuestionAnswers(pending.questionItems, answers),
+            answers: kimiQuestionAnswers(pending.questionItems, decision),
           });
         } else {
           await this.manager.request(

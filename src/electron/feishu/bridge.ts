@@ -575,10 +575,14 @@ export class FeishuBridge {
     } else if (kind === "question") {
       const questions = input.questions as { question: string; multiSelect?: boolean; options: { label: string }[] }[];
       const answers: Record<string, string> = {};
+      // The picked labels, whole: agents read these rather than splitting the
+      // joined string, so a label containing a comma stays one answer.
+      const questionAnswers: Record<string, { selected: string[] }> = {};
       if (action.startsWith("q:")) {
         const option = questions[0]?.options[Number(action.slice(2))];
         if (!option) return toast("error", "That option is no longer available.");
         answers[questions[0].question] = option.label;
+        questionAnswers[questions[0].question] = { selected: [option.label] };
       } else {
         const form = evt.action.formValue ?? {};
         for (const [i, q] of questions.entries()) {
@@ -586,9 +590,10 @@ export class FeishuBridge {
           const picked = Array.isArray(value) ? value.map(String) : typeof value === "string" ? [value] : [];
           if (!picked.length) return { ...toast("warning", `Answer “${q.question}” first.`), retry: true };
           answers[q.question] = picked.join(",");
+          questionAnswers[q.question] = { selected: picked };
         }
       }
-      result = { behavior: "allow", updatedInput: { ...input, answers } };
+      result = { behavior: "allow", updatedInput: { ...input, answers }, questionAnswers };
       outcome = Object.entries(answers).map(([q, a]) => `**${q}** ${a}`).join("\n") + `\n— ${who}`;
     } else {
       return toast("info", "Answer this one in Aegis on your Mac.");

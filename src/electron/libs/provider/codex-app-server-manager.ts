@@ -1,3 +1,4 @@
+import { questionAnswerValues, resolveQuestionAnswer } from '../../../shared/question-answers';
 import { getCodexMcpServers } from '../codex-mcp-settings';
 import { getWorkflowSessionPolicy } from '../workflow/session-hooks';
 import { materializeGoalObjective, readGoalObjective } from '../codex-goal-objective';
@@ -2030,14 +2031,16 @@ export class CodexAppServerManager extends EventEmitter {
       const text = this.optionalString(record.question);
       if (!id) continue;
 
-      const value = (id && rawAnswers?.[id]) ?? (text && rawAnswers?.[text]);
-      if (typeof value !== 'string') continue;
-      const splitAnswers = value
-        .split(',')
-        .map((item) => item.trim())
-        .filter(Boolean);
-      if (splitAnswers.length > 0) {
-        answers[id] = { answers: splitAnswers };
+      // The card answers by question text; older callers may use the id.
+      const answeredByText = Boolean(text && (result.questionAnswers?.[text] || typeof rawAnswers?.[text] === 'string'));
+      const key = answeredByText && text ? text : id;
+      const labels = (this.readArray(record, 'options') || [])
+        .map((option) => this.optionalString(this.asObject(option)?.label))
+        .filter((label): label is string => Boolean(label));
+      // Option labels and the user's own text may contain commas: kept whole.
+      const values = questionAnswerValues(resolveQuestionAnswer(result, key, labels));
+      if (values.length > 0) {
+        answers[id] = { answers: values };
       }
     }
 
