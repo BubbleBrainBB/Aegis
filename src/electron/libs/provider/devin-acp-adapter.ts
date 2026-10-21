@@ -79,6 +79,8 @@ interface DevinTurn {
 }
 
 interface ActiveDevinSession {
+  /** The process a reconnect is starting, so a stop can kill it mid-start. */
+  connectingProc?: ChildProcessWithoutNullStreams;
   threadId: string;
   providerSessionId: string;
   status: ProviderSessionStatus;
@@ -110,6 +112,22 @@ interface ActiveDevinSession {
    * waits on it so it never overtakes a primary prompt still applying config.
    */
   dispatchChain: Promise<void>;
+  /** Devin exited outside a stop; the next turn reconnects and reloads. */
+  dead?: boolean;
+}
+
+/** An in-flight startSession; stop/dispose cancel it and kill its process. */
+interface PendingStart {
+  cancelled: boolean;
+  proc?: ChildProcessWithoutNullStreams;
+}
+
+interface DevinConnection {
+  proc: ChildProcessWithoutNullStreams;
+  rpc: AcpJsonRpcClient;
+  binding: SessionBinding;
+  providerSessionId: string;
+  sessionRecord: Record<string, unknown> | null;
 }
 
 /**
@@ -468,14 +486,28 @@ export class DevinAcpAdapter implements ProviderAdapter {
     )
   >();
 
-  async startSession(input: ProviderSessionStartInput): Promise<ProviderSession> {
+  private starting = new Map<string, PendingStart>();
+
+  /**
+   * Spawns `devin acp`, initializes it and opens (or loads) the ACP session.
+   * `guard` runs after every await and throws once the start was cancelled;
+   * every failure path kills the process it spawned. The load replay is
+   * dropped: the binding has no session until bindConnection.
+   */
+  private async connect(
+    threadId: string,
+    cwd: string,
+    resumeSessionId: string | undefined,
+    guard: (proc?: ChildProcessWithoutNullStreams) => void
+  ): Promise<DevinConnection> {
     const binary = await resolveDevinBinary();
+    guard();
     if (!binary) {
       throw new Error('Devin CLI was not found. Install the Devin CLI or set DEVIN_CLI_PATH.');
     }
 
     const proc = spawn(binary, ['acp'], {
-      cwd: input.cwd,
+      cwd,
       env: buildDevinEnv(),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -502,36 +534,51 @@ export class DevinAcpAdapter implements ProviderAdapter {
       terminateProcess(proc);
       throw error instanceof Error ? error : new Error(String(error));
     };
+    const step = async <T>(work: Promise<T>): Promise<T> => {
+      let value: T;
+      try {
+        value = await work;
+      } catch (error) {
+        return fail(error);
+      }
+      try {
+        guard(proc);
+      } catch (error) {
+        return fail(error);
+      }
+      return value;
+    };
+    await step(Promise.resolve());
 
-    await rpc
-      .request('initialize', {
+    await step(
+      rpc.request('initialize', {
         protocolVersion: 1,
         clientInfo: { name: 'aegis', title: 'Aegis', version: '0.0.32' },
         // No fs/terminal: Devin then runs its own file and shell tools.
         // Form elicitation lets its ask_user_question tool reach the user.
         clientCapabilities: { elicitation: { form: {} } },
       })
-      .catch(fail);
+    );
 
     // Aegis's session tools (read_session, start_workflow) for chat sessions,
     // passed for this session only (Devin's ACP accepts http MCP servers);
     // workflow members get none.
-    const mcpServers = getWorkflowSessionPolicy(input.threadId)
+    const mcpServers = getWorkflowSessionPolicy(threadId)
       ? []
-      : [createGrokAcpHttpMcpServer(SESSION_MCP_SERVER_NAME, await getSessionReaderHttpConfig({ sessionId: input.threadId }))];
+      : [createGrokAcpHttpMcpServer(SESSION_MCP_SERVER_NAME, await step(getSessionReaderHttpConfig({ sessionId: threadId })))];
 
     let sessionRecord: Record<string, unknown> | null = null;
     let providerSessionId = '';
-    if (input.resumeSessionId) {
+    if (resumeSessionId) {
       try {
         sessionRecord = getRecord(
           await rpc.request('session/load', {
-            sessionId: input.resumeSessionId,
-            cwd: input.cwd,
+            sessionId: resumeSessionId,
+            cwd,
             mcpServers,
           })
         );
-        providerSessionId = input.resumeSessionId;
+        providerSessionId = resumeSessionId;
       } catch (error) {
         // A session Devin no longer has (deleted, other machine) must not
         // brick the thread: continue in a fresh Devin session.
@@ -540,70 +587,115 @@ export class DevinAcpAdapter implements ProviderAdapter {
         binding.usage = undefined;
         binding.currentMode = undefined;
       }
+      await step(Promise.resolve());
     }
     if (!providerSessionId) {
-      sessionRecord = getRecord(await rpc.request('session/new', { cwd: input.cwd, mcpServers }).catch(fail));
+      sessionRecord = getRecord(await step(rpc.request('session/new', { cwd, mcpServers })));
       providerSessionId = getString(sessionRecord?.sessionId);
       if (!providerSessionId) {
         fail(new Error('Devin ACP did not return a sessionId.'));
       }
     }
+    return { proc, rpc, binding, providerSessionId, sessionRecord };
+  }
 
-    const active: ActiveDevinSession = {
-      threadId: input.threadId,
-      providerSessionId,
-      status: 'running',
-      cwd: input.cwd,
-      model: extractConfigValue(sessionRecord?.configOptions, 'model'),
-      modelIds: extractModelIds(sessionRecord?.configOptions),
-      thoughtLevel: extractThoughtLevels(sessionRecord?.configOptions).current,
-      thoughtLevelIds: extractThoughtLevels(sessionRecord?.configOptions).ids,
-      requestedThoughtLevel: normalizeDevinThoughtLevel(input.devinThoughtLevel),
-      currentMode:
-        getString(getRecord(sessionRecord?.modes)?.currentModeId) || binding.currentMode || undefined,
-      permissionMode: normalizeDevinPermissionMode(input.devinPermissionMode),
-      proc,
-      rpc,
-      nextBlockIndex: 0,
-      toolCalls: new Map(),
-      dispatchChain: Promise.resolve(),
-    };
+  /** Session config as the (re)opened ACP session reports it. */
+  private adoptSessionRecord(session: ActiveDevinSession, connection: DevinConnection): void {
+    const configOptions = connection.sessionRecord?.configOptions;
+    const thought = extractThoughtLevels(configOptions);
+    session.model = extractConfigValue(configOptions, 'model');
+    session.modelIds = extractModelIds(configOptions);
+    session.rejectedModel = undefined;
+    session.thoughtLevel = thought.current;
+    session.thoughtLevelIds = thought.ids;
+    session.currentMode =
+      getString(getRecord(connection.sessionRecord?.modes)?.currentModeId) || connection.binding.currentMode || undefined;
+  }
 
-    try {
-      await this.applyModel(active, input.model);
-      await this.applyThoughtLevel(active, active.requestedThoughtLevel);
-      await this.applyPermissionMode(active, active.permissionMode);
-    } catch (error) {
-      fail(error);
-    }
-
-    // Never orphan a predecessor for the same thread — it would leak its process.
-    this.disposeSession(input.threadId);
-    this.sessions.set(input.threadId, active);
-    binding.session = active;
+  /** Binds a connection to its session: routing, exit handling, startup state. */
+  private bindConnection(session: ActiveDevinSession, connection: DevinConnection): void {
+    const { proc, binding } = connection;
+    session.proc = proc;
+    session.rpc = connection.rpc;
+    session.dead = false;
+    binding.session = session;
 
     proc.on('exit', () => {
-      const current = this.sessions.get(input.threadId);
-      if (current?.proc === proc) {
-        current.status = current.status === 'stopped' ? 'stopped' : 'completed';
-        this.emit({ type: 'status_change', threadId: input.threadId, status: current.status });
-      }
+      if (this.sessions.get(session.threadId) !== session || session.proc !== proc) return;
+      // Not a stop (that removes the session first): Devin exited on its own.
+      // A running turn fails through its rejected RPC; the next send
+      // reconnects and reloads rather than writing into a dead pipe.
+      session.dead = true;
+      this.dismissPermissions(session.threadId);
     });
 
-    this.emit({
-      type: 'system_init',
-      threadId: input.threadId,
-      sessionId: providerSessionId,
-      model: active.model,
-    });
     if (binding.commands) {
-      this.emitAvailableCommands(active, binding.commands);
+      this.emitAvailableCommands(session, binding.commands);
     }
     if (binding.usage) {
-      this.emitTokenUsage(active, binding.usage);
+      this.emitTokenUsage(session, binding.usage);
     }
     binding.commands = undefined;
     binding.usage = undefined;
+  }
+
+  async startSession(input: ProviderSessionStartInput): Promise<ProviderSession> {
+    // A newer start for the thread supersedes one still connecting.
+    this.cancelPendingStart(input.threadId);
+    const pending: PendingStart = { cancelled: false };
+    this.starting.set(input.threadId, pending);
+    const guard = (proc?: ChildProcessWithoutNullStreams) => {
+      if (proc) pending.proc = proc;
+      if (pending.cancelled) throw new Error('Devin session start was cancelled.');
+    };
+
+    let connection: DevinConnection;
+    let active: ActiveDevinSession;
+    try {
+      connection = await this.connect(input.threadId, input.cwd, input.resumeSessionId, guard);
+      active = {
+        threadId: input.threadId,
+        providerSessionId: connection.providerSessionId,
+        status: 'running',
+        cwd: input.cwd,
+        modelIds: new Set(),
+        thoughtLevelIds: new Set(),
+        requestedThoughtLevel: normalizeDevinThoughtLevel(input.devinThoughtLevel),
+        permissionMode: normalizeDevinPermissionMode(input.devinPermissionMode),
+        proc: connection.proc,
+        rpc: connection.rpc,
+        nextBlockIndex: 0,
+        toolCalls: new Map(),
+        dispatchChain: Promise.resolve(),
+      };
+      this.adoptSessionRecord(active, connection);
+      try {
+        // Guarded between steps: a cancelled start kills the process, and a
+        // request written after it exited would never be answered.
+        await this.applyModel(active, input.model);
+        guard();
+        await this.applyThoughtLevel(active, active.requestedThoughtLevel);
+        guard();
+        await this.applyPermissionMode(active, active.permissionMode);
+        guard();
+      } catch (error) {
+        terminateProcess(connection.proc);
+        throw error;
+      }
+    } finally {
+      if (this.starting.get(input.threadId) === pending) this.starting.delete(input.threadId);
+    }
+
+    // Never orphan a predecessor for the same thread — it would leak its process.
+    this.retireSession(input.threadId);
+    this.sessions.set(input.threadId, active);
+    this.emit({
+      type: 'system_init',
+      threadId: input.threadId,
+      sessionId: active.providerSessionId,
+      model: active.model,
+    });
+    this.bindConnection(active, connection);
 
     if (input.prompt || input.attachments?.length) {
       // Not awaited: the agent loop chains every later send off startSession,
@@ -627,10 +719,33 @@ export class DevinAcpAdapter implements ProviderAdapter {
     return {
       threadId: input.threadId,
       provider: 'devin',
-      providerSessionId,
+      providerSessionId: active.providerSessionId,
       status: 'running',
       model: active.model,
     };
+  }
+
+  /** Devin exited between turns: reload the same session in a fresh process. */
+  private async reconnect(session: ActiveDevinSession): Promise<void> {
+    const owned = (proc?: ChildProcessWithoutNullStreams) => {
+      if (proc) session.connectingProc = proc;
+      if (this.sessions.get(session.threadId) !== session) throw new Error('Devin session was stopped.');
+    };
+    let connection: Awaited<ReturnType<typeof this.connect>>;
+    try {
+      connection = await this.connect(session.threadId, session.cwd, session.providerSessionId, owned);
+    } finally {
+      session.connectingProc = undefined;
+    }
+    const changed = connection.providerSessionId !== session.providerSessionId;
+    session.providerSessionId = connection.providerSessionId;
+    this.adoptSessionRecord(session, connection);
+    if (changed) {
+      // session/load failed and Devin opened a fresh session: the thread must
+      // resume this one from now on.
+      this.emit({ type: 'system_init', threadId: session.threadId, sessionId: session.providerSessionId, model: session.model });
+    }
+    this.bindConnection(session, connection);
   }
 
   async sendTurn(input: ProviderSendTurnInput): Promise<void> {
@@ -651,7 +766,8 @@ export class DevinAcpAdapter implements ProviderAdapter {
       // A stop/dispose kills the process, which rejects this turn's RPC — that
       // stale rejection must not land in whatever session now owns the thread.
       if (this.sessions.get(input.threadId) !== session) return;
-      turn = session.turn;
+      // A dead process cannot take a steer: start a turn that reconnects.
+      turn = session.dead ? undefined : session.turn;
       if (turn) {
         // Steer: Devin folds this prompt into the running turn. Config the
         // composer changed meanwhile is reconciled before the next turn.
@@ -665,6 +781,7 @@ export class DevinAcpAdapter implements ProviderAdapter {
         session.currentAssistant = undefined;
         session.currentThinking = undefined;
         this.emit({ type: 'status_change', threadId: input.threadId, status: 'running' });
+        if (session.dead) await this.reconnect(session);
         await this.applyModel(session, input.model);
         await this.applyThoughtLevel(session, input.devinThoughtLevel);
         await this.applyPermissionMode(session, input.devinPermissionMode);
@@ -736,6 +853,7 @@ export class DevinAcpAdapter implements ProviderAdapter {
   }
 
   async stopSession(threadId: string): Promise<void> {
+    this.cancelPendingStart(threadId);
     const session = this.sessions.get(threadId);
     if (!session) return;
     session.status = 'stopped';
@@ -744,12 +862,26 @@ export class DevinAcpAdapter implements ProviderAdapter {
     } catch {
       // ignore shutdown cancellation errors
     }
-    this.dismissPermissions(threadId);
-    this.sessions.delete(threadId);
-    terminateProcess(session.proc);
+    this.retireSession(threadId);
   }
 
   disposeSession(threadId: string): boolean {
+    const cancelled = this.cancelPendingStart(threadId);
+    return this.retireSession(threadId) || cancelled;
+  }
+
+  /** A start still connecting: mark it cancelled and kill what it spawned. */
+  private cancelPendingStart(threadId: string): boolean {
+    const pending = this.starting.get(threadId);
+    if (!pending) return false;
+    this.starting.delete(threadId);
+    pending.cancelled = true;
+    if (pending.proc) terminateProcess(pending.proc);
+    return true;
+  }
+
+  /** Tears down the thread's registered session, if any. */
+  private retireSession(threadId: string): boolean {
     const session = this.sessions.get(threadId);
     if (!session) {
       return false;
@@ -760,13 +892,15 @@ export class DevinAcpAdapter implements ProviderAdapter {
       // exit then emits nothing.
       this.sessions.delete(threadId);
       terminateProcess(session.proc);
+      if (session.connectingProc) terminateProcess(session.connectingProc);
     } catch (error) {
-      console.warn('[DevinAcpAdapter] disposeSession cleanup failed:', error);
+      console.warn('[DevinAcpAdapter] session teardown failed:', error);
     }
     return true;
   }
 
   async stopAll(): Promise<void> {
+    for (const threadId of Array.from(this.starting.keys())) this.cancelPendingStart(threadId);
     await Promise.all(Array.from(this.sessions.keys()).map((threadId) => this.stopSession(threadId)));
   }
 

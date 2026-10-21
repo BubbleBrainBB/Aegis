@@ -492,12 +492,15 @@ export type MinimaxRuntimeStatus = GrokRuntimeStatus;
 
 /**
  * Thinking levels Devin offers for one model, read from the ACP session's
- * `thought_level` select. Empty `levels` = the model has no thinking control.
+ * `thought_level` select. Empty `levels` = the model has no thinking control,
+ * unless `failed` says the read itself failed.
  */
 export interface DevinThoughtLevels {
   model: string | null;
   levels: Array<{ id: string; label: string }>;
   defaultLevel: string | null;
+  /** The read itself failed (CLI missing, offline, probe timeout); not to be cached. */
+  failed?: boolean;
 }
 
 /**
@@ -510,9 +513,7 @@ export type MinimaxModelConfig = DevinModelConfig;
  * select). Empty `levels` = the model has no effort control, unless
  * `failed` says the read itself failed (not to be cached).
  */
-export interface MinimaxThinkingEfforts extends DevinThoughtLevels {
-  failed?: boolean;
-}
+export type MinimaxThinkingEfforts = DevinThoughtLevels;
 
 export type ClaudeRuntimeStatusKind = 'ready' | 'login_required' | 'install_required' | 'error';
 export type ClaudeRuntimeSource = 'global' | 'unknown';

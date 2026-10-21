@@ -6,12 +6,14 @@ import type { DevinThoughtLevels } from '../types';
 const requests = new Map<string, Promise<DevinThoughtLevels>>();
 const resolved = new Map<string, DevinThoughtLevels>();
 
-function requestLevels(key: string): Promise<DevinThoughtLevels> {
+/** Exported for tests: one shared read per model, failed reads not kept. */
+export function requestDevinThoughtLevels(key: string): Promise<DevinThoughtLevels> {
   let request = requests.get(key);
   if (!request) {
     request = window.electron.getDevinThoughtLevels(key || null).then((levels) => {
-      // A failed read (CLI missing, offline) must not stick for the session.
-      if (levels.levels.length > 0 || levels.model) resolved.set(key, levels);
+      // A failed read (CLI missing, offline, probe timeout) must not stick for
+      // the session; an empty list from a successful read is a real answer.
+      if (!levels.failed && (levels.levels.length > 0 || levels.model)) resolved.set(key, levels);
       else requests.delete(key);
       return levels;
     });
@@ -30,7 +32,7 @@ export function useDevinThoughtLevels(model: string | null, enabled = true): Dev
     if (!enabled) return;
     let cancelled = false;
     setLevels(resolved.get(key) ?? null);
-    requestLevels(key)
+    requestDevinThoughtLevels(key)
       .then((next) => {
         if (!cancelled) setLevels(next);
       })
