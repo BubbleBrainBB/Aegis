@@ -5,7 +5,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import { EventEmitter } from 'events';
 import { readFileSync } from 'fs';
 import { v4 as uuidv4 } from 'uuid';
-import { buildMimoEnv, listMimoSkills, readMimoLastTurnError, readMimoTurnUsage, resolveMimoBinary } from '../mimo-cli';
+import { buildMimoEnv, listMimoSkills, readMimoLastTurnError, readMimoTurnUsage, resolveMimoBinary, type MimoTurnUsage } from '../mimo-cli';
 import { AcpJsonRpcClient, type AcpJsonRpcIncomingRequest } from './acp-json-rpc-client';
 import type {
   ProviderAdapter,
@@ -71,6 +71,8 @@ interface MimoToolCall {
 interface ActiveMimoSession {
   /** The process a reconnect is starting, so a stop can kill it mid-start. */
   connectingProc?: ChildProcessWithoutNullStreams;
+  /** The running turn; a stop reports the usage it already incurred. */
+  turn?: { startedAt: number; accounted: boolean };
   threadId: string;
   providerSessionId: string;
   status: ProviderSessionStatus;
@@ -348,6 +350,24 @@ function terminateProcess(proc: ChildProcessWithoutNullStreams): void {
 }
 
 // ── Adapter ────────────────────────────────────────────────────────────────
+
+/** Usage fields for a result or usage record from MiMo's stored steps. */
+function mimoUsageFields(recorded: MimoTurnUsage): {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens: number;
+  cache_creation_input_tokens: number;
+  total_tokens: number;
+} {
+  const outputTokens = recorded.outputTokens + recorded.reasoningTokens;
+  return {
+    input_tokens: recorded.inputTokens,
+    output_tokens: outputTokens,
+    cache_read_input_tokens: recorded.cacheReadTokens,
+    cache_creation_input_tokens: recorded.cacheWriteTokens,
+    total_tokens: recorded.inputTokens + outputTokens + recorded.cacheReadTokens + recorded.cacheWriteTokens,
+  };
+}
 
 export class MimoAcpAdapter implements ProviderAdapter {
   readonly provider: ProviderKind = 'mimo';
@@ -627,6 +647,8 @@ export class MimoAcpAdapter implements ProviderAdapter {
     this.emit({ type: 'status_change', threadId: input.threadId, status: 'running' });
     const startedAt = Date.now();
     let costAtStart = session.sessionCostUsd;
+    const turn = { startedAt, accounted: false };
+    session.turn = turn;
 
     try {
       if (session.dead) {
@@ -689,12 +711,15 @@ export class MimoAcpAdapter implements ProviderAdapter {
     } catch (error) {
       // A stop/dispose kills the process, which rejects this turn's RPC — that
       // stale rejection must not land in whatever session now owns the thread.
+      // (The stop itself reported the usage the turn had incurred.)
       if (this.sessions.get(input.threadId) !== session) {
         return;
       }
       this.finalizeStreaming(session);
       this.settleOpenToolCalls(session);
       session.status = 'error';
+      // Steps that ran before the failure were billed: count what MiMo stored.
+      const recorded = readMimoTurnUsage(session.providerSessionId, startedAt);
       this.emit({
         type: 'message',
         threadId: input.threadId,
@@ -702,9 +727,10 @@ export class MimoAcpAdapter implements ProviderAdapter {
           type: 'result',
           subtype: 'error',
           duration_ms: Date.now() - startedAt,
-          total_cost_usd: 0,
-          costSource: 'unavailable',
-          usage: { input_tokens: 0, output_tokens: 0 },
+          total_cost_usd: recorded?.costUsd ?? 0,
+          costSource: recorded ? 'reported' : 'unavailable',
+          usage: recorded ? mimoUsageFields(recorded) : { input_tokens: 0, output_tokens: 0 },
+          model: this.currentModel(session),
         },
       });
       this.emit({
@@ -712,6 +738,9 @@ export class MimoAcpAdapter implements ProviderAdapter {
         threadId: input.threadId,
         error: error instanceof Error ? error : new Error(String(error)),
       });
+    } finally {
+      // Reported (result or stop): a later stop must not count it again.
+      if (session.turn === turn) session.turn = undefined;
     }
   }
 
@@ -744,6 +773,33 @@ export class MimoAcpAdapter implements ProviderAdapter {
   }
 
   /** Tears down the thread's registered session, if any. */
+  /**
+   * A stopped turn never gets its result (the runner stopped listening), but
+   * its finished steps were billed and MiMo stored them: report them as an
+   * accounting-only usage record the host persists at once.
+   */
+  private reportStoppedTurnUsage(session: ActiveMimoSession): void {
+    const turn = session.turn;
+    if (!turn || turn.accounted) return;
+    turn.accounted = true;
+    const recorded = readMimoTurnUsage(session.providerSessionId, turn.startedAt);
+    if (!recorded) return;
+    this.emit({
+      type: 'usage_unreported',
+      threadId: session.threadId,
+      provider: 'mimo',
+      message: {
+        type: 'usage_record',
+        uuid: `mimo-usage:${session.threadId}:${uuidv4()}`,
+        duration_ms: Math.max(0, Date.now() - turn.startedAt),
+        total_cost_usd: recorded.costUsd,
+        costSource: 'reported',
+        usage: mimoUsageFields(recorded),
+        model: this.currentModel(session),
+      },
+    });
+  }
+
   private retireSession(threadId: string): boolean {
     const session = this.sessions.get(threadId);
     if (!session) {
@@ -754,6 +810,7 @@ export class MimoAcpAdapter implements ProviderAdapter {
       // Map entry first: the exit handler is identity-guarded, so the async
       // exit then emits nothing.
       this.sessions.delete(threadId);
+      this.reportStoppedTurnUsage(session);
       terminateProcess(session.proc);
       if (session.connectingProc) terminateProcess(session.connectingProc);
     } catch (error) {
