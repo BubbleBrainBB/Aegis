@@ -29,6 +29,7 @@ import type {
   ProviderListSkillsInput,
   ProviderListSkillsResult,
   ProviderSkillDescriptor,
+  QuestionAnswerSelection,
   StreamMessage,
 } from '../../../shared/types';
 
@@ -367,32 +368,45 @@ export function parseDevinElicitation(params: unknown): DevinElicitation | null 
 }
 
 /**
- * Card answers (keyed by question text; multi-select and "Other" text
- * comma-joined) → the reply's typed content. Option labels are matched out
- * of the joined string; what remains is the user's own text, kept whole so a
- * custom answer may itself contain commas.
+ * Card answers → the reply's typed content. `structured` (the card's
+ * questionAnswers) carries exact option labels and the "Other" text, so
+ * labels and custom text may contain commas. Without it (older callers),
+ * labels are matched out of the comma-joined `answers` string and what
+ * remains is kept whole as the user's own text.
  */
 export function buildDevinElicitationContent(
   elicitation: DevinElicitation,
-  answers: Record<string, string>
+  answers: Record<string, string>,
+  structured?: Record<string, QuestionAnswerSelection>
 ): Record<string, string | string[] | boolean | number> {
   const content: Record<string, string | string[] | boolean | number> = {};
   for (const question of elicitation.questions) {
-    const raw = (answers[question.question] || '').trim();
+    const labels = new Set(question.options.map((option) => option.label));
+    const picked = structured?.[question.question];
+    const raw = picked
+      ? [...picked.selected, ...(picked.other ? [picked.other] : [])].join(',').trim()
+      : (answers[question.question] || '').trim();
     if (!raw) continue;
     if (question.valueType === 'boolean') {
-      content[question.key] = /^(yes|true)$/i.test(raw);
+      content[question.key] = /^(yes|true)$/i.test(picked ? picked.selected[0] ?? picked.other ?? '' : raw);
       continue;
     }
     if (question.options.length === 0) {
-      const asNumber = Number(raw);
-      content[question.key] = question.valueType === 'number' && Number.isFinite(asNumber) ? asNumber : raw;
+      const text = picked ? (picked.other ?? picked.selected.join(',')).trim() : raw;
+      const asNumber = Number(text);
+      content[question.key] = question.valueType === 'number' && Number.isFinite(asNumber) ? asNumber : text;
       continue;
     }
-    const labels = new Set(question.options.map((option) => option.label));
-    const parts = raw.split(',').map((part) => part.trim());
-    const selected = parts.filter((part) => labels.has(part));
-    const custom = parts.filter((part) => part && !labels.has(part)).join(', ');
+    let selected: string[];
+    let custom: string;
+    if (picked) {
+      selected = picked.selected.filter((label) => labels.has(label));
+      custom = picked.other?.trim() || '';
+    } else {
+      const parts = raw.split(',').map((part) => part.trim());
+      selected = parts.filter((part) => labels.has(part));
+      custom = parts.filter((part) => part && !labels.has(part)).join(', ');
+    }
     if (question.multiSelect) {
       content[question.key] = [...selected, ...(custom && elicitation.allowOther ? [custom] : [])];
     } else {
@@ -933,7 +947,8 @@ export class DevinAcpAdapter implements ProviderAdapter {
               action: 'accept',
               content: buildDevinElicitationContent(
                 pending.elicitation,
-                Object.fromEntries(Object.entries(answers).map(([key, value]) => [key, getString(value)]))
+                Object.fromEntries(Object.entries(answers).map(([key, value]) => [key, getString(value)])),
+                decision.questionAnswers
               ),
             }
           : { action: 'decline' }

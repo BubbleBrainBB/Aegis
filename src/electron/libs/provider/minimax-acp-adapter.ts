@@ -36,6 +36,7 @@ import type {
   ProviderCostDetails,
   ProviderListSkillsInput,
   ProviderListSkillsResult,
+  QuestionAnswerSelection,
 } from '../../../shared/types';
 
 /**
@@ -365,15 +366,13 @@ function schemaChoices(schema: Record<string, unknown> | null): MinimaxElicitati
       const record = getRecord(entry);
       const value = record && record.const !== undefined ? String(record.const) : '';
       if (!value) return null;
-      // The question card joins selections with ",", so a comma inside a
-      // label would split it apart: show a look-alike (U+201A) instead.
-      const label = (getString(record?.title).trim() || value).replace(/,/g, '\u201a');
+      const label = getString(record?.title).trim() || value;
       const description = getString(record?.description).trim();
       return { label, value, ...(description ? { description } : {}) };
     })
     .filter((choice): choice is MinimaxElicitationQuestion['options'][number] => Boolean(choice));
   if (choices.length > 0) return choices;
-  return getArray(schema?.enum).map((value) => ({ label: String(value).replace(/,/g, '\u201a'), value: String(value) }));
+  return getArray(schema?.enum).map((value) => ({ label: String(value), value: String(value) }));
 }
 
 /**
@@ -431,30 +430,73 @@ export function parseMinimaxElicitation(params: unknown): MinimaxElicitation | n
  * ids; what remains is the user's own text, which goes to the question's
  * `__other` field when it has one.
  */
+/**
+ * A comma-joined answer (callers without the card's structured answers,
+ * e.g. the phone or Feishu) split back into option labels and the user's own
+ * text. Labels may contain commas: whole labels are matched first, longest
+ * first, at comma boundaries; anything else is custom text, commas kept.
+ */
+export function splitJoinedAnswer(raw: string, labels: readonly string[]): { selected: string[]; other: string } {
+  const byLength = [...labels].sort((left, right) => right.length - left.length);
+  const selected: string[] = [];
+  const custom: string[] = [];
+  let index = 0;
+  while (index < raw.length) {
+    // Spaces are skipped to match a label, but kept in the user's own text.
+    const segmentStart = index;
+    while (raw[index] === ' ') index += 1;
+    if (index >= raw.length) break;
+    const label = byLength.find(
+      (candidate) => raw.startsWith(candidate, index) && /^\s*(,|$)/.test(raw.slice(index + candidate.length))
+    );
+    if (label) {
+      selected.push(label);
+      index += label.length;
+    } else {
+      const end = raw.indexOf(',', index);
+      custom.push(raw.slice(segmentStart, end < 0 ? raw.length : end));
+      index = end < 0 ? raw.length : end;
+    }
+    while (raw[index] === ' ') index += 1;
+    if (raw[index] === ',') index += 1;
+  }
+  return { selected, other: custom.join(',').trim() };
+}
+
+/**
+ * Card answers → the reply's typed content. `structured` (the card's
+ * questionAnswers) carries the exact option labels and the "Other" text, so
+ * either may contain commas; without it, the comma-joined `answers` string is
+ * split back (splitJoinedAnswer).
+ */
 export function buildMinimaxElicitationContent(
   elicitation: MinimaxElicitation,
-  answers: Record<string, string>
+  answers: Record<string, string>,
+  structured?: Record<string, QuestionAnswerSelection>
 ): Record<string, string | string[] | boolean | number> {
   const content: Record<string, string | string[] | boolean | number> = {};
   for (const question of elicitation.questions) {
-    const raw = (answers[question.question] || '').trim();
+    const picked = structured?.[question.question];
+    const raw = picked
+      ? [...picked.selected, ...(picked.other ? [picked.other] : [])].join(',').trim()
+      : (answers[question.question] || '').trim();
     if (!raw) continue;
     if (question.valueType === 'boolean') {
-      content[question.key] = /^(yes|true)$/i.test(raw);
+      content[question.key] = /^(yes|true)$/i.test(picked ? picked.selected[0] ?? picked.other ?? '' : raw);
       continue;
     }
     if (question.options.length === 0) {
-      const asNumber = Number(raw);
-      content[question.key] = question.valueType === 'number' && Number.isFinite(asNumber) ? asNumber : raw;
+      const text = picked ? (picked.other ?? picked.selected.join(',')).trim() : raw;
+      const asNumber = Number(text);
+      content[question.key] = question.valueType === 'number' && Number.isFinite(asNumber) ? asNumber : text;
       continue;
     }
-    // Labels hold no commas (see schemaChoices), so every comma separates
-    // answers; whatever matches no label is the user's own text, rejoined
-    // with its original commas.
     const byLabel = new Map(question.options.map((option) => [option.label, option.value]));
-    const parts = raw.split(',');
-    const selected = parts.filter((part) => byLabel.has(part.trim())).map((part) => byLabel.get(part.trim()) as string);
-    const custom = parts.filter((part) => !byLabel.has(part.trim())).join(',').trim();
+    const answer = picked
+      ? { selected: picked.selected.filter((label) => byLabel.has(label)), other: picked.other?.trim() || '' }
+      : splitJoinedAnswer(raw, [...byLabel.keys()]);
+    const selected = answer.selected.map((label) => byLabel.get(label) as string);
+    const custom = answer.other;
     if (question.multiSelect) {
       content[question.key] = selected;
     } else if (selected[0]) {
@@ -1272,7 +1314,8 @@ export class MinimaxAcpAdapter implements ProviderAdapter {
               action: 'accept',
               content: buildMinimaxElicitationContent(
                 pending.elicitation,
-                Object.fromEntries(Object.entries(answers).map(([key, value]) => [key, getString(value)]))
+                Object.fromEntries(Object.entries(answers).map(([key, value]) => [key, getString(value)])),
+                decision.questionAnswers
               ),
             }
           : { action: 'decline' }

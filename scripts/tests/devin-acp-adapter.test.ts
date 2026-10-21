@@ -577,6 +577,45 @@ async function main(): Promise<void> {
       { a: 'Ada, Lovelace', b: true, c: 3 },
       'free text is kept whole; booleans and numbers are typed'
     );
+
+    // The card's structured answers keep comma-containing labels and "Other"
+    // text apart, so they map to exact option consts.
+    const commas = parseDevinElicitation({
+      requestedSchema: {
+        properties: {
+          q0: { type: 'array', description: 'Pick cities', items: { anyOf: [{ const: 'Paris, France' }, { const: 'Austin, Texas' }, { const: 'Lima' }] } },
+          q1: { type: 'string', description: 'One city', oneOf: [{ const: 'Paris, France' }, { const: 'Lima' }] },
+        },
+      },
+      _meta: { 'cognition.ai/allowOther': true },
+    })!;
+    assert.deepEqual(
+      buildDevinElicitationContent(
+        commas,
+        { 'Pick cities': 'Paris, France,Austin, Texas,Rome, Italy, Europe', 'One city': 'Paris, France' },
+        {
+          'Pick cities': { selected: ['Paris, France', 'Austin, Texas'], other: 'Rome, Italy, Europe' },
+          'One city': { selected: ['Paris, France'] },
+        }
+      ),
+      { q0: ['Paris, France', 'Austin, Texas', 'Rome, Italy, Europe'], q1: 'Paris, France' },
+      'structured answers give exact consts and the whole "Other" text'
+    );
+
+    const structured = await answerWith({
+      behavior: 'allow',
+      // The joined string alone would misread "Banana, ripe" as Banana + "ripe".
+      updatedInput: { answers: { 'Which fruits do you like?': 'Apple,Banana, ripe', 'Favorite color?': 'Blue' } },
+      questionAnswers: {
+        'Which fruits do you like?': { selected: ['Apple'], other: 'Banana, ripe' },
+        'Favorite color?': { selected: ['Blue'] },
+      },
+    });
+    assert.deepEqual(
+      structured.reply,
+      { action: 'accept', content: { q0: ['Apple', 'Banana, ripe'], q1: 'Blue' } },
+      'respondToRequest prefers the structured answers over the joined string'
+    );
   }
 
   // ── Skill library: `devin skills list --json` / `devin skills show` ──────

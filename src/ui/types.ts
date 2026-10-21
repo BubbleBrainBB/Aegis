@@ -42,6 +42,7 @@ export type {
   ContentBlock,
   PermissionRequestPayload,
   PermissionResult,
+  QuestionAnswerSelection,
   ClientEvent,
   ServerEvent,
   AppUpdateStatus,

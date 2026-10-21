@@ -1664,6 +1664,20 @@ export interface PermissionResult {
   scope?: 'once' | 'session';
   /** Aegis-only Computer Use grant. Never mapped to Codex persist. */
   computerUseGrant?: 'until-revoked';
+  /**
+   * Aegis-only: the question card's answers, keyed by question text, with
+   * exact option labels and the "Other" text kept apart. `updatedInput.answers`
+   * still carries the comma-joined strings AskUserQuestion expects; this sits
+   * outside updatedInput so it never reaches a provider's tool input.
+   */
+  questionAnswers?: Record<string, QuestionAnswerSelection>;
+}
+
+export interface QuestionAnswerSelection {
+  /** Option labels exactly as listed, in the order the user picked them. */
+  selected: string[];
+  /** Trimmed "Other" text, when the user typed one. */
+  other?: string;
 }
 
 // AskUserQuestion 输入结构
