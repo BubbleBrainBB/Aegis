@@ -6,6 +6,7 @@ import { isStartWorkflowToolName } from '../../shared/workflow';
 import { isShowWidgetToolName, isWidgetGuideToolName } from '../../shared/widget';
 import { designToolNameOf } from '../../shared/design-tools';
 import { WidgetDraftTracker, trackMessagesStreamEvent } from './widget-draft';
+import { toClaudeContentBlocks } from './claude-message-content';
 import type {
   McpServerConfig as SDKMcpServerConfig,
   PermissionMode as ClaudeSdkPermissionMode,
@@ -68,7 +69,7 @@ interface SDKMessage {
   uuid?: string;
   session_id?: string;
   message?: {
-    content: ContentBlock[];
+    content: ContentBlock[] | string;
   };
   duration_ms?: number;
   total_cost_usd?: number;
@@ -1581,7 +1582,7 @@ function convertSDKMessage(message: SDKMessage): StreamMessage | null {
         type: 'user',
         uuid: message.uuid || uuidv4(),
         parentToolUseId: getParentToolUseId(message),
-        message: (message.message || { content: [] }) as any,
+        message: { ...message.message, content: toClaudeContentBlocks(message.message?.content) } as any,
       };
 
     case 'result':
