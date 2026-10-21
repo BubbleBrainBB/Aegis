@@ -83,6 +83,10 @@ async function handle(message) {
       state.model = params.value;
     }
     send({ id, result: { configOptions: config() } });
+  } else if (method === 'session/prompt' && String(params.prompt?.[0]?.text).startsWith('HANG')) {
+    // Runs until stopped.
+  } else if (method === 'session/prompt' && String(params.prompt?.[0]?.text).startsWith('ERRSTEP')) {
+    send({ id, error: { code: -32603, message: 'Internal error', data: { details: 'provider connection reset' } } });
   } else if (method === 'session/prompt' && String(params.prompt?.[0]?.text).startsWith('FAIL')) {
     // A failed model call: nothing streamed, zero usage, plain end_turn.
     update(params.sessionId, { sessionUpdate: 'usage_update', used: 0, size: 1048576, cost: { amount: state.cost, currency: 'USD' } });
@@ -582,6 +586,79 @@ async function main(): Promise<void> {
     } finally {
       delete process.env.FAKE_MIMO_SLOW_INIT;
     }
+  }
+
+  // ── Usage of turns that end without a normal result ──────────────────────
+  {
+    resetCalls();
+    writeFileSync(pidsPath, '');
+    const adapter = new MimoAcpAdapter();
+    const events: Event[] = [];
+    adapter.events.on('event', (event: Event) => {
+      events.push(event);
+      if (event.type === 'permission_request') {
+        void adapter.respondToRequest('t6', event.requestId as string, { behavior: 'allow', updatedInput: {} });
+      }
+    });
+    await withTimeout(adapter.startSession({ threadId: 't6', cwd: dir, prompt: '' }), 'startSession');
+    const step = { role: 'assistant', cost: 0.0042, tokens: { input: 1200, output: 30, reasoning: 10, cache: { read: 800, write: 0 } } };
+    const stepUsage = { input_tokens: 1200, output_tokens: 40, cache_read_input_tokens: 800, cache_creation_input_tokens: 0, total_tokens: 2040 };
+    const insertStep = (id: string, at: number) => {
+      const db = new Database(dbPath);
+      db.prepare('INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)').run(id, 'ses_fresh', at, at, JSON.stringify(step));
+      db.close();
+    };
+    const clearSteps = () => {
+      const db = new Database(dbPath);
+      db.exec("DELETE FROM message WHERE id LIKE 'usage_step_%'");
+      db.close();
+    };
+
+    // A turn that fails after a step ran: the error result carries that step.
+    insertStep('usage_step_err', Date.now() + 1000);
+    await withTimeout(adapter.sendTurn({ threadId: 't6', prompt: 'ERRSTEP' }), 'turn failing after a step');
+    clearSteps();
+    const failed = messages(events).filter((message) => message.type === 'result').at(-1) as { subtype: string; usage: unknown; total_cost_usd: number } | undefined;
+    assert.equal(failed?.subtype, 'error');
+    assert.deepEqual(failed?.usage, stepUsage, 'the billed step is not dropped from an error result');
+    assert.ok(Math.abs((failed?.total_cost_usd ?? 0) - 0.0042) < 1e-9);
+
+    // A finished turn is never reported again by a later stop.
+    await withTimeout(adapter.sendTurn({ threadId: 't6', prompt: 'FAIL' }), 'a finished turn');
+    events.length = 0;
+    resetCalls();
+
+    // A stop mid-turn reports the steps that turn already ran, once.
+    const hanging = adapter.sendTurn({ threadId: 't6', prompt: 'HANG' });
+    await waitFor(() => readCalls().some((call) => call.method === 'session/prompt'), 'the hanging prompt dispatch');
+    insertStep('usage_step_stop', Date.now());
+    await adapter.stopSession('t6');
+    await withTimeout(hanging, 'the stopped turn settles');
+    clearSteps();
+    const unreported = events.filter((event) => event.type === 'usage_unreported') as Array<{
+      threadId: string;
+      provider: string;
+      message: { type: string; usage: unknown; total_cost_usd: number; costSource: string };
+    }>;
+    assert.equal(unreported.length, 1, 'reported once, by the stop');
+    assert.equal(unreported[0].provider, 'mimo');
+    assert.equal(unreported[0].message.type, 'usage_record', 'an accounting record, not a turn result');
+    assert.deepEqual(unreported[0].message.usage, stepUsage);
+    assert.equal(unreported[0].message.costSource, 'reported');
+    assert.equal(messages(events).filter((message) => message.type === 'result').length, 0, 'the stopped turn has no result');
+
+    // A stop between turns reports nothing: the finished turn's steps were in its result.
+    const quiet = new MimoAcpAdapter();
+    const quietEvents: Event[] = [];
+    quiet.events.on('event', (event: Event) => quietEvents.push(event));
+    await withTimeout(quiet.startSession({ threadId: 't7', cwd: dir, prompt: '' }), 'startSession');
+    insertStep('usage_step_done', Date.now() + 1000);
+    await withTimeout(quiet.sendTurn({ threadId: 't7', prompt: 'FAIL' }), 'a finished turn');
+    const done = messages(quietEvents).filter((message) => message.type === 'result').at(-1) as { usage: unknown } | undefined;
+    assert.deepEqual(done?.usage, stepUsage, 'the finished turn reported its step');
+    await quiet.stopSession('t7');
+    clearSteps();
+    assert.equal(quietEvents.filter((event) => event.type === 'usage_unreported').length, 0, 'and a later stop does not report it again');
   }
 
   console.log('mimo-acp-adapter: all checks passed');
