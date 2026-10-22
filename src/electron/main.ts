@@ -6,9 +6,11 @@ import {
   glassSupported,
   glassWindowOptions,
   isGlassWindow,
+  isWindowFullScreen,
   registerGlassWindow,
   savedAppearanceWantsGlass,
   setThemedMaterial,
+  watchFullScreen,
 } from './window-glass';
 import { autoUpdater } from 'electron-updater';
 import * as fs from 'fs';
@@ -285,13 +287,11 @@ function getMainWindowBackgroundColor(): string {
 }
 
 
-function getWindowShellState(win: BrowserWindow): { rounded: boolean } {
+function getWindowShellState(win: BrowserWindow): { rounded: boolean; fullScreen: boolean } {
+  const fullScreen = isWindowFullScreen(win);
   return {
-    rounded:
-      process.platform === 'darwin' &&
-      !win.isMaximized() &&
-      !win.isFullScreen() &&
-      !win.isSimpleFullScreen(),
+    rounded: process.platform === 'darwin' && !win.isMaximized() && !fullScreen,
+    fullScreen,
   };
 }
 
@@ -308,8 +308,11 @@ function registerWindowShellState(win: BrowserWindow): void {
 
   win.on('maximize', emit);
   win.on('unmaximize', emit);
-  win.on('enter-full-screen', emit);
-  win.on('leave-full-screen', emit);
+  // Glass windows paint solid from the moment fullscreen starts; see watchFullScreen.
+  watchFullScreen(win, () => {
+    applyWindowMaterial(win, getMainWindowBackgroundColor());
+    emit();
+  });
   win.webContents.on('did-finish-load', emit);
 }
 

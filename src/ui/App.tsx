@@ -93,7 +93,7 @@ import { useActiveEnvironmentContext } from './components/environment/useActiveE
 import { useGitEnvironment } from './components/environment/useGitEnvironment';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { useCodexModelConfig } from './hooks/useCodexModelConfig';
-import { renderAppearance } from './theme/themes';
+import { renderAppearance, setWindowFullScreen } from './theme/themes';
 import { extractLatestSuccessfulHtmlArtifactFromLatestTurn } from './utils/artifacts';
 import { extractGeneratedMediaFromMessages } from './utils/generated-media';
 import { openGeneratedMediaInFilesPanel } from './components/GeneratedMediaGallery';
@@ -413,10 +413,12 @@ export function App() {
 
     const unsubscribe = window.electron.onWindowShellState((state) => {
       setWindowShellRounded(state.rounded);
+      setWindowFullScreen(state.fullScreen);
     });
 
     void window.electron.getWindowShellState().then((state) => {
       setWindowShellRounded(state.rounded);
+      setWindowFullScreen(state.fullScreen);
     });
 
     return unsubscribe;

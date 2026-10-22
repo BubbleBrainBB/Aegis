@@ -195,8 +195,8 @@ contextBridge.exposeInMainWorld('electron', {
     },
   },
 
-  onWindowShellState: (callback: (state: { rounded: boolean }) => void) => {
-    const handler = (_: unknown, state: { rounded: boolean }) => {
+  onWindowShellState: (callback: (state: { rounded: boolean; fullScreen: boolean }) => void) => {
+    const handler = (_: unknown, state: { rounded: boolean; fullScreen: boolean }) => {
       callback(state);
     };
 

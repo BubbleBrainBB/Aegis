@@ -118,7 +118,7 @@ declare global {
       getTransportInfo: () => Promise<TerminalTransportInfo>;
       onEvent: (callback: (event: TerminalEventPayload) => void) => () => void;
     };
-    onWindowShellState: (callback: (state: { rounded: boolean }) => void) => () => void;
+    onWindowShellState: (callback: (state: { rounded: boolean; fullScreen: boolean }) => void) => () => void;
     registerProjectEditorFlushHandler: (
       callback: () => { ok: boolean; message?: string } | Promise<{ ok: boolean; message?: string }>
     ) => () => void;
@@ -191,7 +191,7 @@ declare global {
     setWindowMinSize: (width: number, height: number) => Promise<{ ok: boolean }>;
     remoteCompanion: (action: string, payload?: unknown) => Promise<any>;
     getAppVersion: () => Promise<string>;
-    getWindowShellState: () => Promise<{ rounded: boolean }>;
+    getWindowShellState: () => Promise<{ rounded: boolean; fullScreen: boolean }>;
     setTheme: (theme: 'light' | 'dark' | 'system', look?: { variant: 'light' | 'dark'; background: string; material?: 'glass' | 'solid' }) => Promise<{ ok: boolean }>;
     /** supported: this Mac can show glass; active: this window was opened able to show it. */
     getWindowGlassSync?: () => { supported: boolean; active: boolean };

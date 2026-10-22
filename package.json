@@ -36,6 +36,7 @@
     "verify:workflow-engine": "tsc -p src/workflow-engine/tsconfig.json && npx tsx scripts/tests/workflow-engine.test.ts && npx tsx scripts/tests/workflow-engine-run.test.ts && npx tsx scripts/tests/workflow-host-units.test.ts",
     "verify:screenshot": "npx tsx scripts/tests/screenshot-layout.test.ts",
     "verify:theme-variables": "node scripts/verify-theme-variables.mjs",
+    "verify:glass-fullscreen": "node scripts/tests/glass-fullscreen-electron.test.mjs",
     "verify:subagent-workstream": "node scripts/verify-subagent-workstream.mjs",
     "verify:prompt-history": "node scripts/verify-prompt-history.mjs",
     "verify:terminal-ui": "npx tsx scripts/tests/terminal-streams.test.ts && npx tsx scripts/tests/terminal-session.test.ts && node scripts/tests/terminal-host-electron.test.mjs",
