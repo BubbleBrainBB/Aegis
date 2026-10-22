@@ -249,6 +249,19 @@ export const THEME_APPLIED_EVENT = 'aegis:theme-applied';
 
 let lastApplied = '';
 let lastSentToMain = '';
+let lastInput: Parameters<typeof renderAppearance>[0] | null = null;
+let windowFullScreen = false;
+
+/**
+ * A fullscreen window has no desktop behind it, so glass would only show the
+ * Space's dark backdrop through the page's thin tints. The page paints solid
+ * until the window leaves fullscreen; the main process does the same for the window.
+ */
+export function setWindowFullScreen(fullScreen: boolean): void {
+  if (fullScreen === windowFullScreen) return;
+  windowFullScreen = fullScreen;
+  if (lastInput) renderAppearance(lastInput);
+}
 
 /**
  * Glass needs Liquid Glass (macOS 26+) and a window opened transparent, which
@@ -263,13 +276,14 @@ export function windowGlassState(): { supported: boolean; active: boolean } {
 }
 
 export function renderAppearance(input: { mode: ThemeMode; state: AppearanceState; uiFontFamily?: string; codeFontFamily?: string }): void {
+  lastInput = input;
   const variant = resolveThemeMode(input.mode);
   const choice = choiceFor(input.state, variant);
   const variables = themeVariables(choice, variant, { ui: input.uiFontFamily, code: input.codeFontFamily });
   // What the theme asks for goes to the main process; the page only turns
   // transparent when this window can actually show glass.
   const wanted = choice.recipe.glassWindow ? 'glass' : 'solid';
-  const material = wanted === 'glass' && windowGlassState().active ? 'glass' : 'solid';
+  const material = wanted === 'glass' && windowGlassState().active && !windowFullScreen ? 'glass' : 'solid';
   const signature = JSON.stringify([input.mode, variant, wanted, material, variables]);
   if (signature === lastApplied) return;
   lastApplied = signature;
