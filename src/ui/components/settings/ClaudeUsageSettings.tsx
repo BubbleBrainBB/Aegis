@@ -534,7 +534,7 @@ function ModelLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDai
                 <th className={`${header} text-left`}>Model</th>
                 <th className={`${header} text-right`}>Tokens</th>
                 <th className={`${header} text-right`}>Share</th>
-                <th className={`${header} whitespace-nowrap text-right`} data-usage-cost-label>{costColumnLabel(report)}</th>
+                <th className={`${header} whitespace-nowrap text-right`} data-usage-cost-label title={report.note}>{costColumnLabel(report)}</th>
                 <th className={`${header} text-right`}>Per 1M</th>
                 <th className={`${header} text-right`}>Sessions</th>
                 <th className={`${header} text-right`}>Cache hit</th>

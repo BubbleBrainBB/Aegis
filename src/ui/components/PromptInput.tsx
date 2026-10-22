@@ -6,7 +6,6 @@ import { imageCommentPrompt, imageEditEffectivePrompt, supportsImageStudio } fro
 import { composerEnterAction } from '../../shared/app-preferences';
 import { useAppPreferences } from '../store/useAppPreferences';
 import { focusComposerFromSurface } from '../utils/composer-surface-focus';
-import { useDeepseekSessionCost } from '../hooks/useDeepseekSessionCost';
 import { deepseekImageInputError } from '../../shared/deepseek-images';
 import { confirmDialog } from './ui/confirm-dialog';
 import { useSessionGoal } from '../hooks/useSessionGoal';
@@ -502,17 +501,6 @@ export function PromptInput({
   const piContextModel = isPiContextVisible ? selectedModel || activeSession?.model || null : null;
   const bubbleContextModel = isBubbleContextVisible ? selectedModel || activeSession?.model || null : null;
   const qoderContextModel = isQoderContextVisible ? selectedModel || activeSession?.model || null : null;
-
-  const latestDeepseekResult = useMemo(() => {
-    if (!isDeepseekContextVisible) return undefined;
-    for (let index = activeSession.messages.length - 1; index >= 0; index -= 1) {
-      if (activeSession.messages[index].type === 'result') return activeSession.messages[index];
-    }
-    return undefined;
-  }, [isDeepseekContextVisible, activeSession?.messages]);
-  const deepseekSessionCost = useDeepseekSessionCost(
-    isDeepseekContextVisible ? activeSession.id : undefined, latestDeepseekResult
-  );
 
   const codexContextSnapshot = useMemo(
     () =>
@@ -1855,7 +1843,7 @@ export function PromptInput({
                 />
               ) : null}
               {preferences.showContextUsage && codexContextSnapshot ? (
-                <CodexContextIndicator snapshot={codexContextSnapshot} cost={deepseekSessionCost} />
+                <CodexContextIndicator snapshot={codexContextSnapshot} modelLabel={selectedModelLabel} />
               ) : null}
               {preferences.showContextUsage && isOpenCodeContextVisible ? (
                 <OpenCodeContextIndicator

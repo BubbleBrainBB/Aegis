@@ -6299,10 +6299,6 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
   });
 
   // RPC: 任意 provider 的 usage 报表(kimi/grok/pi 走 Claude 协议报表)
-  ipcMainHandle('get-deepseek-session-cost', async (_, sessionId: string) => {
-    return sessions.getDeepseekSessionCost(sessionId);
-  });
-
   ipcMainHandle('get-agent-usage-report', async (_, provider: AgentProvider, days?: ClaudeUsageRangeDays) => {
     return sessions.getAgentUsageReport(provider, days);
   });

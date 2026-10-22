@@ -1445,9 +1445,13 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
                     totalTokens: usage.totalTokens,
                     maxTokens: usage.maxTokens,
                     percentage: usage.percentage,
-                    categories: usage.categories.flatMap(({ name, tokens, kind }) =>
-                      kind === 'used' || kind === 'buffer' ? [{ name, tokens, kind }] : []
-                    ),
+                    categories: usage.categories.map(({ name, tokens, kind }) => ({ name, tokens, kind })),
+                    counts: {
+                      mcpTools: usage.mcpTools?.filter((tool) => tool.isLoaded !== false).length,
+                      memoryFiles: usage.memoryFiles?.length,
+                      agents: usage.agents?.length,
+                      skills: usage.skills?.includedSkills,
+                    },
                   },
                 });
               })

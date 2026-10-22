@@ -1,117 +1,17 @@
-import { useState } from 'react';
-import type { ProviderCostEstimate } from '../../shared/types';
 import type { CodexContextSnapshot } from '../utils/context-usage';
-import {
-  CONTEXT_CRITICAL_PERCENT,
-  getContextLevelColorVar,
-  getContextUsageLevel,
-} from '../utils/context-usage';
+import { ContextUsagePopover } from './ContextUsagePopover';
 
-const RING_CIRCUMFERENCE = 37.7;
-
-function formatCompact(value: number): string {
-  if (!Number.isFinite(value)) return '0';
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}m`;
-  if (value >= 1_000) return `${Math.round(value / 1_000)}k`;
-  return `${Math.round(value)}`;
-}
-
-function UsageRing({ percent, size = 'h-4 w-4' }: { percent: number; size?: string }) {
-  const progress = Math.min(100, Math.max(0, percent));
-  const strokeDashoffset = RING_CIRCUMFERENCE * (1 - progress / 100);
-  const ringColor = getContextLevelColorVar(getContextUsageLevel(progress));
-
+export function CodexContextIndicator({
+  snapshot,
+  modelLabel,
+}: {
+  snapshot: CodexContextSnapshot;
+  modelLabel?: string | null;
+}) {
   return (
-    <svg
-      className={`${size} -rotate-90`}
-      viewBox="0 0 16 16"
-      aria-hidden="true"
-      focusable="false"
-    >
-      <circle
-        cx="8"
-        cy="8"
-        r="6"
-        fill="none"
-        stroke="var(--border)"
-        strokeWidth="2"
-      />
-      <circle
-        cx="8"
-        cy="8"
-        r="6"
-        fill="none"
-        stroke={ringColor}
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeDasharray={RING_CIRCUMFERENCE}
-        strokeDashoffset={strokeDashoffset}
-        style={{ transition: 'stroke-dashoffset 0.3s ease, stroke 0.3s ease' }}
-      />
-    </svg>
-  );
-}
-
-export function CodexContextIndicator({ snapshot, cost }: { snapshot: CodexContextSnapshot; cost?: ProviderCostEstimate }) {
-  const [open, setOpen] = useState(false);
-  const level = getContextUsageLevel(snapshot.percent);
-  const nearLimit = level !== 'safe' && snapshot.total > 0;
-
-  return (
-    <div
-      className="relative"
-      onMouseEnter={() => setOpen(true)}
-      onMouseLeave={() => setOpen(false)}
-      onFocus={() => setOpen(true)}
-      onBlur={() => setOpen(false)}
-    >
-      <button
-        type="button"
-        className="flex h-8 w-8 items-center justify-center rounded-[6px] text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
-        aria-label="Context window usage"
-      >
-        <UsageRing percent={snapshot.percent} />
-      </button>
-
-      {open && (
-        <div className={`absolute bottom-full left-1/2 z-40 mb-1.5 ${cost ? 'w-[176px]' : 'w-[156px]'} -translate-x-1/2 rounded-[8px] border border-[color-mix(in_srgb,var(--border)_72%,transparent)] bg-[var(--bg-primary)] px-2.5 py-2 text-[13px] font-normal leading-5 text-[var(--text-primary)] shadow-[0_18px_44px_rgba(15,23,42,0.08)]`}>
-          <div className="flex items-center justify-between gap-2">
-            <div className="text-[var(--text-secondary)]">Context window</div>
-            <UsageRing percent={snapshot.percent} size="h-[18px] w-[18px]" />
-          </div>
-          <div className="mt-1.5 flex items-center justify-between gap-2">
-            <span className="text-[var(--text-secondary)]">Used</span>
-            <span>{formatCompact(snapshot.used)}</span>
-          </div>
-          <div className="mt-0.5 flex items-center justify-between gap-2">
-            <span className="text-[var(--text-secondary)]">Limit</span>
-            <span>{formatCompact(snapshot.total)}</span>
-          </div>
-          {cost ? (
-            <div className="mt-2 border-t border-[var(--border)] pt-1.5" data-testid="deepseek-session-cost">
-              <div className="flex items-center justify-between gap-4">
-                <span className="text-[var(--text-secondary)]">Cost</span>
-                <span>{cost.usd === null ? 'Unavailable'
-                  : cost.usd > 0 && cost.usd < 0.0001 ? '<$0.0001'
-                  : `≈$${cost.usd.toFixed(cost.usd < 0.01 ? 4 : 2)}`}</span>
-              </div>
-            </div>
-          ) : null}
-          {nearLimit ? (
-            <div
-              className="mt-1.5 rounded-[6px] px-2 py-1.5 text-[11px] leading-4"
-              style={{
-                color: getContextLevelColorVar(level),
-                backgroundColor: `color-mix(in srgb, ${getContextLevelColorVar(level)} 12%, transparent)`,
-              }}
-            >
-              {snapshot.percent >= CONTEXT_CRITICAL_PERCENT
-                ? `${snapshot.percent}% used · context window nearly full`
-                : `${snapshot.percent}% used · approaching the context window limit`}
-            </div>
-          ) : null}
-        </div>
-      )}
-    </div>
+    <ContextUsagePopover
+      modelLabel={modelLabel || 'Context window'}
+      usage={{ used: snapshot.used, total: snapshot.total, percent: snapshot.percent }}
+    />
   );
 }

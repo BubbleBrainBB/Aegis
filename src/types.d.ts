@@ -238,7 +238,6 @@ declare global {
     getSessionSources: (sessionId: string) => Promise<import('./shared/types').Attachment[]>;
     previewSessionSource: (sessionId: string, path: string) => Promise<import('./shared/session-sources').SessionSourcePreview>;
     getOpencodeUsageReport: (days?: ClaudeUsageRangeDays) => Promise<ClaudeUsageReport>;
-    getDeepseekSessionCost: (sessionId: string) => Promise<import('./shared/types').ProviderCostEstimate>;
     getAgentUsageReport: (
       provider: import('./shared/types').AgentProvider,
       days?: ClaudeUsageRangeDays

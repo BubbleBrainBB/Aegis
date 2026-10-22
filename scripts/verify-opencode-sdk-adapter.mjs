@@ -117,7 +117,7 @@ const openCodeIndicator = read('src/ui/components/OpenCodeContextIndicator.tsx')
 assert.ok(
   openCodeIndicator.includes('OpenCodeContextSnapshot | null') &&
     openCodeIndicator.includes('providerLabel =') &&
-    openCodeIndicator.includes('Waiting for {providerLabel} usage from this model.'),
+    openCodeIndicator.includes('Waiting for ${providerLabel} usage from this model.'),
   'OpenCode context indicator must support an empty waiting state before first usage'
 );
 

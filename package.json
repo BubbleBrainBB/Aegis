@@ -154,6 +154,7 @@
     "verify:deepseek-images": "npm run transpile:electron && node scripts/tests/deepseek-images.test.mjs",
     "verify:deepseek-streaming": "npm run transpile:electron && node scripts/tests/deepseek-streaming.test.mjs",
     "verify:deepseek-images-ui": "node scripts/tests/deepseek-images-electron.test.mjs",
+    "verify:context-popover": "node scripts/tests/context-popover-electron.test.mjs",
     "verify:keyboard-shortcuts": "npm run transpile:electron && npx tsx scripts/tests/keyboard-shortcuts.test.ts && node scripts/tests/keyboard-shortcuts-electron.test.mjs",
     "verify:settings-integration": "node scripts/tests/settings-integration-electron.test.mjs",
     "verify:providers-settings": "node scripts/tests/providers-settings-electron.test.mjs",

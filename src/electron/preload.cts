@@ -527,10 +527,6 @@ contextBridge.exposeInMainWorld('electron', {
   getSessionSources: (sessionId: string) => ipcRenderer.invoke('get-session-sources', sessionId),
   previewSessionSource: (sessionId: string, path: string) => ipcRenderer.invoke('preview-session-source', sessionId, path),
 
-  getDeepseekSessionCost: (sessionId: string) => {
-    return ipcRenderer.invoke('get-deepseek-session-cost', sessionId);
-  },
-
   getAgentUsageReport: (provider: string, days?: ClaudeUsageRangeDays) => {
     return ipcRenderer.invoke('get-agent-usage-report', provider, days);
   },
