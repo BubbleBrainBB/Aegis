@@ -493,10 +493,13 @@ export interface AppState {
   searchPaletteOpen: boolean;
   historyNavigationTarget: {
     sessionId: string;
-    messageCreatedAt: number;
+    /** The message to land on; a target naming a tool call may lack it (live messages are not always stamped). */
+    messageCreatedAt?: number;
     nonce: number;
     /** Set false to scroll without the locate-flash highlight (outline rail). */
     highlight?: boolean;
+    /** Reveal this tool call inside its work group instead of flashing the whole group. */
+    toolUseId?: string;
   } | null;
   // MCP 状态
   mcpServers: Record<string, import('../shared/types').McpServerConfig>;

@@ -2,9 +2,8 @@ import { useEffect, useState } from 'react';
 import { Bot, LoaderCircle, Terminal, Workflow, X } from './icons';
 import { sendEvent } from '../hooks/useIPC';
 import { useAppStore } from '../store/useAppStore';
-import { getMessageContentBlocks, normalizeToolUseBlock } from '../utils/message-content';
+import { findToolCallMessage } from '../utils/tool-call-lookup';
 import type { BackgroundTaskInfo } from '../../shared/types';
-import type { StreamMessage } from '../types';
 
 /** Chips shown before the rest fold into "+N". */
 const VISIBLE_TASKS = 3;
@@ -23,19 +22,12 @@ export function BackgroundTaskIcon({ taskType, className = 'h-3.5 w-3.5 shrink-0
   return <Terminal className={className} aria-hidden="true" />;
 }
 
-/** createdAt of the message holding the tool call that started the task. */
-function toolCallCreatedAt(messages: StreamMessage[], toolUseId: string): number | null {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    const hit = getMessageContentBlocks(message).some((block) => normalizeToolUseBlock(block)?.id === toolUseId);
-    if (!hit) continue;
-    const createdAt = (message as { createdAt?: unknown }).createdAt;
-    return typeof createdAt === 'number' && Number.isFinite(createdAt) ? createdAt : null;
-  }
-  return null;
-}
-
-/** Opens a task's detail: a subagent's trace panel, or the tool call that started it. */
+/**
+ * Opens a task's detail: a subagent's trace panel, or the tool call that
+ * started it. A command a subagent ran lives in that subagent's trace, so it
+ * opens there. The transcript finds the call itself (loading older history if
+ * needed); the message time, when known, only helps it look.
+ */
 export function openBackgroundTaskDetail(sessionId: string, task: { taskType?: string; toolUseId?: string }): void {
   if (!task.toolUseId) return;
   const state = useAppStore.getState();
@@ -43,10 +35,18 @@ export function openBackgroundTaskDetail(sessionId: string, task: { taskType?: s
     state.openSubagentPanel(task.toolUseId);
     return;
   }
-  const createdAt = toolCallCreatedAt(state.sessions[sessionId]?.messages ?? [], task.toolUseId);
-  if (createdAt !== null) {
-    state.setHistoryNavigationTarget({ sessionId, messageCreatedAt: createdAt, nonce: Date.now() });
+  const call = findToolCallMessage(state.sessions[sessionId]?.messages ?? [], task.toolUseId);
+  if (call?.parentToolUseId) {
+    state.openSubagentPanel(call.parentToolUseId);
+    return;
   }
+  const createdAt = call?.createdAt;
+  state.setHistoryNavigationTarget({
+    sessionId,
+    nonce: Date.now(),
+    toolUseId: task.toolUseId,
+    ...(typeof createdAt === 'number' && Number.isFinite(createdAt) ? { messageCreatedAt: createdAt } : {}),
+  });
 }
 
 /**

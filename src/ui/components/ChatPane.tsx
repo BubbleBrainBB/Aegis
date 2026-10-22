@@ -32,7 +32,7 @@ import { ChatOutlineRail } from './ChatOutlineRail';
 import { JumpToLatestButton } from './JumpToLatestButton';
 import { SessionTitleActions } from './SessionTitleActions';
 import { buildSessionUserPromptSummaries } from '../../shared/outline-summary';
-import { ToolExecutionBatch, WorkstreamDisclosure } from './ToolExecutionBatch';
+import { ToolExecutionBatch, WorkstreamDisclosure, type WorkstreamReveal } from './ToolExecutionBatch';
 import { GeneratedMediaGallery } from './GeneratedMediaGallery';
 import { extractGeneratedMediaFromMessages } from '../utils/generated-media';
 import { StructuredResponse } from './StructuredResponse';
@@ -51,6 +51,8 @@ import { TurnChangesCard } from './TurnChangesCard';
 import { DesignChatCard } from './design/DesignChatCard';
 import { designDocumentIdsInMessages } from '../utils/design-entries';
 import { followUpCallsInMessages, type FollowUpCall } from '../utils/follow-up-entries';
+import { workDisclosureScope, type WorkDisclosureScope } from '../utils/work-disclosure-scope';
+import { findTimelineItemWithToolCall, findToolCallMessage, findWorkGroupWithToolCall } from '../utils/tool-call-lookup';
 import { FollowUpCard } from './follow-up/FollowUpCard';
 import { TurnDiffContext, type TurnDiffContextValue } from './TurnDiffContext';
 import { CodexActivePlanCard } from './CodexActivePlanCard';
@@ -1005,6 +1007,9 @@ export function ChatPane({
   const scrollHeightBeforeLoadRef = useRef<number>(0);
   const historyHighlightTimerRef = useRef<number | null>(null);
   const [highlightedHistoryAnchor, setHighlightedHistoryAnchor] = useState<string | null>(null);
+  // A tool call to open inside the work group that holds it. Named by session
+  // and tool call, not by position, and dropped once the group has run it.
+  const [workReveal, setWorkReveal] = useState<{ sessionId: string; toolUseId: string; nonce: number } | null>(null);
   const activePlanMessage = useMemo(() => {
     if (!session || session.provider !== 'codex' || session.status !== 'running') {
       return null;
@@ -1264,6 +1269,16 @@ export function ChatPane({
         : [],
     [lastUserPromptIndex, session?.messages, session?.status]
   );
+  // Each work group's disclosure names, recomputed only when the transcript changes.
+  const disclosureScopes = useMemo(() => {
+    const scopes = new Map<string, WorkDisclosureScope>();
+    const messages = session?.messages;
+    if (!messages) return scopes;
+    for (const item of timelineItems) {
+      if (item.type === 'work') scopes.set(item.group.id, workDisclosureScope(sessionId, messages, item.group.originalIndices));
+    }
+    return scopes;
+  }, [session?.messages, sessionId, timelineItems]);
   const activeTimelineWorkId = useMemo(() => {
     for (let index = timelineItems.length - 1; index >= 0; index -= 1) {
       const item = timelineItems[index];
@@ -1488,19 +1503,33 @@ export function ChatPane({
     [session?.messages]
   );
 
+  // A target naming a tool call lands on the work group that holds the call.
+  const historyNavigationWorkGroupId = useMemo(() => {
+    const toolUseId = historyNavigationTarget?.toolUseId;
+    if (!sessionId || !toolUseId || historyNavigationTarget.sessionId !== sessionId) return null;
+    return findWorkGroupWithToolCall(timelineItems, toolUseId)?.group.id ?? null;
+  }, [historyNavigationTarget, sessionId, timelineItems]);
+
   const historyNavigationAnchor = useMemo(() => {
     if (!sessionId || !historyNavigationTarget || historyNavigationTarget.sessionId !== sessionId) {
       return null;
     }
 
+    if (historyNavigationTarget.toolUseId) {
+      const item = findTimelineItemWithToolCall(timelineItems, historyNavigationTarget.toolUseId);
+      if (item) return String(item.type === 'work' ? item.group.originalIndices[0] : item.originalIndex);
+    }
+
+    const { messageCreatedAt } = historyNavigationTarget;
+    if (typeof messageCreatedAt !== 'number') return null;
     for (const item of timelineItems) {
-      if (item.type === 'message' && item.message.createdAt === historyNavigationTarget.messageCreatedAt) {
+      if (item.type === 'message' && item.message.createdAt === messageCreatedAt) {
         return String(item.originalIndex);
       }
 
       if (
         item.type === 'work' &&
-        item.group.messages.some((message) => message.createdAt === historyNavigationTarget.messageCreatedAt)
+        item.group.messages.some((message) => message.createdAt === messageCreatedAt)
       ) {
         return String(item.group.originalIndices[0]);
       }
@@ -1508,6 +1537,19 @@ export function ChatPane({
 
     return null;
   }, [historyNavigationTarget, sessionId, timelineItems]);
+
+  // The group the pending reveal belongs to; a reveal for another session, or
+  // for a call no group holds any more, has nothing to run.
+  const workRevealGroupId = useMemo(() => {
+    if (!workReveal || workReveal.sessionId !== sessionId) return null;
+    return findWorkGroupWithToolCall(timelineItems, workReveal.toolUseId)?.group.id ?? null;
+  }, [sessionId, timelineItems, workReveal]);
+  useEffect(() => {
+    if (workReveal && !workRevealGroupId) setWorkReveal(null);
+  }, [workReveal, workRevealGroupId]);
+  const settleWorkReveal = useCallback((nonce: number) => {
+    setWorkReveal((current) => (current?.nonce === nonce ? null : current));
+  }, []);
 
   const historyNavigationPending =
     !!historyNavigationTarget &&
@@ -1716,6 +1758,14 @@ export function ChatPane({
     }
 
     if (!historyNavigationAnchor) {
+      // A call a subagent made (now loaded) lives in that subagent's trace.
+      const { toolUseId } = historyNavigationTarget;
+      const owningTask = toolUseId ? findToolCallMessage(session.messages, toolUseId)?.parentToolUseId : null;
+      if (owningTask) {
+        setHistoryNavigationTarget(null);
+        useAppStore.getState().openSubagentPanel(owningTask);
+        return;
+      }
       if (session.hasMoreHistory && !session.loadingMoreHistory) {
         if (scrollContainerRef.current) {
           scrollHeightBeforeLoadRef.current = scrollContainerRef.current.scrollHeight;
@@ -1737,6 +1787,14 @@ export function ChatPane({
       return;
     }
 
+    const { toolUseId } = historyNavigationTarget;
+    if (toolUseId && historyNavigationWorkGroupId) {
+      // The work group opens onto the call and points at it itself.
+      setHistoryNavigationTarget(null);
+      setWorkReveal({ sessionId, toolUseId, nonce: historyNavigationTarget.nonce });
+      return;
+    }
+
     messageEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
     const wantsHighlight = historyNavigationTarget.highlight !== false;
     setHistoryNavigationTarget(null);
@@ -1755,6 +1813,7 @@ export function ChatPane({
     }, 2400);
   }, [
     historyNavigationAnchor,
+    historyNavigationWorkGroupId,
     historyNavigationTarget,
     loadOlderSessionHistory,
     session?.hasMoreHistory,
@@ -2078,6 +2137,7 @@ export function ChatPane({
                     : null;
                   if (item.type === 'work') {
                     const anchor = String(item.group.originalIndices[0]);
+                    const disclosure = disclosureScopes.get(item.group.id) ?? workDisclosureScope(sessionId, session.messages, item.group.originalIndices);
                     const highlighted = highlightedHistoryAnchor === anchor;
                     const copyActionText = turnCard
                       ? copyPlacementByTimelineIndex.actionTextByCardIndex.get(idx) || ''
@@ -2111,9 +2171,12 @@ export function ChatPane({
                             defaultExpanded={item.defaultExpanded}
                             canCollapse={item.canCollapse}
                             isStopped={session.status !== 'running' && session.status !== 'stopping' && session.status !== 'error' && !item.canCollapse}
-                            resetKey={`${sessionId}:${session.messages[turnStartIndex]?.createdAt ?? turnStartIndex}`}
+                            resetKey={disclosure.scope}
+                            disclosureAliases={disclosure.aliases}
                             generatedMedia={workMedia}
                             mediaCwd={session.cwd ?? null}
+                            reveal={workReveal && workRevealGroupId === item.group.id ? workReveal : null}
+                            onRevealSettled={settleWorkReveal}
                           />
                         </div>
                         {designCards}

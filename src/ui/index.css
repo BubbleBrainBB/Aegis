@@ -3158,6 +3158,29 @@ button.aegis-mdx-metadata-key:hover {
   }
 }
 
+/* A tool call opened from elsewhere (a background task's outcome row): its row
+   lights up inside its own width, then fades. */
+@keyframes workstream-reveal-flash {
+  0%,
+  60% {
+    background-color: color-mix(in srgb, var(--accent) 12%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+.workstream-reveal-flash {
+  border-radius: 6px;
+  animation: workstream-reveal-flash 2.4s ease-out forwards;
+}
+
+/* data-reduce-motion already resolves the app setting against the system's. */
+:root[data-reduce-motion='true'] .workstream-reveal-flash {
+  animation: none;
+  background-color: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
 /* In-app browser loading bar: page loads report no progress, so it sweeps. */
 @keyframes aegis-browser-progress {
   0% {
