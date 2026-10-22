@@ -1,8 +1,11 @@
-import { createContext, useCallback, useContext, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from 'react';
 
 type TurnChoices = Record<string, boolean>;
+/** A stored choice and when it was made, so the latest wins across a run's names. */
+type StoredChoice = { expanded: boolean; order: number };
+type StoredTurn = Record<string, StoredChoice>;
 interface Registry {
-  turns: Record<string, TurnChoices>;
+  turns: Record<string, StoredTurn>;
   setChoice: (turn: string, key: string, expanded: boolean) => void;
 }
 const RegistryContext = createContext<Registry | null>(null);
@@ -11,19 +14,59 @@ const emptyTurn: TurnChoices = {};
 
 /** Lives above timeline reconciliation; a streaming group may remount at final answer. */
 export function WorkstreamDisclosureRegistry({ children }: { children: ReactNode }) {
-  const [turns, setTurns] = useState<Record<string, TurnChoices>>({});
+  const [turns, setTurns] = useState<Record<string, StoredTurn>>({});
+  const writes = useRef(0);
   const setChoice = useCallback((turn: string, key: string, expanded: boolean) => {
-    setTurns(previous => ({ ...previous, [turn]: { ...(previous[turn] ?? emptyTurn), [key]: expanded } }));
+    writes.current += 1;
+    const order = writes.current;
+    setTurns(previous => ({ ...previous, [turn]: { ...previous[turn], [key]: { expanded, order } } }));
   }, []);
-  return <RegistryContext.Provider value={{ turns, setChoice }}>{children}</RegistryContext.Provider>;
+  const value = useMemo(() => ({ turns, setChoice }), [turns, setChoice]);
+  return <RegistryContext.Provider value={value}>{children}</RegistryContext.Provider>;
 }
 
-/** Owned by the turn, outside lazily mounted activity details. */
-export function WorkstreamDisclosureState({ children, scopeKey }: { children: ReactNode; scopeKey?: string | number | null }) {
+/**
+ * The choices of every scope in `names`, the most recent write winning. A run
+ * keeps several names as history pages in (see workDisclosureScope), and a
+ * choice made under any of them still applies.
+ */
+export function resolveScopedChoices(turns: Record<string, StoredTurn>, names: readonly string[]): TurnChoices {
+  const latest: Record<string, StoredChoice> = {};
+  for (const name of names) {
+    const stored = turns[name];
+    if (!stored) continue;
+    for (const [key, choice] of Object.entries(stored)) {
+      if (!latest[key] || choice.order > latest[key].order) latest[key] = choice;
+    }
+  }
+  const keys = Object.keys(latest);
+  if (keys.length === 0) return emptyTurn;
+  return Object.fromEntries(keys.map((key) => [key, latest[key].expanded]));
+}
+
+/**
+ * Owned by the turn, outside lazily mounted activity details. Choices are
+ * written under `scopeKey`; ones stored under `aliasKeys` (other names of the
+ * same run) are read too, the most recent winning.
+ */
+export function WorkstreamDisclosureState({
+  children,
+  scopeKey,
+  aliasKeys,
+}: {
+  children: ReactNode;
+  scopeKey?: string | number | null;
+  aliasKeys?: readonly string[];
+}) {
   const registry = useContext(RegistryContext);
   const [local, setLocal] = useState<TurnChoices>(emptyTurn);
   const scope = scopeKey == null ? null : String(scopeKey);
-  const choices = registry && scope != null ? registry.turns[scope] ?? emptyTurn : local;
+  const turns = registry?.turns;
+  const registered = useMemo(
+    () => (turns && scope != null ? resolveScopedChoices(turns, [scope, ...(aliasKeys ?? [])]) : null),
+    [aliasKeys, scope, turns]
+  );
+  const choices = registered ?? local;
   const setChoice = (key: string, expanded: boolean) => {
     if (registry && scope != null) registry.setChoice(scope, key, expanded);
     else setLocal(previous => ({ ...previous, [key]: expanded }));

@@ -224,6 +224,16 @@ export function LiveWidgetDrafts() {
   );
 }
 
+/** The disclosure key of the step group (CompactGroup) that holds an entry, if any. */
+export function compactGroupKeyFor(entries: WorkstreamEntry[], entryId: string): string | null {
+  for (const group of groupEntries(entries)) {
+    if (group.kind === 'compact' && group.entries.some((entry) => entry.id === entryId)) {
+      return `group:${group.entries[0]?.id}`;
+    }
+  }
+  return null;
+}
+
 function groupEntries(entries: WorkstreamEntry[]): EntryGroup[] {
   const groups: EntryGroup[] = [];
   let buffer: WorkstreamEntry[] = [];
@@ -374,7 +384,12 @@ function StageRow({
   const tone: TraceTone = stage.status === 'waiting' ? 'waiting' : isPending ? 'active' : failed ? 'error' : 'default';
 
   return (
-    <div data-workstream-stage={stage.id} data-denied-action={denied || undefined} tabIndex={denied ? -1 : undefined}>
+    <div
+      data-workstream-stage={stage.id}
+      data-workstream-tool-ids={stage.entries.map((entry) => entry.id).join(' ')}
+      data-denied-action={denied || undefined}
+      tabIndex={-1}
+    >
       <TraceLine
         onClick={() => canExpand && setExpanded(!expanded)}
         disabled={!canExpand}

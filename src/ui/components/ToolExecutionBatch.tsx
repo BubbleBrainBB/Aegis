@@ -1,8 +1,9 @@
 import { getWorkstreamDeniedActionIds } from '../utils/workstream-stages';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useLayoutEffect } from 'react';
 import { ChevronRight } from './icons';
 import type { ContentBlock, PermissionRequestPayload, ToolStatus, StreamMessage } from '../types';
-import { AssistantWorkstream, PinnedNoteIdsProvider, TurnWorkflowBoards, WorkflowBoardsOutsideProvider } from './AssistantWorkstream';
+import { useAppReducedMotion } from '../hooks/useAppReducedMotion';
+import { AssistantWorkstream, compactGroupKeyFor, PinnedNoteIdsProvider, TurnWorkflowBoards, WorkflowBoardsOutsideProvider } from './AssistantWorkstream';
 import { pinnedTurnEntries } from '../utils/turn-pins';
 import {
   createBatchWorkstreamModel,
@@ -50,6 +51,24 @@ interface ToolExecutionBatchProps {
   resetKey?: string | number | null;
   generatedMedia?: GeneratedMediaItem[];
   mediaCwd?: string | null;
+  /** Open this batch onto a tool call and point at it; a new nonce asks again. */
+  reveal?: WorkstreamReveal | null;
+  /** Called once a reveal request has run, so the caller can drop it. */
+  onRevealSettled?: (nonce: number) => void;
+  /** Earlier names of this turn's disclosure scope whose choices still apply. */
+  disclosureAliases?: readonly string[];
+}
+
+export type WorkstreamReveal = { toolUseId: string; nonce: number };
+
+// How long a revealed row stays highlighted (matches .workstream-reveal-flash).
+const REVEAL_FLASH_MS = 2400;
+const REVEAL_FLASH_CLASS = 'workstream-reveal-flash';
+
+/** Keyboard and screen-reader users land where the reveal pointed: the row's control, else the row. */
+function focusRevealedRow(row: HTMLElement): void {
+  const control = row.querySelector<HTMLElement>('button:not([disabled])');
+  (control ?? row).focus({ preventScroll: true });
 }
 
 export function ToolExecutionBatch({
@@ -72,6 +91,9 @@ export function ToolExecutionBatch({
   resetKey,
   generatedMedia,
   mediaCwd,
+  reveal,
+  onRevealSettled,
+  disclosureAliases,
 }: ToolExecutionBatchProps) {
   const batchIsRunning = isSessionRunning && isLastBatch;
   const model = useMemo(
@@ -104,12 +126,15 @@ export function ToolExecutionBatch({
       resetKey={disclosureResetKey}
       generatedMedia={generatedMedia}
       mediaCwd={mediaCwd}
+      reveal={reveal}
+      onRevealSettled={onRevealSettled}
+      disclosureAliases={disclosureAliases}
     />
   );
 }
 
 export function WorkstreamDisclosure(props: WorkstreamDisclosureProps) {
-  return <WorkstreamDisclosureState key={props.resetKey} scopeKey={props.resetKey}>
+  return <WorkstreamDisclosureState key={props.resetKey} scopeKey={props.resetKey} aliasKeys={props.disclosureAliases}>
     <WorkstreamDisclosureBody {...props} />
   </WorkstreamDisclosureState>;
 }
@@ -125,6 +150,9 @@ interface WorkstreamDisclosureProps {
   resetKey?: string | number | null;
   generatedMedia?: GeneratedMediaItem[];
   mediaCwd?: string | null;
+  reveal?: WorkstreamReveal | null;
+  onRevealSettled?: (nonce: number) => void;
+  disclosureAliases?: readonly string[];
 }
 
 function WorkstreamDisclosureBody({
@@ -137,6 +165,8 @@ function WorkstreamDisclosureBody({
   onExpandedChange,
   generatedMedia,
   mediaCwd,
+  reveal,
+  onRevealSettled,
 }: WorkstreamDisclosureProps) {
   const bodyRef = useRef<HTMLDivElement>(null);
   const setDetailChoice = useWorkstreamDisclosureActions();
@@ -191,6 +221,73 @@ function WorkstreamDisclosureBody({
     const timer = setTimeout(focusDenied, 320);
     return () => { clearTimeout(timer); cancelAnimationFrame(frame); };
   }, [navigation]);
+  // Opening onto a tool call (a background task's outcome row): unfold the
+  // turn and the step group that hold it, then bring its row into view and
+  // focus it. Each request runs once: it is reported settled, and ChatPane
+  // drops it, so a remount never replays it.
+  const reducedMotion = useAppReducedMotion();
+  const revealContext = useRef({ model, setExpanded, setDetailChoice, reducedMotion, reveal, onRevealSettled });
+  // Latest values for the reveal below, which runs once per request rather than on every change.
+  useLayoutEffect(() => {
+    revealContext.current = { model, setExpanded, setDetailChoice, reducedMotion, reveal, onRevealSettled };
+  });
+  const revealNonce = reveal?.nonce;
+  useEffect(() => {
+    const request = revealContext.current.reveal;
+    if (revealNonce === undefined || !request) return;
+    const { toolUseId } = request;
+    const { model: current, setExpanded: expand, setDetailChoice: setDetail } = revealContext.current;
+    if (current.entries.some((entry) => entry.id === toolUseId)) {
+      expand(true);
+      const groupKey = compactGroupKeyFor(current.entries, toolUseId);
+      if (groupKey) setDetail?.(groupKey, true);
+    }
+    let frame = 0;
+    let attempts = 0;
+    const settle = () => revealContext.current.onRevealSettled?.(revealNonce);
+    const point = () => {
+      const behavior = revealContext.current.reducedMotion ? 'instant' : 'smooth';
+      const row = bodyRef.current?.querySelector<HTMLElement>(`[data-workstream-tool-ids~="${CSS.escape(toolUseId)}"]`);
+      if (row && !row.closest('[inert]') && row.getBoundingClientRect().height > 0) {
+        row.scrollIntoView({ block: 'center', behavior });
+        focusRevealedRow(row);
+        flashRow(row);
+        settle();
+        return;
+      }
+      // Nested disclosures mount over later frames; past that, the header is the closest place.
+      if (++attempts < 120) {
+        frame = requestAnimationFrame(point);
+        return;
+      }
+      const header = bodyRef.current?.querySelector<HTMLElement>('.workstream-toggle-row button');
+      bodyRef.current?.scrollIntoView({ block: 'center', behavior });
+      header?.focus({ preventScroll: true });
+      settle();
+    };
+    frame = requestAnimationFrame(point);
+    return () => cancelAnimationFrame(frame);
+  }, [revealNonce]);
+  const flash = useRef<{ row: HTMLElement; timer: ReturnType<typeof setTimeout> } | null>(null);
+  const flashRow = (row: HTMLElement) => {
+    if (flash.current) {
+      clearTimeout(flash.current.timer);
+      flash.current.row.classList.remove(REVEAL_FLASH_CLASS);
+    }
+    row.classList.remove(REVEAL_FLASH_CLASS);
+    void row.offsetWidth; // restart the fade on a repeat open
+    row.classList.add(REVEAL_FLASH_CLASS);
+    const timer = setTimeout(() => {
+      row.classList.remove(REVEAL_FLASH_CLASS);
+      if (flash.current?.row === row) flash.current = null;
+    }, REVEAL_FLASH_MS);
+    flash.current = { row, timer };
+  };
+  useEffect(() => () => {
+    if (!flash.current) return;
+    clearTimeout(flash.current.timer);
+    flash.current.row.classList.remove(REVEAL_FLASH_CLASS);
+  }, []);
   const stopSnapshot = useRef<{ startedAt?: number; wasRunning: boolean; durationMs?: number }>({ wasRunning: false });
   if (isRunning) stopSnapshot.current = { startedAt: model.startedAt, wasRunning: true };
   else if (stopSnapshot.current.wasRunning) {
