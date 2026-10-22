@@ -1731,8 +1731,15 @@ export interface ClaudeContextUsage {
   totalTokens: number;
   maxTokens: number;
   percentage: number;
-  /** Used rows (system prompt, tools, messages, …) and the compaction buffer. */
-  categories: Array<{ name: string; tokens: number; kind: 'used' | 'buffer' }>;
+  /**
+   * Rows as Claude Code lists them: content in the window ('used'), free
+   * space, the compaction buffer, and deferred tool schemas that sit outside
+   * the window until a tool search loads them. Sessions saved before free and
+   * deferred rows were kept carry only 'used' and 'buffer'.
+   */
+  categories: Array<{ name: string; tokens: number; kind: 'used' | 'free' | 'buffer' | 'deferred' }>;
+  /** How many items sit behind some used rows, when Claude Code listed them. */
+  counts?: { mcpTools?: number; memoryFiles?: number; agents?: number; skills?: number };
 }
 
 export interface CodexApprovalPermissionInput {

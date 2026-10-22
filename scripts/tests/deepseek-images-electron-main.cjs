@@ -50,7 +50,6 @@ app.whenReady().then(async()=>{
  store.initialize();
  const liveSession=store.createSession({provider:'deepseek',model:'deepseek-flash',cwd:temp,title:'Live cumulative cost'});
  let expectedSessionCost=0;
- ipcMain.handle('get-deepseek-session-cost',()=>store.getDeepseekSessionCost(liveSession.id));
  let report;
  ipcMain.handle('get-agent-usage-report',()=>report);
  for(const [channel,value] of [['get-user-profile',{displayName:'DeepSeek Usage QA',handle:'local-test',customized:true}],['get-codex-rate-limits',{snapshots:[]}],['get-claude-plan-usage',null]])ipcMain.handle(channel,()=>value);
@@ -100,13 +99,13 @@ app.whenReady().then(async()=>{
   const ring=await js('(()=>{const r=document.querySelector("[aria-label=\\"Context window usage\\"]").getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()');
   await delay(300);win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(ring.x),y:Math.round(ring.y)});
   await js('document.querySelector("[aria-label=\\"Context window usage\\"]").focus()');
-  await until('document.querySelector("[data-testid=deepseek-session-cost]")?.textContent.includes("Cost")','turn cost tooltip');
-  assert((await js('document.querySelector("[data-testid=deepseek-session-cost]").textContent')).includes('≈$'));
+  await until('document.body.innerText.includes("1.3k of")','context popover');
+  assert(!(await js('document.body.innerText')).includes('≈$'),'context popover shows no cost');
   assert.equal(await js('qa.store.getState().sessions[qa.id].messages.filter(m=>m.subtype==="token_usage").at(-1).usage.totalTokens'),1280);
   assert(!(await js('document.body.innerText')).includes('Turn estimate'));
   assert(!(await js('document.body.innerText')).includes('reported main-agent usage'));
   assert.equal(store.getDeepseekSessionCost(liveSession.id).usd,expectedSessionCost);
-  await capture('session-cost');await js('document.activeElement.blur()');
+  await capture('context-popover');await js('document.activeElement.blur()');
   await js('Array.from(document.querySelectorAll("main button")).find(b=>/Show work|previous message/.test(b.textContent))?.click()');
   await until('!!Array.from(document.querySelectorAll("main button")).find(b=>/Read|Explor/.test(b.textContent))','read image workstream');
   await js('Array.from(document.querySelectorAll("main button")).find(b=>/Read|Explor/.test(b.textContent)).click()');
@@ -128,10 +127,7 @@ app.whenReady().then(async()=>{
     const result=await js('qa.store.getState().sessions[qa.id].messages.filter(m=>m.type==="result").at(-1)');
     assert.equal(latest.turnCostEstimate.usd,result.costEstimate.usd,label+': raw per-turn accounting remains intact');
     assert(Math.abs(store.getDeepseekSessionCost(liveSession.id).usd-expectedSessionCost)<1e-12);
-    await js('document.querySelector("[aria-label=\\"Context window usage\\"]").focus()');
-    await until(`document.querySelector('[data-testid=deepseek-session-cost]')?.textContent.includes(${JSON.stringify('≈$'+expectedSessionCost.toFixed(4))})`,'cumulative '+label);
     assert(expectedSessionCost>result.costEstimate.usd,'Cost includes previous turns');
-    await js('document.activeElement.blur()');
   };
   await followup(2300,'warm turn');
   const originalId=savedSessionId,contextEventCount=contextEvents.length;
@@ -139,9 +135,6 @@ app.whenReady().then(async()=>{
   await followup(3400,'resumed turn');
   assert.equal(savedSessionId,originalId,'resume retains native session identity');
   assert.equal(contextEvents.length,contextEventCount,'unchanged native context is not re-emitted');
-  await js('document.querySelector("[aria-label=\\"Context window usage\\"]").focus()');
-  await until('document.querySelector("[data-testid=deepseek-session-cost]")?.textContent.includes("Cost")','resumed cost tooltip');await capture('resumed-turn-cost');
-  await js('document.activeElement.blur()');
   const history=await js('JSON.parse(JSON.stringify(qa.store.getState().sessions[qa.id].messages))');
   assert(history.some(m=>m.message?.content.some(b=>b.images?.length)),'stored history retains tool images');
   await win.reload();await until('!!window.qa && !!qa.editor()','reload');await js(`qa.restore(${JSON.stringify(history)})`);
@@ -153,9 +146,7 @@ app.whenReady().then(async()=>{
   // The page holds only the latest turn; its token_usage may precede or follow the assistant text.
   const latestPage=history.slice(history.findLastIndex(m=>m.type==='user_prompt'));
   await js(`qa.restore(${JSON.stringify(latestPage)})`);
-  await js('document.querySelector("[aria-label=\\"Context window usage\\"]").focus()');
-  await until(`document.querySelector('[data-testid=deepseek-session-cost]')?.textContent.includes(${JSON.stringify('≈$'+expectedSessionCost.toFixed(4))})`,'cumulative cost with paginated history');
-  await capture('session-cost-restored');await js('document.activeElement.blur()');
+  assert(Math.abs(store.getDeepseekSessionCost(liveSession.id).usd-expectedSessionCost)<1e-12,'paginated history keeps the session total');
   // Same guard also runs in the first-message composer.
   await js('qa.fresh(true)');await until('!!qa.editor()','new conversation');
   picked=[path.join(temp,'sample.png')];await js('document.querySelector("[aria-label=\\"Add files or photos\\"]").click()');await until('qa.images().length===1','new conversation image');

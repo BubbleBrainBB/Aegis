@@ -138,7 +138,7 @@ assert.ok(
     promptInput.includes('providerLabel="Pi"') &&
     contextUsage.includes("fallbackModelLabel = 'OpenCode'") &&
     openCodeIndicator.includes('providerLabel =') &&
-    openCodeIndicator.includes('Latest {providerLabel} usage'),
+    openCodeIndicator.includes('Waiting for ${providerLabel} usage from this model.'),
   'Composer must show Pi token/context usage with Pi-specific copy'
 );
 

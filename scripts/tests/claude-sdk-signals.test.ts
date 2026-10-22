@@ -24,10 +24,13 @@ const reported: ClaudeContextUsage = {
     { name: 'System tools', tokens: 22000, kind: 'used' },
     { name: 'Messages', tokens: 228000, kind: 'used' },
     { name: 'Autocompact buffer', tokens: 33000, kind: 'buffer' },
+    { name: 'Free space', tokens: 717000, kind: 'free' },
+    { name: 'MCP tools (deferred)', tokens: 85400, kind: 'deferred' },
   ],
+  counts: { mcpTools: 0, memoryFiles: 2, agents: 3, skills: 132 },
 };
 
-// Claude Code's own figures replace the estimate's window numbers; cost and token rows stay.
+// Claude Code's own figures replace the estimate's window numbers and bring the breakdown along.
 {
   const merged = withClaudeContextUsage(estimate, reported, 'claude-opus-5-5');
   assert.equal(merged?.used, 250000);
@@ -35,7 +38,8 @@ const reported: ClaudeContextUsage = {
   assert.equal(merged?.percent, 25);
   assert.equal(merged?.costUSD, 0.42);
   assert.equal(merged?.inputTokens, 1000);
-  assert.deepEqual(merged?.categories?.map((c) => c.name), ['System tools', 'Messages', 'Autocompact buffer']);
+  assert.deepEqual(merged?.categories?.map((c) => c.kind), ['used', 'used', 'buffer', 'free', 'deferred']);
+  assert.deepEqual(merged?.counts, { mcpTools: 0, memoryFiles: 2, agents: 3, skills: 132 });
 }
 
 // Without an estimate (a fresh window) the reported figures still show.

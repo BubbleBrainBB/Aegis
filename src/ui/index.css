@@ -41,6 +41,15 @@
   --warning: #d97706;
   --border: rgba(0, 0, 0, 0.06);
 
+  /* Context ring categories: chart series hues (WIDGET_SERIES). Amber and
+     red stay free for the near-limit warning. */
+  --context-messages: #2f82d6;
+  --context-system-tools: #039580;
+  --context-mcp-tools: #846cd1;
+  --context-system-prompt: #bf5784;
+  --context-skills: #55923d;
+  --context-other: #9a9a9a;
+
 
   /* Tool status colors */
   --tool-pending: #d97706;
@@ -167,6 +176,13 @@
   --error: #f87171;
   --warning: #fbbf24;
   --border: rgba(255, 255, 255, 0.06);
+
+  --context-messages: #58a2f2;
+  --context-system-tools: #3ab59e;
+  --context-mcp-tools: #a18dee;
+  --context-system-prompt: #de79a3;
+  --context-skills: #76b161;
+  --context-other: #8a8a8a;
 
 
   /* Tool status colors */

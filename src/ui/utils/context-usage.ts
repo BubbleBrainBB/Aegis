@@ -15,6 +15,7 @@ export type ClaudeContextSnapshot = {
   webSearchRequests: number;
   /** Claude Code's own breakdown of what fills the window, when it reported one. */
   categories?: ClaudeContextUsage['categories'];
+  counts?: ClaudeContextUsage['counts'];
 };
 
 export type CodexContextSnapshot = {
@@ -255,7 +256,6 @@ export function buildClaudeContextSnapshot(
 /**
  * Prefers Claude Code's own context figures (getContextUsage) over the
  * estimate from the last turn's token usage, when they are for this model.
- * Cost and per-turn token rows still come from the estimate.
  */
 export function withClaudeContextUsage(
   snapshot: ClaudeContextSnapshot | null,
@@ -284,6 +284,7 @@ export function withClaudeContextUsage(
     total: contextUsage.maxTokens,
     percent: Math.min(100, Math.max(0, Math.round((used / contextUsage.maxTokens) * 100))),
     categories: contextUsage.categories,
+    counts: contextUsage.counts,
   };
 }
 
