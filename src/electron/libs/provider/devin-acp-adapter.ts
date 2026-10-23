@@ -95,6 +95,10 @@ interface ActiveDevinSession {
   /** Current `thought_level` and the levels the current model offers. */
   thoughtLevel?: string;
   thoughtLevelIds: Set<string>;
+  /** The current model's levels are not known (a switch reply without options). */
+  thoughtLevelsUnknown?: boolean;
+  /** `model:level` Devin refused; not re-sent every turn. */
+  rejectedThoughtLevel?: string;
   /** Catalog display names of the models and levels, by id. */
   modelLabels: Map<string, string>;
   thoughtLevelLabels: Map<string, string>;
@@ -643,6 +647,8 @@ export class DevinAcpAdapter implements ProviderAdapter {
     session.rejectedModel = undefined;
     session.thoughtLevel = thought.current;
     session.thoughtLevelIds = thought.ids;
+    session.thoughtLevelsUnknown = false;
+    session.rejectedThoughtLevel = undefined;
     session.modelLabels = extractOptionLabels(configOptions, 'model');
     session.thoughtLevelLabels = extractOptionLabels(configOptions, 'thought_level');
     session.currentMode =
@@ -1063,12 +1069,16 @@ export class DevinAcpAdapter implements ProviderAdapter {
         const thought = extractThoughtLevels(result.configOptions);
         session.thoughtLevel = thought.current;
         session.thoughtLevelIds = thought.ids;
+        session.thoughtLevelsUnknown = false;
         const modelLabels = extractOptionLabels(result.configOptions, 'model');
         if (modelLabels.size > 0) session.modelLabels = modelLabels;
         session.thoughtLevelLabels = extractOptionLabels(result.configOptions, 'thought_level');
       } else {
-        // No options in the reply: the level is unknown until Devin confirms one.
+        // No options in the reply: the level and the model's levels are unknown
+        // until Devin confirms them, so the composer's level is tried as is.
         session.thoughtLevel = undefined;
+        session.thoughtLevelIds = new Set();
+        session.thoughtLevelsUnknown = true;
       }
     } catch (error) {
       // An id the account no longer offers: keep the session's current model.
@@ -1079,15 +1089,17 @@ export class DevinAcpAdapter implements ProviderAdapter {
 
   /**
    * Runs after applyModel: a model switch resets the level, so the composer's
-   * choice is re-applied whenever the model's levels include it. A level the
-   * current model does not offer is left to Devin's per-model default.
+   * choice is re-applied whenever the model's levels include it (or are not
+   * known yet). A level the current model does not offer, or that Devin
+   * refused for it, is left to Devin's per-model default.
    */
   private async applyThoughtLevel(session: ActiveDevinSession, level: string | undefined): Promise<void> {
     const requested = normalizeDevinThoughtLevel(level) ?? session.requestedThoughtLevel;
     session.requestedThoughtLevel = requested;
-    if (!requested || requested === session.thoughtLevel || !session.thoughtLevelIds.has(requested)) {
-      return;
-    }
+    if (!requested || requested === session.thoughtLevel) return;
+    if (!session.thoughtLevelsUnknown && !session.thoughtLevelIds.has(requested)) return;
+    const key = `${session.model ?? ''}:${requested}`;
+    if (session.rejectedThoughtLevel === key) return;
     try {
       const result = getRecord(
         await session.rpc.request('session/set_config_option', {
@@ -1096,11 +1108,18 @@ export class DevinAcpAdapter implements ProviderAdapter {
           value: requested,
         })
       );
-      session.thoughtLevel = extractThoughtLevels(result?.configOptions).current || requested;
+      const thought = extractThoughtLevels(result?.configOptions);
+      session.thoughtLevel = thought.current || requested;
+      if (thought.found) {
+        session.thoughtLevelIds = thought.ids;
+        session.thoughtLevelsUnknown = false;
+      }
       const labels = extractOptionLabels(result?.configOptions, 'thought_level');
       if (labels.size > 0) session.thoughtLevelLabels = labels;
+      session.rejectedThoughtLevel = undefined;
     } catch (error) {
       // Devin keeps its own level; the turn runs (and is recorded) at that one.
+      session.rejectedThoughtLevel = key;
       console.warn('[Devin ACP] could not set thought_level:', error instanceof Error ? error.message : error);
     }
   }
@@ -1328,9 +1347,12 @@ export class DevinAcpAdapter implements ProviderAdapter {
         const ids = extractModelIds(update.configOptions);
         if (ids.size > 0) session.modelIds = ids;
         const thought = extractThoughtLevels(update.configOptions);
-        if (thought.found) {
+        // A full list (it has the model select) without a thought_level select
+        // means the current model has no thinking control.
+        if (thought.found || extractConfigValue(update.configOptions, 'model')) {
           session.thoughtLevel = thought.current;
           session.thoughtLevelIds = thought.ids;
+          session.thoughtLevelsUnknown = false;
           session.thoughtLevelLabels = extractOptionLabels(update.configOptions, 'thought_level');
         }
         const modelLabels = extractOptionLabels(update.configOptions, 'model');

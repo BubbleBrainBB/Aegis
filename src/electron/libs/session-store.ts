@@ -3396,17 +3396,19 @@ function resolveUsageRowModel(
   return USAGE_PROVIDER_MODEL_FALLBACK[provider] || 'Unknown';
 }
 
-// A Devin row names the model and the thinking level it ran at, in Devin's
-// catalog words ("Claude Opus 5.5 · High"): the id's own suffix is fixed
-// (claude-opus-5-5-medium at every level). Rows recorded before levels were
-// kept have no level and stay under the bare id, apart from newer rows.
-// The level label falls back as the composer's picker does.
+// A Devin row names the model in Devin's catalog words, plus the thinking
+// level it ran at ("Claude Opus 5.5 · High"): the id's own suffix is fixed
+// (claude-opus-5-5-medium at every level). Rows recorded before names and
+// levels were kept stay under the bare id, apart from newer rows. The level
+// label falls back as the composer's picker does.
 function devinUsageLabel(model: string, result: StoredClaudeResultMessage): string {
-  const level = typeof result.thoughtLevel === 'string' ? result.thoughtLevel.trim() : '';
-  if (!level || model === USAGE_PROVIDER_MODEL_FALLBACK.devin) return model;
-  const name = result.model?.trim() === model && result.modelLabel?.trim() ? result.modelLabel.trim() : model;
-  const levelLabel = result.thoughtLevelLabel?.trim() || level.charAt(0).toUpperCase() + level.slice(1);
-  return `${name} · ${levelLabel}`;
+  if (model === USAGE_PROVIDER_MODEL_FALLBACK.devin) return model;
+  const text = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+  const label = text(result.modelLabel);
+  const name = label && text(result.model) === model ? label : model;
+  const level = text(result.thoughtLevel);
+  if (!level) return name;
+  return `${name} · ${text(result.thoughtLevelLabel) || level.charAt(0).toUpperCase() + level.slice(1)}`;
 }
 
 /** Same historical repair and request-time pricing as the Usage report. */

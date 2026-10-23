@@ -46,7 +46,7 @@ const state = { model: 'swe-2-high', level: 'high' };
 let openTurn = null;
 const config = () => [
   { id: 'mode', category: 'mode', type: 'select', currentValue: 'accept-edits', options: [] },
-  { id: 'model', category: 'model', type: 'select', currentValue: state.model, options: ['swe-2-high', 'swe-2-medium', 'claude-opus-5-5-high'].map((value) => ({ value, name: value })) },
+  { id: 'model', category: 'model', type: 'select', currentValue: state.model, options: ['swe-2-high', 'swe-2-medium', 'claude-opus-5-5-high'].map((value) => ({ value, name: 'Name of ' + value })) },
   ...(LEVELS[state.model] ? [{ id: 'thought_level', category: 'thought_level', type: 'select', currentValue: state.level, options: LEVELS[state.model][1].map((value) => ({ value, name: value.toUpperCase() })) }] : []),
 ];
 const commands = (sessionId) => update(sessionId, {
@@ -115,6 +115,12 @@ async function handle(message) {
       return;
     }
     send({ id, result: { configOptions: config() } });
+  } else if (method === 'session/prompt' && String(params.prompt?.[0]?.text).startsWith('DROP')) {
+    // Devin switches itself to a model without thinking control (a full list, no thought_level).
+    state.model = 'swe-2-medium';
+    state.level = undefined;
+    update(params.sessionId, { sessionUpdate: 'config_option_update', configOptions: config() });
+    send({ id, result: { stopReason: 'end_turn', usage: { totalTokens: 1, inputTokens: 1, outputTokens: 0 } } });
   } else if (method === 'session/prompt' && String(params.prompt?.[0]?.text).startsWith('BUMP')) {
     // Devin changes its own level mid-turn and reports it.
     state.level = 'xhigh';
@@ -526,7 +532,7 @@ async function main(): Promise<void> {
     assert.ok(!readCalls().some((call) => call.method === 'session/set_config_option'), 'unchanged level is not re-sent');
     assert.deepEqual(
       levelResults.at(-1),
-      { model: 'claude-opus-5-5-high', modelLabel: 'claude-opus-5-5-high', thoughtLevel: 'max', thoughtLevelLabel: 'MAX' },
+      { model: 'claude-opus-5-5-high', modelLabel: 'Name of claude-opus-5-5-high', thoughtLevel: 'max', thoughtLevelLabel: 'MAX' },
       'the result records the level the turn ran at, with catalog names'
     );
 
@@ -553,7 +559,7 @@ async function main(): Promise<void> {
     );
     assert.deepEqual(
       levelResults.at(-1),
-      { model: 'swe-2-medium', modelLabel: 'swe-2-medium', thoughtLevel: undefined, thoughtLevelLabel: undefined },
+      { model: 'swe-2-medium', modelLabel: 'Name of swe-2-medium', thoughtLevel: undefined, thoughtLevelLabel: undefined },
       'no level is recorded for a model without one'
     );
 
@@ -590,6 +596,33 @@ async function main(): Promise<void> {
     await withTimeout(adapter.sendTurn({ threadId: 't4', prompt: 'x', model: 'swe-2-high' } as never), 'turn after the steer');
     assert.deepEqual(configCalls(), [['thought_level', 'high']], "the steer's level applies from the next turn");
     assert.equal(levelResults.at(-1)?.thoughtLevel, 'high');
+
+    // Devin switches itself to a model without thinking control: the stale
+    // level is dropped, so the next row carries none.
+    await withTimeout(adapter.sendTurn({ threadId: 't4', prompt: 'DROP', model: 'swe-2-high' } as never), 'Devin dropping to a model without levels');
+    assert.deepEqual(
+      { model: levelResults.at(-1)?.model, thoughtLevel: levelResults.at(-1)?.thoughtLevel },
+      { model: 'swe-2-medium', thoughtLevel: undefined },
+      'no stale level after Devin switches to a model without one'
+    );
+
+    // A level Devin refuses (here after a bare switch, when the model's levels
+    // are unknown): the turn still runs at Devin's level and the level is not
+    // re-sent every turn.
+    writeFileSync(bareSwitchPath, '');
+    resetCalls();
+    const warn = console.warn;
+    console.warn = () => {};
+    try {
+      await withTimeout(adapter.sendTurn({ threadId: 't4', prompt: 'x', model: 'claude-opus-5-5-high', devinThoughtLevel: 'turbo' } as never), 'turn with a refused level');
+      assert.deepEqual(configCalls(), [['model', 'claude-opus-5-5-high'], ['thought_level', 'turbo']], 'the unknown list lets the level be tried');
+      assert.equal(levelResults.at(-1)?.thoughtLevel, undefined, 'a refused level is not recorded');
+      resetCalls();
+      await withTimeout(adapter.sendTurn({ threadId: 't4', prompt: 'x', model: 'claude-opus-5-5-high', devinThoughtLevel: 'turbo' } as never), 'turn after the refusal');
+      assert.deepEqual(configCalls(), [], 'a refused level is not re-sent');
+    } finally {
+      console.warn = warn;
+    }
     await adapter.stopAll();
   }
 
@@ -866,8 +899,8 @@ async function main(): Promise<void> {
         void adapter.respondToRequest('t9', event.requestId as string, { behavior: 'allow', updatedInput: {} });
       }
     });
-    await adapter.startSession({ threadId: 't9', cwd: dir, prompt: '' } as never);
-    await withTimeout(adapter.sendTurn({ threadId: 't9', prompt: 'go' } as never), 'turn before the exit');
+    await adapter.startSession({ threadId: 't9', cwd: dir, prompt: '', devinThoughtLevel: 'max' } as never);
+    await withTimeout(adapter.sendTurn({ threadId: 't9', prompt: 'go', devinThoughtLevel: 'max' } as never), 'turn before the exit');
     const [firstPid] = readPids();
     process.kill(firstPid, 'SIGKILL');
     await waitFor(() => !isAlive(firstPid), 'the killed CLI exiting');
@@ -876,8 +909,12 @@ async function main(): Promise<void> {
 
     events.length = 0;
     resetCalls();
-    await withTimeout(adapter.sendTurn({ threadId: 't9', prompt: 'go again' } as never), 'turn after Devin exited');
+    await withTimeout(adapter.sendTurn({ threadId: 't9', prompt: 'go again', devinThoughtLevel: 'max' } as never), 'turn after Devin exited');
     const calls = readCalls();
+    assert.ok(
+      calls.some((call) => call.method === 'session/set_config_option' && call.params.configId === 'thought_level' && call.params.value === 'max'),
+      'the reloaded session (back at its default) gets the level again'
+    );
     assert.deepEqual(calls.slice(0, 2).map((call) => call.method), ['initialize', 'session/load'], 'a fresh process reloads the session');
     assert.equal(calls[1].params.sessionId, 'fresh-session');
     assert.ok(calls.some((call) => call.method === 'session/prompt'), 'the turn runs in the new process');
@@ -889,9 +926,10 @@ async function main(): Promise<void> {
     assert.ok(!events.some((event) => event.type === 'system_init'), 'the reloaded session keeps its id');
     const result = events
       .filter((event) => event.type === 'message' && (event.message as { type?: string }).type === 'result')
-      .map((event) => event.message as { subtype: string })
+      .map((event) => event.message as { subtype: string; thoughtLevel?: string })
       .at(-1);
     assert.equal(result?.subtype, 'success');
+    assert.equal(result?.thoughtLevel, 'max', 'the turn after a reconnect records the re-applied level');
     await adapter.stopAll();
     await waitFor(() => !isAlive(pids[1]), 'stopAll killing the reconnected process');
   }
