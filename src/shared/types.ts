@@ -2004,6 +2004,11 @@ export type StreamMessage =
       costDetails?: ProviderCostDetails;
       usage: Usage;
       model?: string;
+      /** Devin: the catalog name of `model` ("Claude Opus 5.5"). */
+      modelLabel?: string;
+      /** Devin: the thinking level (thought_level) the turn ran at, and its catalog name. */
+      thoughtLevel?: string;
+      thoughtLevelLabel?: string;
       modelUsage?: Record<string, ClaudeModelUsage>;
       /** Provider-specific usage fold version for safe historical repair. */
       usageAccounting?: string;

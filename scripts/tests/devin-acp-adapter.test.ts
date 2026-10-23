@@ -18,6 +18,7 @@ const dir = mkdtempSync(path.join(tmpdir(), 'devin-acp-test-'));
 const logPath = path.join(dir, 'calls.jsonl');
 const pidsPath = path.join(dir, 'pids');
 const failSwitchPath = path.join(dir, 'fail-next-model-switch');
+const bareSwitchPath = path.join(dir, 'bare-next-model-switch');
 const fakeAgentPath = path.join(dir, 'devin');
 
 writeFileSync(
@@ -26,6 +27,7 @@ writeFileSync(
 const { appendFileSync, existsSync, unlinkSync } = require('node:fs');
 const LOG = ${JSON.stringify(logPath)};
 const FAIL_SWITCH = ${JSON.stringify(failSwitchPath)};
+const BARE_SWITCH = ${JSON.stringify(bareSwitchPath)};
 const FAIL_LOAD = process.env.FAKE_DEVIN_FAIL_LOAD === '1';
 const SLOW_INIT = process.env.FAKE_DEVIN_SLOW_INIT === '1';
 const HANG_INIT = process.env.FAKE_DEVIN_HANG_INIT === '1';
@@ -106,7 +108,18 @@ async function handle(message) {
       }
       state.level = params.value;
     }
+    if (params.configId === 'model' && existsSync(BARE_SWITCH)) {
+      // One switch whose reply carries no configOptions (the marker is consumed).
+      unlinkSync(BARE_SWITCH);
+      send({ id, result: {} });
+      return;
+    }
     send({ id, result: { configOptions: config() } });
+  } else if (method === 'session/prompt' && String(params.prompt?.[0]?.text).startsWith('BUMP')) {
+    // Devin changes its own level mid-turn and reports it.
+    state.level = 'xhigh';
+    update(params.sessionId, { sessionUpdate: 'config_option_update', configOptions: config() });
+    send({ id, result: { stopReason: 'end_turn', usage: { totalTokens: 1, inputTokens: 1, outputTokens: 0 } } });
   } else if (method === 'session/prompt' && openTurn) {
     openTurn.ids.push(id);
     openTurn.release();
@@ -478,11 +491,19 @@ async function main(): Promise<void> {
   {
     resetCalls();
     const adapter = new DevinAcpAdapter();
+    type LevelResult = { model?: string; modelLabel?: string; thoughtLevel?: string; thoughtLevelLabel?: string };
+    const levelResults: LevelResult[] = [];
     adapter.events.on('event', (event: Event) => {
       if (event.type === 'permission_request') {
         void adapter.respondToRequest('t4', event.requestId as string, { behavior: 'allow', updatedInput: {} });
       }
+      const message = event.type === 'message' ? (event.message as LevelResult & { type?: string }) : undefined;
+      if (message?.type === 'result') {
+        levelResults.push({ model: message.model, modelLabel: message.modelLabel, thoughtLevel: message.thoughtLevel, thoughtLevelLabel: message.thoughtLevelLabel });
+      }
     });
+    const configCalls = () =>
+      readCalls().filter((call) => call.method === 'session/set_config_option').map((call) => [call.params.configId, call.params.value]);
     await adapter.startSession({
       threadId: 't4',
       cwd: dir,
@@ -503,6 +524,11 @@ async function main(): Promise<void> {
       'turn with an unchanged level'
     );
     assert.ok(!readCalls().some((call) => call.method === 'session/set_config_option'), 'unchanged level is not re-sent');
+    assert.deepEqual(
+      levelResults.at(-1),
+      { model: 'claude-opus-5-5-high', modelLabel: 'claude-opus-5-5-high', thoughtLevel: 'max', thoughtLevelLabel: 'MAX' },
+      'the result records the level the turn ran at, with catalog names'
+    );
 
     resetCalls();
     await withTimeout(
@@ -525,6 +551,45 @@ async function main(): Promise<void> {
       ['model'],
       'a model without a thought_level select gets no level'
     );
+    assert.deepEqual(
+      levelResults.at(-1),
+      { model: 'swe-2-medium', modelLabel: 'swe-2-medium', thoughtLevel: undefined, thoughtLevelLabel: undefined },
+      'no level is recorded for a model without one'
+    );
+
+    // Devin changes its own level mid-turn (config_option_update): the result
+    // records the level it ran at; the next turn re-applies the composer's.
+    await withTimeout(
+      adapter.sendTurn({ threadId: 't4', prompt: 'BUMP', model: 'claude-opus-5-5-high', devinThoughtLevel: 'max' } as never),
+      'turn where Devin changes its level'
+    );
+    assert.equal(levelResults.at(-1)?.thoughtLevel, 'xhigh', 'a level Devin reports mid-turn is recorded');
+    assert.equal(levelResults.at(-1)?.thoughtLevelLabel, 'XHIGH');
+    resetCalls();
+    await withTimeout(adapter.sendTurn({ threadId: 't4', prompt: 'x', model: 'claude-opus-5-5-high', devinThoughtLevel: 'max' } as never), 'turn after Devin changed the level');
+    assert.deepEqual(configCalls(), [['thought_level', 'max']], "the composer's level is re-applied");
+    assert.equal(levelResults.at(-1)?.thoughtLevel, 'max');
+
+    // A model switch whose reply carries no options: the level is unknown, so
+    // the composer's is applied again rather than skipped or guessed.
+    writeFileSync(bareSwitchPath, '');
+    resetCalls();
+    await withTimeout(adapter.sendTurn({ threadId: 't4', prompt: 'x', model: 'swe-2-high', devinThoughtLevel: 'max' } as never), 'switch without options');
+    assert.deepEqual(configCalls(), [['model', 'swe-2-high'], ['thought_level', 'max']], 'the level is re-applied after a bare switch');
+    assert.equal(levelResults.at(-1)?.thoughtLevel, 'max', 'and recorded once Devin confirms it');
+
+    // A steer that changes the level: the folded turn keeps the level it ran
+    // at; the new one applies from the next turn.
+    resetCalls();
+    const slow = adapter.sendTurn({ threadId: 't4', prompt: 'SLOW level', model: 'swe-2-high', devinThoughtLevel: 'max' } as never);
+    for (let i = 0; i < 100 && !readCalls().some((call) => call.method === 'session/prompt'); i++) await new Promise((resolve) => setTimeout(resolve, 20));
+    await withTimeout(adapter.sendTurn({ threadId: 't4', prompt: 'steer', model: 'swe-2-high', devinThoughtLevel: 'high' } as never), 'steer with a new level');
+    await withTimeout(slow, 'slow turn');
+    assert.equal(levelResults.at(-1)?.thoughtLevel, 'max', 'the folded turn ran at max');
+    resetCalls();
+    await withTimeout(adapter.sendTurn({ threadId: 't4', prompt: 'x', model: 'swe-2-high' } as never), 'turn after the steer');
+    assert.deepEqual(configCalls(), [['thought_level', 'high']], "the steer's level applies from the next turn");
+    assert.equal(levelResults.at(-1)?.thoughtLevel, 'high');
     await adapter.stopAll();
   }
 

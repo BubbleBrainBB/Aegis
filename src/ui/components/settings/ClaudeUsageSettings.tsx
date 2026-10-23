@@ -1371,6 +1371,8 @@ function getProviderLogoForModel(model: string): string | null {
 
   if (
     normalized.startsWith('claude-') ||
+    // Devin rows use catalog names ("Claude Opus 5.5 · High").
+    normalized.startsWith('claude ') ||
     normalized === 'opus' ||
     normalized === 'sonnet' ||
     normalized === 'haiku'
