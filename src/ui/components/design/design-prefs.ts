@@ -25,5 +25,7 @@ export function useStoredFlag(key: string, fallback: boolean) {
 
 /** Whether the inspector column is shown. */
 export const useInspectorOpen = () => useStoredFlag("aegis.design.inspectorOpen", false);
+/** Whether padding and gap guides show on a selected auto layout container. */
+export const useLayoutGuides = () => useStoredFlag("aegis.design.layoutGuides", false);
 /** Whether comment pins are hidden on the canvas (visual only). */
 export const useCommentsHidden = () => useStoredFlag("aegis.design.commentsHidden", false);

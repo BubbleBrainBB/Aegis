@@ -23,6 +23,7 @@ import { DesignActionMenu, DesignToolButton, useDesignMenu } from "./DesignChrom
 import { BoardFrame, type BoardInspector, type DragState, type DropTarget } from "./BoardFrame";
 import { FRAME_SIZE, snapBoard, textTagFor } from "./design-insert";
 import { CanvasMarks } from "./CanvasMarks";
+import { useLayoutGuides } from "./design-prefs";
 import { createDesignMark, isDesignMarkType, markFromPoints, translateDesignMark, MAX_MARK_POINTS, type DesignMark, type DesignMarkType, type MarkChangeReason } from "./design-marks";
 import type { LayerCss } from "./design-css";
 import {
@@ -294,7 +295,7 @@ export function DesignCanvas(props: Props) {
   const [editMarkId, setEditMarkId] = useState<string>();
   const [markGesturing, setMarkGesturing] = useState(false);
   const markGesturingRef = useRef(false);
-  const [layoutGuides, setLayoutGuides] = useState(true);
+  const [layoutGuides, setLayoutGuides] = useLayoutGuides();
   const zoomTrigger = useRef<HTMLButtonElement>(null);
   const zoomList = useRef<HTMLDivElement>(null);
   useDesignMenu(zoomMenu, zoomList, zoomTrigger, () => setZoomMenu(false));
@@ -1720,7 +1721,7 @@ export function DesignCanvas(props: Props) {
           <div className="design-menu-label">Now {Math.round(view.zoom * 100)}%</div>
           {[25,50,75,100,150,200].map(percent => <button key={percent} role="menuitemradio" aria-checked={Math.round(view.zoom * 100) === percent} onClick={() => { zoom(percent / 100); setZoomMenu(false); zoomTrigger.current?.focus(); }}>{percent}% {Math.round(view.zoom * 100) === percent && <Check size={12} />}</button>)}
           <div className="design-menu-divider" role="separator" />
-          <button role="menuitemcheckbox" aria-checked={layoutGuides} onClick={() => setLayoutGuides(value => !value)}>Layout guides {layoutGuides && <Check size={12} />}</button>
+          <button role="menuitemcheckbox" aria-checked={layoutGuides} onClick={() => setLayoutGuides(!layoutGuides)}>Layout guides {layoutGuides && <Check size={12} />}</button>
           {props.history && <>
             <div className="design-menu-divider" role="separator" />
             <button role="menuitem" disabled={!props.history.canUndo} onClick={() => { setZoomMenu(false); zoomTrigger.current?.focus(); props.history?.step("undo"); }}>Undo <kbd>⌘Z</kbd></button>
