@@ -2,6 +2,7 @@ import { BrowserWindow } from 'electron';
 import { createHash } from 'node:crypto';
 import type { ServerEvent } from '../../shared/types';
 import {
+  kimiGoalCommand,
   validateGoalAction,
   type GoalAction,
   type GoalSettings,
@@ -138,13 +139,15 @@ export function setupSessionGoalIPC(deps: {
   ) => void;
   broadcast: (event: ServerEvent) => void;
   changeClaudeGoal?: (sessionId: string, action: GoalAction, settings: GoalSettings) => Promise<import('../libs/claude-goal').ClaudeGoalState>;
+  /** Sends a Kimi `/goal …` command as the task's next message. */
+  sendKimiGoalCommand?: (session: NonNullable<ReturnType<typeof sessions.getSession>>, command: string) => Promise<boolean>;
 }) {
   emit = deps.broadcast;
   onClaudeGoalChanged((id, state) => publishSessionGoal(id, state.goal, state.supported, state.resumeConfirmation));
   const getSession = (id: string) => {
     const session = sessions.getSession(id);
-    if (!session || !['codex', 'claude'].includes(session.provider || ''))
-      throw new Error('Native Goal mode requires a Codex or Claude task.');
+    if (!session || !['codex', 'claude', 'kimi'].includes(session.provider || ''))
+      throw new Error('Native Goal mode requires a Codex, Claude or Kimi task.');
     return session;
   };
   const getAdapter = () => {
@@ -158,6 +161,8 @@ export function setupSessionGoalIPC(deps: {
       const state = readClaudeGoalState(sessionId);
       return publishSessionGoal(sessionId, state.goal, state.supported, state.resumeConfirmation);
     }
+    // Kimi pushes its goal (goal.updated) while the task runs.
+    if (session.provider === 'kimi') return snapshots.get(sessionId) ?? publishSessionGoal(sessionId, null);
     if (!session.codex_session_id)
       return snapshots.get(sessionId) ?? publishSessionGoal(sessionId, null);
     const before = snapshots.get(sessionId)?.revision;
@@ -194,6 +199,20 @@ export function setupSessionGoalIPC(deps: {
           const state = readClaudeGoalState(sessionId);
           if (action.type === 'clear') snapshots.delete(sessionId);
           return publishSessionGoal(sessionId, state.goal, state.supported, state.resumeConfirmation);
+        }
+        if (session.provider === 'kimi') {
+          // Kimi has no goal-mutation API: its `/goal` command is the control,
+          // and the resulting goal arrives through goal.updated.
+          if (!deps.sendKimiGoalCommand) throw new Error('Kimi Goal mode is not available.');
+          const current = snapshots.get(sessionId)?.goal ?? null;
+          const command = kimiGoalCommand(action, current);
+          if (!(await deps.sendKimiGoalCommand(session, command)))
+            throw new Error('Kimi did not accept the goal command. Try again when the task is idle.');
+          if (action.type === 'clear') {
+            snapshots.delete(sessionId);
+            return publishSessionGoal(sessionId, null);
+          }
+          return snapshots.get(sessionId) ?? publishSessionGoal(sessionId, current);
         }
         const adapter = getAdapter();
         let goal: ThreadGoal | null;

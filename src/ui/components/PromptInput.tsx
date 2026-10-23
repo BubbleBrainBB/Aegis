@@ -632,7 +632,7 @@ export function PromptInput({
     onCommandSelect: (command, nextPrompt) => {
       if (command.name === 'goal' && supportsGoalUI(agentSelection.provider)) {
         if (agentSelection.provider === 'claude') agentSelection.setClaudeExecutionMode('execute');
-        else agentSelection.setCodexExecutionMode('execute');
+        else if (agentSelection.provider === 'codex') agentSelection.setCodexExecutionMode('execute');
         sessionGoal.setDraft(true);
         const next = removeSelectedSlashCommandPrompt(nextPrompt, command.name);
         setPrompt(next.prompt);
@@ -767,7 +767,7 @@ export function PromptInput({
   const handleSend = async (invertFollowUp = false) => {
     const goalInput = parseGoalInput(prompt, sessionGoal.drafting);
     const isGoal = supportsGoalUI(agentSelection.provider) && goalInput.isGoal;
-    if (isGoal && agentSelection.provider === 'claude' && isClaudeGoalClearObjective(goalInput.objective) && attachments.length === 0) {
+    if (isGoal && (agentSelection.provider === 'claude' || agentSelection.provider === 'kimi') && isClaudeGoalClearObjective(goalInput.objective) && attachments.length === 0) {
       if (goalSubmitting) return;
       setGoalSubmitting(true);
       try {
@@ -781,7 +781,7 @@ export function PromptInput({
     if (isGoal && !goalInput.objective && attachments.length === 0) {
       sessionGoal.setDraft(true);
       if (agentSelection.provider === 'claude') agentSelection.setClaudeExecutionMode('execute');
-      else agentSelection.setCodexExecutionMode('execute');
+      else if (agentSelection.provider === 'codex') agentSelection.setCodexExecutionMode('execute');
       setPrompt(''); setCursorIndex(0);
       window.requestAnimationFrame(() => editorRef.current?.focus());
       return;
@@ -880,7 +880,7 @@ export function PromptInput({
         if (agentSelection.provider === 'claude') {
           agentSelection.setClaudeExecutionMode('execute');
           setSessionClaudeMode(activeSession.id, agentSelection.claudePermissionMode, 'execute');
-        } else {
+        } else if (agentSelection.provider === 'codex') {
           agentSelection.setCodexExecutionMode('execute');
           setSessionCodexExecutionMode(activeSession.id, 'execute');
         }

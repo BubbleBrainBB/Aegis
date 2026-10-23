@@ -36,7 +36,21 @@ export interface GoalSettings {
 }
 
 export function supportsGoalUI(provider?: string): boolean {
-  return provider === 'codex' || provider === 'claude';
+  return provider === 'codex' || provider === 'claude' || provider === 'kimi';
+}
+
+/**
+ * The Kimi Code `/goal` command for a Goal action: Kimi has no goal-mutation
+ * API, its slash command is the control.
+ */
+export function kimiGoalCommand(action: GoalAction, current: ThreadGoal | null): string {
+  if (action.type === 'clear') return '/goal cancel';
+  const objective = action.objective?.trim();
+  if (objective) {
+    // `--` keeps an objective that starts with a subcommand word an objective.
+    return current && current.status !== 'complete' ? `/goal replace ${objective}` : `/goal -- ${objective}`;
+  }
+  return action.status === 'paused' ? '/goal pause' : '/goal resume';
 }
 
 export function isClaudeGoalClearObjective(value: string): boolean {

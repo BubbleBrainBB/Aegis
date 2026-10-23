@@ -318,6 +318,12 @@ export class KimiAdapterFacade implements ProviderAdapter {
     }
   }
 
+  /** Names the Kimi session (stored id, `server:`-prefixed) after Aegis's title. */
+  async syncTitle(kimiSessionId: string, title: string): Promise<void> {
+    if (!kimiSessionId.startsWith(KIMI_SERVER_ID_PREFIX)) return;
+    await this.server.syncTitle(kimiSessionId.slice(KIMI_SERVER_ID_PREFIX.length), title);
+  }
+
   async listSkills(input: ProviderListSkillsInput): Promise<ProviderListSkillsResult> {
     if (await isKimiServerCapable()) {
       return this.server.listSkills(input);

@@ -253,6 +253,11 @@ function makeFakeFetch(state) {
         state.failSubmitOnce = false;
         return respond(50000, null);
       }
+      if (state.failSubmitCode) {
+        const code = state.failSubmitCode;
+        state.failSubmitCode = 0;
+        return respond(code, null, 'This session is in use by another Kimi Code CLI instance.');
+      }
       const invalidContent = invalidContentReason(body?.content);
       if (invalidContent) return respond(40001, null, invalidContent);
       state.promptSeq = (state.promptSeq || 0) + 1;
@@ -531,6 +536,102 @@ async function l1ToolFlow() {
   assert.equal(toolResult.message.content[0].tool_use_id, 'tool_B');
   assert.equal(toolResult.message.content[0].content, 'file.txt');
   ok('tool.call.started/tool.result map to tool_use/tool_result');
+}
+
+async function l1TodoListAsTodoWrite() {
+  const t = await startL1Session();
+  await t.adapter.sendTurn({ threadId: 'thread-1', prompt: 'plan', model: 'm' });
+  t.push('turn.started', { turnId: 1 });
+  t.push('tool.call.started', {
+    toolCallId: 'tool_T',
+    name: 'TodoList',
+    args: { todos: [{ title: 'read', status: 'done' }, { title: 'edit', status: 'in_progress' }, { title: 'test', status: 'pending' }] },
+    description: 'Updating todo list',
+  });
+  await waitFor(() => t.events.messages('assistant').some((m) => m.message.content[0]?.id === 'tool_T'), 2000, 'todo tool');
+  const block = t.events.messages('assistant').find((m) => m.message.content[0]?.id === 'tool_T').message.content[0];
+  assert.equal(block.name, 'TodoWrite', 'Kimi TodoList drives the todo panel as TodoWrite');
+  assert.deepEqual(block.input.todos, [
+    { content: 'read', status: 'completed', activeForm: 'read' },
+    { content: 'edit', status: 'in_progress', activeForm: 'edit' },
+    { content: 'test', status: 'pending', activeForm: 'test' },
+  ]);
+  ok('TodoList maps to TodoWrite with Claude-shaped items');
+}
+
+async function l1ToolProgressStreams() {
+  const t = await startL1Session();
+  await t.adapter.sendTurn({ threadId: 'thread-1', prompt: 'run', model: 'm' });
+  t.push('turn.started', { turnId: 1 });
+  t.push('tool.call.started', { toolCallId: 'tool_B', name: 'Bash', args: { command: 'for i in 1 2; do echo $i; done' } });
+  t.push('tool.progress', { toolCallId: 'tool_B', update: { kind: 'stdout', text: 'line1\n' } }, true);
+  t.push('tool.progress', { toolCallId: 'tool_B', update: { kind: 'stderr', text: 'warn\n' } }, true);
+  t.push('tool.progress', { toolCallId: 'tool_B', update: { kind: 'status', text: 'ignored' } }, true);
+  await waitFor(() => t.events.byType('tool_output_delta').length === 2, 2000, 'two deltas');
+  assert.deepEqual(
+    t.events.byType('tool_output_delta').map((e) => [e.toolUseId, e.delta]),
+    [['tool_B', 'line1\n'], ['tool_B', 'warn\n']]
+  );
+  ok('tool.progress stdout/stderr stream to the live tool card');
+}
+
+async function l1BackgroundTasks() {
+  const t = await startL1Session();
+  await t.adapter.sendTurn({ threadId: 'thread-1', prompt: 'bg', model: 'm' });
+  t.push('turn.started', { turnId: 1 });
+  const info = { taskId: 'bash-1', description: 'Sleep then echo', kind: 'process', command: 'sleep 4; echo done', parentToolCallId: 'tool_S', status: 'running', exitCode: null };
+  t.push('background.task.started', { info });
+  await waitFor(() => t.events.messages('system').some((m) => m.subtype === 'background_tasks'), 2000, 'task list');
+  const started = t.events.messages('system').filter((m) => m.subtype === 'background_tasks').at(-1);
+  assert.deepEqual(started.tasks, [{ taskId: 'bash-1', toolUseId: 'tool_S', description: 'Sleep then echo', taskType: 'local_bash' }]);
+  t.push('background.task.terminated', { info: { ...info, status: 'completed', exitCode: 0 } });
+  await waitFor(() => t.events.messages('system').some((m) => m.subtype === 'background_task_ended'), 2000, 'task ended');
+  const ended = t.events.messages('system').find((m) => m.subtype === 'background_task_ended');
+  assert.equal(ended.outcome.status, 'completed');
+  assert.equal(ended.outcome.toolUseId, 'tool_S');
+  assert.equal(ended.outcome.summary, 'Background command "sleep 4; echo done" completed (exit code 0)');
+  assert.deepEqual(t.events.messages('system').filter((m) => m.subtype === 'background_tasks').at(-1).tasks, [], 'the chip list empties');
+  t.push('background.task.terminated', { info: { ...info, taskId: 'bash-2', status: 'killed' } });
+  await waitFor(() => t.events.messages('system').filter((m) => m.subtype === 'background_task_ended').length === 2, 2000, 'killed');
+  assert.equal(t.events.messages('system').filter((m) => m.subtype === 'background_task_ended').at(-1).outcome.status, 'stopped');
+  ok('background.task.* drive the task chips and outcome rows');
+}
+
+async function l1GoalUpdates() {
+  const t = await startL1Session();
+  t.push('goal.updated', {
+    agentId: 'main',
+    snapshot: { goalId: 'g1', objective: 'Create hello.txt', status: 'active', turnsUsed: 0, tokensUsed: 120, wallClockMs: 4000, budget: { tokenBudget: 5000 } },
+  });
+  await waitFor(() => t.events.byType('goal_changed').length === 1, 2000, 'goal');
+  const goal = t.events.byType('goal_changed')[0].goal;
+  assert.equal(goal.objective, 'Create hello.txt');
+  assert.equal(goal.status, 'active');
+  assert.equal(goal.tokenBudget, 5000);
+  assert.equal(goal.tokensUsed, 120);
+  assert.equal(goal.timeUsedSeconds, 4);
+  t.push('goal.updated', { agentId: 'main', snapshot: null });
+  await waitFor(() => t.events.byType('goal_changed').length === 2, 2000, 'goal cleared');
+  assert.equal(t.events.byType('goal_changed')[1].goal, null);
+  ok('goal.updated maps to goal_changed (null ends the goal)');
+}
+
+async function l1SessionOccupied() {
+  const t = await startL1Session();
+  t.state.failSubmitCode = 40931;
+  await t.adapter.sendTurn({ threadId: 'thread-1', prompt: 'hi', model: 'm' });
+  await waitFor(() => t.events.byType('error').length === 1, 2000, 'error');
+  assert.match(t.events.byType('error')[0].error.message, /open in another Kimi client/);
+  ok('session.occupied reads as a clear in-use message');
+}
+
+async function l1TitleSync() {
+  const t = await startL1Session();
+  await t.adapter.syncTitle(t.sid, '  Ship the login page  ');
+  const call = t.fetchImpl.calls.find((c) => c.path === `/api/v1/sessions/${t.sid}/profile`);
+  assert.equal(call?.method, 'POST');
+  assert.deepEqual(call.body, { title: 'Ship the login page' });
+  ok('syncTitle names the Kimi session after the Aegis title');
 }
 
 async function l1SubagentAttribution() {
@@ -2208,6 +2309,12 @@ const suites = [
   ['L1: error frame dedupe', l1ErrorFrameDedupe],
   ['L1: seq replay idempotence + volatile', l1SeqReplayIdempotence],
   ['L1: tool flow', l1ToolFlow],
+  ['L1: TodoList as TodoWrite', l1TodoListAsTodoWrite],
+  ['L1: tool.progress live output', l1ToolProgressStreams],
+  ['L1: background tasks', l1BackgroundTasks],
+  ['L1: goal updates', l1GoalUpdates],
+  ['L1: session occupied', l1SessionOccupied],
+  ['L1: title sync', l1TitleSync],
   ['L1: subagent attribution', l1SubagentAttribution],
   ['L1: subagent turn lifecycle isolation', l1SubagentTurnLifecycle],
   ['L1: stop settle', l1StopSettle],

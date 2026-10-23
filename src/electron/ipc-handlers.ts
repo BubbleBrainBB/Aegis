@@ -58,6 +58,7 @@ import { appendSessionReferences } from './libs/session-reference';
 import { buildHandoffBrief, collectHandoffTurns, readHandoffWorkspace } from './libs/session-handoff';
 import { extractAssistantText, isLocalUtilityAssistantText } from './libs/transcript-text';
 import { setupSessionTitleIPC } from './ipc/session-title';
+import { syncKimiSessionTitle } from './libs/kimi-title-sync';
 import { setupAttachmentIPC } from './ipc/attachments';
 import { setupScreenshotIPC } from './ipc/screenshot';
 import { ATTACHMENT_MIME_TYPES, MAX_ATTACHMENT_BYTES, attachmentSizeLimit } from '../shared/attachment-policy';
@@ -5459,6 +5460,8 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
         undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
         false, false, undefined, undefined, undefined, undefined, undefined, undefined, action);
     },
+    sendKimiGoalCommand: (session, command) =>
+      handleSessionContinue(mainWindow, { sessionId: session.id, prompt: command, provider: 'kimi' }),
     broadcast: event => broadcast(mainWindow, event),
   });
   setupSessionTitleIPC((event) => broadcast(mainWindow, event));
@@ -9751,6 +9754,7 @@ async function handleSessionStart(
       }
 
       if (!sessions.updateSessionTitle(session.id, trimmedTitle, session.title)) return;
+      syncKimiSessionTitle(session.id, trimmedTitle);
       const latest = sessions.getSession(session.id);
       const currentStatus = latest?.status || session.status || 'running';
       broadcast(mainWindow, {
@@ -10906,7 +10910,11 @@ function startRunner(
             sessions.updateSessionModel(session.id, message.model);
           }
         } else if (provider === 'kimi') {
+          const isNewKimiSession = sessions.getSession(session.id)?.kimi_session_id !== message.session_id;
           sessions.updateKimiSessionId(session.id, message.session_id);
+          // A title generated before the Kimi session existed reaches it now.
+          const currentTitle = sessions.getSession(session.id)?.title;
+          if (isNewKimiSession && currentTitle) syncKimiSessionTitle(session.id, currentTitle);
           if (message.model) {
             sessions.updateSessionModel(session.id, message.model);
           }
