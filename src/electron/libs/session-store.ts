@@ -3396,19 +3396,16 @@ function resolveUsageRowModel(
   return USAGE_PROVIDER_MODEL_FALLBACK[provider] || 'Unknown';
 }
 
-// A Devin row names the model in Devin's catalog words, plus the thinking
-// level it ran at ("Claude Opus 5.5 · High"): the id's own suffix is fixed
-// (claude-opus-5-5-medium at every level). Rows recorded before names and
-// levels were kept stay under the bare id, apart from newer rows. The level
-// label falls back as the composer's picker does.
+// A Devin row names the model id with the thinking level it ran at
+// ("claude-opus-5-5-high"): the id's own suffix is fixed
+// (claude-opus-5-5-medium at every level), so it gives way to the recorded
+// level. "max" stays, as it also ends model names (gpt-5.1-codex-max). Rows
+// recorded before levels were kept stay under the bare id.
+const DEVIN_ID_LEVEL_SUFFIX = /-(?:minimal|low|medium|high|xhigh)$/;
 function devinUsageLabel(model: string, result: StoredClaudeResultMessage): string {
   if (model === USAGE_PROVIDER_MODEL_FALLBACK.devin) return model;
-  const text = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
-  const label = text(result.modelLabel);
-  const name = label && text(result.model) === model ? label : model;
-  const level = text(result.thoughtLevel);
-  if (!level) return name;
-  return `${name} · ${text(result.thoughtLevelLabel) || level.charAt(0).toUpperCase() + level.slice(1)}`;
+  const level = typeof result.thoughtLevel === 'string' ? result.thoughtLevel.trim().toLowerCase() : '';
+  return level ? `${model.replace(DEVIN_ID_LEVEL_SUFFIX, '')}-${level}` : model;
 }
 
 /** Same historical repair and request-time pricing as the Usage report. */
