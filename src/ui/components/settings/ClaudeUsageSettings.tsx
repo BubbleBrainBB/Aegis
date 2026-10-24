@@ -1361,8 +1361,7 @@ function getProviderLogoForModel(model: string): string | null {
   }
 
   if (
-    // Devin rows use catalog names ("GPT-6.1 Sol", "GPT 5.5").
-    /^gpt[\s-]/.test(normalized) ||
+    normalized.startsWith('gpt-') ||
     normalized.startsWith('codex') ||
     normalized === 'chatgpt' ||
     /^o[134]/.test(normalized)
@@ -1372,9 +1371,9 @@ function getProviderLogoForModel(model: string): string | null {
 
   if (
     normalized.startsWith('claude-') ||
-    // Devin rows use catalog names ("Claude Opus 5.5 · High", "Sonnet 4.5").
-    normalized.startsWith('claude ') ||
-    /^(opus|sonnet|haiku)\b/.test(normalized)
+    normalized === 'opus' ||
+    normalized === 'sonnet' ||
+    normalized === 'haiku'
   ) {
     return claudeLogo;
   }

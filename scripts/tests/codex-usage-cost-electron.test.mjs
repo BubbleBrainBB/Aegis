@@ -194,19 +194,19 @@ app.whenReady().then(async()=>{
   store.addMessage(devin.id,result({model:'swe-2-high',costSource:'unavailable',usage:{input_tokens:500,output_tokens:5}}));
   store.addMessage(devin.id,result({model:'claude-opus-5-5-medium',modelLabel:'Claude Opus 5.5',thoughtLevel:'high',thoughtLevelLabel:'High',costSource:'unavailable',usage:{input_tokens:2000,output_tokens:20}}));
   store.addMessage(devin.id,result({model:'claude-opus-5-5-medium',modelLabel:'Claude Opus 5.5',thoughtLevel:'xhigh',thoughtLevelLabel:'XHigh',costSource:'unavailable',usage:{input_tokens:300,output_tokens:3}}));
-  // No catalog names recorded: the id stays whole (no suffix guessing) and the level reads as in the composer.
+  // "max" ends a model name, not a level suffix: the level is appended.
   store.addMessage(devin.id,result({model:'gpt-5.1-codex-max',thoughtLevel:'xhigh',costSource:'unavailable',usage:{input_tokens:40,output_tokens:1}}));
-  // A model without thinking control still shows its catalog name.
+  // A model without thinking control keeps its id, not its catalog name.
   store.addMessage(devin.id,result({model:'swe-2-medium',modelLabel:'SWE-2 Medium',costSource:'unavailable',usage:{input_tokens:20,output_tokens:1}}));
   // Malformed stored fields neither throw nor leak into the label.
-  store.addMessage(devin.id,result({model:'swe-2-medium',modelLabel:42,thoughtLevel:'high',thoughtLevelLabel:{},costSource:'unavailable',usage:{input_tokens:5,output_tokens:0}}));
+  store.addMessage(devin.id,result({model:'swe-2-medium',modelLabel:42,thoughtLevel:' Low ',thoughtLevelLabel:{},costSource:'unavailable',usage:{input_tokens:5,output_tokens:0}}));
   const devinModels=store.getAgentUsageReport('devin',365).models;
-  assert.deepEqual(devinModels.map(m=>m.model).sort(),['Claude Opus 5.5 · High','Claude Opus 5.5 · XHigh','SWE-2 Medium','claude-opus-5-5-medium','gpt-5.1-codex-max · Xhigh','swe-2-high','swe-2-medium · High'],'Devin rows keep their Claude name and split by recorded thinking level');
-  assert.equal(devinModels.find(m=>m.model==='Claude Opus 5.5 · High').inputTokens,2000);
+  assert.deepEqual(devinModels.map(m=>m.model).sort(),['claude-opus-5-5-high','claude-opus-5-5-medium','claude-opus-5-5-xhigh','gpt-5.1-codex-max-xhigh','swe-2-high','swe-2-low','swe-2-medium'],'Devin rows keep their Claude id and split by recorded thinking level');
+  assert.equal(devinModels.find(m=>m.model==='claude-opus-5-5-high').inputTokens,2000);
   // A row without a model id stays under the provider label, undecorated.
   const devinBare=store.createSession({provider:'devin',cwd:temp,title:'Devin without a model'});
   store.addMessage(devinBare.id,result({thoughtLevel:'high',costSource:'unavailable',usage:{input_tokens:7,output_tokens:0}}));
-  assert(store.getAgentUsageReport('devin',365).models.some(m=>m.model==='Devin'),'no "Devin · High"');
+  assert(store.getAgentUsageReport('devin',365).models.some(m=>m.model==='Devin'),'no "Devin-high"');
   // Pricing uses the model id, not the label: a level does not change a row's price or coverage.
   const devinPriced=store.createSession({provider:'devin',model:'claude-opus-4-7',cwd:temp,title:'Devin priced'});
   const pricedUsage={input_tokens:1000000,output_tokens:10000};
