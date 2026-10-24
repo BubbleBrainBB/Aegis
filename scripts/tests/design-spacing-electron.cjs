@@ -88,8 +88,15 @@ exports.run = async ({ w, js, repo, sessionId, documentId, screenshotDir }) => {
   };
   await js('document.querySelector(".design-viewport").focus()');
 
-  // N7: the nav is a flex row; padding bands and a gap handle appear.
+  // N7: the nav is a flex row. Guides start off; turned on from the zoom menu,
+  // padding bands and a gap handle appear.
   await select("nav");
+  await wait(200);
+  assert(await js('document.querySelectorAll("[data-spacing]").length===0'), "layout guides are off by default");
+  await js('document.querySelector(".design-zoom").click()');
+  await until(() => js('!!document.querySelector(".design-zoom-menu [role=menuitemcheckbox]")'), "zoom menu");
+  await js('document.querySelector(".design-zoom-menu [role=menuitemcheckbox]").click()');
+  await js('document.querySelector(".design-zoom").click()');
   await until(() => js('document.querySelectorAll(\'[data-spacing^="pad:"]\').length===4'), "padding handles");
   assert(await js('document.querySelectorAll(\'[data-spacing^="gap:"]\').length>=1'), "gap handle between children");
   assert(await js('document.querySelectorAll(".design-spacing-band").length>=4'), "padding bands shown");
