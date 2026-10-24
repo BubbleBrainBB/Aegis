@@ -878,6 +878,7 @@ export function PromptInput({
           claudeAccessMode: agentSelection.claudePermissionMode, claudeReasoningEffort: agentSelection.claudeReasoningEffort || undefined,
           model: selectedModel || undefined, codexPermissionMode: agentSelection.codexPermissionMode,
           codexReasoningEffort: agentSelection.codexReasoningEffort || undefined, codexFastMode: agentSelection.codexFastMode,
+          ...(agentSelection.provider === 'kimi' ? { kimiPermissionMode: agentSelection.kimiPermissionMode } : {}),
         });
         if (agentSelection.provider === 'claude') {
           agentSelection.setClaudeExecutionMode('execute');

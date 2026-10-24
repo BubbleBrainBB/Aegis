@@ -5460,8 +5460,8 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
         undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
         false, false, undefined, undefined, undefined, undefined, undefined, undefined, action);
     },
-    sendKimiGoalPrompt: (session, prompt) =>
-      handleSessionContinue(mainWindow, { sessionId: session.id, prompt, provider: 'kimi' }),
+    sendKimiGoalPrompt: (session, prompt, kimiPermissionMode) =>
+      handleSessionContinue(mainWindow, { sessionId: session.id, prompt, provider: 'kimi', kimiPermissionMode }),
     broadcast: event => broadcast(mainWindow, event),
   });
   setupSessionTitleIPC((event) => broadcast(mainWindow, event));

@@ -120,6 +120,21 @@ const OPENCODE_COMMAND_DEFINITIONS: Record<string, { title: string; description:
   unshare: { title: '/unshare', description: 'Unshare the current session' },
 };
 
+// Kimi builtins Aegis handles itself (the server does not parse slash text):
+// /goal opens Goal mode, /compact routes to the compact action. The adapter
+// also advertises /compact and skills once a session runs.
+const KIMI_COMMAND_DEFINITIONS: Record<
+  string,
+  { title: string; description: string; submitOnSelect?: boolean; inputHint?: string }
+> = {
+  goal: { title: '/goal', description: 'Set a goal to keep pursuing' },
+  compact: {
+    title: '/compact',
+    description: 'Summarize the conversation to free up context',
+    submitOnSelect: true,
+  },
+};
+
 // Codex builtins Aegis executes itself: the app-server has no slash-command
 // passthrough (turn text is literal), so only commands the codex adapter
 // intercepts and routes to dedicated RPCs (thread/compact/start,
@@ -589,7 +604,15 @@ export function buildProviderSlashCommands(
         GROK_COMMAND_DEFINITIONS
       );
     }
+    if (provider === 'kimi') {
+      // The session's list (compact + skills) lacks the Aegis-side /goal.
+      return mergeMissingDefaultCommands(commands, KIMI_COMMAND_DEFINITIONS);
+    }
     return commands;
+  }
+
+  if (provider === 'kimi') {
+    return buildDefaultCommandList(KIMI_COMMAND_DEFINITIONS);
   }
 
   if (provider === 'claude') {

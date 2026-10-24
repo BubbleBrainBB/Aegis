@@ -2,8 +2,16 @@ import assert from 'node:assert/strict';
 import { kimiGoalControlWord, kimiGoalStartPrompt, parseGoalInput, supportsGoalUI, type SessionGoalSnapshot, type ThreadGoal } from '../../src/shared/session-goal';
 import { changeKimiGoal, type KimiGoalDeps } from '../../src/electron/libs/kimi-goal';
 import { KimiServerApiError } from '../../src/electron/libs/provider/kimi-server-manager';
+import { buildProviderSlashCommands } from '../../src/ui/utils/claude-slash';
 
 assert.equal(supportsGoalUI('kimi'), true);
+// The slash menu offers /goal for Kimi: before a session, and merged into the session's commands.
+assert.ok(buildProviderSlashCommands('kimi').some((c) => c.name === 'goal'));
+assert.deepEqual(
+  buildProviderSlashCommands('kimi', [{ name: 'compact', title: '/compact', description: 'Compact', source: 'acp' }, { name: 'skill:review', title: '/skill:review', description: 'Review', source: 'acp' }])
+    .map((c) => c.name),
+  ['compact', 'goal', 'skill:review'],
+);
 assert.equal(kimiGoalStartPrompt(' pause the release '), '/goal -- pause the release', 'a subcommand word stays an objective');
 assert.equal(kimiGoalStartPrompt('-- Ship it'), '/goal -- Ship it', 'an explicit -- is not doubled');
 assert.equal(kimiGoalStartPrompt(parseGoalInput('/goal Ship the login page', false).objective), '/goal -- Ship the login page');

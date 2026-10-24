@@ -33,6 +33,8 @@ export interface GoalSettings {
   codexPermissionMode?: CodexPermissionMode;
   codexReasoningEffort?: CodexReasoningEffort;
   codexFastMode?: boolean;
+  /** The Kimi task's permission mode, for the messages a Kimi goal sends. */
+  kimiPermissionMode?: import('./types').KimiPermissionMode;
 }
 
 export function supportsGoalUI(provider?: string): boolean {

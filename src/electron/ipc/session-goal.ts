@@ -147,7 +147,11 @@ export function setupSessionGoalIPC(deps: {
   broadcast: (event: ServerEvent) => void;
   changeClaudeGoal?: (sessionId: string, action: GoalAction, settings: GoalSettings) => Promise<import('../libs/claude-goal').ClaudeGoalState>;
   /** Sends a Kimi goal's prompt (its objective, or `/goal --` before Kimi has the task) as the task's next message. */
-  sendKimiGoalPrompt?: (session: NonNullable<ReturnType<typeof sessions.getSession>>, prompt: string) => Promise<boolean>;
+  sendKimiGoalPrompt?: (
+    session: NonNullable<ReturnType<typeof sessions.getSession>>,
+    prompt: string,
+    kimiPermissionMode?: GoalSettings['kimiPermissionMode'],
+  ) => Promise<boolean>;
 }) {
   emit = deps.broadcast;
   onClaudeGoalChanged((id, state) => publishSessionGoal(id, state.goal, state.supported, state.resumeConfirmation));
@@ -167,13 +171,14 @@ export function setupSessionGoalIPC(deps: {
     if (!(adapter instanceof KimiAdapterFacade)) throw new Error('Kimi is not available.');
     return adapter;
   };
-  const changeKimiGoal = (session: NonNullable<ReturnType<typeof sessions.getSession>>, action: GoalAction) =>
+  const changeKimiGoal = (session: NonNullable<ReturnType<typeof sessions.getSession>>, action: GoalAction, settings: GoalSettings) =>
     changeKimiGoalWith(session, action, {
       adapter: getKimiAdapter(),
       cached: (id) => snapshots.get(id),
       publish: (id, goal) => publishSessionGoal(id, goal),
       forget: (id) => snapshots.delete(id),
-      sendPrompt: deps.sendKimiGoalPrompt && ((prompt) => deps.sendKimiGoalPrompt!(session, prompt)),
+      // Sent in the task's permission mode: without it Kimi falls back to asking.
+      sendPrompt: deps.sendKimiGoalPrompt && ((prompt) => deps.sendKimiGoalPrompt!(session, prompt, settings.kimiPermissionMode)),
       describeFailure: describeKimiFailure,
       isNoCurrentGoal: (error) => error instanceof KimiServerApiError && error.code === KIMI_NO_CURRENT_GOAL_CODE,
       kimiSessionId: (id) => sessions.getSession(id)?.kimi_session_id,
@@ -229,7 +234,7 @@ export function setupSessionGoalIPC(deps: {
           if (action.type === 'clear') snapshots.delete(sessionId);
           return publishSessionGoal(sessionId, state.goal, state.supported, state.resumeConfirmation);
         }
-        if (session.provider === 'kimi') return changeKimiGoal(session, action);
+        if (session.provider === 'kimi') return changeKimiGoal(session, action, settings);
         const adapter = getAdapter();
         let goal: ThreadGoal | null;
         if (settings.appendTranscript && action.type === 'set' && action.objective)

@@ -81,13 +81,19 @@ export function useSessionGoal(sessionId: string | undefined, enabled: boolean, 
     },
     change: async (action: GoalAction, settings?: GoalSettings) => {
       if (!sessionId) throw new Error('Start a task before changing its goal.');
-      const result = await window.electron.changeSessionGoal(sessionId, action, settings);
+      const target = useAppStore.getState().sessions[sessionId];
+      // A Kimi goal can send a message on the task (to start or resume the
+      // work): it runs in the task's permission mode, as composer sends do.
+      const sent = target?.provider === 'kimi' && target.kimiPermissionMode && !settings?.kimiPermissionMode
+        ? { ...settings, kimiPermissionMode: target.kimiPermissionMode }
+        : settings;
+      const result = await window.electron.changeSessionGoal(sessionId, action, sent);
       useSessionGoalStore.getState().apply(result);
       if (result.goal?.status === 'active') {
         const state = useAppStore.getState();
         const session = state.sessions[sessionId];
         if (session?.provider === 'claude') state.setSessionClaudeMode(sessionId, session.claudeAccessMode || 'default', 'execute');
-        else state.setSessionCodexExecutionMode(sessionId, 'execute');
+        else if (session?.provider === 'codex') state.setSessionCodexExecutionMode(sessionId, 'execute');
       }
       return result;
     },
