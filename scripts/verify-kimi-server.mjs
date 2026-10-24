@@ -233,7 +233,7 @@ function makeFakeFetch(state) {
     const modeRoute = /^\/api\/v1\/sessions\/([^/]+)\/(status|profile)$/.exec(u.pathname);
     if (modeRoute) {
       state.planModes ||= {};
-      if (method === 'POST') state.planModes[modeRoute[1]] = body.agent_config.plan_mode;
+      if (method === 'POST' && body.agent_config?.plan_mode !== undefined) state.planModes[modeRoute[1]] = body.agent_config.plan_mode;
       return respond(0, { plan_mode: state.planModes[modeRoute[1]] ?? false });
     }
     if (/\/prompts:steer$/.test(u.pathname)) {
@@ -610,10 +610,36 @@ async function l1GoalUpdates() {
   assert.equal(goal.tokenBudget, 5000);
   assert.equal(goal.tokensUsed, 120);
   assert.equal(goal.timeUsedSeconds, 4);
+  // ThreadGoal times are epoch seconds, and createdAt keys the completion row.
+  const nowSec = Date.now() / 1000;
+  assert.ok(Math.abs(goal.updatedAt - nowSec) < 5 && Math.abs(goal.createdAt - (nowSec - 4)) < 5, 'times in seconds');
+  t.push('goal.updated', {
+    agentId: 'main',
+    snapshot: { goalId: 'g1', objective: 'Create hello.txt', status: 'complete', tokensUsed: 300, wallClockMs: 9000, budget: {} },
+  });
+  await waitFor(() => t.events.byType('goal_changed').length === 2, 2000, 'goal complete');
+  assert.equal(t.events.byType('goal_changed')[1].goal.createdAt, goal.createdAt, 'createdAt stays fixed for one goal');
+  assert.equal(t.events.byType('goal_changed')[1].goal.status, 'complete');
   t.push('goal.updated', { agentId: 'main', snapshot: null });
-  await waitFor(() => t.events.byType('goal_changed').length === 2, 2000, 'goal cleared');
-  assert.equal(t.events.byType('goal_changed')[1].goal, null);
-  ok('goal.updated maps to goal_changed (null ends the goal)');
+  await waitFor(() => t.events.byType('goal_changed').length === 3, 2000, 'goal cleared');
+  assert.equal(t.events.byType('goal_changed')[2].goal, null);
+  t.push('goal.updated', { agentId: 'main', snapshot: { goalId: 'g2', objective: 'Next', status: 'someday', wallClockMs: 0, budget: {} } });
+  await waitFor(() => t.events.byType('goal_changed').length === 4, 2000, 'unknown status');
+  assert.equal(t.events.byType('goal_changed')[3].goal.status, 'blocked', 'an unknown status keeps the goal on screen');
+  ok('goal.updated maps to goal_changed (seconds, stable createdAt, null ends the goal)');
+}
+
+async function l1GoalApi() {
+  const t = await startL1Session();
+  const profileCalls = () => t.fetchImpl.calls.filter((c) => c.path === `/api/v1/sessions/${t.sid}/profile`).map((c) => c.body);
+  await t.adapter.changeGoal(t.sid, { control: 'pause' });
+  await t.adapter.changeGoal(t.sid, { objective: 'Ship it', replace: true });
+  assert.deepEqual(profileCalls(), [
+    { agent_config: { goal_control: 'pause' } },
+    { agent_config: { goal_control: 'cancel' } },
+    { agent_config: { goal_objective: 'Ship it' } },
+  ]);
+  ok('goal controls and objectives go through the session profile API');
 }
 
 async function l1SessionOccupied() {
@@ -2313,6 +2339,7 @@ const suites = [
   ['L1: tool.progress live output', l1ToolProgressStreams],
   ['L1: background tasks', l1BackgroundTasks],
   ['L1: goal updates', l1GoalUpdates],
+  ['L1: goal API', l1GoalApi],
   ['L1: session occupied', l1SessionOccupied],
   ['L1: title sync', l1TitleSync],
   ['L1: subagent attribution', l1SubagentAttribution],

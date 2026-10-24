@@ -10,7 +10,7 @@ import { deepseekImageInputError } from '../../shared/deepseek-images';
 import { confirmDialog } from './ui/confirm-dialog';
 import { useSessionGoal } from '../hooks/useSessionGoal';
 import { GoalModePill, SessionGoal } from './SessionGoal';
-import { buildGoalObjective, parseGoalInput, supportsGoalUI, isClaudeGoalClearObjective } from '../../shared/session-goal';
+import { buildGoalObjective, parseGoalInput, supportsGoalUI, isClaudeGoalClearObjective, kimiGoalControlWord } from '../../shared/session-goal';
 import {
   useState,
   useRef,
@@ -864,7 +864,9 @@ export function PromptInput({
       : {};
     if (isGoal && !activeSession.isDraft) {
       if (goalSubmitting) return;
-      if (sessionGoal.goal && sessionGoal.goal.status !== 'complete' && !(await confirmDialog({
+      // Kimi's typed `/goal pause|resume` is a control: nothing is replaced.
+      const kimiControl = agentSelection.provider === 'kimi' && kimiGoalControlWord(goalInput.objective) !== null;
+      if (!kimiControl && sessionGoal.goal && sessionGoal.goal.status !== 'complete' && !(await confirmDialog({
         title: 'Replace current goal?',
         description: `This will keep the chat but replace the saved goal with your current composer text.\n\n${displayPrompt}`,
         confirmLabel: 'Replace goal', cancelLabel: 'Cancel', tone: 'default',

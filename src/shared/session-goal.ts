@@ -40,17 +40,18 @@ export function supportsGoalUI(provider?: string): boolean {
 }
 
 /**
- * The Kimi Code `/goal` command for a Goal action: Kimi has no goal-mutation
- * API, its slash command is the control.
+ * The prompt that starts a Kimi Code goal in a task Kimi has not started yet
+ * (no server session to set it on). `--` keeps an objective that begins with
+ * a subcommand word (pause, cancel, …) an objective.
  */
-export function kimiGoalCommand(action: GoalAction, current: ThreadGoal | null): string {
-  if (action.type === 'clear') return '/goal cancel';
-  const objective = action.objective?.trim();
-  if (objective) {
-    // `--` keeps an objective that starts with a subcommand word an objective.
-    return current && current.status !== 'complete' ? `/goal replace ${objective}` : `/goal -- ${objective}`;
-  }
-  return action.status === 'paused' ? '/goal pause' : '/goal resume';
+export function kimiGoalStartPrompt(objective: string): string {
+  return `/goal -- ${objective.trim().replace(/^--\s*/, '')}`;
+}
+
+/** `/goal pause` / `/goal resume` typed for Kimi: a control, not an objective. */
+export function kimiGoalControlWord(value: string): 'pause' | 'resume' | null {
+  const word = value.trim().toLowerCase();
+  return word === 'pause' || word === 'resume' ? word : null;
 }
 
 export function isClaudeGoalClearObjective(value: string): boolean {

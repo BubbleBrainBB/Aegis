@@ -2,7 +2,6 @@ import { BrowserWindow } from 'electron';
 import { createHash } from 'node:crypto';
 import type { ServerEvent } from '../../shared/types';
 import {
-  kimiGoalCommand,
   validateGoalAction,
   type GoalAction,
   type GoalSettings,
@@ -13,6 +12,10 @@ import { ipcMainHandle } from '../util';
 import { getProviderService } from '../libs/provider/service';
 import { CodexAdapter } from '../libs/provider/codex-adapter';
 import { CodexRpcError } from '../libs/provider/codex-app-server-manager';
+import { KimiAdapterFacade } from '../libs/provider/kimi-adapter-facade';
+import { describeKimiFailure, KIMI_NO_CURRENT_GOAL_CODE } from '../libs/provider/kimi-server-adapter';
+import { KimiServerApiError } from '../libs/provider/kimi-server-manager';
+import { changeKimiGoal as changeKimiGoalWith } from '../libs/kimi-goal';
 import * as sessions from '../libs/session-store';
 import { onClaudeGoalChanged, readClaudeGoalState } from '../libs/claude-goal-manager';
 
@@ -98,8 +101,12 @@ export function publishSessionGoal(
   }
   if (!goal?.claude && !previous?.goal?.claude && goal?.status !== 'active' && previous?.goal?.status === 'active') {
     const adapter = getProviderService().getAdapter('codex');
+    const kimi = getProviderService().getAdapter('kimi');
     // Pause allows the current turn to finish; its normal result owns status.
-    if (!(adapter instanceof CodexAdapter && adapter.hasActiveGoalTurn(sessionId))) {
+    if (
+      !(adapter instanceof CodexAdapter && adapter.hasActiveGoalTurn(sessionId)) &&
+      !(kimi instanceof KimiAdapterFacade && kimi.hasActiveTurn(sessionId))
+    ) {
       sessions.updateSessionStatus(sessionId, 'completed');
       emit({ type: 'session.status', payload: { sessionId, status: 'completed' } });
     }
@@ -139,8 +146,8 @@ export function setupSessionGoalIPC(deps: {
   ) => void;
   broadcast: (event: ServerEvent) => void;
   changeClaudeGoal?: (sessionId: string, action: GoalAction, settings: GoalSettings) => Promise<import('../libs/claude-goal').ClaudeGoalState>;
-  /** Sends a Kimi `/goal …` command as the task's next message. */
-  sendKimiGoalCommand?: (session: NonNullable<ReturnType<typeof sessions.getSession>>, command: string) => Promise<boolean>;
+  /** Sends a Kimi goal's prompt (its objective, or `/goal --` before Kimi has the task) as the task's next message. */
+  sendKimiGoalPrompt?: (session: NonNullable<ReturnType<typeof sessions.getSession>>, prompt: string) => Promise<boolean>;
 }) {
   emit = deps.broadcast;
   onClaudeGoalChanged((id, state) => publishSessionGoal(id, state.goal, state.supported, state.resumeConfirmation));
@@ -155,14 +162,36 @@ export function setupSessionGoalIPC(deps: {
     if (!(adapter instanceof CodexAdapter)) throw new Error('Codex is not available.');
     return adapter;
   };
+  const getKimiAdapter = () => {
+    const adapter = getProviderService().getAdapter('kimi');
+    if (!(adapter instanceof KimiAdapterFacade)) throw new Error('Kimi is not available.');
+    return adapter;
+  };
+  const changeKimiGoal = (session: NonNullable<ReturnType<typeof sessions.getSession>>, action: GoalAction) =>
+    changeKimiGoalWith(session, action, {
+      adapter: getKimiAdapter(),
+      cached: (id) => snapshots.get(id),
+      publish: (id, goal) => publishSessionGoal(id, goal),
+      forget: (id) => snapshots.delete(id),
+      sendPrompt: deps.sendKimiGoalPrompt && ((prompt) => deps.sendKimiGoalPrompt!(session, prompt)),
+      describeFailure: describeKimiFailure,
+      isNoCurrentGoal: (error) => error instanceof KimiServerApiError && error.code === KIMI_NO_CURRENT_GOAL_CODE,
+      kimiSessionId: (id) => sessions.getSession(id)?.kimi_session_id,
+    });
   ipcMainHandle('get-session-goal', async (_, sessionId: string) => {
     const session = getSession(sessionId);
     if (session.provider === 'claude') {
       const state = readClaudeGoalState(sessionId);
       return publishSessionGoal(sessionId, state.goal, state.supported, state.resumeConfirmation);
     }
-    // Kimi pushes its goal (goal.updated) while the task runs.
-    if (session.provider === 'kimi') return snapshots.get(sessionId) ?? publishSessionGoal(sessionId, null);
+    // Kimi pushes its goal (goal.updated) while the task runs; otherwise it is
+    // read from the server when that runs (a restart keeps a paused goal).
+    if (session.provider === 'kimi') {
+      const cached = snapshots.get(sessionId);
+      if (cached || !session.kimi_session_id) return cached ?? publishSessionGoal(sessionId, null);
+      const goal = await getKimiAdapter().readGoal(session.kimi_session_id, sessionId).catch(() => undefined);
+      return snapshots.get(sessionId) ?? publishSessionGoal(sessionId, goal ?? null);
+    }
     if (!session.codex_session_id)
       return snapshots.get(sessionId) ?? publishSessionGoal(sessionId, null);
     const before = snapshots.get(sessionId)?.revision;
@@ -200,20 +229,7 @@ export function setupSessionGoalIPC(deps: {
           if (action.type === 'clear') snapshots.delete(sessionId);
           return publishSessionGoal(sessionId, state.goal, state.supported, state.resumeConfirmation);
         }
-        if (session.provider === 'kimi') {
-          // Kimi has no goal-mutation API: its `/goal` command is the control,
-          // and the resulting goal arrives through goal.updated.
-          if (!deps.sendKimiGoalCommand) throw new Error('Kimi Goal mode is not available.');
-          const current = snapshots.get(sessionId)?.goal ?? null;
-          const command = kimiGoalCommand(action, current);
-          if (!(await deps.sendKimiGoalCommand(session, command)))
-            throw new Error('Kimi did not accept the goal command. Try again when the task is idle.');
-          if (action.type === 'clear') {
-            snapshots.delete(sessionId);
-            return publishSessionGoal(sessionId, null);
-          }
-          return snapshots.get(sessionId) ?? publishSessionGoal(sessionId, current);
-        }
+        if (session.provider === 'kimi') return changeKimiGoal(session, action);
         const adapter = getAdapter();
         let goal: ThreadGoal | null;
         if (settings.appendTranscript && action.type === 'set' && action.objective)

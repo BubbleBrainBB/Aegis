@@ -324,6 +324,24 @@ export class KimiAdapterFacade implements ProviderAdapter {
     await this.server.syncTitle(kimiSessionId.slice(KIMI_SERVER_ID_PREFIX.length), title);
   }
 
+  /** Kimi's goal API for a stored (`server:`-prefixed) session id. */
+  async changeGoal(
+    kimiSessionId: string,
+    change: Parameters<KimiServerAdapter['changeGoal']>[1],
+  ): Promise<void> {
+    if (!kimiSessionId.startsWith(KIMI_SERVER_ID_PREFIX)) throw new Error('This Kimi task has no server session yet.');
+    await this.server.changeGoal(kimiSessionId.slice(KIMI_SERVER_ID_PREFIX.length), change);
+  }
+
+  hasActiveTurn(threadId: string): boolean {
+    return this.server.hasActiveTurn(threadId);
+  }
+
+  async readGoal(kimiSessionId: string, threadId: string): Promise<import('../../../shared/session-goal').ThreadGoal | null | undefined> {
+    if (!kimiSessionId.startsWith(KIMI_SERVER_ID_PREFIX)) return undefined;
+    return this.server.readGoal(kimiSessionId.slice(KIMI_SERVER_ID_PREFIX.length), threadId);
+  }
+
   async listSkills(input: ProviderListSkillsInput): Promise<ProviderListSkillsResult> {
     if (await isKimiServerCapable()) {
       return this.server.listSkills(input);
