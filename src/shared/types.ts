@@ -2009,6 +2009,8 @@ export type StreamMessage =
       /** Devin: the thinking level (thought_level) the turn ran at, and its catalog name. */
       thoughtLevel?: string;
       thoughtLevelLabel?: string;
+      /** Devin: what the turn billed (quota plans report messages only, credit plans also credits). */
+      devinBilling?: { agentMessages: number; credits: number };
       modelUsage?: Record<string, ClaudeModelUsage>;
       /** Provider-specific usage fold version for safe historical repair. */
       usageAccounting?: string;
@@ -2234,6 +2236,9 @@ export interface ClaudeUsageModelSummary {
   totalCostUsd: number;
   sessionCount: number;
   cacheReadTokens: number;
+  /** Devin: billed agent messages and credits. */
+  agentMessages?: number;
+  credits?: number;
 }
 
 export interface ClaudeUsageDailyPoint {
@@ -2241,6 +2246,9 @@ export interface ClaudeUsageDailyPoint {
   totalTokens: number;
   byModel: Record<string, number>;
   byModelCostUsd?: Record<string, number>;
+  /** Devin: billed agent messages and credits per model. */
+  byModelAgentMessages?: Record<string, number>;
+  byModelCredits?: Record<string, number>;
 }
 
 export interface ClaudeUsageReport {
@@ -2261,6 +2269,11 @@ export interface ClaudeUsageReport {
     sessionCount: number;
     cacheReadTokens: number;
     cacheHitRate: number;
+  };
+  /** Devin: billed totals; present for Devin reports only. */
+  billing?: {
+    agentMessages: number;
+    credits: number;
   };
   models: ClaudeUsageModelSummary[];
   daily: ClaudeUsageDailyPoint[];

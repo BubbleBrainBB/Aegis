@@ -126,6 +126,18 @@ async function handle(message) {
     state.level = 'xhigh';
     update(params.sessionId, { sessionUpdate: 'config_option_update', configOptions: config() });
     send({ id, result: { stopReason: 'end_turn', usage: { totalTokens: 1, inputTokens: 1, outputTokens: 0 } } });
+  } else if (method === 'session/prompt' && String(params.prompt?.[0]?.text).startsWith('CREDIT')) {
+    // A credit-billed account: credits as a dimension on one message, as creditCost on agent_stopped otherwise.
+    const dimension = String(params.prompt[0].text) === 'CREDIT-DIM';
+    send({ method: '_cognition.ai/turn_stats', params: { sessionId: params.sessionId, turnClientMessageId: 'c1', responseDimensions: [
+      { uid: 'agent_messages', kind: { type: 'cumulativeMetric', value: 1 } },
+      ...(dimension ? [{ uid: 'credits', kind: { type: 'cumulativeMetric', value: 1.5 } }] : []),
+    ] } });
+    send({ method: '_cognition.ai/agent_stopped', params: { cause: 'complete', stats: { creditCost: 0.75 } } });
+    send({ id, result: { stopReason: 'end_turn', usage: { totalTokens: 1, inputTokens: 1, outputTokens: 0 } } });
+  } else if (method === 'session/prompt' && String(params.prompt?.[0]?.text).startsWith('QUOTA')) {
+    send({ method: '_cognition.ai/agent_stopped', params: { cause: 'quota_exhausted' } });
+    send({ id, error: { code: -32011, message: 'Quota exhausted.', data: { 'cognition.ai/errorKind': 'resource_exhausted', 'cognition.ai/retryable': true } } });
   } else if (method === 'session/prompt' && openTurn) {
     openTurn.ids.push(id);
     openTurn.release();
@@ -177,6 +189,12 @@ async function handle(message) {
     log({ method: 'permission_response', params: decision });
     update(sid, { sessionUpdate: 'tool_call_update', toolCallId: curl, status: 'completed', content: [{ type: 'content', content: { type: 'text', text: 'HTTP/2 200' } }] });
     update(sid, { sessionUpdate: 'usage_update', used: 25000, size: 262000, _meta: { 'cognition.ai/inputTokens': 24900, 'cognition.ai/outputTokens': 100, 'cognition.ai/cachedReadTokens': 24000 } });
+    // As observed on a quota-billed (Max) account: messages, no credits.
+    send({ method: '_cognition.ai/turn_stats', params: { sessionId: sid, turnClientMessageId: 'm1', responseDimensions: [
+      { uid: 'agent_messages', groupTitle: 'Response Statistics', label: 'Agent messages', kind: { type: 'cumulativeMetric', value: 2, tail: ' message' } },
+      { uid: 'model', groupTitle: 'Response Statistics', label: 'Model', kind: { type: 'metric', value: 'SWE-2 High' } },
+      { uid: 'input_tokens', groupTitle: 'Token Usage', label: 'Input tokens', kind: { type: 'cumulativeMetric', value: 24900 } },
+    ] } });
     send({ method: '_cognition.ai/agent_stopped', params: { cause: 'complete' } });
     update(sid, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: ' Done.' } });
     send({ id, result: { stopReason: 'end_turn', usage: { totalTokens: 25000, inputTokens: 24900, outputTokens: 100, cachedReadTokens: 24000 } } });
@@ -251,7 +269,14 @@ async function waitFor(condition: () => boolean, label: string, ms = 5_000): Pro
 }
 
 async function main(): Promise<void> {
-  const { DevinAcpAdapter } = await import('../../src/electron/libs/provider/devin-acp-adapter');
+  const { DevinAcpAdapter, DEVIN_QUOTA_EXHAUSTED_MESSAGE, isDevinQuotaError } = await import('../../src/electron/libs/provider/devin-acp-adapter');
+  const { AcpJsonRpcError } = await import('../../src/electron/libs/provider/acp-json-rpc-client');
+
+  // ── Quota error detection ────────────────────────────────────────────────
+  assert.equal(isDevinQuotaError(new AcpJsonRpcError('session/prompt', -32011, { 'cognition.ai/errorKind': 'resource_exhausted' }, 'Something')), true);
+  assert.equal(isDevinQuotaError(new Error('Usage limit reached')), true);
+  assert.equal(isDevinQuotaError(new AcpJsonRpcError('session/prompt', -32603, 'transient', 'Internal error')), false);
+  assert.equal(isDevinQuotaError(undefined), false);
 
   // ── New session + one turn ────────────────────────────────────────────────
   {
@@ -371,6 +396,29 @@ async function main(): Promise<void> {
     assert.equal(result?.subtype, 'success');
     assert.equal(result?.usage.input_tokens, 24900);
     assert.equal(result?.usage.cache_read_input_tokens, 24000);
+    assert.deepEqual(
+      (result as { devinBilling?: unknown } | undefined)?.devinBilling,
+      { agentMessages: 2, credits: 0 },
+      'turn_stats billing (agent messages) lands on the result'
+    );
+
+    // Credit-billed turns: a credits dimension wins; agent_stopped creditCost is the fallback.
+    for (const [prompt, credits] of [['CREDIT-DIM', 1.5], ['CREDIT-STOP', 0.75]] as const) {
+      events.length = 0;
+      await withTimeout(adapter.sendTurn({ threadId: 't1', prompt, model: 'claude-opus-5-5-high', devinPermissionMode: 'smart' } as never), prompt);
+      const billed = events.find((event) => event.type === 'message' && (event.message as { type?: string }).type === 'result')?.message as { devinBilling?: unknown };
+      assert.deepEqual(billed?.devinBilling, { agentMessages: 1, credits }, `${prompt} bills ${credits} credits once`);
+    }
+
+    // Quota exhaustion ends the turn with a clear message pointing at Devin's usage settings.
+    events.length = 0;
+    await withTimeout(adapter.sendTurn({ threadId: 't1', prompt: 'QUOTA', model: 'claude-opus-5-5-high', devinPermissionMode: 'smart' } as never), 'quota turn');
+    const quotaError = events.find((event) => event.type === 'error')?.error as Error | undefined;
+    assert.equal(quotaError?.message, DEVIN_QUOTA_EXHAUSTED_MESSAGE);
+    assert.match(quotaError?.message ?? '', /https:\/\/app\.devin\.ai\/settings\/usage$/);
+    const quotaResult = events.find((event) => event.type === 'message' && (event.message as { type?: string }).type === 'result')?.message as { subtype?: string; devinBilling?: unknown };
+    assert.equal(quotaResult?.subtype, 'error');
+    assert.equal(quotaResult?.devinBilling, undefined, 'nothing billed, nothing recorded');
 
     // Model and mode switches apply live, before the next prompt.
     resetCalls();

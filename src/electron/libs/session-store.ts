@@ -3515,11 +3515,15 @@ function getClaudeProtocolUsageReport(
     totalTokens: number;
     byModel: Record<string, number>;
     byModelCostUsd: Record<string, number>;
+    byModelAgentMessages: Record<string, number>;
+    byModelCredits: Record<string, number>;
   }>();
   for (let index = 0; index < safeDays; index += 1) {
     const dayStart = rangeStart + index * DAY_MS;
-    dailyMap.set(formatDateKey(dayStart), { totalTokens: 0, byModel: {}, byModelCostUsd: {} });
+    dailyMap.set(formatDateKey(dayStart), { totalTokens: 0, byModel: {}, byModelCostUsd: {}, byModelAgentMessages: {}, byModelCredits: {} });
   }
+  // Devin bills in agent messages (quota plans) and credits (credit plans).
+  const devinBilling = provider === 'devin' ? { agentMessages: 0, credits: 0 } : null;
 
   const sessionIds = new Set<string>();
   const modelSummaries = new Map<string, ClaudeUsageModelSummary>();
@@ -3667,6 +3671,19 @@ function getClaudeProtocolUsageReport(
       dayBucket.byModelCostUsd[fallbackModel] =
         (dayBucket.byModelCostUsd[fallbackModel] || 0) + (resultCostUsd ?? 0);
     }
+
+    if (devinBilling) {
+      const agentMessages = toNumber(result.devinBilling?.agentMessages);
+      const credits = toNumber(result.devinBilling?.credits);
+      devinBilling.agentMessages += agentMessages;
+      devinBilling.credits += credits;
+      summary.agentMessages = (summary.agentMessages || 0) + agentMessages;
+      summary.credits = (summary.credits || 0) + credits;
+      if (dayBucket && (agentMessages || credits)) {
+        dayBucket.byModelAgentMessages[fallbackModel] = (dayBucket.byModelAgentMessages[fallbackModel] || 0) + agentMessages;
+        dayBucket.byModelCredits[fallbackModel] = (dayBucket.byModelCredits[fallbackModel] || 0) + credits;
+      }
+    }
   }
 
   const modelList = Array.from(modelSummaries.values())
@@ -3693,12 +3710,14 @@ function getClaudeProtocolUsageReport(
       cacheReadTokens: totalCacheReadTokens,
       cacheHitRate: cacheDenominator > 0 ? totalCacheReadTokens / cacheDenominator : 0,
     },
+    ...(devinBilling ? { billing: devinBilling } : {}),
     models: modelList,
     daily: Array.from(dailyMap.entries()).map(([date, bucket]) => ({
       date,
       totalTokens: bucket.totalTokens,
       byModel: bucket.byModel,
       byModelCostUsd: bucket.byModelCostUsd,
+      ...(devinBilling ? { byModelAgentMessages: bucket.byModelAgentMessages, byModelCredits: bucket.byModelCredits } : {}),
     })),
   };
 

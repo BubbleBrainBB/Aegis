@@ -7,7 +7,7 @@ import { EventEmitter } from 'events';
 import { readFileSync } from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import { buildDevinEnv, listDevinSkills, resolveDevinBinary } from '../devin-cli';
-import { AcpJsonRpcClient, type AcpJsonRpcIncomingRequest } from './acp-json-rpc-client';
+import { AcpJsonRpcClient, AcpJsonRpcError, type AcpJsonRpcIncomingRequest } from './acp-json-rpc-client';
 import type {
   ProviderAdapter,
   ProviderAdapterCapabilities,
@@ -76,8 +76,47 @@ interface DevinTurn {
   outstanding: number;
   /** Usage per Devin user message; prompts folded into one turn share an id. */
   usage: Map<string, Record<string, unknown>>;
+  /** Billing Devin reports per user message (`_cognition.ai/turn_stats`). */
+  billing: Map<string, DevinBilling>;
+  /** Credits from `_cognition.ai/agent_stopped`, used when turn_stats has none. */
+  stoppedCredits: number;
+  quotaExhausted: boolean;
   refused: boolean;
   error?: Error;
+}
+
+interface DevinBilling {
+  agentMessages: number;
+  credits: number;
+}
+
+const DEVIN_USAGE_SETTINGS_URL = 'https://app.devin.ai/settings/usage';
+export const DEVIN_QUOTA_EXHAUSTED_MESSAGE =
+  `Devin quota exhausted. Purchase on-demand usage, turn on auto-reload, or wait for your quota to reset: ${DEVIN_USAGE_SETTINGS_URL}`;
+
+/**
+ * What a turn_stats payload bills. Quota-billed plans report only an
+ * "Agent messages" dimension; credit-billed accounts also report credits
+ * (as a dimension or `creditCost`).
+ */
+export function readDevinTurnBilling(params: Record<string, unknown> | undefined): DevinBilling {
+  const billing: DevinBilling = { agentMessages: 0, credits: 0 };
+  for (const dimension of getArray(params?.responseDimensions)) {
+    const record = getRecord(dimension);
+    const uid = getString(record?.uid).toLowerCase();
+    const value = getNumber(getRecord(record?.kind)?.value);
+    if (uid === 'agent_messages') billing.agentMessages += value;
+    else if (uid.includes('credit')) billing.credits += value;
+  }
+  if (!billing.credits) billing.credits = getNumber(params?.creditCost);
+  return billing;
+}
+
+/** Devin's quota/usage-limit refusal (JSON-RPC -32011 resource_exhausted). */
+export function isDevinQuotaError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const kind = error instanceof AcpJsonRpcError ? getString(getRecord(error.data)?.['cognition.ai/errorKind']) : '';
+  return kind === 'resource_exhausted' || /quota exhausted|usage limit reached/i.test(error.message);
 }
 
 interface ActiveDevinSession {
@@ -820,7 +859,7 @@ export class DevinAcpAdapter implements ProviderAdapter {
         session.permissionMode = normalizeDevinPermissionMode(input.devinPermissionMode) ?? session.permissionMode;
         turn.outstanding += 1;
       } else {
-        turn = { startedAt: Date.now(), outstanding: 1, usage: new Map(), refused: false };
+        turn = { startedAt: Date.now(), outstanding: 1, usage: new Map(), billing: new Map(), stoppedCredits: 0, quotaExhausted: false, refused: false };
         session.turn = turn;
         session.status = 'running';
         session.currentAssistant = undefined;
@@ -870,6 +909,16 @@ export class DevinAcpAdapter implements ProviderAdapter {
       cacheReadTokens += getNumber(usage.cachedReadTokens);
       totalTokens += getNumber(usage.totalTokens) || getNumber(usage.inputTokens) + getNumber(usage.outputTokens);
     }
+    let agentMessages = 0;
+    let credits = 0;
+    for (const billing of turn.billing.values()) {
+      agentMessages += billing.agentMessages;
+      credits += billing.credits;
+    }
+    credits ||= turn.stoppedCredits;
+    if (turn.quotaExhausted || isDevinQuotaError(turn.error)) {
+      turn.error = new Error(DEVIN_QUOTA_EXHAUSTED_MESSAGE);
+    }
     session.status = turn.error ? 'error' : 'completed';
     this.emit({
       type: 'message',
@@ -887,6 +936,7 @@ export class DevinAcpAdapter implements ProviderAdapter {
           cache_read_input_tokens: cacheReadTokens,
           total_tokens: totalTokens,
         },
+        ...(agentMessages > 0 || credits > 0 ? { devinBilling: { agentMessages, credits } } : {}),
         model: session.model,
         ...(session.model && session.modelLabels.has(session.model) ? { modelLabel: session.modelLabels.get(session.model) } : {}),
         ...(session.thoughtLevel
@@ -1150,9 +1200,19 @@ export class DevinAcpAdapter implements ProviderAdapter {
   // ── ACP routing ──────────────────────────────────────────────────────────
 
   private handleNotification(binding: SessionBinding, method: string, params?: Record<string, unknown>): void {
-    // `_cognition.ai/*` extension notifications (MCP log lines, thinking
-    // timers, agent_stopped stats) carry nothing the transcript needs.
+    // Of the `_cognition.ai/*` extension notifications (MCP log lines,
+    // thinking timers, stats) only billing and a quota stop matter.
     if (method !== 'session/update') {
+      const turn = binding.session && this.sessions.get(binding.session.threadId) === binding.session
+        ? binding.session.turn
+        : undefined;
+      if (!turn) return;
+      if (method === '_cognition.ai/turn_stats') {
+        turn.billing.set(getString(params?.turnClientMessageId) || uuidv4(), readDevinTurnBilling(params));
+      } else if (method === '_cognition.ai/agent_stopped') {
+        if (getString(params?.cause) === 'quota_exhausted') turn.quotaExhausted = true;
+        turn.stoppedCredits += getNumber(getRecord(params?.stats)?.creditCost);
+      }
       return;
     }
     const update = getRecord(params?.update) as DevinSessionUpdate | null;
