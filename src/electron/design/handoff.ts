@@ -55,6 +55,9 @@ export function handOffDesign(input: { sessionId: string; documentId: string; bo
     "## Implementing",
     "- Build these screens with the project's own components, styles and tokens; the HTML is a reference for layout, type, spacing and copy, not code to paste in.",
     "- Match the layout and hierarchy; where the project already has a pattern for something, use it.",
+    ...(chosen.some((b) => b.html.includes("data-aegis-starter"))
+      ? ['- Elements marked data-aegis-starter="frame" or "chrome" are a presentation frame (device bezel, status bar, browser or window chrome): build only what is inside data-aegis-starter="content".']
+      : []),
     "- Ask before adding a dependency.",
     "",
   ].join("\n");

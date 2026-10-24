@@ -71,6 +71,31 @@ app.whenReady().then(async () => {
     const guide = await call(info.url, a, 'design_guide', { topics: ['structure'] });
     assert.match(guide.result.content[0].text, /data-aegis-layer-name/);
 
+    // A starter frame goes through the real save path and renders without warnings.
+    const starter = (await call(info.url, a, 'design_starter', { kind: 'ios-phone', theme: 'dark' })).result.content[0].text;
+    const frame = starter.match(/```html\n([\s\S]+?)\n```/)[1]
+      .replace(/(data-aegis-starter="content"[^>]*>)\s*/, '$1<h1 style="margin:16px 20px;font-size:34px">设置</h1>');
+    assert.equal((await call(info.url, a, 'design_starter', { kind: 'ios-phone', width: 9 })).result.isError, true);
+    const framed = json(await call(info.url, a, 'design_update', {
+      documentId: created.id, operationId: 'op-frame', summary: 'Framed Settings',
+      operations: [{ type: 'add', name: 'Settings', width: 510, height: 964, html: `<body style="margin:0;display:flex;align-items:center;justify-content:center;min-height:964px;background:#ecebe8">${frame}</body>` }],
+    }));
+    const framedBoard = framed.boards.find((b) => b.name === 'Settings');
+    const framedHtml = json(await call(info.url, a, 'design_read', { documentId: created.id, boardId: framedBoard.id })).boards[0].html;
+    assert.equal((framedHtml.match(/data-aegis-starter=/g) || []).length, 4, 'starter marks survive saving');
+    assert.match(framedHtml, /data-aegis-layer-name="Status bar" data-aegis-starter="chrome" data-aegis-locked="true"/);
+    const framedPreview = json(await call(info.url, a, 'design_preview', { documentId: created.id, boardId: framedBoard.id, revision: framed.revision }));
+    assert.deepEqual(framedPreview.warnings, [], 'the framed board renders cleanly');
+
+    // HTML sent as entities is refused before it reaches the canvas.
+    const escaped = await call(info.url, a, 'design_update', {
+      documentId: created.id, operationId: 'op-escaped',
+      operations: [{ type: 'add', name: 'Escaped', html: '&lt;style&gt;h1{color:red}&lt;/style&gt;&lt;main&gt;&lt;h1&gt;Hi&lt;/h1&gt;&lt;/main&gt;' }],
+    });
+    assert.equal(escaped.result.isError, true);
+    assert.match(escaped.result.content[0].text, /operations\[0\]\.html is HTML-escaped[\s\S]*Nothing was saved[\s\S]*literal < and >/);
+    assert.ok(!json(await call(info.url, a, 'design_read', { documentId: created.id })).boards.some((b) => b.name === 'Escaped'), 'nothing was saved');
+
     // Another session's runtime cannot see or touch session-a's design.
     const b = await scoped('session-b');
     assert.deepEqual(json(await call(info.url, b, 'design_read', {})), []);

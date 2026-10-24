@@ -8,10 +8,17 @@ const tags = new Set(
     .split(" "),
 );
 const attrs = new Set(
-  "class id style title role type value placeholder disabled checked selected for name width height viewbox d fill stroke stroke-width stroke-linecap stroke-linejoin opacity x y x1 y1 x2 y2 cx cy r rx ry points transform offset stop-color stop-opacity preserveaspectratio clip-path colspan rowspan alt data-aegis-node-id data-aegis-layer-name data-aegis-hidden data-aegis-locked data-aegis-tweaks".split(
+  "class id style title role type value placeholder disabled checked selected for name width height viewbox d fill stroke stroke-width stroke-linecap stroke-linejoin opacity x y x1 y1 x2 y2 cx cy r rx ry points transform offset stop-color stop-opacity preserveaspectratio clip-path colspan rowspan alt data-aegis-node-id data-aegis-layer-name data-aegis-hidden data-aegis-locked data-aegis-tweaks data-aegis-starter".split(
     " ",
   ),
 );
+export function looksEscapedMarkup(html: string): boolean {
+  const escaped = (html.match(/&lt;\/?[a-z][a-z0-9-]*(?:\s|&gt;|\/)/gi) ?? []).length;
+  if (escaped < 3) return false;
+  const real = (html.match(/<\/?[a-z][a-z0-9-]*(?:\s|>|\/)/gi) ?? []).length;
+  return real === 0 || (/^\s*&lt;[a-z!]/i.test(html) && escaped > real);
+}
+
 export function sanitizeDesignHtml(html: string): string {
   if (typeof html !== "string" || new TextEncoder().encode(html).length > 1_000_000)
     throw new Error("HTML must be text of at most 1 MB.");

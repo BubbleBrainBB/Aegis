@@ -1,12 +1,15 @@
 import {
   DESIGN_COMMENTS_TOOL, DESIGN_CREATE_TOOL, DESIGN_GUIDE_TOOL, DESIGN_PREVIEW_TOOL, DESIGN_READ_TOOL,
-  DESIGN_REPLY_TOOL, DESIGN_RESOURCES_TOOL, DESIGN_UPDATE_TOOL, designToolNameOf,
+  DESIGN_REPLY_TOOL, DESIGN_RESOURCES_TOOL, DESIGN_STARTER_TOOL, DESIGN_UPDATE_TOOL, designToolNameOf,
 } from '../../shared/design-tools';
 import type { ToolStatus } from '../types';
 
 const record = (value: unknown): Record<string, unknown> =>
   value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 const text = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : '');
+const STARTER_LABELS: Record<string, string> = {
+  'ios-phone': 'iOS phone', 'android-phone': 'Android phone', 'browser-window': 'browser window', 'macos-window': 'macOS window',
+};
 
 /** What a design operation did, in the user's words ("Added Pricing", "Edited 2 boards"). */
 function describeOperations(operations: unknown): string {
@@ -52,5 +55,7 @@ export function designToolDisplay(name: string, input: unknown, status: ToolStat
         verb: pending ? 'Reading' : 'Read',
         target: args.name ? `the ${text(args.kind) || 'design system'} ${text(args.name)}` : 'the project design system',
       };
+    case DESIGN_STARTER_TOOL:
+      return { verb: pending ? 'Getting' : 'Got', target: `the ${STARTER_LABELS[text(args.kind)] ?? 'device'} frame` };
   }
 }
