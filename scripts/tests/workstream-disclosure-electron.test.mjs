@@ -16,6 +16,7 @@ import {WorkstreamActivityLabel} from '/src/ui/components/WorkstreamPrimitives';
 import {Tooltip} from '@base-ui-components/react/tooltip';
 import {useAppPreferences} from '/src/ui/store/useAppPreferences';
 import {useAppStore} from '/src/ui/store/useAppStore';
+import {useDesignStore} from '/src/ui/store/useDesignStore';
 import {StreamRetryTracker} from '/src/electron/libs/stream-retry-tracker';
 import '/src/ui/index.css';
 window.electron = {
@@ -24,7 +25,7 @@ window.electron = {
  getSessionGoal:async()=>({goal:null,supported:false,revision:0}),onSessionGoalChanged:()=>()=>{},
  getBubbleProvidersConfig:async()=>({providers:[]}),
  getProjectFolders:async()=>[],getModels:async()=>[],
- design:{read:async({documentId})=>({id:documentId,title:'Lift log',revision:3,boards:[]}),onChanged:()=>()=>{}},
+ design:{read:async({documentId})=>({id:documentId,title:'Lift log',revision:3,boards:[{id:'b-home',name:'Home · today',x:0,y:0,width:390,height:844,html:'<main>Home</main>',contentRevision:2,placementRevision:1},{id:'b-new',name:'Workout · in progress',x:480,y:0,width:390,height:844,html:'<main>Workout</main>',contentRevision:1,placementRevision:1}]}),onChanged:()=>()=>{}},
  readProjectFilePreview:async()=>{const c=document.createElement('canvas');c.width=320;c.height=240;const x=c.getContext('2d');x.fillStyle='#c5d2bf';x.fillRect(0,0,320,240);return {kind:'image',dataUrl:c.toDataURL()}},
 };
 for(const p of ['Claude','Kimi','Grok','Opencode','Pi','Bubble','Qoder','Deepseek','Devin','Mimo','Minimax','Codex'])window.electron['get'+p+'ModelConfig']=async()=>({defaultModel:null,options:[],availableModels:[]});
@@ -54,6 +55,7 @@ const model = (entries, running=true, durationMs) => ({state:running?'running':'
 function App(){
  const [n,setN]=useState(10),[running,setRunning]=useState(true),[turn,setTurn]=useState(1),[states,setStates]=useState(false),[chat,setChat]=useState(false),[label,setLabel]=useState('Reading first.ts'),[labelActive,setLabelActive]=useState(true),[shellDone,setShellDone]=useState(false);
  window.qa={emit,
+  designFocus:()=>{const f=useDesignStore.getState().focusRequest;return f?f.documentId+':'+f.boardId:null},
   persistedRetryTurn:()=>{retryTracker.reset();retryHistory=[];store.setState(s=>({sessions:{...s.sessions,[chatId]:{...s.sessions[chatId],provider:'claude',status:'running',messages:[],streaming:{isStreaming:false,text:'',thinking:''}}}}));emitTracked({...prompt,createdAt:Date.now()});emitTracked({...thought,createdAt:Date.now(),agentId:'qa-profile',agentRunId:'qa-run'});emitTracked({type:'stream_event',event:{type:'content_block_delta',index:0,delta:{type:'thinking_delta',thinking:'Durable reasoning before retry'}}});emitTracked({type:'system',subtype:'api_retry',uuid:'durable-retry',session_id:chatId,attempt:1,maxRetries:10,delayMs:500,errorStatus:null})},
   reloadRetryHistory:(status='running')=>store.getState().handleServerEvent({type:'session.history',payload:{sessionId:chatId,status,messages:JSON.parse(JSON.stringify(retryHistory))}}),
   resumeTracked:()=>emitTracked({type:'stream_event',event:{type:'content_block_delta',index:0,delta:{type:'thinking_delta',thinking:'Recovered reasoning'}}}),
@@ -70,8 +72,10 @@ function App(){
    store.setState(s=>({sessions:{...s.sessions,[chatId]:{...s.sessions[chatId],provider,status:stage==='completed'?'completed':'running',messages}}}));
   },
   designTurn:(provider,stage)=>{
-   const update={type:'assistant',uuid:'design-tool',createdAt:1200,message:{content:[{type:'tool_use',id:'design-edit',name:'mcp__aegis-sessions__design_update',input:{documentId:'doc-1',operationId:'op',operations:[]}}]}};
-   const done={type:'user',uuid:'design-result',createdAt:1400,message:{content:[{type:'tool_result',tool_use_id:'design-edit',content:'{"id":"doc-1"}'}]}};
+   const update={type:'assistant',uuid:'design-tool',createdAt:1200,message:{content:[{type:'tool_use',id:'design-edit',name:'mcp__aegis-sessions__design_update',input:{documentId:'doc-1',operationId:'op',operations:[{type:'content',boardId:'b-home',expectedRevision:1,html:'<main>Home</main>'},{type:'add',name:'Workout · in progress',html:'<main>Workout</main>'}]}}]}};
+   const json='{"id":"doc-1","boards":[{"id":"b-home"},{"id":"b-new"}]}';
+   // Claude-style agents return content parts; others a plain string.
+   const done={type:'user',uuid:'design-result',createdAt:1400,message:{content:[{type:'tool_result',tool_use_id:'design-edit',content:provider==='grok'?[{type:'text',text:json}]:json}]}};
    const reply={type:'assistant',uuid:'design-reply',createdAt:1800,...(provider==='codex'?{phase:'final_answer'}:{}),message:{content:[{type:'text',text:'The home board is ready.'}]}};
    const messages=[{...prompt,createdAt:provider==='grok'?1005:1006},{...thought,uuid:provider+'-design-thought'},update,done,...(stage==='running'?[]:[reply])];
    store.setState(s=>({sessions:{...s.sessions,[chatId]:{...s.sessions[chatId],provider,status:stage==='completed'?'completed':'running',messages}}}));
@@ -263,6 +267,10 @@ app.whenReady().then(async()=>{
    assert.equal(await js('!!document.querySelector("#real-chat [data-design-card]")'),false,provider+': no design card while the turn runs');
    await js('qa.designTurn('+JSON.stringify(provider)+',"completed")');
    await until('document.querySelector("#real-chat [data-design-card=doc-1]")?.textContent.includes("Lift log")','design card when the turn ends');
+   assert(await js('document.querySelector("#real-chat [data-design-card=doc-1]").textContent.startsWith("Added 1 board · Updated 1 · Lift log")'),provider+': the card sums up what the turn did');
+   assert.deepEqual(await js('[...document.querySelectorAll("#real-chat [data-design-board-chip]")].map(c=>c.dataset.designBoardChip)'),['b-new','b-home'],provider+': a chip per touched board, added first');
+   await click('#real-chat [data-design-board-chip=b-new]');
+   assert.equal(await js('qa.designFocus()'),'doc-1:b-new',provider+': a chip asks the canvas to show that board');
    assert.equal(await js('document.querySelector("#real-chat .workstream-toggle-row button")?.getAttribute("aria-expanded")'),'false',provider+': completed design turn collapses its trace');
    assert(await js('(()=>{const card=document.querySelector("#real-chat [data-design-card]"),reply=[...document.querySelectorAll("#real-chat p")].find(p=>p.textContent.startsWith("The home board is ready."));const r=card.getBoundingClientRect();return !!reply&&r.height>0&&r.top>=reply.getBoundingClientRect().bottom})()'),provider+': design card shows after the reply, outside the collapsed trace');
    await click('#real-chat .workstream-toggle-row button');

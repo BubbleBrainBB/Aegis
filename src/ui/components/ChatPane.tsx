@@ -49,7 +49,7 @@ import { ComputerUseGrantBadge, ComputerUseLiveHud } from './ComputerUseLiveHud'
 import { ErrorBoundary } from './ErrorBoundary';
 import { TurnChangesCard } from './TurnChangesCard';
 import { DesignChatCard } from './design/DesignChatCard';
-import { designDocumentIdsInMessages } from '../utils/design-entries';
+import { designChangesInMessages, type DesignTurnChange } from '../utils/design-entries';
 import { followUpCallsInMessages, type FollowUpCall } from '../utils/follow-up-entries';
 import { workDisclosureScope, type WorkDisclosureScope } from '../utils/work-disclosure-scope';
 import { findTimelineItemWithToolCall, findToolCallMessage, findWorkGroupWithToolCall } from '../utils/tool-call-lookup';
@@ -1395,14 +1395,14 @@ export function ChatPane({
     return map;
   }, [turnEndByTimelineIndex, turns]);
   const designCardsByTimelineIndex = useMemo(() => {
-    const map = new Map<number, string[]>();
+    const map = new Map<number, DesignTurnChange[]>();
     if (!session) return map;
     for (const [index, turn] of turnEndByTimelineIndex) {
-      const ids = designDocumentIdsInMessages(
+      const changes = designChangesInMessages(
         session.messages.slice(turn.firstMessageIndex, turn.lastMessageIndex + 1),
         toolResultsMap
       );
-      if (ids.length) map.set(index, ids);
+      if (changes.length) map.set(index, changes);
     }
     return map;
   }, [turnEndByTimelineIndex, session?.messages, toolResultsMap]);
@@ -2125,10 +2125,10 @@ export function ChatPane({
                     ? <GeneratedMediaGallery items={answerMedia} cwd={session.cwd ?? null} />
                     : null;
                   const turnCard = turnCardByTimelineIndex.get(idx);
-                  const designIds = designCardsByTimelineIndex.get(idx);
-                  const designCards = designIds && sessionId
-                    ? designIds.map((documentId) => (
-                        <DesignChatCard key={documentId} sessionId={sessionId} documentId={documentId} />
+                  const designChanges = designCardsByTimelineIndex.get(idx);
+                  const designCards = designChanges && sessionId
+                    ? designChanges.map((change) => (
+                        <DesignChatCard key={change.documentId} sessionId={sessionId} change={change} />
                       ))
                     : null;
                   const followUpCalls = followUpCardsByTimelineIndex.get(idx);
