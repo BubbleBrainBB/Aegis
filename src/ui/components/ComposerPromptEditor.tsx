@@ -6,6 +6,7 @@ import {
   useImperativeHandle,
   useLayoutEffect,
   useMemo,
+  useReducer,
   useRef,
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
@@ -15,6 +16,12 @@ import { getFileTypeIconVisual } from './FileTypeIcon';
 import { extractProjectFileMentions } from '../utils/project-file-mentions';
 import { extractKnownSiteLinkTokens } from '../utils/known-site-links';
 import { faviconUrlForHostname, isFaviconPlaceholder } from '../utils/link-favicons';
+import {
+  computeMarkdownStyles,
+  isMarkdownTokenActive,
+  markdownClassName,
+  type MarkdownToken,
+} from '../utils/composer-markdown';
 
 // Tabler IconWorld — same icon the browser panel uses (exported as Globe from
 // components/icons); the composer chip is built with raw DOM nodes, so the
@@ -86,6 +93,26 @@ function isSegmentElement(node: Node | null | undefined): boolean {
   );
 }
 
+// Zero-width text kept after a hidden closing marker at the end of the prompt,
+// so the caret (and IME composition text) has a visible place to sit.
+const CARET_ANCHOR_TEXT = '\u200B';
+
+function isCaretAnchor(node: Node | null | undefined): boolean {
+  return node instanceof HTMLElement && node.hasAttribute('data-composer-caret-anchor');
+}
+
+function caretAnchorText(node: Node): string {
+  return (node.textContent || '').replaceAll(CARET_ANCHOR_TEXT, '');
+}
+
+/** Non-serialized helper nodes: the trailing break and an untouched caret anchor. */
+function isEditorScaffold(node: Node): boolean {
+  return (
+    (node instanceof HTMLElement && node.hasAttribute('data-composer-trailing-break')) ||
+    (isCaretAnchor(node) && caretAnchorText(node) === '')
+  );
+}
+
 function isImeKeyboardEvent(event: ReactKeyboardEvent<HTMLDivElement>): boolean {
   return event.nativeEvent.isComposing === true || event.keyCode === 229 || event.key === 'Process';
 }
@@ -104,6 +131,10 @@ function getChildTextLength(node: ChildNode): number {
 
   if (isSegmentElement(node)) {
     return node.dataset.rawText?.length || 0;
+  }
+
+  if (isCaretAnchor(node)) {
+    return caretAnchorText(node).length;
   }
 
   return Array.from(node.childNodes).reduce((total, child) => total + getChildTextLength(child), 0);
@@ -164,23 +195,20 @@ function getCursorIndex(root: HTMLDivElement, selectedRange?: Range): number {
     return startOffset <= 0 ? offset : offset + tokenLength;
   }
 
-  if (startContainer.nodeType === Node.TEXT_NODE) {
-    return offset + startOffset;
-  }
+  // Text inside a direct child (a plain text node or a Markdown style span).
+  const prefix = document.createRange();
+  prefix.selectNodeContents(directChild);
+  prefix.setEnd(startContainer, startOffset);
+  const text = prefix.toString();
+  return offset + (isCaretAnchor(directChild) ? text.replaceAll(CARET_ANCHOR_TEXT, '') : text).length;
+}
 
-  if (startContainer instanceof HTMLElement) {
-    const walker = document.createTreeWalker(startContainer, NodeFilter.SHOW_TEXT);
-    let textNode = walker.nextNode();
-    while (textNode) {
-      if (textNode === range.startContainer) {
-        return offset + startOffset;
-      }
-      offset += textNode.textContent?.length || 0;
-      textNode = walker.nextNode();
-    }
-  }
+function isMarkdownSpan(node: Node | null | undefined): node is HTMLElement {
+  return node instanceof HTMLElement && node.hasAttribute('data-composer-md');
+}
 
-  return offset;
+function isHiddenMarker(node: Node | null | undefined): boolean {
+  return isMarkdownSpan(node) && node.hasAttribute('data-md-hide') && !node.hasAttribute('data-md-active');
 }
 
 interface CaretAnchor {
@@ -295,6 +323,12 @@ function createCursorRange(root: HTMLDivElement, index: number): Range {
   const range = document.createRange();
 
   const children = Array.from(root.childNodes);
+  const anchor = children.at(-1);
+  if (targetIndex === getSerializedLength(root) && isCaretAnchor(anchor) && anchor?.firstChild) {
+    range.setStart(anchor.firstChild, anchor.firstChild.textContent?.length ?? 0);
+    range.collapse(true);
+    return range;
+  }
   const trailingBreakIndex = children.findIndex(
     (child) => child instanceof HTMLElement && child.hasAttribute('data-composer-trailing-break')
   );
@@ -323,6 +357,22 @@ function createCursorRange(root: HTMLDivElement, index: number): Range {
     }
 
     if (remaining <= childLength) {
+      // At the end of a Markdown style span, prefer the start of a following
+      // plain text node so typing continues unstyled instead of growing the span.
+      // A hidden marker has no caret height, so also step into a following
+      // visible span.
+      const next = child.nextSibling;
+      const nextText =
+        next?.nodeType === Node.TEXT_NODE
+          ? next
+          : isMarkdownSpan(next) && isHiddenMarker(child) && !isHiddenMarker(next)
+            ? next.firstChild
+            : null;
+      if (remaining === childLength && isMarkdownSpan(child) && nextText) {
+        range.setStart(nextText, 0);
+        range.collapse(true);
+        return range;
+      }
       const textNode =
         child.nodeType === Node.TEXT_NODE
           ? child
@@ -384,6 +434,10 @@ function serializeEditorValue(root: HTMLDivElement): string {
 
     if (isSegmentElement(node)) {
       return node.dataset.rawText || '';
+    }
+
+    if (isCaretAnchor(node)) {
+      return caretAnchorText(node);
     }
 
     return Array.from(node.childNodes)
@@ -544,34 +598,127 @@ function createSlashNode(
   return chip;
 }
 
-function renderSegments(
-  root: HTMLDivElement,
-  value: string,
-  slashContext?: SlashTokenContext,
-  slashDisplayLabels?: Record<string, string>,
-  plainText = false
-): void {
+type EditorPart =
+  | { type: 'text'; text: string; className?: string; token?: number }
+  | { type: 'chip'; segment: Exclude<PromptSegment, { type: 'text' }> };
+
+interface EditorView {
+  parts: EditorPart[];
+  tokens: MarkdownToken[];
+}
+
+/**
+ * Flat list of editor children for `value`: atomic chips plus text runs, where
+ * runs carrying Markdown styles become single-text-node spans. Hideable syntax
+ * runs keep their token so markers can be revealed around the caret. Plain
+ * text mode keeps links and Markdown literal.
+ */
+function buildEditorView(value: string, slashContext?: SlashTokenContext, plainText = false): EditorView {
   const segments: PromptSegment[] = splitPromptIntoComposerSegments(value, slashContext);
-  root.replaceChildren();
-
+  const placed: Array<{ segment: PromptSegment; start: number }> = [];
+  let offset = 0;
   for (const segment of segments) {
-    if (segment.type === 'text') {
-      root.append(document.createTextNode(segment.text));
-      continue;
-    }
-
-    if (segment.type === 'mention') {
-      root.append(createMentionNode(segment.path, segment.text));
-      continue;
-    }
-
-    if (segment.type === 'link') {
-      root.append(plainText ? document.createTextNode(segment.text) : createLinkNode(segment.url, segment.label, segment.text));
-      continue;
-    }
-
-    root.append(createSlashNode(segment.kind, segment.name, segment.text, slashDisplayLabels));
+    placed.push({ segment, start: offset });
+    offset += segment.text.length;
   }
+  const isText = (segment: PromptSegment) => segment.type === 'text' || (plainText && segment.type === 'link');
+  const styles = plainText
+    ? null
+    : computeMarkdownStyles(
+        value,
+        placed
+          .filter(({ segment }) => !isText(segment))
+          .map(({ segment, start }) => ({ start, end: start + segment.text.length }))
+      );
+
+  const parts: EditorPart[] = [];
+  const pushText = (text: string, className?: string, token?: number) => {
+    const last = parts.at(-1);
+    if (!className && last?.type === 'text' && !last.className) last.text += text;
+    else parts.push({ type: 'text', text, ...(className && { className }), ...(token !== undefined && { token }) });
+  };
+  for (const { segment, start } of placed) {
+    if (!isText(segment)) {
+      parts.push({ type: 'chip', segment: segment as Exclude<PromptSegment, { type: 'text' }> });
+      continue;
+    }
+    if (!styles) {
+      pushText(segment.text);
+      continue;
+    }
+    const { flags, tokenOf } = styles;
+    const end = start + segment.text.length;
+    let runStart = start;
+    for (let index = start + 1; index <= end; index += 1) {
+      if (index < end && flags[index] === flags[runStart] && tokenOf[index] === tokenOf[runStart]) continue;
+      const runFlags = flags[runStart]!;
+      const token = tokenOf[runStart]!;
+      pushText(value.slice(runStart, index), runFlags ? markdownClassName(runFlags) : undefined, token >= 0 ? token : undefined);
+      runStart = index;
+    }
+  }
+  return { parts, tokens: styles?.tokens ?? [] };
+}
+
+function isHiddenMarkerPart(part: EditorPart | undefined): boolean {
+  return part?.type === 'text' && part.token !== undefined;
+}
+
+/** Shows the syntax markers of tokens around `caret`; null hides them all. */
+function revealMarkers(root: HTMLDivElement, view: EditorView, caret: number | null): void {
+  let index = 0;
+  for (const child of Array.from(root.childNodes)) {
+    if (isEditorScaffold(child)) continue;
+    const part = view.parts[index++];
+    if (!isMarkdownSpan(child) || part?.type !== 'text' || part.token === undefined) continue;
+    const active = caret !== null && isMarkdownTokenActive(view.tokens[part.token]!, caret);
+    child.toggleAttribute('data-md-active', active);
+  }
+}
+
+function createEditorPartNode(part: EditorPart, slashDisplayLabels?: Record<string, string>): Node {
+  if (part.type === 'text') {
+    if (!part.className) return document.createTextNode(part.text);
+    const span = document.createElement('span');
+    span.setAttribute('data-composer-md', '');
+    if (part.token !== undefined) span.setAttribute('data-md-hide', '');
+    span.className = part.className;
+    span.textContent = part.text;
+    return span;
+  }
+  const { segment } = part;
+  if (segment.type === 'mention') return createMentionNode(segment.path, segment.text);
+  if (segment.type === 'link') return createLinkNode(segment.url, segment.label, segment.text);
+  return createSlashNode(segment.kind, segment.name, segment.text, slashDisplayLabels);
+}
+
+/** Whether the editor DOM already shows `parts`, so typing need not re-render. */
+function editorMatchesParts(root: HTMLDivElement, parts: EditorPart[]): boolean {
+  const children = Array.from(root.childNodes).filter((child) => !isEditorScaffold(child));
+  if (children.length !== parts.length) return false;
+  return parts.every((part, index) => {
+    const child = children[index]!;
+    if (part.type === 'chip') {
+      return (
+        isSegmentElement(child) &&
+        (child as HTMLElement).dataset.segmentType === part.segment.type &&
+        (child as HTMLElement).dataset.rawText === part.segment.text
+      );
+    }
+    if (!part.className) return child.nodeType === Node.TEXT_NODE && child.textContent === part.text;
+    return (
+      isMarkdownSpan(child) &&
+      child.className === part.className &&
+      child.hasAttribute('data-md-hide') === (part.token !== undefined) &&
+      child.childNodes.length === 1 &&
+      child.firstChild?.nodeType === Node.TEXT_NODE &&
+      child.textContent === part.text
+    );
+  });
+}
+
+function renderEditorParts(root: HTMLDivElement, parts: EditorPart[], slashDisplayLabels?: Record<string, string>): void {
+  root.replaceChildren(...parts.map((part) => createEditorPartNode(part, slashDisplayLabels)));
 }
 
 function removeMentionAdjacentToCursor(
@@ -664,6 +811,11 @@ export const ComposerPromptEditor = forwardRef<
   const lastRenderedSlashContextRef = useRef<SlashTokenContext | undefined>(undefined);
   const lastRenderedSlashDisplayLabelsRef = useRef<Record<string, string> | undefined>(undefined);
   const displayHasValue = useMemo(() => props.value.length > 0, [props.value]);
+  const view = useMemo(
+    () => buildEditorView(props.value, props.slashContext, plainText),
+    [plainText, props.slashContext, props.value]
+  );
+  const [compositionRevision, syncAfterComposition] = useReducer((count: number) => count + 1, 0);
   useImperativeHandle(
     ref,
     () => ({
@@ -723,19 +875,16 @@ export const ComposerPromptEditor = forwardRef<
     const slashContextChanged = lastRenderedSlashContextRef.current !== props.slashContext;
     const slashDisplayLabelsChanged =
       lastRenderedSlashDisplayLabelsRef.current !== props.slashDisplayLabels;
+    // Typing inside an unchanged run keeps the DOM (and native undo) intact;
+    // opening or closing Markdown syntax restyles it.
     const needsRender =
       valueChanged ||
       slashContextChanged ||
       slashDisplayLabelsChanged ||
-      lastPlainText.current !== plainText;
+      lastPlainText.current !== plainText ||
+      !editorMatchesParts(editorRef.current, view.parts);
     if (needsRender) {
-      renderSegments(
-        editorRef.current,
-        props.value,
-        props.slashContext,
-        props.slashDisplayLabels,
-        plainText
-      );
+      renderEditorParts(editorRef.current, view.parts, props.slashDisplayLabels);
       lastPlainText.current = plainText;
       lastRenderedSlashContextRef.current = props.slashContext;
       lastRenderedSlashDisplayLabelsRef.current = props.slashDisplayLabels;
@@ -757,7 +906,21 @@ export const ComposerPromptEditor = forwardRef<
       existingTrailingBreak?.remove();
     }
 
-    if (document.activeElement !== editorRef.current) {
+    const existingAnchor = editorRef.current.querySelector('[data-composer-caret-anchor]');
+    if (isHiddenMarkerPart(view.parts.at(-1))) {
+      if (!existingAnchor) {
+        const anchor = document.createElement('span');
+        anchor.setAttribute('data-composer-caret-anchor', '');
+        anchor.textContent = CARET_ANCHOR_TEXT;
+        editorRef.current.append(anchor);
+      }
+    } else {
+      existingAnchor?.remove();
+    }
+
+    const focused = document.activeElement === editorRef.current;
+    revealMarkers(editorRef.current, view, focused ? props.cursorIndex : null);
+    if (!focused) {
       return;
     }
 
@@ -777,6 +940,8 @@ export const ComposerPromptEditor = forwardRef<
       isApplyingSelectionRef.current = false;
     });
   }, [
+    compositionRevision,
+    view,
     plainText,
     props.cursorIndex,
     props.slashContext,
@@ -973,8 +1138,12 @@ export const ComposerPromptEditor = forwardRef<
         onKeyUp={handleSelect}
         onFocus={() => {
           if (editorRef.current) {
+            revealMarkers(editorRef.current, view, props.cursorIndex);
             setCursorIndex(editorRef.current, props.cursorIndex);
           }
+        }}
+        onBlur={() => {
+          if (editorRef.current) revealMarkers(editorRef.current, view, null);
         }}
         onCompositionStart={() => {
           isComposingRef.current = true;
@@ -984,6 +1153,9 @@ export const ComposerPromptEditor = forwardRef<
           isComposingRef.current = false;
           props.onCompositionEnd?.();
           handleInput();
+          // The committed value may equal the one already reported mid-composition,
+          // so make sure the DOM is reconciled (Markdown restyle, caret anchor).
+          syncAfterComposition();
         }}
       />
     </div>

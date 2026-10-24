@@ -22,6 +22,7 @@ import {
   type ReactNode,
 } from 'react';
 import { ArrowElbowRight, CornerDownRight, MousePointer, Plus, Square, Trash2 } from './icons';
+import { ComposerMarkdownPreview, ComposerMarkdownPreviewToggle, useComposerMarkdownPreview } from './ComposerMarkdownPreview';
 import { toast } from 'sonner';
 import { getSessionReferenceCapabilityError } from '../../shared/session-links';
 import { useAppStore } from '../store/useAppStore';
@@ -663,6 +664,7 @@ export function PromptInput({
       return true;
     },
   });
+  const markdownPreview = useComposerMarkdownPreview(capabilityMenu.displayPrompt, editorRef, targetSessionId);
 
   const projectFileMentions = useProjectFileMentions({
     cwd: activeSession?.cwd,
@@ -1675,9 +1677,10 @@ export function PromptInput({
             }
             disabled={pendingStart || approvalPending}
             placeholderClassName={isLandingSurface ? 'inset-x-4 top-3 text-[14px] leading-[21px]' : undefined}
-            className="w-full bg-transparent px-4 pt-3 pb-1 text-[14px] outline-none resize-none min-h-[56px] max-h-[200px] disabled:opacity-50"
+            className={`w-full bg-transparent px-4 pt-3 pb-1 text-[14px] outline-none resize-none min-h-[56px] max-h-[200px] disabled:opacity-50${markdownPreview.active ? ' hidden' : ''}`}
             autoFocus={isLandingSurface}
           />
+          <ComposerMarkdownPreview value={capabilityMenu.displayPrompt} preview={markdownPreview} />
 
           <div className="aegis-composer-toolbar flex items-end justify-between gap-2 px-2.5 pb-2">
             <div className="aegis-composer-leading-controls flex min-w-0 flex-1 items-center gap-1 overflow-visible">
@@ -1693,6 +1696,7 @@ export function PromptInput({
               >
                 <Plus className="h-4 w-4" />
               </button>
+              <ComposerMarkdownPreviewToggle preview={markdownPreview} />
               {leadingControls}
               {(sessionGoal.drafting || (sessionGoal.goal && sessionGoal.goal.status !== 'complete')) && <GoalModePill onExit={() => {
                 if (sessionGoal.snapshot?.goal) void sessionGoal.change({ type: 'clear' }).then(() => sessionGoal.setDraft(false)).catch(error => toast.error(String(error)));
