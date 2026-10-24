@@ -95,6 +95,13 @@ interface ActiveDevinSession {
   /** Current `thought_level` and the levels the current model offers. */
   thoughtLevel?: string;
   thoughtLevelIds: Set<string>;
+  /** The current model's levels are not known (a switch reply without options). */
+  thoughtLevelsUnknown?: boolean;
+  /** `model:level` Devin refused; not re-sent every turn. */
+  rejectedThoughtLevel?: string;
+  /** Catalog display names of the models and levels, by id. */
+  modelLabels: Map<string, string>;
+  thoughtLevelLabels: Map<string, string>;
   /** Thinking level the composer asked for; reconciled before every turn. */
   requestedThoughtLevel?: string;
   /** Mode the agent last reported (current_mode_update). */
@@ -264,6 +271,24 @@ function extractModelIds(configOptions: unknown): Set<string> {
     }
   }
   return ids;
+}
+
+/** Display names of a select's options (model, thought_level), by value. */
+function extractOptionLabels(configOptions: unknown, key: string): Map<string, string> {
+  const labels = new Map<string, string>();
+  const visit = (entries: unknown): void => {
+    for (const entry of getArray(entries)) {
+      const record = getRecord(entry);
+      if (!record) continue;
+      if (Array.isArray(record.options)) visit(record.options);
+      else if (getString(record.value) && getString(record.name).trim()) labels.set(getString(record.value), getString(record.name).trim());
+    }
+  };
+  for (const option of getArray(configOptions)) {
+    const record = getRecord(option);
+    if (record && (getString(record.id) === key || getString(record.category) === key)) visit(record.options);
+  }
+  return labels;
 }
 
 function extractTextContent(content: unknown): string {
@@ -622,6 +647,10 @@ export class DevinAcpAdapter implements ProviderAdapter {
     session.rejectedModel = undefined;
     session.thoughtLevel = thought.current;
     session.thoughtLevelIds = thought.ids;
+    session.thoughtLevelsUnknown = false;
+    session.rejectedThoughtLevel = undefined;
+    session.modelLabels = extractOptionLabels(configOptions, 'model');
+    session.thoughtLevelLabels = extractOptionLabels(configOptions, 'thought_level');
     session.currentMode =
       getString(getRecord(connection.sessionRecord?.modes)?.currentModeId) || connection.binding.currentMode || undefined;
   }
@@ -674,6 +703,8 @@ export class DevinAcpAdapter implements ProviderAdapter {
         cwd: input.cwd,
         modelIds: new Set(),
         thoughtLevelIds: new Set(),
+        modelLabels: new Map(),
+        thoughtLevelLabels: new Map(),
         requestedThoughtLevel: normalizeDevinThoughtLevel(input.devinThoughtLevel),
         permissionMode: normalizeDevinPermissionMode(input.devinPermissionMode),
         proc: connection.proc,
@@ -857,6 +888,13 @@ export class DevinAcpAdapter implements ProviderAdapter {
           total_tokens: totalTokens,
         },
         model: session.model,
+        ...(session.model && session.modelLabels.has(session.model) ? { modelLabel: session.modelLabels.get(session.model) } : {}),
+        ...(session.thoughtLevel
+          ? {
+            thoughtLevel: session.thoughtLevel,
+            ...(session.thoughtLevelLabels.has(session.thoughtLevel) ? { thoughtLevelLabel: session.thoughtLevelLabels.get(session.thoughtLevel) } : {}),
+          }
+          : {}),
       },
     });
     if (turn.error) {
@@ -1027,9 +1065,21 @@ export class DevinAcpAdapter implements ProviderAdapter {
       if (ids.size > 0) session.modelIds = ids;
       session.rejectedModel = undefined;
       // A model switch resets thought_level to that model's own default.
-      const thought = extractThoughtLevels(result?.configOptions);
-      session.thoughtLevel = thought.current;
-      session.thoughtLevelIds = thought.ids;
+      if (Array.isArray(result?.configOptions)) {
+        const thought = extractThoughtLevels(result.configOptions);
+        session.thoughtLevel = thought.current;
+        session.thoughtLevelIds = thought.ids;
+        session.thoughtLevelsUnknown = false;
+        const modelLabels = extractOptionLabels(result.configOptions, 'model');
+        if (modelLabels.size > 0) session.modelLabels = modelLabels;
+        session.thoughtLevelLabels = extractOptionLabels(result.configOptions, 'thought_level');
+      } else {
+        // No options in the reply: the level and the model's levels are unknown
+        // until Devin confirms them, so the composer's level is tried as is.
+        session.thoughtLevel = undefined;
+        session.thoughtLevelIds = new Set();
+        session.thoughtLevelsUnknown = true;
+      }
     } catch (error) {
       // An id the account no longer offers: keep the session's current model.
       session.rejectedModel = requested;
@@ -1039,23 +1089,39 @@ export class DevinAcpAdapter implements ProviderAdapter {
 
   /**
    * Runs after applyModel: a model switch resets the level, so the composer's
-   * choice is re-applied whenever the model's levels include it. A level the
-   * current model does not offer is left to Devin's per-model default.
+   * choice is re-applied whenever the model's levels include it (or are not
+   * known yet). A level the current model does not offer, or that Devin
+   * refused for it, is left to Devin's per-model default.
    */
   private async applyThoughtLevel(session: ActiveDevinSession, level: string | undefined): Promise<void> {
     const requested = normalizeDevinThoughtLevel(level) ?? session.requestedThoughtLevel;
     session.requestedThoughtLevel = requested;
-    if (!requested || requested === session.thoughtLevel || !session.thoughtLevelIds.has(requested)) {
-      return;
+    if (!requested || requested === session.thoughtLevel) return;
+    if (!session.thoughtLevelsUnknown && !session.thoughtLevelIds.has(requested)) return;
+    const key = `${session.model ?? ''}:${requested}`;
+    if (session.rejectedThoughtLevel === key) return;
+    try {
+      const result = getRecord(
+        await session.rpc.request('session/set_config_option', {
+          sessionId: session.providerSessionId,
+          configId: 'thought_level',
+          value: requested,
+        })
+      );
+      const thought = extractThoughtLevels(result?.configOptions);
+      session.thoughtLevel = thought.current || requested;
+      if (thought.found) {
+        session.thoughtLevelIds = thought.ids;
+        session.thoughtLevelsUnknown = false;
+      }
+      const labels = extractOptionLabels(result?.configOptions, 'thought_level');
+      if (labels.size > 0) session.thoughtLevelLabels = labels;
+      session.rejectedThoughtLevel = undefined;
+    } catch (error) {
+      // Devin keeps its own level; the turn runs (and is recorded) at that one.
+      session.rejectedThoughtLevel = key;
+      console.warn('[Devin ACP] could not set thought_level:', error instanceof Error ? error.message : error);
     }
-    const result = getRecord(
-      await session.rpc.request('session/set_config_option', {
-        sessionId: session.providerSessionId,
-        configId: 'thought_level',
-        value: requested,
-      })
-    );
-    session.thoughtLevel = extractThoughtLevels(result?.configOptions).current || requested;
   }
 
   /**
@@ -1281,10 +1347,16 @@ export class DevinAcpAdapter implements ProviderAdapter {
         const ids = extractModelIds(update.configOptions);
         if (ids.size > 0) session.modelIds = ids;
         const thought = extractThoughtLevels(update.configOptions);
-        if (thought.found) {
+        // A full list (it has the model select) without a thought_level select
+        // means the current model has no thinking control.
+        if (thought.found || extractConfigValue(update.configOptions, 'model')) {
           session.thoughtLevel = thought.current;
           session.thoughtLevelIds = thought.ids;
+          session.thoughtLevelsUnknown = false;
+          session.thoughtLevelLabels = extractOptionLabels(update.configOptions, 'thought_level');
         }
+        const modelLabels = extractOptionLabels(update.configOptions, 'model');
+        if (modelLabels.size > 0) session.modelLabels = modelLabels;
         break;
       }
       case 'current_mode_update':

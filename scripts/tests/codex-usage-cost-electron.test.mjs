@@ -188,6 +188,40 @@ app.whenReady().then(async()=>{
   assert.equal(minimaxReport.costMode,'estimated');
   near(minimaxReport.totals.totalCostUsd,(2*(21937*.15+66048*.015+179*.6)+(21937*.3+66048*.06+179*1.2)+170*.15)/1e6);
   assert.equal(minimaxReport.models.find(m=>m.model==='MiniMax-M3.1-Flash').inputTokens,2*21937+170,'the stopped usage row counts toward its model');
+  // Devin's model ids are its own catalog: a Claude name is the model picked, not an SDK alias.
+  const devin=store.createSession({provider:'devin',model:'claude-opus-5-5-medium',cwd:temp,title:'Devin on Opus'});
+  store.addMessage(devin.id,result({model:'claude-opus-5-5-medium',costSource:'unavailable',usage:{input_tokens:1000,output_tokens:10}}));
+  store.addMessage(devin.id,result({model:'swe-2-high',costSource:'unavailable',usage:{input_tokens:500,output_tokens:5}}));
+  store.addMessage(devin.id,result({model:'claude-opus-5-5-medium',modelLabel:'Claude Opus 5.5',thoughtLevel:'high',thoughtLevelLabel:'High',costSource:'unavailable',usage:{input_tokens:2000,output_tokens:20}}));
+  store.addMessage(devin.id,result({model:'claude-opus-5-5-medium',modelLabel:'Claude Opus 5.5',thoughtLevel:'xhigh',thoughtLevelLabel:'XHigh',costSource:'unavailable',usage:{input_tokens:300,output_tokens:3}}));
+  // No catalog names recorded: the id stays whole (no suffix guessing) and the level reads as in the composer.
+  store.addMessage(devin.id,result({model:'gpt-5.1-codex-max',thoughtLevel:'xhigh',costSource:'unavailable',usage:{input_tokens:40,output_tokens:1}}));
+  // A model without thinking control still shows its catalog name.
+  store.addMessage(devin.id,result({model:'swe-2-medium',modelLabel:'SWE-2 Medium',costSource:'unavailable',usage:{input_tokens:20,output_tokens:1}}));
+  // Malformed stored fields neither throw nor leak into the label.
+  store.addMessage(devin.id,result({model:'swe-2-medium',modelLabel:42,thoughtLevel:'high',thoughtLevelLabel:{},costSource:'unavailable',usage:{input_tokens:5,output_tokens:0}}));
+  const devinModels=store.getAgentUsageReport('devin',365).models;
+  assert.deepEqual(devinModels.map(m=>m.model).sort(),['Claude Opus 5.5 · High','Claude Opus 5.5 · XHigh','SWE-2 Medium','claude-opus-5-5-medium','gpt-5.1-codex-max · Xhigh','swe-2-high','swe-2-medium · High'],'Devin rows keep their Claude name and split by recorded thinking level');
+  assert.equal(devinModels.find(m=>m.model==='Claude Opus 5.5 · High').inputTokens,2000);
+  // A row without a model id stays under the provider label, undecorated.
+  const devinBare=store.createSession({provider:'devin',cwd:temp,title:'Devin without a model'});
+  store.addMessage(devinBare.id,result({thoughtLevel:'high',costSource:'unavailable',usage:{input_tokens:7,output_tokens:0}}));
+  assert(store.getAgentUsageReport('devin',365).models.some(m=>m.model==='Devin'),'no "Devin · High"');
+  // Pricing uses the model id, not the label: a level does not change a row's price or coverage.
+  const devinPriced=store.createSession({provider:'devin',model:'claude-opus-4-7',cwd:temp,title:'Devin priced'});
+  const pricedUsage={input_tokens:1000000,output_tokens:10000};
+  const before=store.getAgentUsageReport('devin',365);
+  store.addMessage(devinPriced.id,result({model:'claude-opus-4-7',usage:pricedUsage}));
+  const plain=store.getAgentUsageReport('devin',365);
+  store.addMessage(devinPriced.id,result({model:'claude-opus-4-7',modelLabel:'Claude Opus 4.7',thoughtLevel:'high',usage:pricedUsage}));
+  const leveled=store.getAgentUsageReport('devin',365);
+  assert(plain.totals.totalCostUsd>before.totals.totalCostUsd,'the Devin id is priced');
+  near(leveled.totals.totalCostUsd-plain.totals.totalCostUsd,plain.totals.totalCostUsd-before.totals.totalCostUsd);
+  assert.equal(leveled.costMode,plain.costMode,'the level does not change cost coverage');
+  const grok=store.createSession({provider:'grok',model:'claude-sonnet-4-6',cwd:temp,title:'Grok under an alias'});
+  store.addMessage(grok.id,result({model:'claude-sonnet-4-6',costSource:'unavailable',usage:{input_tokens:100,output_tokens:1}}));
+  const grokModels=store.getAgentUsageReport('grok',365).models.map(m=>m.model);
+  assert(grokModels.includes('Grok')&&!grokModels.includes('claude-sonnet-4-6'),'an SDK alias still falls back to the provider label');
   const win=new BrowserWindow({width:1140,height:900,show:false,webPreferences:{backgroundThrottling:false}});
   const errors=[];win.webContents.on('console-message',e=>{if(e.level==='error')errors.push(e.message)});
   const js=code=>win.webContents.executeJavaScript(code);

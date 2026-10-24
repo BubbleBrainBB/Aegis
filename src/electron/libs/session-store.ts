@@ -3361,10 +3361,15 @@ function looksLikeClaudeModelAlias(value: string): boolean {
   return /^claude[-\s]/i.test(value) || /^(opus|sonnet|haiku)\b/i.test(value);
 }
 
+// Providers whose model ids come from their own catalog: a Claude name there
+// (Devin's claude-opus-…) is the model the user picked, not an SDK alias.
+const OWN_MODEL_ID_PROVIDERS = new Set<AgentProvider>(['devin']);
+
 // Picks the model name to attribute a result row to. For claude the session
 // model is authoritative; for Claude-compatible providers, prefer the
 // message-level model, then the session model, skipping Claude aliases the
-// SDK reports about itself, and fall back to the provider's display name.
+// SDK reports about itself (except for OWN_MODEL_ID_PROVIDERS, whose Claude
+// names are real picks), and fall back to the provider's display name.
 function resolveUsageRowModel(
   provider: AgentProvider,
   sessionModel: string | null,
@@ -3380,7 +3385,7 @@ function resolveUsageRowModel(
   ];
   for (const candidate of candidates) {
     const trimmed = candidate?.trim();
-    if (trimmed && !looksLikeClaudeModelAlias(trimmed)) {
+    if (trimmed && (OWN_MODEL_ID_PROVIDERS.has(provider) || !looksLikeClaudeModelAlias(trimmed))) {
       // MiniMax Code records its select value, `m:<provider>:<model>:v:<variant>`;
       // variants of one model share its row (and its price).
       const mcodeModel = provider === 'minimax' ? /^m:[^:]+:([^:]+):[uv](?::|$)/.exec(trimmed)?.[1] : undefined;
@@ -3389,6 +3394,21 @@ function resolveUsageRowModel(
   }
 
   return USAGE_PROVIDER_MODEL_FALLBACK[provider] || 'Unknown';
+}
+
+// A Devin row names the model in Devin's catalog words, plus the thinking
+// level it ran at ("Claude Opus 5.5 · High"): the id's own suffix is fixed
+// (claude-opus-5-5-medium at every level). Rows recorded before names and
+// levels were kept stay under the bare id, apart from newer rows. The level
+// label falls back as the composer's picker does.
+function devinUsageLabel(model: string, result: StoredClaudeResultMessage): string {
+  if (model === USAGE_PROVIDER_MODEL_FALLBACK.devin) return model;
+  const text = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+  const label = text(result.modelLabel);
+  const name = label && text(result.model) === model ? label : model;
+  const level = text(result.thoughtLevel);
+  if (!level) return name;
+  return `${name} · ${text(result.thoughtLevelLabel) || level.charAt(0).toUpperCase() + level.slice(1)}`;
 }
 
 /** Same historical repair and request-time pricing as the Usage report. */
@@ -3465,7 +3485,8 @@ function applyCostMode(report: ClaudeUsageReport, costs: ReturnType<typeof empty
 }
 
 // Builds a usage report for any provider whose runner stores Claude-shaped
-// `result` messages (claude itself plus kimi/grok/pi).
+// `result` messages: claude itself and every other provider except codex and
+// opencode (kimi, grok, pi, qoder, bubble, deepseek, devin, mimo, minimax).
 function getClaudeProtocolUsageReport(
   provider: AgentProvider,
   days: ClaudeUsageRangeDays = 30
@@ -3563,7 +3584,8 @@ function getClaudeProtocolUsageReport(
     // model alias, so their modelUsage keys and even the stored session model
     // can name a Claude model that was never actually used. Only trust the
     // per-model split for claude itself; other providers attribute each
-    // result row to the best non-alias model name available.
+    // result row to the best non-alias model name available (Devin's Claude
+    // ids are real picks, labeled with their thinking level below).
     const rawModelUsage = provider === 'claude' ? result.modelUsage : undefined;
     if (rawModelUsage && Object.keys(rawModelUsage).length > 0) {
       const modelNames = Object.keys(rawModelUsage);
@@ -3620,12 +3642,14 @@ function getClaudeProtocolUsageReport(
       continue;
     }
 
-    const fallbackModel = resolveUsageRowModel(
+    const resolvedModel = resolveUsageRowModel(
       provider,
       row.session_model,
       (result as { model?: unknown }).model
     );
-    const resultCostUsd = recordCost(storedAgentCost(provider, result, fallbackModel, row.created_at), fallbackModel);
+    // Priced by the model id; the row (and its buckets) go under the label.
+    const fallbackModel = provider === 'devin' ? devinUsageLabel(resolvedModel, result) : resolvedModel;
+    const resultCostUsd = recordCost(storedAgentCost(provider, result, resolvedModel, row.created_at), fallbackModel);
     totalCostUsd += resultCostUsd;
     const summary = modelSummaries.get(fallbackModel) || emptyModelSummary(fallbackModel);
     summary.inputTokens += inputTokens;
