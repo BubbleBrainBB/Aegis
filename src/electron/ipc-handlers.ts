@@ -20,7 +20,7 @@ import { WorkflowService } from './libs/workflow/workflow-service';
 import { findPendingStartWorkflowCall, setWorkflowChatEntry } from './libs/workflow/chat-entry';
 import { isFullAccessMode } from '../shared/workflow';
 import type { GoalAction } from '../shared/session-goal';
-import { parseGoalInput } from '../shared/session-goal';
+import { kimiGoalStartPrompt, parseGoalInput } from '../shared/session-goal';
 import { siteRootPathCandidates } from '../shared/site-root-path';
 import { supportsSessionReferences } from '../shared/session-links';
 import { findProjectFileByName } from './libs/project-file-index';
@@ -58,6 +58,7 @@ import { appendSessionReferences } from './libs/session-reference';
 import { buildHandoffBrief, collectHandoffTurns, readHandoffWorkspace } from './libs/session-handoff';
 import { extractAssistantText, isLocalUtilityAssistantText } from './libs/transcript-text';
 import { setupSessionTitleIPC } from './ipc/session-title';
+import { syncKimiSessionTitle } from './libs/kimi-title-sync';
 import { setupAttachmentIPC } from './ipc/attachments';
 import { setupScreenshotIPC } from './ipc/screenshot';
 import { ATTACHMENT_MIME_TYPES, MAX_ATTACHMENT_BYTES, attachmentSizeLimit } from '../shared/attachment-policy';
@@ -5459,6 +5460,8 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
         undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
         false, false, undefined, undefined, undefined, undefined, undefined, undefined, action);
     },
+    sendKimiGoalPrompt: (session, prompt, kimiPermissionMode) =>
+      handleSessionContinue(mainWindow, { sessionId: session.id, prompt, provider: 'kimi', kimiPermissionMode }),
     broadcast: event => broadcast(mainWindow, event),
   });
   setupSessionTitleIPC((event) => broadcast(mainWindow, event));
@@ -9413,7 +9416,13 @@ async function handleSessionStart(
   const outgoingPrompt = sourcePrompt;
   const outgoingAttachments = (attachments ?? []).filter((attachment) => !!attachment?.path);
   const effectiveRunnerPrompt = (effectivePrompt ?? sourcePrompt).trim();
-  const runnerPrompt = chosenProvider === 'claude' && parseGoalInput(sourcePrompt, false).isGoal ? sourcePrompt : augmentPromptForLiveWidgetProtocol(
+  const startGoal = parseGoalInput(sourcePrompt, false);
+  // A Kimi goal starts with its own `/goal -- <objective>` command, sent as is
+  // (the composer's raw text lacks `/goal` when the objective was drafted).
+  const runnerPrompt = chosenProvider === 'claude' && startGoal.isGoal ? sourcePrompt
+    : chosenProvider === 'kimi' && startGoal.isGoal && startGoal.objective
+      ? kimiGoalStartPrompt(startGoal.objective)
+      : augmentPromptForLiveWidgetProtocol(
     await buildRunnerPromptWithMemory(chosenProvider, effectiveRunnerPrompt + referenceContext + (payload.draftSessionId ? designContextText(payload.draftSessionId, designSelection) : '') + sessions.buildProjectSourcesContext(normalizedProjectCwd, isolated?.worktreePath || normalizedWorktreePath || sessionCwd, Boolean(isolated) || normalizedEnvMode === 'worktree'), sessionCwd),
   );
   const selectedModel = normalizeProviderModel(chosenProvider, model);
@@ -9751,6 +9760,7 @@ async function handleSessionStart(
       }
 
       if (!sessions.updateSessionTitle(session.id, trimmedTitle, session.title)) return;
+      syncKimiSessionTitle(session.id, trimmedTitle);
       const latest = sessions.getSession(session.id);
       const currentStatus = latest?.status || session.status || 'running';
       broadcast(mainWindow, {
@@ -10028,7 +10038,9 @@ async function handleSessionContinueImpl(
   if (session.handoff_pending === 1) {
     sessions.clearSessionHandoffPending(sessionId);
   }
-  const runnerPrompt = nextProvider === 'claude' && parseGoalInput(prompt, false).isGoal ? prompt.trim() : augmentPromptForLiveWidgetProtocol(
+  // Goal commands reach the agent verbatim: Claude's, and Kimi's `/goal --`
+  // start prompt (context appended would become part of the objective).
+  const runnerPrompt = (nextProvider === 'claude' || nextProvider === 'kimi') && parseGoalInput(prompt, false).isGoal ? prompt.trim() : augmentPromptForLiveWidgetProtocol(
     await buildRunnerPromptWithMemory(nextProvider, effectiveRunnerPrompt + referenceContext + designContextText(sessionId, designSelection) + sessions.buildProjectSourcesContext(session.project_cwd || session.cwd, session.cwd, session.env_mode === 'worktree' && Boolean(session.worktree_path)), session.cwd || undefined),
     historyBeforeContinue
   );
@@ -10907,6 +10919,10 @@ function startRunner(
           }
         } else if (provider === 'kimi') {
           sessions.updateKimiSessionId(session.id, message.session_id);
+          // Every bind (the daemon runs now) carries the title over, so one
+          // generated or renamed while Kimi was down still reaches it.
+          const currentTitle = sessions.getSession(session.id)?.title;
+          if (currentTitle) syncKimiSessionTitle(session.id, currentTitle);
           if (message.model) {
             sessions.updateSessionModel(session.id, message.model);
           }

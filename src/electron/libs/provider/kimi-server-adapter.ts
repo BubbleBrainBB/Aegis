@@ -27,6 +27,8 @@ import type {
   AcpPermissionOption,
   AskUserQuestionInput,
   Attachment,
+  BackgroundTaskInfo,
+  BackgroundTaskOutcome,
   ContentBlock,
   KimiPermissionMode,
   KimiThinking,
@@ -37,6 +39,7 @@ import type {
   ProviderSkillDescriptor,
   StreamMessage,
 } from '../../../shared/types';
+import type { ThreadGoal } from '../../../shared/session-goal';
 
 /**
  * KimiServerAdapter — ProviderAdapter over the `kimi server` REST+WS runtime.
@@ -65,6 +68,62 @@ const CAPABILITIES: ProviderAdapterCapabilities = {
   compactThread: true,
   planMode: true,
 };
+
+/**
+ * Kimi's goal snapshot (`goal.updated`) as Aegis's ThreadGoal; null ends it.
+ * ThreadGoal times are epoch SECONDS. `createdAt` must stay fixed for one
+ * goal (it keys the goal's completion row), so the caller passes it in.
+ */
+export function kimiGoalToThreadGoal(
+  threadId: string,
+  snapshot: Record<string, unknown> | null,
+  createdAt: number,
+  now = Date.now() / 1000,
+): ThreadGoal | null {
+  if (!snapshot) return null;
+  const objective = getString(snapshot.objective);
+  if (!objective) return null;
+  const raw = getString(snapshot.status);
+  // A status this version does not know keeps the goal on screen, not ended.
+  const status = (['active', 'paused', 'blocked', 'complete'].includes(raw) ? raw : 'blocked') as ThreadGoal['status'];
+  const budget = isRecord(snapshot.budget) ? snapshot.budget : {};
+  return {
+    threadId,
+    objective,
+    status,
+    tokenBudget: typeof budget.tokenBudget === 'number' ? budget.tokenBudget : null,
+    tokensUsed: getNumber(snapshot.tokensUsed),
+    timeUsedSeconds: Math.round(getNumber(snapshot.wallClockMs) / 1000),
+    createdAt,
+    updatedAt: now,
+  };
+}
+
+/** Kimi TodoList items as TodoWrite's ({content, status, activeForm}). */
+export function kimiTodosToTodoWrite(todos: unknown[]): Array<Record<string, unknown>> {
+  return todos.filter(isRecord).map((todo) => {
+    const content = getString(todo.title) || getString(todo.content);
+    const status = getString(todo.status);
+    return {
+      content,
+      status: status === 'done' ? 'completed' : status === 'in_progress' ? 'in_progress' : 'pending',
+      activeForm: content,
+    };
+  });
+}
+
+/** Kimi's `No current goal` (40914): a goal control found no goal. */
+export const KIMI_NO_CURRENT_GOAL_CODE = 40914;
+
+/** Kimi's `session.occupied` (40931): the session is held by another Kimi client. */
+export const KIMI_SESSION_OCCUPIED_CODE = 40931;
+
+export function describeKimiFailure(error: unknown): string {
+  if (error instanceof KimiServerApiError && error.code === KIMI_SESSION_OCCUPIED_CODE) {
+    return 'This Kimi session is open in another Kimi client (the terminal or the Kimi app). Stop or exit it there, then send again.';
+  }
+  return error instanceof Error ? error.message : String(error);
+}
 
 function envInt(name: string, fallback: number): number {
   const raw = Number.parseInt(process.env[name] || '', 10);
@@ -266,6 +325,10 @@ interface ActiveServerSession {
    * subagent's next tool call or completion (no per-delta broadcasting —
    * nested traces render committed messages only). */
   subagentStreams: Map<string, { text: string; thinking: string }>;
+  /** Running background tasks (`background.task.*`), the composer's chip list. */
+  backgroundTasks: Map<string, BackgroundTaskInfo>;
+  /** The current Kimi goal and when it started (epoch seconds, stable per goal). */
+  goalStart?: { goalId: string; createdAt: number };
 }
 
 export class KimiServerAdapter implements ProviderAdapter {
@@ -387,6 +450,7 @@ export class KimiServerAdapter implements ProviderAdapter {
       stopRequest: null,
       subagentParents: new Map(),
       subagentStreams: new Map(),
+      backgroundTasks: new Map(),
     };
     this.sessions.set(input.threadId, session);
     this.sessionsByServerId.set(providerSessionId, input.threadId);
@@ -462,7 +526,7 @@ export class KimiServerAdapter implements ProviderAdapter {
         await this.manager.compactSession(session.providerSessionId);
       } catch (error) {
         session.pendingManualCompact = false;
-        this.failTurn(session, error instanceof Error ? error.message : String(error));
+        this.failTurn(session, describeKimiFailure(error));
       }
       return;
     }
@@ -491,7 +555,7 @@ export class KimiServerAdapter implements ProviderAdapter {
         ...(session.thinking ? { thinking: session.thinking } : {}),
       });
     } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
+      const detail = describeKimiFailure(error);
       if (wasActive) {
         // Steer-path failure: the RUNNING turn is fine — failing it here
         // would emit a second terminal (and post-detach would tear down the
@@ -919,6 +983,37 @@ export class KimiServerAdapter implements ProviderAdapter {
       case 'tool.result':
         this.emitToolResult(session, payload, subagentParent);
         break;
+      case 'tool.progress': {
+        // Volatile stdout/stderr chunks of a running tool: the live card only.
+        const update = isRecord(payload.update) ? payload.update : {};
+        const toolUseId = getString(payload.toolCallId);
+        const delta = getString(update.text);
+        if (toolUseId && delta && (update.kind === 'stdout' || update.kind === 'stderr')) {
+          this.emit({ type: 'tool_output_delta', threadId: session.threadId, toolUseId, delta });
+        }
+        break;
+      }
+      case 'background.task.started':
+      case 'background.task.terminated':
+        this.handleBackgroundTask(session, frame.type === 'background.task.started', payload);
+        break;
+      case 'goal.updated':
+      case 'event.goal.updated': {
+        if (subagentParent) break;
+        const snapshot = isRecord(payload.snapshot) ? payload.snapshot : null;
+        const goalId = snapshot ? getString(snapshot.goalId) : '';
+        const now = Date.now() / 1000;
+        if (snapshot && (!session.goalStart || session.goalStart.goalId !== goalId)) {
+          session.goalStart = { goalId, createdAt: Math.floor(now - getNumber(snapshot.wallClockMs) / 1000) };
+        }
+        this.emit({
+          type: 'goal_changed',
+          threadId: session.threadId,
+          goal: kimiGoalToThreadGoal(session.threadId, snapshot, session.goalStart?.createdAt ?? Math.floor(now), now),
+        });
+        if (!snapshot) session.goalStart = undefined;
+        break;
+      }
       case 'turn.step.completed':
         // Subagent steps still count: their tokens are real consumption of
         // this session's turn.
@@ -990,8 +1085,9 @@ export class KimiServerAdapter implements ProviderAdapter {
         break;
       }
       default:
-        // context.spliced, session.meta.updated, work_changed and volatile
-        // phase frames carry nothing the transcript needs.
+        // context.spliced, session.meta.updated, work_changed, task.* (the
+        // background.task.* pair carries the same info) and volatile phase
+        // frames carry nothing the transcript needs.
         break;
     }
   }
@@ -1178,10 +1274,14 @@ export class KimiServerAdapter implements ProviderAdapter {
     // A MAIN-agent tool call closes the current text/thinking block in the
     // stream; a subagent's tool call must leave the main stream alone.
     if (!parentToolUseId) this.finalizeStreaming(session);
-    const name = getString(payload.name) || 'KimiTool';
+    const rawName = getString(payload.name) || 'KimiTool';
     const args = isRecord(payload.args) ? payload.args : {};
     const description = getString(payload.description);
-    const input: Record<string, unknown> = { ...args };
+    // Kimi's TodoList carries the whole list as {title, status: pending |
+    // in_progress | done}: as TodoWrite it drives the todo progress panel.
+    const todoList = rawName === 'TodoList' && Array.isArray(args.todos);
+    const name = todoList ? 'TodoWrite' : rawName;
+    const input: Record<string, unknown> = todoList ? { todos: kimiTodosToTodoWrite(args.todos as unknown[]) } : { ...args };
     if (description) {
       input.__aegisDisplayTitle = description;
     }
@@ -1804,6 +1904,11 @@ export class KimiServerAdapter implements ProviderAdapter {
       session.stopRequest = null;
     }
     this.manager.unsubscribeSession(session.providerSessionId);
+    // Unsubscribed, their terminated frames would never arrive: drop the chips.
+    if (session.backgroundTasks.size > 0) {
+      session.backgroundTasks.clear();
+      this.emitBackgroundTasks(session);
+    }
     if (this.sessionsByServerId.get(session.providerSessionId) === session.threadId) {
       this.sessionsByServerId.delete(session.providerSessionId);
     }
@@ -1880,6 +1985,113 @@ export class KimiServerAdapter implements ProviderAdapter {
       },
     });
     this.emit({ type: 'status_change', threadId: session.threadId, status: 'error' });
+  }
+
+  /**
+   * `background.task.started` / `.terminated` (2.x): the running set becomes
+   * the composer's chip list (REPLACE semantics, as Claude's), and each end a
+   * transcript row so its outcome shows whether or not the agent mentions it.
+   */
+  private handleBackgroundTask(session: ActiveServerSession, started: boolean, payload: Record<string, unknown>): void {
+    const info = isRecord(payload.info) ? payload.info : {};
+    const taskId = getString(info.taskId);
+    if (!taskId) return;
+    const kind = getString(info.kind);
+    const toolUseId = getString(info.parentToolCallId) || undefined;
+    const description = getString(info.description) || getString(info.command) || taskId;
+    const taskType = kind === 'process' ? 'local_bash' : kind === 'agent' ? 'local_agent' : kind || 'task';
+    if (started) {
+      session.backgroundTasks.set(taskId, { taskId, ...(toolUseId ? { toolUseId } : {}), description, taskType });
+    } else {
+      const known = session.backgroundTasks.delete(taskId);
+      const status = getString(info.status);
+      const outcome: BackgroundTaskOutcome['status'] =
+        status === 'completed' ? 'completed' : status === 'killed' ? 'stopped' : 'failed';
+      const exitCode = typeof info.exitCode === 'number' ? ` (exit code ${info.exitCode})` : '';
+      const label = getString(info.command) || description;
+      const verb = status === 'timed_out' ? 'timed out' : status === 'lost' ? 'was lost' : status || 'ended';
+      this.emit({
+        type: 'message',
+        threadId: session.threadId,
+        message: {
+          type: 'system',
+          subtype: 'background_task_ended',
+          uuid: `kimi-task-ended:${session.threadId}:${taskId}`,
+          session_id: session.threadId,
+          outcome: {
+            taskId,
+            ...(toolUseId ? { toolUseId } : {}),
+            status: outcome,
+            summary: `Background ${kind === 'agent' ? 'agent' : 'command'} "${label}" ${verb}${exitCode}`,
+            ...(known ? { description, taskType } : {}),
+          },
+        },
+      });
+    }
+    this.emitBackgroundTasks(session);
+  }
+
+  private emitBackgroundTasks(session: ActiveServerSession): void {
+    this.emit({
+      type: 'message',
+      threadId: session.threadId,
+      message: {
+        type: 'system',
+        subtype: 'background_tasks',
+        uuid: uuidv4(),
+        session_id: session.threadId,
+        tasks: [...session.backgroundTasks.values()],
+      },
+    });
+  }
+
+  /**
+   * Kimi's goal API (what its web UI uses): `agent_config.goal_objective`
+   * creates a goal, `goal_control` pauses, resumes (continuing the work) or
+   * cancels it — mid-turn too. The resulting goal arrives as goal.updated.
+   * A `/goal pause|cancel` prompt does NOT control a goal (probed on 2.3.1).
+   */
+  async changeGoal(serverSessionId: string, change: { objective: string; replace: boolean } | { control: 'pause' | 'resume' | 'cancel' }): Promise<void> {
+    await this.manager.ensureDaemon();
+    const path = `/sessions/${encodeURIComponent(serverSessionId)}/profile`;
+    if ('control' in change) {
+      await this.manager.request('POST', path, { agent_config: { goal_control: change.control } });
+      return;
+    }
+    if (change.replace) {
+      try {
+        await this.manager.request('POST', path, { agent_config: { goal_control: 'cancel' } });
+      } catch (error) {
+        // The goal already ended; nothing to replace.
+        if (!(error instanceof KimiServerApiError && error.code === KIMI_NO_CURRENT_GOAL_CODE)) throw error;
+      }
+    }
+    await this.manager.request('POST', path, { agent_config: { goal_objective: change.objective } });
+  }
+
+  /** A main-agent turn is running for the thread (its result owns the status). */
+  hasActiveTurn(threadId: string): boolean {
+    return this.sessions.get(threadId)?.activeTurn === true;
+  }
+
+  /** The Kimi session's current goal, or null; undefined while the server is down. */
+  async readGoal(serverSessionId: string, threadId: string): Promise<ThreadGoal | null | undefined> {
+    if (!this.manager.isRunning()) return undefined;
+    const snapshot = await this.manager.request<Record<string, unknown> | null>('GET', `/sessions/${encodeURIComponent(serverSessionId)}/goal`);
+    if (!isRecord(snapshot)) return null;
+    const now = Date.now() / 1000;
+    return kimiGoalToThreadGoal(threadId, snapshot, Math.floor(now - getNumber(snapshot.wallClockMs) / 1000), now);
+  }
+
+  /** Aegis's title for the Kimi session (other clients list it by it). */
+  async syncTitle(serverSessionId: string, title: string): Promise<void> {
+    const name = title.trim();
+    if (!name || !this.manager.isRunning()) return;
+    try {
+      await this.manager.request('POST', `/sessions/${encodeURIComponent(serverSessionId)}/profile`, { title: name });
+    } catch (error) {
+      console.warn('[KimiServerAdapter] title sync failed:', error instanceof Error ? error.message : error);
+    }
   }
 
   private emitLocalNotice(threadId: string, text: string): void {

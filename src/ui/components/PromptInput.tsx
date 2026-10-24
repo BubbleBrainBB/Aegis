@@ -10,7 +10,7 @@ import { deepseekImageInputError } from '../../shared/deepseek-images';
 import { confirmDialog } from './ui/confirm-dialog';
 import { useSessionGoal } from '../hooks/useSessionGoal';
 import { GoalModePill, SessionGoal } from './SessionGoal';
-import { buildGoalObjective, parseGoalInput, supportsGoalUI, isClaudeGoalClearObjective } from '../../shared/session-goal';
+import { buildGoalObjective, parseGoalInput, supportsGoalUI, isClaudeGoalClearObjective, kimiGoalControlWord } from '../../shared/session-goal';
 import {
   useState,
   useRef,
@@ -632,7 +632,7 @@ export function PromptInput({
     onCommandSelect: (command, nextPrompt) => {
       if (command.name === 'goal' && supportsGoalUI(agentSelection.provider)) {
         if (agentSelection.provider === 'claude') agentSelection.setClaudeExecutionMode('execute');
-        else agentSelection.setCodexExecutionMode('execute');
+        else if (agentSelection.provider === 'codex') agentSelection.setCodexExecutionMode('execute');
         sessionGoal.setDraft(true);
         const next = removeSelectedSlashCommandPrompt(nextPrompt, command.name);
         setPrompt(next.prompt);
@@ -767,7 +767,7 @@ export function PromptInput({
   const handleSend = async (invertFollowUp = false) => {
     const goalInput = parseGoalInput(prompt, sessionGoal.drafting);
     const isGoal = supportsGoalUI(agentSelection.provider) && goalInput.isGoal;
-    if (isGoal && agentSelection.provider === 'claude' && isClaudeGoalClearObjective(goalInput.objective) && attachments.length === 0) {
+    if (isGoal && (agentSelection.provider === 'claude' || agentSelection.provider === 'kimi') && isClaudeGoalClearObjective(goalInput.objective) && attachments.length === 0) {
       if (goalSubmitting) return;
       setGoalSubmitting(true);
       try {
@@ -781,7 +781,7 @@ export function PromptInput({
     if (isGoal && !goalInput.objective && attachments.length === 0) {
       sessionGoal.setDraft(true);
       if (agentSelection.provider === 'claude') agentSelection.setClaudeExecutionMode('execute');
-      else agentSelection.setCodexExecutionMode('execute');
+      else if (agentSelection.provider === 'codex') agentSelection.setCodexExecutionMode('execute');
       setPrompt(''); setCursorIndex(0);
       window.requestAnimationFrame(() => editorRef.current?.focus());
       return;
@@ -864,7 +864,9 @@ export function PromptInput({
       : {};
     if (isGoal && !activeSession.isDraft) {
       if (goalSubmitting) return;
-      if (sessionGoal.goal && sessionGoal.goal.status !== 'complete' && !(await confirmDialog({
+      // Kimi's typed `/goal pause|resume` is a control: nothing is replaced.
+      const kimiControl = agentSelection.provider === 'kimi' && kimiGoalControlWord(goalInput.objective) !== null;
+      if (!kimiControl && sessionGoal.goal && sessionGoal.goal.status !== 'complete' && !(await confirmDialog({
         title: 'Replace current goal?',
         description: `This will keep the chat but replace the saved goal with your current composer text.\n\n${displayPrompt}`,
         confirmLabel: 'Replace goal', cancelLabel: 'Cancel', tone: 'default',
@@ -876,11 +878,12 @@ export function PromptInput({
           claudeAccessMode: agentSelection.claudePermissionMode, claudeReasoningEffort: agentSelection.claudeReasoningEffort || undefined,
           model: selectedModel || undefined, codexPermissionMode: agentSelection.codexPermissionMode,
           codexReasoningEffort: agentSelection.codexReasoningEffort || undefined, codexFastMode: agentSelection.codexFastMode,
+          ...(agentSelection.provider === 'kimi' ? { kimiPermissionMode: agentSelection.kimiPermissionMode } : {}),
         });
         if (agentSelection.provider === 'claude') {
           agentSelection.setClaudeExecutionMode('execute');
           setSessionClaudeMode(activeSession.id, agentSelection.claudePermissionMode, 'execute');
-        } else {
+        } else if (agentSelection.provider === 'codex') {
           agentSelection.setCodexExecutionMode('execute');
           setSessionCodexExecutionMode(activeSession.id, 'execute');
         }

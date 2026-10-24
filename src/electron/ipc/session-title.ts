@@ -1,6 +1,7 @@
 import { normalizeSessionTitleInput } from '../../shared/session-rename';
 import type { ServerEvent } from '../../shared/types';
 import * as sessions from '../libs/session-store';
+import { syncKimiSessionTitle } from '../libs/kimi-title-sync';
 import { ipcMainHandle } from '../util';
 
 export function setupSessionTitleIPC(emit: (event: ServerEvent) => void): void {
@@ -10,6 +11,7 @@ export function setupSessionTitleIPC(emit: (event: ServerEvent) => void): void {
       throw new Error('This conversation is no longer available.');
     }
     sessions.updateSessionTitle(sessionId, title);
+    syncKimiSessionTitle(sessionId, title);
     const updated = sessions.getSession(sessionId)!;
     const result = { title: updated.title, updatedAt: updated.updated_at };
     emit({ type: 'session.renamed', payload: { sessionId, ...result } });

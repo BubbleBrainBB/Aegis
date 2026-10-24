@@ -148,7 +148,7 @@
     "verify:deepseek-packaging": "node scripts/verify-deepseek-packaging.mjs && node scripts/tests/deepseek-packaging-closure.test.cjs && npx tsx scripts/tests/deepseek-profile-resolution.test.ts",
     "build:electron": "electron-builder --config electron-builder.config.cjs",
     "dist": "npm run build && npm run build:electron -- --publish never",
-    "verify:kimi-server": "npm run transpile:electron && node scripts/verify-kimi-server.mjs",
+    "verify:kimi-server": "npx tsx scripts/tests/kimi-goal-command.test.ts && npm run transpile:electron && node scripts/verify-kimi-server.mjs",
     "verify:kimi-queue-flush": "node scripts/verify-kimi-queue-flush.mjs",
     "verify:video-attachments": "npm run transpile:electron && node scripts/tests/video-attachments-electron.test.mjs",
     "verify:session-title-editor": "npm run transpile:electron && node scripts/tests/session-title-editor-electron.test.mjs",

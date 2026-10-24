@@ -109,7 +109,7 @@ export function NewSessionView() {
     onCommandSelect: (command, nextPrompt) => {
       if (command.name === 'goal' && supportsGoalUI(agentSelection.provider)) {
         if (agentSelection.provider === 'claude') agentSelection.setClaudeExecutionMode('execute');
-        else agentSelection.setCodexExecutionMode('execute');
+        else if (agentSelection.provider === 'codex') agentSelection.setCodexExecutionMode('execute');
         sessionGoal.setDraft(true);
         const next = removeSelectedSlashCommandPrompt(nextPrompt, command.name);
         setPrompt(next.prompt);
@@ -190,7 +190,7 @@ export function NewSessionView() {
   const handleStart = async () => {
     const goalInput = parseGoalInput(prompt, sessionGoal.drafting);
     const isGoal = supportsGoalUI(agentSelection.provider) && goalInput.isGoal;
-    if (isGoal && agentSelection.provider === 'claude' && isClaudeGoalClearObjective(goalInput.objective) && attachments.length === 0) {
+    if (isGoal && (agentSelection.provider === 'claude' || agentSelection.provider === 'kimi') && isClaudeGoalClearObjective(goalInput.objective) && attachments.length === 0) {
       sessionGoal.setDraft(false);
       setPrompt(''); setCursorIndex(0);
       return;
@@ -198,7 +198,7 @@ export function NewSessionView() {
     if (isGoal && !goalInput.objective && attachments.length === 0) {
       sessionGoal.setDraft(true);
       if (agentSelection.provider === 'claude') agentSelection.setClaudeExecutionMode('execute');
-      else agentSelection.setCodexExecutionMode('execute');
+      else if (agentSelection.provider === 'codex') agentSelection.setCodexExecutionMode('execute');
       setPrompt(''); setCursorIndex(0);
       window.requestAnimationFrame(() => editorRef.current?.focus());
       return;

@@ -33,10 +33,27 @@ export interface GoalSettings {
   codexPermissionMode?: CodexPermissionMode;
   codexReasoningEffort?: CodexReasoningEffort;
   codexFastMode?: boolean;
+  /** The Kimi task's permission mode, for the messages a Kimi goal sends. */
+  kimiPermissionMode?: import('./types').KimiPermissionMode;
 }
 
 export function supportsGoalUI(provider?: string): boolean {
-  return provider === 'codex' || provider === 'claude';
+  return provider === 'codex' || provider === 'claude' || provider === 'kimi';
+}
+
+/**
+ * The prompt that starts a Kimi Code goal in a task Kimi has not started yet
+ * (no server session to set it on). `--` keeps an objective that begins with
+ * a subcommand word (pause, cancel, …) an objective.
+ */
+export function kimiGoalStartPrompt(objective: string): string {
+  return `/goal -- ${objective.trim().replace(/^--\s*/, '')}`;
+}
+
+/** `/goal pause` / `/goal resume` typed for Kimi: a control, not an objective. */
+export function kimiGoalControlWord(value: string): 'pause' | 'resume' | null {
+  const word = value.trim().toLowerCase();
+  return word === 'pause' || word === 'resume' ? word : null;
 }
 
 export function isClaudeGoalClearObjective(value: string): boolean {
