@@ -126,6 +126,26 @@ async function handle(message) {
     state.level = 'xhigh';
     update(params.sessionId, { sessionUpdate: 'config_option_update', configOptions: config() });
     send({ id, result: { stopReason: 'end_turn', usage: { totalTokens: 1, inputTokens: 1, outputTokens: 0 } } });
+  } else if (method === 'session/prompt' && String(params.prompt?.[0]?.text).startsWith('CREDIT')) {
+    // A credit-billed account: credits as a dimension or creditCost on turn_stats (possibly an
+    // explicit 0), and creditCost on agent_stopped as the fallback.
+    const variant = String(params.prompt[0].text);
+    const credit = { 'CREDIT-DIM': [{ uid: 'credits', kind: { type: 'cumulativeMetric', value: 1.5 } }], 'CREDIT-ZERO-DIM': [{ uid: 'credits', kind: { type: 'cumulativeMetric', value: 0 } }] }[variant] || [];
+    send({ method: '_cognition.ai/turn_stats', params: { sessionId: params.sessionId, turnClientMessageId: 'c1', ...(variant === 'CREDIT-ZERO-COST' ? { creditCost: 0 } : {}), responseDimensions: [
+      { uid: 'agent_messages', kind: { type: 'cumulativeMetric', value: 1 } },
+      ...credit,
+    ] } });
+    send({ method: '_cognition.ai/agent_stopped', params: { cause: 'complete', stats: { creditCost: 0.75 } } });
+    send({ id, result: { stopReason: 'end_turn', usage: { totalTokens: 1, inputTokens: 1, outputTokens: 0 } } });
+  } else if (method === 'session/prompt' && String(params.prompt?.[0]?.text).startsWith('QUOTA')) {
+    // Each quota signal on its own: the agent_stopped cause, or the structured RPC error.
+    const variant = String(params.prompt[0].text);
+    if (variant !== 'QUOTA-RPC') send({ method: '_cognition.ai/agent_stopped', params: { cause: 'quota_exhausted' } });
+    if (variant === 'QUOTA-STOP') send({ id, result: { stopReason: 'end_turn', usage: { totalTokens: 0, inputTokens: 0, outputTokens: 0 } } });
+    else send({ id, error: { code: -32011, message: 'Quota exhausted.', data: { 'cognition.ai/errorKind': 'resource_exhausted', 'cognition.ai/retryable': true } } });
+  } else if (method === 'session/prompt' && String(params.prompt?.[0]?.text).startsWith('INTERNAL')) {
+    // A non-quota failure whose diagnostic happens to mention a usage limit.
+    send({ id, error: { code: -32603, message: 'Internal error', data: { 'cognition.ai/errorKind': 'internal_error', diagnostic: 'retry after usage limit reached check' } } });
   } else if (method === 'session/prompt' && openTurn) {
     openTurn.ids.push(id);
     openTurn.release();
@@ -177,6 +197,12 @@ async function handle(message) {
     log({ method: 'permission_response', params: decision });
     update(sid, { sessionUpdate: 'tool_call_update', toolCallId: curl, status: 'completed', content: [{ type: 'content', content: { type: 'text', text: 'HTTP/2 200' } }] });
     update(sid, { sessionUpdate: 'usage_update', used: 25000, size: 262000, _meta: { 'cognition.ai/inputTokens': 24900, 'cognition.ai/outputTokens': 100, 'cognition.ai/cachedReadTokens': 24000 } });
+    // As observed on a quota-billed (Max) account: messages, no credits.
+    send({ method: '_cognition.ai/turn_stats', params: { sessionId: sid, turnClientMessageId: 'm1', responseDimensions: [
+      { uid: 'agent_messages', groupTitle: 'Response Statistics', label: 'Agent messages', kind: { type: 'cumulativeMetric', value: 2, tail: ' message' } },
+      { uid: 'model', groupTitle: 'Response Statistics', label: 'Model', kind: { type: 'metric', value: 'SWE-2 High' } },
+      { uid: 'input_tokens', groupTitle: 'Token Usage', label: 'Input tokens', kind: { type: 'cumulativeMetric', value: 24900 } },
+    ] } });
     send({ method: '_cognition.ai/agent_stopped', params: { cause: 'complete' } });
     update(sid, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: ' Done.' } });
     send({ id, result: { stopReason: 'end_turn', usage: { totalTokens: 25000, inputTokens: 24900, outputTokens: 100, cachedReadTokens: 24000 } } });
@@ -251,7 +277,30 @@ async function waitFor(condition: () => boolean, label: string, ms = 5_000): Pro
 }
 
 async function main(): Promise<void> {
-  const { DevinAcpAdapter } = await import('../../src/electron/libs/provider/devin-acp-adapter');
+  const { DevinAcpAdapter, DEVIN_QUOTA_EXHAUSTED_MESSAGE, isDevinQuotaError, readDevinTurnBilling } = await import('../../src/electron/libs/provider/devin-acp-adapter');
+  const { AcpJsonRpcError } = await import('../../src/electron/libs/provider/acp-json-rpc-client');
+
+  // ── Quota error detection ────────────────────────────────────────────────
+  const rpcError = (code: number, data: unknown, message: string) => new AcpJsonRpcError('session/prompt', code, data, message);
+  assert.equal(isDevinQuotaError(rpcError(-32011, { 'cognition.ai/errorKind': 'resource_exhausted' }, 'Something')), true, 'structured quota error');
+  assert.equal(isDevinQuotaError(rpcError(-32603, { 'cognition.ai/errorKind': 'resource_exhausted' }, 'Something')), false, 'resource_exhausted needs the quota code');
+  assert.equal(
+    isDevinQuotaError(rpcError(-32603, { 'cognition.ai/errorKind': 'internal_error', diagnostic: 'usage limit reached' }, 'Internal error')),
+    false,
+    'a known non-quota kind is not overridden by text in its data'
+  );
+  assert.equal(isDevinQuotaError(rpcError(-32603, { diagnostic: 'Quota exhausted.' }, 'Internal error')), false, 'text in data never matches');
+  assert.equal(isDevinQuotaError(rpcError(-32000, undefined, 'Quota exhausted.')), true, 'a kindless error matches its own message');
+  assert.equal(isDevinQuotaError(rpcError(-32603, 'transient', 'Internal error')), false);
+  assert.equal(isDevinQuotaError(new Error('Usage limit reached')), true);
+  assert.equal(isDevinQuotaError(undefined), false);
+
+  // ── turn_stats billing: unreported credits stay undefined, an explicit 0 is kept ─
+  const dim = (uid: string, value: unknown) => ({ uid, kind: { type: 'cumulativeMetric', value } });
+  assert.deepEqual(readDevinTurnBilling({ responseDimensions: [dim('agent_messages', 1)] }), { agentMessages: 1 });
+  assert.deepEqual(readDevinTurnBilling({ responseDimensions: [dim('agent_messages', 1), dim('credits', 0)], creditCost: 2 }), { agentMessages: 1, credits: 0 });
+  assert.deepEqual(readDevinTurnBilling({ responseDimensions: [], creditCost: 0 }), { agentMessages: 0, credits: 0 });
+  assert.deepEqual(readDevinTurnBilling({ responseDimensions: [], creditCost: 'x' }), { agentMessages: 0 });
 
   // ── New session + one turn ────────────────────────────────────────────────
   {
@@ -371,6 +420,41 @@ async function main(): Promise<void> {
     assert.equal(result?.subtype, 'success');
     assert.equal(result?.usage.input_tokens, 24900);
     assert.equal(result?.usage.cache_read_input_tokens, 24000);
+    assert.deepEqual(
+      (result as { devinBilling?: unknown } | undefined)?.devinBilling,
+      { agentMessages: 2, credits: 0 },
+      'turn_stats billing (agent messages) lands on the result'
+    );
+
+    // Credit-billed turns: credits turn_stats reports win, an explicit 0 included;
+    // agent_stopped creditCost is used only when turn_stats reported none.
+    for (const [prompt, credits] of [['CREDIT-DIM', 1.5], ['CREDIT-ZERO-DIM', 0], ['CREDIT-ZERO-COST', 0], ['CREDIT-STOP', 0.75]] as const) {
+      events.length = 0;
+      await withTimeout(adapter.sendTurn({ threadId: 't1', prompt, model: 'claude-opus-5-5-high', devinPermissionMode: 'smart' } as never), prompt);
+      const billed = events.find((event) => event.type === 'message' && (event.message as { type?: string }).type === 'result')?.message as { devinBilling?: unknown };
+      assert.deepEqual(billed?.devinBilling, { agentMessages: 1, credits }, `${prompt} bills ${credits} credits once`);
+    }
+
+    // Quota exhaustion, by either signal alone or both, ends the turn with a clear
+    // message pointing at Devin's usage settings; the original error stays the cause.
+    for (const prompt of ['QUOTA', 'QUOTA-RPC', 'QUOTA-STOP']) {
+      events.length = 0;
+      await withTimeout(adapter.sendTurn({ threadId: 't1', prompt, model: 'claude-opus-5-5-high', devinPermissionMode: 'smart' } as never), prompt);
+      const quotaError = events.find((event) => event.type === 'error')?.error as Error | undefined;
+      assert.equal(quotaError?.message, DEVIN_QUOTA_EXHAUSTED_MESSAGE, `${prompt} maps to the quota message`);
+      assert.match(quotaError?.message ?? '', /https:\/\/app\.devin\.ai\/settings\/usage$/);
+      if (prompt !== 'QUOTA-STOP') assert.match(String((quotaError?.cause as Error | undefined)?.message), /Quota exhausted\./, `${prompt} keeps the RPC error as cause`);
+      const quotaResult = events.find((event) => event.type === 'message' && (event.message as { type?: string }).type === 'result')?.message as { subtype?: string; devinBilling?: unknown };
+      assert.equal(quotaResult?.subtype, 'error');
+      assert.equal(quotaResult?.devinBilling, undefined, 'nothing billed, nothing recorded');
+    }
+
+    // A non-quota failure keeps its own message even when its data mentions a usage limit.
+    events.length = 0;
+    await withTimeout(adapter.sendTurn({ threadId: 't1', prompt: 'INTERNAL', model: 'claude-opus-5-5-high', devinPermissionMode: 'smart' } as never), 'internal error turn');
+    const internalError = events.find((event) => event.type === 'error')?.error as Error | undefined;
+    assert.match(internalError?.message ?? '', /Internal error \(code -32603\)/);
+    assert.notEqual(internalError?.message, DEVIN_QUOTA_EXHAUSTED_MESSAGE);
 
     // Model and mode switches apply live, before the next prompt.
     resetCalls();

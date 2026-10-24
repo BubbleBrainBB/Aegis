@@ -2346,7 +2346,7 @@ export function ChatPane({
               </WorkstreamDisclosureRegistry>
               {session.status === 'error' && <div role="status" data-turn-failure className="my-3 text-[13px] text-[var(--text-secondary)]">
                 <div className="text-[var(--error)]">This turn did not finish.</div>
-                <div>{session.lastTurnError || 'The connection ended before completion. Send a message to continue.'}</div>
+                <div><LinkifiedText text={session.lastTurnError || 'The connection ended before completion. Send a message to continue.'} /></div>
               </div>}
 
               {apiRetry ? <StreamRetryStatus retry={apiRetry} /> : null}
@@ -2411,4 +2411,19 @@ export function ChatPane({
       )}
     </div>
   );
+}
+
+/** Plain text whose http(s) URLs open in the browser (e.g. a provider's usage settings). */
+function LinkifiedText({ text }: { text: string }) {
+  return <>{text.split(/(https?:\/\/[^\s]+)/).map((part, index) => index % 2 === 1 ? (
+    <a
+      key={index}
+      href={part}
+      className="text-[var(--accent)] underline-offset-2 hover:underline"
+      onClick={(event) => {
+        event.preventDefault();
+        void window.electron.openExternalUrl(part).then((result) => { if (!result.ok) toast.error(result.message || 'Could not open the link.'); });
+      }}
+    >{part}</a>
+  ) : part)}</>;
 }
