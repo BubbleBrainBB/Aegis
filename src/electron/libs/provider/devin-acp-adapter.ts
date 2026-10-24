@@ -78,8 +78,8 @@ interface DevinTurn {
   usage: Map<string, Record<string, unknown>>;
   /** Billing Devin reports per user message (`_cognition.ai/turn_stats`). */
   billing: Map<string, DevinBilling>;
-  /** Credits from `_cognition.ai/agent_stopped`, used when turn_stats has none. */
-  stoppedCredits: number;
+  /** Credits from `_cognition.ai/agent_stopped`, used only when no turn_stats reported credits. */
+  stoppedCredits?: number;
   quotaExhausted: boolean;
   refused: boolean;
   error?: Error;
@@ -87,7 +87,8 @@ interface DevinTurn {
 
 interface DevinBilling {
   agentMessages: number;
-  credits: number;
+  /** Undefined when Devin did not report credits (quota plans); a reported 0 is kept. */
+  credits?: number;
 }
 
 const DEVIN_USAGE_SETTINGS_URL = 'https://app.devin.ai/settings/usage';
@@ -100,23 +101,37 @@ export const DEVIN_QUOTA_EXHAUSTED_MESSAGE =
  * (as a dimension or `creditCost`).
  */
 export function readDevinTurnBilling(params: Record<string, unknown> | undefined): DevinBilling {
-  const billing: DevinBilling = { agentMessages: 0, credits: 0 };
+  const billing: DevinBilling = { agentMessages: 0 };
   for (const dimension of getArray(params?.responseDimensions)) {
     const record = getRecord(dimension);
     const uid = getString(record?.uid).toLowerCase();
     const value = getNumber(getRecord(record?.kind)?.value);
     if (uid === 'agent_messages') billing.agentMessages += value;
-    else if (uid.includes('credit')) billing.credits += value;
+    else if (uid.includes('credit')) billing.credits = (billing.credits ?? 0) + value;
   }
-  if (!billing.credits) billing.credits = getNumber(params?.creditCost);
+  const creditCost = params?.creditCost;
+  if (billing.credits === undefined && isFiniteNumber(creditCost)) billing.credits = creditCost;
   return billing;
 }
 
-/** Devin's quota/usage-limit refusal (JSON-RPC -32011 resource_exhausted). */
+const QUOTA_TEXT = /quota exhausted|usage limit reached/i;
+
+/**
+ * Devin's quota/usage-limit refusal. A structured RPC error decides by its
+ * code and kind (-32011 resource_exhausted); a known other kind is never a
+ * quota error, whatever its data mentions. Only an error without a kind falls
+ * back to its own message text (never the data).
+ */
 export function isDevinQuotaError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
-  const kind = error instanceof AcpJsonRpcError ? getString(getRecord(error.data)?.['cognition.ai/errorKind']) : '';
-  return kind === 'resource_exhausted' || /quota exhausted|usage limit reached/i.test(error.message);
+  if (!(error instanceof AcpJsonRpcError)) return QUOTA_TEXT.test(error.message);
+  const kind = getString(getRecord(error.data)?.['cognition.ai/errorKind']);
+  if (kind) return kind === 'resource_exhausted' && error.code === -32011;
+  return QUOTA_TEXT.test(error.rpcMessage);
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
 }
 
 interface ActiveDevinSession {
@@ -859,7 +874,7 @@ export class DevinAcpAdapter implements ProviderAdapter {
         session.permissionMode = normalizeDevinPermissionMode(input.devinPermissionMode) ?? session.permissionMode;
         turn.outstanding += 1;
       } else {
-        turn = { startedAt: Date.now(), outstanding: 1, usage: new Map(), billing: new Map(), stoppedCredits: 0, quotaExhausted: false, refused: false };
+        turn = { startedAt: Date.now(), outstanding: 1, usage: new Map(), billing: new Map(), quotaExhausted: false, refused: false };
         session.turn = turn;
         session.status = 'running';
         session.currentAssistant = undefined;
@@ -910,14 +925,15 @@ export class DevinAcpAdapter implements ProviderAdapter {
       totalTokens += getNumber(usage.totalTokens) || getNumber(usage.inputTokens) + getNumber(usage.outputTokens);
     }
     let agentMessages = 0;
-    let credits = 0;
+    let credits: number | undefined;
     for (const billing of turn.billing.values()) {
       agentMessages += billing.agentMessages;
-      credits += billing.credits;
+      if (billing.credits !== undefined) credits = (credits ?? 0) + billing.credits;
     }
-    credits ||= turn.stoppedCredits;
+    credits = (credits ?? turn.stoppedCredits) ?? 0;
     if (turn.quotaExhausted || isDevinQuotaError(turn.error)) {
-      turn.error = new Error(DEVIN_QUOTA_EXHAUSTED_MESSAGE);
+      // The original error stays reachable for diagnostics.
+      turn.error = new Error(DEVIN_QUOTA_EXHAUSTED_MESSAGE, { cause: turn.error });
     }
     session.status = turn.error ? 'error' : 'completed';
     this.emit({
@@ -1211,7 +1227,8 @@ export class DevinAcpAdapter implements ProviderAdapter {
         turn.billing.set(getString(params?.turnClientMessageId) || uuidv4(), readDevinTurnBilling(params));
       } else if (method === '_cognition.ai/agent_stopped') {
         if (getString(params?.cause) === 'quota_exhausted') turn.quotaExhausted = true;
-        turn.stoppedCredits += getNumber(getRecord(params?.stats)?.creditCost);
+        const creditCost = getRecord(params?.stats)?.creditCost;
+        if (isFiniteNumber(creditCost)) turn.stoppedCredits = (turn.stoppedCredits ?? 0) + creditCost;
       }
       return;
     }

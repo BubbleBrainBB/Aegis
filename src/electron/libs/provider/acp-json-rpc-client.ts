@@ -33,7 +33,8 @@ export class AcpJsonRpcError extends Error {
     readonly method: string,
     readonly code: number | undefined,
     readonly data: unknown,
-    message: string
+    /** The error's own message, without the method, code and data. */
+    readonly rpcMessage: string
   ) {
     const codePart = typeof code === 'number' ? ` (code ${code})` : '';
     let dataPart = '';
@@ -44,7 +45,7 @@ export class AcpJsonRpcError extends Error {
         dataPart = `: ${String(data)}`;
       }
     }
-    super(`${method}: ${message}${codePart}${dataPart}`);
+    super(`${method}: ${rpcMessage}${codePart}${dataPart}`);
     this.name = 'AcpJsonRpcError';
   }
 }

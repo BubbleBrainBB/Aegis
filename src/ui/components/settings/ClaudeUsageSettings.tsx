@@ -141,7 +141,7 @@ export function ClaudeUsageSettingsContent() {
           : activeProvider === 'qoder' ? qoderPlanLimits(qoderPlanUsage, qoderPlanUsageLoading, qoderPlanUsageError)
             : null;
   const tokenReportHidden = Boolean(
-    activeReport && activeReport.totals.totalTokens <= 0 && activeReport.totals.sessionCount > 0
+    activeReport && activeReport.totals.totalTokens <= 0 && activeReport.totals.sessionCount > 0 && !hasBilledUsage(activeReport)
   );
 
   return (
@@ -446,7 +446,7 @@ function ModelLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDai
   const costKnown = report.costMode !== 'unavailable';
   const unpriced = new Set(report.costCoverage?.unpricedModels ?? []);
   const models = [...report.models]
-    .filter((model) => model.totalTokens > 0 || model.totalCostUsd > 0)
+    .filter((model) => model.totalTokens > 0 || model.totalCostUsd > 0 || (model.agentMessages ?? 0) > 0 || (model.credits ?? 0) > 0)
     .sort((a, b) => b.totalTokens - a.totalTokens);
   // Shares and the total row add up the rows themselves, so they always reach 100%.
   const totalTokens = ledgerTotalTokens(report);
@@ -1261,7 +1261,7 @@ function renderUsageState(provider: UsageProviderCard) {
     );
   }
 
-  if (provider.report && provider.report.totals.totalTokens <= 0) {
+  if (provider.report && provider.report.totals.totalTokens <= 0 && !hasBilledUsage(provider.report)) {
     return <InlineEmpty label="No usage recorded in the last year." />;
   }
 
@@ -1603,6 +1603,11 @@ function formatLongDate(dateKey: string): string {
 
 function trimTrailingZero(value: string): string {
   return value.endsWith('.0') ? value.slice(0, -2) : value;
+}
+
+/** Devin turns can bill messages or credits with no token usage (a turn that failed after billing). */
+function hasBilledUsage(report: ClaudeUsageReport): boolean {
+  return (report.billing?.agentMessages ?? 0) > 0 || (report.billing?.credits ?? 0) > 0;
 }
 
 /** A billed count (messages, credits); credits can be fractional. */
