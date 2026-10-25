@@ -172,7 +172,20 @@ const runtime = {
         { name: "gpt-5", label: "GPT-5", enabled: true, isDefault: false, defaultReasoningEffort: "medium", supportedReasoningLevels: [{ effort: "minimal" }, { effort: "low" }, { effort: "medium" }, { effort: "high" }] },
       ],
     },
-    bubble: { defaultModel: "deepseek-v4-flash", options: [], availableModels: [{ name: "deepseek-v4-flash", label: "DeepSeek V4 Flash", enabled: true, isDefault: true, reasoningLevels: ["low", "high", "max"], defaultReasoningLevel: "high" }] },
+    // Enough Bubble models for the phone's model sheet to switch to its searchable list.
+    bubble: {
+      defaultModel: "deepseek-v4-flash",
+      options: [],
+      availableModels: [
+        { name: "deepseek-v4-flash", label: "DeepSeek V4 Flash", enabled: true, isDefault: true, reasoningLevels: ["low", "high", "max"], defaultReasoningLevel: "high" },
+        ...["DeepSeek V4 Pro", "Kimi K2", "GLM-4.6", "Qwen3 Coder", "MiniMax-M2", "Doubao Seed Code", "Grok Code Fast"].map((label) => ({
+          name: label.toLowerCase().replace(/[^a-z0-9.]+/g, "-"),
+          label,
+          enabled: true,
+          isDefault: false,
+        })),
+      ],
+    },
   }),
   // The desktop's built-in commands, plus a few made-up skills (no files read).
   capabilities: async (provider) => ({

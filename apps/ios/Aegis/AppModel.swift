@@ -152,11 +152,6 @@ final class AppModel {
         save(sessionSettings, "aegis-session-settings")
     }
 
-    func describe(_ provider: String) -> String {
-        let r = catalog(provider).resolve(taskSettings[provider] ?? RemoteTaskSettings())
-        return r.modelLabel + (r.effortLabel.map { " · \($0)" } ?? "")
-    }
-
     // MARK: Commands and skills ("/" and "$" menus)
 
     /// The composer's menu is showing; Home makes room for it above the keyboard.
