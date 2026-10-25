@@ -53,6 +53,15 @@ const sessions = [
     runId: null,
   },
   {
+    id: "long",
+    projectId: "project",
+    title: "Long history paging",
+    provider: "claude",
+    status: "idle",
+    updatedAt: Date.now() - 2 * 60 * minute,
+    runId: null,
+  },
+  {
     id: "video",
     projectId: "site",
     title: "Stream large videos past the cap",
@@ -132,12 +141,19 @@ const history = {
   video: [
     { id: "u4", role: "user", text: "Stream videos over 200 MB instead of failing the preview." },
   ],
+  // Several history pages, numbered so paging and scroll position can be checked by eye.
+  long: Array.from({ length: 260 }, (_, i) =>
+    i % 2
+      ? { id: `long-${i}`, role: "assistant", at: t0 - (260 - i) * 1000, text: `Reply #${i}.` + " Some longer text so rows differ in height.".repeat(i % 5) }
+      : { id: `long-${i}`, role: "user", at: t0 - (260 - i) * 1000, text: `Message #${i}` },
+  ),
   notes: [{ id: "a5", role: "assistant", text: "Release notes drafted in RELEASE_NOTES.md." }],
 };
 let pending = true;
 let gateway;
 const runtime = {
-  environment: "fixture",
+  // "development" lets the Aegis Dev simulator build pair with it.
+  environment: process.env.AEGIS_FIXTURE_ENVIRONMENT || "fixture",
   // The direct listener on loopback: the simulator and tests reach it like a phone on the Mac's Wi-Fi.
   lan: { host: "127.0.0.1" },
   projects: () => [

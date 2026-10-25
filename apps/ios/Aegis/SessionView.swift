@@ -16,6 +16,18 @@ struct SessionView: View {
     @State private var atBottom = true
     @State private var copied = false
     @State private var loadingOlder = false
+    /// The last automatic load failed; a button retries instead of looping on it.
+    @State private var olderFailed = false
+    /// The older-page cursor `rendered` was built with, so the loading row and the rows
+    /// it pages in change in the same pass.
+    @State private var shownBefore: Double?
+    @State private var scrollPhase = ScrollPhase.idle
+    /// Rendered rows kept out of the stack above the shown ones. Laying out a whole
+    /// page of rows at once stalled opening a long task and paging in older history,
+    /// so they go in a few at a time as the top comes near.
+    @State private var hiddenRows = 0
+    private static let firstRows = 30
+    private static let moreRows = 20
 
     private var session: RemoteSession? { model.sessions.first { $0.id == sessionId } }
     private var history: SessionHistory? { model.client.messagesBySession[sessionId] }
@@ -71,17 +83,18 @@ struct SessionView: View {
             // (markdown, traces, async diff previews) the estimates never settled,
             // freezing the app at 100% CPU. History is paged, so rows are few.
             VStack(alignment: .leading, spacing: 18) {
-                if history?.before != nil {
-                    Button(loadingOlder ? "Loading…" : "Load earlier messages") {
-                        loadingOlder = true
-                        Task {
-                            await model.perform { try await model.client.older() }
-                            loadingOlder = false
+                // Older pages load on their own as the top comes near; the button is
+                // only the retry after a failed load.
+                if hiddenRows > 0 || shownBefore != nil {
+                    Group {
+                        if hiddenRows == 0 && olderFailed && !loadingOlder {
+                            Button("Load earlier messages") { loadOlder(retry: true) }
+                                .font(.app(13)).foregroundStyle(Color.text2)
+                        } else {
+                            ProgressView().controlSize(.small)
                         }
                     }
-                    .font(.app(13)).foregroundStyle(Color.text2)
-                    .frame(maxWidth: .infinity)
-                    .disabled(loadingOlder)
+                    .frame(maxWidth: .infinity, minHeight: 24)
                 }
                 let pending = pendingSends
                 // A new task already shows its message; no loading line under it.
@@ -90,8 +103,8 @@ struct SessionView: View {
                         .font(.app(14)).foregroundStyle(Color.text2)
                         .frame(maxWidth: .infinity).padding(.vertical, 40)
                 }
-                ForEach(rendered.items) { item in
-                    ItemView(item: item, sessionId: sessionId)
+                ForEach(rendered.items.dropFirst(hiddenRows)) { item in
+                    ItemView(item: item, sessionId: sessionId).equatable()
                 }
                 ForEach(pending, id: \.id) { send in
                     VStack(alignment: .trailing, spacing: 6) {
@@ -160,16 +173,44 @@ struct SessionView: View {
             if atBottom, distance > 140 { atBottom = false }
             else if !atBottom, distance < 80 { atBottom = true }
         }
+        .onScrollPhaseChange { _, phase in scrollPhase = phase }
+        .onScrollGeometryChange(for: TopRoom.self) { geo in
+            TopRoom(offset: geo.visibleRect.minY, content: geo.contentSize.height, viewport: geo.containerSize.height)
+        } action: { _, room in
+            // Only while the user scrolls, or when the page doesn't fill the screen: right
+            // after opening, the list sits at the top for a moment before it moves to the end.
+            let userScrolling = scrollPhase == .interacting || scrollPhase == .decelerating
+            let fits = room.content <= room.viewport
+            if room.offset < room.viewport, userScrolling || fits { loadOlder() }
+        }
         .task(id: RenderKey(history: historyKey, live: history?.live, running: running, status: session?.status ?? "")) {
             let key = RenderKey(history: historyKey, live: history?.live, running: running, status: session?.status ?? "")
             let committed = messages
+            let before = history?.before
             let next = await model.core.renderSession(history: key.history, messages: committed, live: key.live, running: key.running, status: key.status)
+            await Task.detached(priority: .userInitiated) { MarkdownBlocks.warm(next.items) }.value
             guard !Task.isCancelled else { return }
+            // An older page goes in above what's on screen.
+            let prepended = shownMessages.first.map { first in
+                committed.first?.id != first.id && committed.contains { $0.id == first.id }
+            } ?? false
             let follow = atBottom
+            if prepended {
+                // The page stays above the shown rows; scrolling up brings it in.
+                hiddenRows += max(0, next.items.count - rendered.items.count)
+                // The row at the seam can still grow (a turn that began on the older page).
+                if !follow { scroller.keepPosition() }
+            } else if shownMessages.first?.id != committed.first?.id {
+                // Opening the task, or a different history: start from the latest rows.
+                hiddenRows = max(0, next.items.count - Self.firstRows)
+            }
             rendered = next
             shown = key
             shownMessages = committed
+            shownBefore = before
             if follow { scrollToBottom(proxy, animated: false) }
+            // The reader waited at the top for this page.
+            else if prepended, scroller.nearTop { loadOlder() }
         }
         .onChange(of: model.sendTick) {
             scrollToBottom(proxy, animated: true)
@@ -277,6 +318,32 @@ struct SessionView: View {
         DispatchQueue.main.async { scroller.scrollToBottom(animated: animated) }
     }
 
+    private struct TopRoom: Equatable {
+        /// How far the visible top is below the start of the content.
+        let offset: CGFloat
+        let content: CGFloat
+        let viewport: CGFloat
+    }
+
+    private func loadOlder(retry: Bool = false) {
+        if hiddenRows > 0 {
+            // Already here: a few more rows go in above, and the reader stays put.
+            scroller.keepPosition()
+            hiddenRows = max(0, hiddenRows - Self.moreRows)
+            return
+        }
+        // Waits for the page in hand to render, so one page is asked for at a time.
+        // After a failure only the button tries again; scrolling would keep hammering it.
+        guard !loadingOlder, retry || !olderFailed, !rendered.items.isEmpty, shown.history == historyKey,
+              let before = history?.before, before == shownBefore else { return }
+        loadingOlder = true
+        olderFailed = false
+        Task {
+            do { try await model.client.older() } catch { olderFailed = true }
+            loadingOlder = false
+        }
+    }
+
     private var isUserLast: Bool {
         if case .user = rendered.items.last { return true }
         return false
@@ -311,10 +378,14 @@ struct UserBubble: View {
     }
 }
 
-private struct ItemView: View {
+/// Equatable so a re-render that only adds rows (a new page, a new reply) skips the
+/// bodies of the rows that didn't change.
+private struct ItemView: View, Equatable {
     @Environment(AppModel.self) private var model
     let item: SessionItem
     let sessionId: String
+
+    static func == (a: ItemView, b: ItemView) -> Bool { a.item == b.item && a.sessionId == b.sessionId }
 
     var body: some View {
         switch item {
@@ -563,6 +634,35 @@ struct PillButtonStyle: ButtonStyle {
         let insets = scroll.adjustedContentInset
         let bottom = max(-insets.top, scroll.contentSize.height - scroll.bounds.height + insets.bottom)
         scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: bottom), animated: animated)
+    }
+
+    /// Within a screen of the top.
+    var nearTop: Bool {
+        guard let scroll = scrollView else { return false }
+        return scroll.contentOffset.y + scroll.adjustedContentInset.top < scroll.bounds.height
+    }
+
+    private var resize: NSKeyValueObservation?
+
+    /// Keeps the visible rows in place when content is about to be added above them:
+    /// the next time the content grows, the offset moves by as much. Done as the
+    /// size changes, before drawing, so the old position never shows for a frame.
+    func keepPosition() {
+        guard let scroll = scrollView else { return }
+        let fromEnd = scroll.contentSize.height - scroll.contentOffset.y
+        let height = scroll.contentSize.height
+        let observation = scroll.observe(\.contentSize, options: [.new]) { [weak self] scroll, _ in
+            MainActor.assumeIsolated {
+                guard scroll.contentSize.height > height else { return }
+                scroll.contentOffset.y = scroll.contentSize.height - fromEnd
+                self?.resize = nil
+            }
+        }
+        resize = observation
+        // Nothing grew (the page was all tool rows that fold away): let it go.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            if self?.resize === observation { self?.resize = nil }
+        }
     }
 }
 

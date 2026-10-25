@@ -1,3 +1,4 @@
+import AegisKit
 import SwiftUI
 
 /// Chat Markdown without dependencies: Foundation parses GitHub-flavored
@@ -40,10 +41,33 @@ indirect enum MarkdownBlock {
 }
 
 enum MarkdownBlocks {
+    // Read from view bodies on the main thread and filled ahead of time by `warm` off it.
+    private static let lock = NSLock()
     private static var cache: [String: [MarkdownBlock]] = [:]
+    /// Insertion order, so a full cache drops its oldest texts instead of everything on screen.
+    private static var order: [String] = []
+    private static let limit = 1000
+
+    /// Parses the Markdown of `items` ahead of rendering, off the main thread, so their
+    /// rows only look it up. Parsing a page of long answers in `body` stalled scrolling.
+    static func warm(_ items: [SessionItem]) {
+        for item in items {
+            switch item {
+            case .answer(_, let markdown, _), .plan(_, let markdown):
+                _ = parse(markdown)
+            case .work(_, let work):
+                for case .note(_, let markdown, _) in work.groups { _ = parse(markdown) }
+            default:
+                break
+            }
+        }
+    }
 
     static func parse(_ text: String) -> [MarkdownBlock] {
-        if let hit = cache[text] { return hit }
+        lock.lock()
+        let hit = cache[text]
+        lock.unlock()
+        if let hit { return hit }
         let options = AttributedString.MarkdownParsingOptions(
             allowsExtendedAttributes: false,
             interpretedSyntax: .full,
@@ -64,8 +88,17 @@ enum MarkdownBlocks {
             }
         }
         let blocks = build(runs.map { ($0.path.reversed(), $0.text) })
-        if cache.count > 400 { cache.removeAll() }
-        cache[text] = blocks
+        lock.lock()
+        if cache[text] == nil {
+            cache[text] = blocks
+            order.append(text)
+            if order.count > limit {
+                let old = order.prefix(limit / 4)
+                for key in old { cache[key] = nil }
+                order.removeFirst(old.count)
+            }
+        }
+        lock.unlock()
         return blocks
     }
 
