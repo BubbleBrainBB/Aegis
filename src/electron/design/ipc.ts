@@ -4,7 +4,7 @@ import { isAbsolute } from "path";
 import { randomUUID } from "crypto";
 import { strToU8, zipSync } from "fflate";
 import { ipcMainHandle } from "../util";
-import { designPdf, getDesignRepository, previewDesign } from "./service";
+import { designPdf, getDesignRepository, packForDesign, previewDesign } from "./service";
 import { designForPage } from "../../shared/design-pages";
 import { setDesignComposerPrefs, setDesignFocus } from "./focus";
 import { listDesignStyles, listProjectTemplates } from "./styles";
@@ -145,6 +145,10 @@ export function registerDesignIpc() {
       if (typeof x?.requestId === "string") cancelQuickEdit(x.requestId);
       return Promise.resolve();
     },
+    system: (x) => {
+      const d = getDesignRepository().read(x.sessionId, x.documentId);
+      return Promise.resolve(packForDesign(d));
+    },
     recoverFrame: (x, owner?: BrowserWindow) => Promise.resolve({ recovered: recoverSandboxFrame(owner, x?.frameName) }),
     composer: (x) => {
       if (typeof x?.sessionId === "string") setDesignComposerPrefs(x.sessionId, x);
@@ -174,7 +178,7 @@ export function registerDesignIpc() {
         throw new Error("Unsupported export format");
       let bytes: Uint8Array;
       if (x.format === "pdf") {
-        bytes = await designPdf(d.boards);
+        bytes = await designPdf(d.boards, undefined, packForDesign(d));
       } else if (x.format === "png") {
         if (!x.boardId) throw new Error("Select a board to export as PNG.");
         const preview = await previewDesign(
@@ -204,9 +208,11 @@ export function registerDesignIpc() {
             ),
           ),
         };
+        // Each board stands alone: its system's styles, components and assets inlined, and interactive.
+        const system = packForDesign(d);
         for (const board of d.boards)
           files[`boards/${board.id}.html`] = strToU8(
-            designFrameHtml(board.html, randomUUID(), false),
+            designFrameHtml(board.html, randomUUID(), false, { system }),
           );
         bytes = zipSync(files);
       }

@@ -4,6 +4,7 @@ import { designFramePatchScript } from "./design-frame-patch";
 import { editableLayerStyles } from "./design-layers";
 import { DESIGN_COMPONENTS_TYPE, isDesignComponent } from "./design-component";
 import { DESIGN_RUNTIME_SCRIPT } from "./design-runtime-bundle";
+import { resolveDesignAssets } from "./design-system-pack";
 
 /** A component another board can use: its template, logic and props. */
 export interface DesignComponentSource {
@@ -18,8 +19,10 @@ export interface DesignFrameOptions {
    * a board whose script stopped responding).
    */
   mode?: "edit" | "play" | "static";
-  /** Components the board may use (its design system), by name. */
+  /** Components the board may use, by name (besides its design system's). */
   components?: Record<string, DesignComponentSource>;
+  /** The design system the board loads: its stylesheet, components and assets. */
+  system?: { css: string; components: Record<string, DesignComponentSource>; assets: Record<string, string> } | null;
 }
 
 // Only nonce-bound scripts run, in an opaque-origin, network-less iframe with
@@ -34,6 +37,7 @@ export function designFrameHtml(
   if (!/^[a-zA-Z0-9-]+$/.test(nonce)) throw new Error("Invalid frame nonce");
   const mode = options.mode ?? (inspect ? "edit" : "play");
   const runtime = mode !== "static" && isDesignComponent(html);
+  const available = { ...(options.system?.components ?? {}), ...(options.components ?? {}) };
   const policy = `default-src 'none'; script-src 'nonce-${nonce}'${runtime ? " 'unsafe-eval'" : ""}; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'`;
   const inspector = inspect
     ? `<script data-aegis-frame nonce="${nonce}">
@@ -54,7 +58,7 @@ export function designFrameHtml(
       const parts=s=>{const r=[];let d=0,cur='';for(const ch of s){if(ch==='('||ch==='[')d++;if(ch===')'||ch===']')d--;if(ch===','&&!d){r.push(cur);cur=''}else cur+=ch}r.push(cur);return r.map(x=>x.trim()).filter(Boolean)};
       const spec=s=>{s=s.replace(/::[\\w-]+/g,'').replace(/:where\\([^)]*\\)/g,'');const a=(s.match(/#[\\w-]+/g)||[]).length,b=(s.match(/\\.[\\w-]+|\\[[^\\]]*\\]|:[\\w-]+/g)||[]).length,c=(s.replace(/\\[[^\\]]*\\]|\\([^)]*\\)|[.#:][\\w-]+/g,'').match(/[a-zA-Z][\\w-]*/g)||[]).length;return a*1e6+b*1e3+c};
       let ruleList=null;
-      const rules=()=>{if(ruleList)return ruleList;const out=[];const walk=l=>{for(const r of l){if(r instanceof CSSStyleRule)out.push(r);else if(r instanceof CSSMediaRule){if(matchMedia(r.media.mediaText).matches)walk(r.cssRules)}else if(r instanceof CSSSupportsRule){if(CSS.supports(r.conditionText))walk(r.cssRules)}else if(typeof CSSLayerBlockRule!=='undefined'&&r instanceof CSSLayerBlockRule)walk(r.cssRules)}};for(const s of document.styleSheets){if(s.ownerNode?.hasAttribute?.('data-aegis-frame'))continue;try{walk(s.cssRules)}catch{}}return ruleList=out};
+      const rules=()=>{if(ruleList)return ruleList;const out=[];const walk=l=>{for(const r of l){if(r instanceof CSSStyleRule)out.push(r);else if(r instanceof CSSMediaRule){if(matchMedia(r.media.mediaText).matches)walk(r.cssRules)}else if(r instanceof CSSSupportsRule){if(CSS.supports(r.conditionText))walk(r.cssRules)}else if(typeof CSSLayerBlockRule!=='undefined'&&r instanceof CSSLayerBlockRule)walk(r.cssRules)}};for(const s of document.styleSheets){if(s.ownerNode?.hasAttribute?.('data-aegis-frame')&&!s.ownerNode.hasAttribute('data-aegis-system'))continue;try{walk(s.cssRules)}catch{}}return ruleList=out};
       const authored=t=>{const hits=[];rules().forEach((r,i)=>{let best=-1;for(const p of parts(r.selectorText)){try{if(t.matches(p))best=Math.max(best,spec(p))}catch{}}if(best>=0)hits.push([best,i,r])});hits.sort((a,b)=>a[0]-b[0]||a[1]-b[1]);const m=new Map();const put=(k,v)=>{const imp=/!\\s*important$/i.test(v);if(m.get(k)?.imp&&!imp)return;m.set(k,{v,imp})};for(const h of hits)for(const [k,v] of decls(h[2].style.cssText))put(k,v);const saved=t.getAttribute('data-aegis-orig-style');const inline=saved===null?t.getAttribute('style'):saved==='aegis:none'?'':saved;for(const [k,v] of decls(inline||''))put(k,v);return [...m].map(([k,o])=>[k,o.v])};
       const labelOf=e=>e===document.body?'body':e===document.documentElement?'html':e.classList[0]?'.'+e.classList[0]:(e.getAttribute('data-aegis-layer-name')||e.tagName.toLowerCase());
       const cssOf=t=>{const own=authored(t);const seen=new Set(own.map(d=>d[0]));const inherited=[];for(let e=t.parentElement;e&&inherited.length<8;e=e.parentElement){const ds=authored(e).filter(([k])=>INH.has(k)&&!seen.has(k));ds.forEach(([k])=>seen.add(k));if(ds.length)inherited.push({id:e.getAttribute('data-aegis-node-id')||undefined,label:labelOf(e),decls:ds.slice(0,40)})}return {tag:t.tagName.toLowerCase(),text:(t.textContent||'').replace(/\\s+/g,' ').trim().slice(0,80),own:own.slice(0,80),inherited}};
@@ -96,16 +100,18 @@ export function designFrameHtml(
         if(d.type==='aegis-design-select-node'&&typeof d.nodeId==='string'){send([...document.querySelectorAll('[data-aegis-node-id]')].find(t=>t.getAttribute('data-aegis-node-id')===d.nodeId),false,true);return}if(d.type!=='aegis-design-hit-test'||!Number.isFinite(d.x)||!Number.isFinite(d.y))return;let t=document.elementFromPoint(d.x,d.y);if(t?.closest('[data-aegis-locked="true"]'))return;send(t,d.hover===true)});
       </script>`
     : "";
-  const components = runtime && options.components && Object.keys(options.components).length
-    ? `<script type="${DESIGN_COMPONENTS_TYPE}" data-aegis-frame>${JSON.stringify(options.components).replace(/</g, "\\u003c")}</script>`
+  const components = runtime && Object.keys(available).length
+    ? `<script type="${DESIGN_COMPONENTS_TYPE}" data-aegis-frame>${JSON.stringify(available).replace(/</g, "\\u003c")}</script>`
     : "";
+  // The system's stylesheet comes first, so the board's own styles win.
+  const system = options.system?.css ? `<style data-aegis-frame data-aegis-system>${options.system.css.replace(/<\/(style)/gi, "<\\/$1")}</style>` : "";
   const board = runtime
     ? `${components}<script data-aegis-frame data-aegis-runtime data-mode="${mode === "play" ? "play" : "edit"}" nonce="${nonce}">${DESIGN_RUNTIME_SCRIPT}</script>`
     : "";
   // parse5 serializes a single document; insert CSP before all user styles.
   // A replacer function: the runtime bundle contains `$&`-style sequences.
-  return sanitizeDesignHtml(html).replace(
+  return resolveDesignAssets(sanitizeDesignHtml(html), options.system?.assets).replace(
     "<head>",
-    () => `<head><meta data-aegis-frame http-equiv="Content-Security-Policy" content="${policy}"><meta data-aegis-frame name="referrer" content="no-referrer"><style data-aegis-frame>html{color-scheme:light}body{margin:0}*{box-sizing:border-box}[data-aegis-hidden="true"]{display:none!important}[data-aegis-masked]{-webkit-text-fill-color:transparent!important;-webkit-text-stroke-color:transparent!important;text-shadow:none!important;text-decoration-color:transparent!important}</style>${inspector}${board}`,
+    () => `<head><meta data-aegis-frame http-equiv="Content-Security-Policy" content="${policy}"><meta data-aegis-frame name="referrer" content="no-referrer">${system}<style data-aegis-frame>html{color-scheme:light}body{margin:0}*{box-sizing:border-box}[data-aegis-hidden="true"]{display:none!important}[data-aegis-masked]{-webkit-text-fill-color:transparent!important;-webkit-text-stroke-color:transparent!important;text-shadow:none!important;text-decoration-color:transparent!important}</style>${inspector}${board}`,
   );
 }

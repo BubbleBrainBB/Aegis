@@ -51,9 +51,10 @@ export function sanitizeDesignHtml(html: string): string {
         if (name === "src")
           return (
             node.tagName === "img" &&
-            /^data:image\/(png|jpeg|webp|gif);base64,[a-z\d+/=\s]+$/i.test(
-              attr.value,
-            )
+            // SVG in <img> never runs script.
+            (/^data:image\/(png|jpeg|webp|gif|svg\+xml);base64,[a-z\d+/=\s]+$/i.test(attr.value) ||
+              // A design system asset, resolved to its data URL when the board renders.
+              /^aegis-asset:[\w.-]{1,80}$/.test(attr.value))
           );
         if (name === "href") return /^#[a-z\d_-]+$/i.test(attr.value);
         return attrs.has(name) || /^aria-[a-z-]+$/.test(name);

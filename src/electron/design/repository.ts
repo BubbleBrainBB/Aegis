@@ -135,6 +135,11 @@ const operations = z
           expectedRevision: revision,
         })
         .strict(),
+      z.object({
+        type: z.literal("system"),
+        system: z.string().regex(/^[a-z0-9][a-z0-9-]{0,40}$/).nullable(),
+        expectedRevision: revision,
+      }).strict(),
     ]),
   )
   .min(1)
@@ -765,7 +770,7 @@ export class DesignRepository {
     operationId: string,
     signal?: AbortSignal,
     author: DesignAuthor = DEFAULT_AGENT_AUTHOR,
-    options: { exclusive?: boolean; request?: DesignRequest } = {},
+    options: { exclusive?: boolean; request?: DesignRequest; system?: string | null } = {},
   ) {
     return this.mutate(
       sessionId,
@@ -793,6 +798,7 @@ export class DesignRepository {
         comments: [],
         createdAt: Date.now(),
         updatedAt: Date.now(),
+        ...(options.system ? { system: options.system } : {}),
         };
       },
       signal,
@@ -841,6 +847,11 @@ export class DesignRepository {
           if (op.type === "title") {
             if (d.revision !== op.expectedRevision) conflict();
             d.title = op.title;
+            continue;
+          }
+          if (op.type === "system") {
+            if (d.revision !== op.expectedRevision) conflict();
+            d.system = op.system;
             continue;
           }
           if (op.type === "add") {

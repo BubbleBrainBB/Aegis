@@ -6,7 +6,10 @@ import { designFrameHtml } from "./html";
 import { renderChecksScript } from "./render-checks";
 import { moveDesignFocus } from "./focus";
 import { designProjectRoot } from "./styles";
-import type { DesignPreview } from "../../shared/design-types";
+import type { DesignDocument, DesignPreview } from "../../shared/design-types";
+import { designSystemPack } from "./system-pack";
+import { adherenceWarnings } from "./adherence";
+import type { DesignSystemPack } from "../../shared/design-system-pack";
 
 let repository: DesignRepository | undefined;
 export function getDesignRepository() {
@@ -67,6 +70,16 @@ export function settleDesignTurn(sessionId: string, agentName?: string) {
   );
 }
 
+/** The design system a design's boards load: its recorded one, else its project's. */
+export function packForDesign(d: Pick<DesignDocument, "system" | "project" | "sessionId">): DesignSystemPack | null {
+  try {
+    return designSystemPack(d.system, d.project || designProjectRoot(d.sessionId));
+  } catch (error) {
+    console.warn("Failed to read the design system:", error);
+    return null;
+  }
+}
+
 // Each capture owns a fresh, nonpersistent Chromium session, with no preload.
 // Serialize captures to bound Chromium/GPU memory even when tools run in parallel.
 let captureTail: Promise<unknown> = Promise.resolve();
@@ -125,7 +138,7 @@ export function previewDesign(
       signal?.addEventListener("abort", stop, { once: true });
       try {
         await w.loadURL(
-          `data:text/html;charset=utf-8,${encodeURIComponent(designFrameHtml(b.html, randomUUID(), false))}`,
+          `data:text/html;charset=utf-8,${encodeURIComponent(designFrameHtml(b.html, randomUUID(), false, { system: packForDesign(d) }))}`,
         );
         if (scale !== 1) w.webContents.setZoomFactor(scale);
         // A design component renders after its runtime boots.
@@ -137,6 +150,9 @@ export function previewDesign(
         if (checks) {
           const errors = (await w.webContents.executeJavaScript(RUNTIME_ERRORS).catch(() => [])) as string[];
           for (const error of errors.slice(0, 8)) warnings.push(`Logic error: ${error}`);
+          // How far the board strays from the design system it loads.
+          const pack = packForDesign(d);
+          if (pack) warnings.push(...adherenceWarnings(b.html, pack));
         }
         signal?.throwIfAborted();
         let image = await w.webContents.capturePage();
@@ -196,6 +212,7 @@ export function previewDesign(
 export function designPdf(
   boards: { id: string; html: string; width: number; height: number }[],
   signal?: AbortSignal,
+  system?: DesignSystemPack | null,
 ): Promise<Uint8Array> {
   const job = captureTail
     .catch(() => {})
@@ -205,7 +222,7 @@ export function designPdf(
       const pages = boards
         .map(
           (b, i) =>
-            `<section class="page p${i}"><iframe sandbox="allow-scripts" srcdoc="${escape(designFrameHtml(b.html, randomUUID(), false, { mode: "edit" }))}" style="width:${b.width}px;height:${b.height}px"></iframe></section>`,
+            `<section class="page p${i}"><iframe sandbox="allow-scripts" srcdoc="${escape(designFrameHtml(b.html, randomUUID(), false, { mode: "edit", system }))}" style="width:${b.width}px;height:${b.height}px"></iframe></section>`,
         )
         .join("");
       const sizes = boards.map((b, i) => `@page s${i}{size:${b.width}px ${b.height}px;margin:0}.p${i}{page:s${i}}`).join("");

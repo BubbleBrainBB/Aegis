@@ -25,6 +25,8 @@ export function summarizeOperations(
         return `Duplicated ${name(op.boardId)}`;
       case "title":
         return `Renamed design to ${op.title}`;
+      case "system":
+        return op.system ? `Switched the design system to ${op.system}` : "Removed the design system";
       case "canvas":
         return op.pages !== undefined ? "Updated canvas pages" : "Edited canvas objects";
       case "placement": {

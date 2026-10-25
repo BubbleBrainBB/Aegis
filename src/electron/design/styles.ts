@@ -16,6 +16,8 @@ interface BuiltinStyle {
   featured?: boolean;
   palette: { background: string; surface: string; text: string; muted: string; accent: string; line: string };
   type: { display: string; body: string };
+  /** Corner radii and elevation its components use (from its rules). */
+  shape: { radius: string; control: string; shadow: string };
   rules: string[];
 }
 
@@ -31,6 +33,7 @@ const BUILTIN: BuiltinStyle[] = [
     featured: true,
     palette: { background: "#f6f2ea", surface: "#fbf9f4", text: "#23302a", muted: "#667565", accent: "#7a5c3e", line: "#e3ddd0" },
     type: { display: SERIF, body: SANS },
+    shape: { radius: "6px", control: "999px", shadow: "none" },
     rules: [
       "Large serif headlines (48–72px on desktop) at weight 400 with tight line-height; sans body text at 15–17px.",
       "Generous whitespace; sections separated by space or a hairline in the line color, not boxes.",
@@ -45,6 +48,7 @@ const BUILTIN: BuiltinStyle[] = [
     featured: true,
     palette: { background: "#eff1f4", surface: "#ffffff", text: "#2f3244", muted: "#6a6f85", accent: "#4f5bd5", line: "#e1e3ea" },
     type: { display: SANS, body: SANS },
+    shape: { radius: "12px", control: "8px", shadow: "0 1px 2px rgba(31, 35, 50, 0.06)" },
     rules: [
       "Sans throughout; a restrained scale (28 / 20 / 15 / 13px) with weights 600 and 400.",
       "White cards on the grey background with a 1px line border and 10–12px radius; no heavy shadows.",
@@ -59,6 +63,7 @@ const BUILTIN: BuiltinStyle[] = [
     featured: true,
     palette: { background: "#1d2a24", surface: "#24342d", text: "#e9efe8", muted: "#a7b8ad", accent: "#7fb38f", line: "#33463d" },
     type: { display: SERIF, body: SANS },
+    shape: { radius: "10px", control: "8px", shadow: "none" },
     rules: [
       "Dark surfaces stepped by lightness (background, then surface), never pure black.",
       "Text in the light ink at 90% for body; muted for secondary. Keep contrast at least 4.5:1.",
@@ -72,6 +77,7 @@ const BUILTIN: BuiltinStyle[] = [
     description: "Cream, near-black and a bright orange. Friendly and energetic.",
     palette: { background: "#fff8ec", surface: "#ffffff", text: "#2a2118", muted: "#7b6a58", accent: "#f07a28", line: "#f0e2cc" },
     type: { display: SANS, body: SANS },
+    shape: { radius: "18px", control: "14px", shadow: "none" },
     rules: [
       "Bold sans headlines (weight 700, slightly tight tracking) with plain body text.",
       "Orange for the main call to action and one decorative shape per section at most.",
@@ -85,6 +91,7 @@ const BUILTIN: BuiltinStyle[] = [
     description: "Black on white with a monospaced utility face. Typographic and strict.",
     palette: { background: "#ffffff", surface: "#ffffff", text: "#111111", muted: "#6b6b6b", accent: "#111111", line: "#dddddd" },
     type: { display: SERIF, body: SANS },
+    shape: { radius: "0px", control: "0px", shadow: "none" },
     rules: [
       "No color: hierarchy comes from size, weight and space alone.",
       `Captions, labels and data in a monospaced face (${MONO}) at 11–12px, uppercase with letter-spacing.`,
@@ -98,6 +105,7 @@ const BUILTIN: BuiltinStyle[] = [
     description: "Pale lilac surfaces and a violet accent. Soft and modern.",
     palette: { background: "#f4f1fb", surface: "#ffffff", text: "#2b2540", muted: "#706a86", accent: "#8a6fd8", line: "#e4def5" },
     type: { display: SANS, body: SANS },
+    shape: { radius: "16px", control: "12px", shadow: "0 6px 20px rgba(138, 111, 216, 0.10)" },
     rules: [
       "Sans with a medium-weight display (500–600); body at 15px with comfortable line-height.",
       "White panels on the lilac background, 16px radius, the faintest violet-tinted shadow.",
@@ -106,6 +114,13 @@ const BUILTIN: BuiltinStyle[] = [
     ],
   },
 ];
+
+/** The built-in styles (their packs come from system-pack.ts). */
+export function builtinDesignStyles(): readonly BuiltinStyle[] {
+  return BUILTIN;
+}
+export type { BuiltinStyle };
+export const PROJECT_DESIGN_SYSTEM = "project";
 
 function builtinGuide(style: BuiltinStyle): string {
   const p = style.palette;

@@ -1082,6 +1082,7 @@ contextBridge.exposeInMainWorld('electron', {
     quickEdit: (input?: unknown) => ipcRenderer.invoke('design:quickEdit', input),
     quickEditCancel: (input?: unknown) => ipcRenderer.invoke('design:quickEditCancel', input),
     recoverFrame: (input?: unknown) => ipcRenderer.invoke('design:recoverFrame', input),
+    system: (input?: unknown) => ipcRenderer.invoke('design:system', input),
     handoff: (input?: unknown) => ipcRenderer.invoke('design:handoff', input),
     join: (input?: unknown) => ipcRenderer.invoke('design:join', input),
     remove: (input?: unknown) => ipcRenderer.invoke('design:remove', input),

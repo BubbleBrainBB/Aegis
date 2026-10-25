@@ -101,6 +101,12 @@ export interface DesignDocument {
   project?: string | null;
   /** The chats working on this design, most recently active first. */
   chats?: string[];
+  /**
+   * The design system its boards load: "project" (the project's
+   * design-system/ folder) or a built-in style id. Unset: none, unless the
+   * project has a design system.
+   */
+  system?: string | null;
 }
 export type DesignSummary = Pick<
   DesignDocument,
@@ -146,6 +152,7 @@ export type DesignOperation =
     }
   | { type: "remove" | "duplicate"; boardId: string; expectedRevision: number }
   | { type: "title"; title: string; expectedRevision: number }
+  | { type: "system"; system: string | null; expectedRevision: number }
   | { type: "canvas"; expectedRevision: number; pages?: DesignPage[]; marks?: DesignMark[] };
 export interface DesignUpdate {
   documentId: string;
@@ -299,6 +306,8 @@ export interface DesignAPI {
    * the renderer remounts them all afterwards.
    */
   recoverFrame(input: { frameName: string }): Promise<{ recovered: boolean }>;
+  /** The design system the design's boards load, or null. */
+  system(input: { sessionId: string; documentId: string }): Promise<import("./design-system-pack").DesignSystemPack | null>;
   /** A chat joins a design (a new chat started on it). */
   join(input: { sessionId: string; documentId: string }): Promise<void>;
   /** Deletes a design for good; its chats stay. */

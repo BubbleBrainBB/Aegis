@@ -15,6 +15,7 @@ import type {
 import { sanitizeDesignHtml } from "../../../shared/design-html";
 import { designFrameHtml, type DesignComponentSource } from "../../../shared/design-frame";
 import { isDesignComponent } from "../../../shared/design-component";
+import { resolveDesignAssets, type DesignSystemPack } from "../../../shared/design-system-pack";
 import { isBoardHung, markBoardHung, recoverSandboxFrames, useSandboxEpoch } from "../../utils/sandbox-frames";
 import type { LayerLayout } from "./design-spacing";
 import { toLayerCss, type LayerCss } from "./design-css";
@@ -130,14 +131,16 @@ export const BoardFrame = memo(
        * is still writing). Defaults to edit on the canvas, play in preview.
        */
       mode?: "edit" | "play" | "static";
-      /** Components the board can use, from its design system. */
+      /** Components the board can use besides its design system's. */
       components?: Record<string, DesignComponentSource>;
+      /** The design system the board loads. Keep the object stable: a new one reloads the frame. */
+      system?: DesignSystemPack | null;
       /** `requested`: the frame answering selectNode rather than reporting a click. */
       onInspect?: (anchor: DesignAnchor, hover: boolean, requested?: boolean) => void;
       onLoad?: () => void;
       onRuntime?: (event: BoardRuntimeEvent) => void;
     }
-  >(function BoardFrame({ board, preview = false, mode: requestedMode, components, onInspect, onLoad, onRuntime }, ref) {
+  >(function BoardFrame({ board, preview = false, mode: requestedMode, components, system, onInspect, onLoad, onRuntime }, ref) {
     const frame = useRef<HTMLIFrameElement>(null);
     const pending = useRef(new Map<string, (data: any) => void>());
     // A hung board falls back to its template without the runtime until its HTML changes.
@@ -151,12 +154,13 @@ export const BoardFrame = memo(
     const scripted = mode !== "static" && isDesignComponent(board.html);
     const lifetime = useMemo(() => {
       const token = crypto.randomUUID();
-      return { token, html: board.html, source: designFrameHtml(board.html, token, !preview, { mode, components }) };
-    }, [board.id, preview, mode, scripted, components, sandboxEpoch]);
+      return { token, html: board.html, source: designFrameHtml(board.html, token, !preview, { mode, components, system }) };
+    }, [board.id, preview, mode, scripted, components, system, sandboxEpoch]);
     const { token } = lifetime;
-    const html = useMemo(() => sanitizeDesignHtml(board.html), [board.html]);
+    // What the frame holds: sanitized, with the system's asset references resolved.
+    const html = useMemo(() => resolveDesignAssets(sanitizeDesignHtml(board.html), system?.assets), [board.html, system]);
     const [recovery, setRecovery] = useState<{ token: string; html: string; source: string; epoch: string } | null>(null);
-    const source = preview ? designFrameHtml(html, token, false, { mode, components })
+    const source = preview ? designFrameHtml(html, token, false, { mode, components, system })
       : recovery?.token === token ? recovery.source : lifetime.source;
     const onRuntimeRef = useRef(onRuntime);
     onRuntimeRef.current = onRuntime;
@@ -440,7 +444,7 @@ export const BoardFrame = memo(
         } else {
           // A broken bridge gets one full, sandboxed recovery for these bytes.
           ready.current = null;
-          setRecovery({ token, html, source: designFrameHtml(html, token, true, { mode, components }), epoch: crypto.randomUUID() });
+          setRecovery({ token, html, source: designFrameHtml(html, token, true, { mode, components, system }), epoch: crypto.randomUUID() });
         }
       });
       return () => { current = false; };
@@ -457,7 +461,7 @@ export const BoardFrame = memo(
         referrerPolicy="no-referrer"
         onLoad={() => {
           ready.current = token;
-          applied.current = sanitizeDesignHtml(recovery?.token === token ? recovery.html : lifetime.html);
+          applied.current = resolveDesignAssets(sanitizeDesignHtml(recovery?.token === token ? recovery.html : lifetime.html), system?.assets);
           setLoadEpoch(n => n + 1);
           onLoadRef.current?.();
         }}

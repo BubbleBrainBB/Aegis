@@ -22,6 +22,7 @@ import { findDesignLayer, readDesignLayers } from "../../../shared/design-layers
 import { ArrowsDiagonal, ChevronDown, Check, Download, Hand, Hash, MessageCircle, MousePointer, PanelRight, Play, Type } from "../icons";
 import { DesignActionMenu, DesignToolButton, useDesignMenu } from "./DesignChrome";
 import { BoardFrame, type BoardInspector, type BoardRuntimeEvent, type DragState, type DropTarget } from "./BoardFrame";
+import type { DesignSystemPack } from "../../../shared/design-system-pack";
 import { FRAME_SIZE, snapBoard, textTagFor } from "./design-insert";
 import { CanvasMarks } from "./CanvasMarks";
 import { useLayoutGuides } from "./design-prefs";
@@ -136,6 +137,8 @@ export type CanvasApi = {
   focus(): void;
 };
 type Props = {
+  /** The design system every board loads (stylesheet, components, assets). */
+  system?: DesignSystemPack | null;
   /** Page picker belongs before the canvas tools, not in the host titlebar. */
   toolbarLeading?: ReactNode;
   commentControlInHeader?: boolean;
@@ -1827,6 +1830,7 @@ export function DesignCanvas(props: Props) {
                 }}
                 board={patches[b.id] ? { ...b, ...p } : b}
                 mode={writingBoard(b) ? "static" : "edit"}
+                system={props.system}
                 onRuntime={(event) => onBoardRuntime(b.id, event)}
                 onLoad={() => {
                   setLoads((n) => n + 1);
@@ -2219,6 +2223,7 @@ export function DesignCanvas(props: Props) {
         <BoardPreview
           board={previewBoard}
           boards={[...boards].sort((a, b) => a.y - b.y || a.x - b.x)}
+          system={props.system}
           onNavigate={(id) => setPreviewId(id)}
           onClose={() => preview()}
         />
@@ -2236,11 +2241,13 @@ function MarkToolIcon({ type }: { type: DesignMarkType }) {
 function BoardPreview({
   board,
   boards,
+  system,
   onNavigate,
   onClose,
 }: {
   board: DesignBoard;
   boards: DesignBoard[];
+  system?: DesignSystemPack | null;
   onNavigate(id: string): void;
   onClose(): void;
 }) {
@@ -2347,6 +2354,7 @@ function BoardPreview({
             <BoardFrame
               board={board}
               preview
+              system={system}
               onRuntime={(event) => {
                 if (event.type !== "goto") return;
                 // A board link names its target by name (or id).

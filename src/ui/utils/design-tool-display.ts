@@ -1,6 +1,6 @@
 import {
   DESIGN_COMMENTS_TOOL, DESIGN_CREATE_TOOL, DESIGN_GUIDE_TOOL, DESIGN_PREVIEW_TOOL, DESIGN_READ_TOOL,
-  DESIGN_REPLY_TOOL, DESIGN_RESOURCES_TOOL, DESIGN_STARTER_TOOL, DESIGN_UPDATE_TOOL, designToolNameOf,
+  DESIGN_REPLY_TOOL, DESIGN_RESOURCES_TOOL, DESIGN_STARTER_TOOL, DESIGN_SYSTEM_CHECK_TOOL, DESIGN_UPDATE_TOOL, designToolNameOf,
 } from '../../shared/design-tools';
 import type { ToolStatus } from '../types';
 
@@ -53,9 +53,11 @@ export function designToolDisplay(name: string, input: unknown, status: ToolStat
     case DESIGN_RESOURCES_TOOL:
       return {
         verb: pending ? 'Reading' : 'Read',
-        target: args.name ? `the ${text(args.kind) || 'design system'} ${text(args.name)}` : 'the project design system',
+        target: args.name ? `the ${text(args.kind) || 'design system'} ${text(args.name)}` : 'the design system',
       };
     case DESIGN_STARTER_TOOL:
       return { verb: pending ? 'Getting' : 'Got', target: `the ${STARTER_LABELS[text(args.kind)] ?? 'device'} frame` };
+    case DESIGN_SYSTEM_CHECK_TOOL:
+      return { verb: pending ? 'Checking' : 'Checked', target: 'the design system' };
   }
 }

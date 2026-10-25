@@ -2,6 +2,7 @@ import { memo, useMemo, type CSSProperties } from "react";
 import { designFrameHtml } from "../../../shared/design-frame";
 import { isDesignComponent } from "../../../shared/design-component";
 import { isBoardHung, useSandboxEpoch } from "../../utils/sandbox-frames";
+import type { DesignSystemPack } from "../../../shared/design-system-pack";
 import type { DesignBoard } from "../../../shared/design-types";
 
 /**
@@ -15,6 +16,7 @@ export const BoardThumb = memo(function BoardThumb({
   height,
   className,
   style,
+  system,
 }: {
   board: Pick<DesignBoard, "id" | "html" | "width" | "height" | "contentRevision">;
   width: number;
@@ -22,14 +24,16 @@ export const BoardThumb = memo(function BoardThumb({
   className?: string;
   /** Extra placement, e.g. a position inside a design's cover. */
   style?: CSSProperties;
+  /** The design system the board loads. */
+  system?: DesignSystemPack | null;
 }) {
   const scale = Math.min(width / board.width, height / board.height);
   const sandboxEpoch = useSandboxEpoch();
   const scripted = isDesignComponent(board.html) && !isBoardHung(board.html);
   // Keyed by revision so a rewritten board repaints; no inspector script.
   const srcDoc = useMemo(
-    () => designFrameHtml(board.html, `thumb-${board.id.replace(/[^a-zA-Z0-9-]/g, "")}-${board.contentRevision}`, false, { mode: scripted ? "edit" : "static" }),
-    [board.html, board.id, board.contentRevision, scripted],
+    () => designFrameHtml(board.html, `thumb-${board.id.replace(/[^a-zA-Z0-9-]/g, "")}-${board.contentRevision}`, false, { mode: scripted ? "edit" : "static", system }),
+    [board.html, board.id, board.contentRevision, scripted, system],
   );
   return (
     <div

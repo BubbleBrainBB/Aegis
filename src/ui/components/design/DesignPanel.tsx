@@ -38,6 +38,7 @@ import { HistoryPanel } from "./HistoryPanel";
 import { DesignCompare } from "./DesignCompare";
 import { InlineTextEditor } from "./InlineTextEditor";
 import { editDesignText } from "../../../shared/design-component";
+import { useDesignSystem } from "./use-design-system";
 import { SelectionTools } from "./SelectionTools";
 import { frameStyle } from "./design-insert";
 import type { DropTarget } from "./BoardFrame";
@@ -127,6 +128,8 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
   const user = useDesignUser();
   const [list, setList] = useState<DesignSummary[]>([]);
   const [doc, setDoc] = useState<DesignDocument | null>(null);
+  // What every board of the open design loads: its design system.
+  const system = useDesignSystem(sessionId ?? undefined, doc?.id, doc?.system);
   const pageKey = "aegis.design.page:" + documentId;
   const [pageChoice, setPageChoice] = useState<string>(() => rendererStateStorage.getItem(pageKey) ?? "");
   const pages = designPages(doc ?? {});
@@ -1342,6 +1345,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
         <DesignCanvas
           key={documentId + ":" + activePageId}
           apiRef={canvas}
+          system={system}
           toolbarLeading={pagePicker}
           commentControlInHeader
           history={{
@@ -2154,6 +2158,9 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
             styleId: style?.id,
             styleName: style?.name,
           });
+          // The open design loads the picked system on every board.
+          if (doc && editable && (doc.system ?? null) !== (style?.id ?? null))
+            void update([{ type: "system", system: style?.id ?? null, expectedRevision: doc.revision }], style ? `Switched the design system to ${style.name}` : "Removed the design system");
           setStylesOpen(false);
         }}
       />
