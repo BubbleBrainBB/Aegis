@@ -56,7 +56,7 @@ struct SessionTrailing: View {
 
     var body: some View {
         if let waiting {
-            Text(waiting.canApprove ? "Approve" : "On Mac")
+            Text(badge(waiting.kind))
                 .font(.app(12, weight: .semibold)).foregroundStyle(Color.warn)
                 .padding(.horizontal, 8).padding(.vertical, 3)
                 .background(Color.warnBg, in: .capsule)
@@ -64,6 +64,15 @@ struct SessionTrailing: View {
             ProgressView().controlSize(.small)
         } else if session.isFailed {
             Text("Failed").font(.app(12, weight: .medium)).foregroundStyle(Color.danger)
+        }
+    }
+
+    private func badge(_ kind: RemotePermission.Kind) -> String {
+        switch kind {
+        case .approval: "Approve"
+        case .question: "Answer"
+        case .plan: "Review"
+        case .desktop: "On Mac"
         }
     }
 }

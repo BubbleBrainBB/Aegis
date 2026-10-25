@@ -242,16 +242,23 @@ struct SessionView: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 10) {
-                if running && !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text("Draft saved · send it after this turn").font(.app(12.5)).foregroundStyle(Color.text2)
-                }
-                if let session {
+                // A question takes the composer's place until it is answered or the turn ends.
+                if let session, let question = permissions.first(where: { $0.kind == .question }) {
+                    QuestionDock(permission: question, provider: session.provider)
+                        .id(question.requestId)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                } else if let session {
+                    if running && !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text("Draft saved · send it after this turn").font(.app(12.5)).foregroundStyle(Color.text2)
+                    }
                     Composer(
                         catalog: model.catalog(session.provider),
                         settings: model.settings(forSession: sessionId),
                         onSettings: { model.setSettings($0, forSession: sessionId) },
-                        placeholder: !permissions.isEmpty ? "Resolve this approval request to continue"
-                            : running ? "Ask for follow-up changes" : "message to agent",
+                        placeholder: permissions.first.map {
+                            $0.kind == .plan ? "Review the plan to continue" : "Resolve this approval request to continue"
+                        } ??
+                            (running ? "Ask for follow-up changes" : "message to agent"),
                         running: running,
                         canStop: model.ready && !model.busy && session.runId != nil
                     )
@@ -259,6 +266,7 @@ struct SessionView: View {
             }
             .padding(.horizontal, 12)
             .padding(.bottom, 6)
+            .animation(.smooth(duration: 0.3), value: permissions.first { $0.kind == .question }?.requestId)
         }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) { SidebarButton() }
@@ -552,7 +560,10 @@ struct ApprovalCard: View {
 
     var body: some View {
         Group {
-            if permission.canApprove {
+            switch permission.kind {
+            case .question: EmptyView() // answered in the dock that replaces the composer
+            case .plan: planCard
+            case .approval:
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 8) {
                         Image(systemName: "checkmark.shield").foregroundStyle(Color.warn)
@@ -574,7 +585,7 @@ struct ApprovalCard: View {
                 }
                 .padding(14)
                 .background(Color.fill2, in: .rect(cornerRadius: 22))
-            } else {
+            case .desktop:
                 HStack(alignment: .top, spacing: 12) {
                     Image(systemName: "laptopcomputer").font(.app(16))
                         .frame(width: 34, height: 34).background(Color.fill2, in: .circle)
@@ -595,6 +606,36 @@ struct ApprovalCard: View {
             }
         }
         .task(id: permission.detail) { summary = await model.core.describeRequest(permission.detail).summary }
+    }
+
+    private var planCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "list.bullet.clipboard").foregroundStyle(Color.warn)
+                Text("Plan ready for review").fontWeight(.semibold)
+            }
+            .font(.app(14))
+            Text(planPreview)
+                .font(.app(14)).foregroundStyle(Color.text2).lineLimit(3)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 8) {
+                Button("Keep planning") { Task { await model.decide(permission, "deny") } }
+                    .buttonStyle(PillButtonStyle(kind: .secondary)).disabled(!model.ready)
+                Button("Review plan") { model.approval = permission }
+                    .buttonStyle(PillButtonStyle(kind: .primary))
+            }
+        }
+        .padding(14)
+        .background(Color.fill2, in: .rect(cornerRadius: 22))
+    }
+
+    /// The plan's first lines without Markdown marks.
+    private var planPreview: String {
+        let lines = (permission.plan?.markdown ?? "").split(whereSeparator: \.isNewline)
+            .map { $0.replacingOccurrences(of: "`", with: "").replacingOccurrences(of: "**", with: "") }
+            .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "#>*- ")) }
+            .filter { !$0.isEmpty }
+        return lines.isEmpty ? "Approve it to let the agent start, or keep it planning." : lines.prefix(3).joined(separator: " · ")
     }
 
     private var deskTitle: String {

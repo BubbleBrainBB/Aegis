@@ -201,9 +201,35 @@ struct SettingsPage: View {
     }
 }
 
+/// A waiting request: an agent's question, a plan, or a tool to allow.
 struct ApprovalSheet: View {
+    let permission: RemotePermission
+
+    var body: some View {
+        switch permission.kind {
+        // Questions are answered in the task's dock, never in a sheet.
+        case .question: QuestionRedirect(permission: permission)
+        case .plan: PlanSheet(permission: permission)
+        case .approval, .desktop: ToolApprovalSheet(permission: permission)
+        }
+    }
+}
+
+/// Closes at once and opens the task, where the question is docked.
+private struct QuestionRedirect: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
+    let permission: RemotePermission
+
+    var body: some View {
+        Color.clear.task {
+            model.approval = nil
+            model.open(session: permission.sessionId)
+        }
+    }
+}
+
+private struct ToolApprovalSheet: View {
+    @Environment(AppModel.self) private var model
     let permission: RemotePermission
     @State private var request: RequestDescription?
 
@@ -249,7 +275,7 @@ struct ApprovalSheet: View {
                 Label {
                     Text(!live ? "This request is no longer waiting. It was handled or the turn ended."
                          : permission.canApprove ? "Allows this request only. Your project’s permission settings stay the same."
-                         : "Questions, plans and computer use need Aegis on your Mac. You can still deny it here.")
+                         : "This request needs Aegis on your Mac. You can still deny it here.")
                 } icon: { Image(systemName: "lock") }
                     .font(.app(13)).foregroundStyle(Color.text2)
                 HStack(spacing: 8) {

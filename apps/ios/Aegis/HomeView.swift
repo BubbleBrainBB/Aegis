@@ -114,7 +114,8 @@ private struct NeedsCards: View {
                         ForEach(model.permissions) { p in
                             Button {
                                 model.open(session: p.sessionId)
-                                model.approval = p
+                                // A question is docked in the task; others open their sheet.
+                                if p.kind != .question { model.approval = p }
                             } label: { card(p) }
                             .buttonStyle(.plain)
                         }
@@ -134,13 +135,22 @@ private struct NeedsCards: View {
     }
 
     private func card(_ p: RemotePermission) -> some View {
-        let question = p.toolName.lowercased().contains("question")
+        let (label, icon, detail): (String, String, String) = switch p.kind {
+        case .question: ("Question", "questionmark", p.questions?.first?.question ?? "")
+        case .plan: ("Plan", "list.bullet.clipboard", "Ready for your review")
+        case .approval: ("Approval", "checkmark.shield", "\(p.toolName) · \(summaries[p.requestId] ?? "")")
+        case .desktop: (
+            p.toolName.lowercased().contains("question") ? "Question" : "Needs your Mac",
+            p.toolName.lowercased().contains("question") ? "questionmark" : "checkmark.shield",
+            "\(p.toolName) · \(summaries[p.requestId] ?? "")"
+        )
+        }
         return VStack(alignment: .leading, spacing: 3) {
-            Label(question ? "Question" : p.canApprove ? "Approval" : "Needs your Mac", systemImage: question ? "questionmark" : "checkmark.shield")
+            Label(label, systemImage: icon)
                 .font(.app(12, weight: .semibold)).foregroundStyle(Color.warn)
             Text(model.sessions.first { $0.id == p.sessionId }?.title ?? "Task")
                 .font(.app(15, weight: .semibold)).lineLimit(1)
-            Text("\(p.toolName) · \(summaries[p.requestId] ?? "")")
+            Text(detail)
                 .font(.app(13)).foregroundStyle(Color.text2).lineLimit(1)
         }
         .padding(.horizontal, 15).padding(.vertical, 13)

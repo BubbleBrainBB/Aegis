@@ -85,8 +85,119 @@ public struct RemotePermission: Codable, Equatable, Hashable, Identifiable, Send
     public let runId: String
     public let toolName: String
     public let detail: String
+    /// Allow needs nothing else. False for questions and plans, which carry their own fields.
     public let canApprove: Bool
+    /// The agent is asking (newer Macs). Answered with allow plus `answers`.
+    public let questions: [RemoteQuestion]?
+    /// A plan to approve (allow) or keep planning on (deny), from newer Macs.
+    public let plan: RemotePlan?
     public var id: String { requestId }
+
+    public init(
+        requestId: String, sessionId: String, runId: String, toolName: String, detail: String, canApprove: Bool,
+        questions: [RemoteQuestion]? = nil, plan: RemotePlan? = nil
+    ) {
+        self.requestId = requestId
+        self.sessionId = sessionId
+        self.runId = runId
+        self.toolName = toolName
+        self.detail = detail
+        self.canApprove = canApprove
+        self.questions = questions
+        self.plan = plan
+    }
+
+    public enum Kind: Sendable { case approval, question, plan, desktop }
+    public var kind: Kind {
+        if let questions, !questions.isEmpty { return .question }
+        if plan != nil { return .plan }
+        return canApprove ? .approval : .desktop
+    }
+}
+
+/// A question as the desktop's question card shows it. Every question also takes free "Other" text.
+public struct RemoteQuestion: Codable, Equatable, Hashable, Sendable {
+    public struct Option: Codable, Equatable, Hashable, Sendable {
+        public let label: String
+        public let description: String?
+        public init(label: String, description: String? = nil) {
+            self.label = label
+            self.description = description
+        }
+    }
+    public let question: String
+    public let header: String?
+    public let options: [Option]
+    public let multiSelect: Bool?
+    public var allowsMany: Bool { multiSelect == true }
+
+    public init(question: String, header: String? = nil, options: [Option], multiSelect: Bool? = nil) {
+        self.question = question
+        self.header = header
+        self.options = options
+        self.multiSelect = multiSelect
+    }
+}
+
+public struct RemotePlan: Codable, Equatable, Hashable, Sendable {
+    /// Markdown; empty when the Mac didn't see the plan itself (it is in the task above).
+    public let markdown: String
+    /// Cut off for the phone: approve it on the Mac.
+    public let truncated: Bool?
+    public init(markdown: String, truncated: Bool? = nil) {
+        self.markdown = markdown
+        self.truncated = truncated
+    }
+}
+
+/// One question's answer: option labels as listed, in the order picked, plus "Other" text.
+public struct QuestionAnswer: Equatable, Hashable, Sendable {
+    public var selected: [String]
+    public var other: String
+
+    public init(selected: [String] = [], other: String = "") {
+        self.selected = selected
+        self.other = other
+    }
+
+    public var trimmedOther: String { other.trimmingCharacters(in: .whitespacesAndNewlines) }
+    public var isAnswered: Bool { !selected.isEmpty || !trimmedOther.isEmpty }
+
+    /// Picks an option: toggles it for multi-select, else replaces the answer (and any "Other" text).
+    public mutating func pick(_ label: String, many: Bool) {
+        if many {
+            if let index = selected.firstIndex(of: label) { selected.remove(at: index) } else { selected.append(label) }
+        } else {
+            selected = selected == [label] ? [] : [label]
+            other = ""
+        }
+    }
+
+    /// Types "Other" text; for single-select it replaces the picked option.
+    public mutating func type(_ text: String, many: Bool) {
+        other = text
+        if !many, !trimmedOther.isEmpty { selected = [] }
+    }
+
+    public var json: JSONValue {
+        var object: [String: JSONValue] = ["selected": .array(selected.map { .string($0) })]
+        if !trimmedOther.isEmpty { object["other"] = .string(trimmedOther) }
+        return .object(object)
+    }
+}
+
+extension RemotePermission {
+    /// The `permission` command for a decision; answers go with an allow on a question.
+    public func command(_ decision: String, answers: [String: QuestionAnswer]? = nil) -> [String: JSONValue] {
+        var request: [String: JSONValue] = [
+            "method": "permission", "sessionId": .string(sessionId), "runId": .string(runId),
+            "requestId": .string(requestId), "decision": .string(decision),
+        ]
+        if let answers, decision == "allow" {
+            request["answers"] = .object(answers.filter { $0.value.isAnswered }.mapValues(\.json))
+        }
+        return request
+    }
 }
 
 public struct RemoteSnapshot: Codable, Equatable, Sendable {
