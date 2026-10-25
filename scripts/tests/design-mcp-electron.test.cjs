@@ -106,6 +106,21 @@ app.whenReady().then(async () => {
     assert.equal(forged.status, 403);
     assert.equal((await post(info.url, { ...auth, 'x-aegis-session-resolver': 'nobody' }, { method: 'tools/list', params: {} })).status, 403);
 
+    // A per-session Codex app-server: its entry sends the signed caller from
+    // the environment (never argv), so calls are bound without any history.
+    const codexEntry = await http.getSessionReaderCodexArgs('session-c');
+    assert.match(codexEntry.args[1], /env_http_headers=\{"x-aegis-session"="AEGIS_SESSION_MCP_CALLER"\}/);
+    assert.ok(!codexEntry.args.join(' ').includes(codexEntry.env.AEGIS_SESSION_MCP_CALLER), 'signed caller stays out of argv');
+    initializeToolCallerAttribution({ listRunningSessionIds: () => [], getSessionHistory: () => [] });
+    const codexHeaders = { ...auth, 'x-aegis-session': codexEntry.env.AEGIS_SESSION_MCP_CALLER };
+    const codexCreated = json(await call(info.url, codexHeaders, 'design_create', { title: 'Codex notes', operationId: 'op-c1' }));
+    assert.equal(codexCreated.title, 'Codex notes');
+    assert.deepEqual(getDesignRepository().list('session-c').map((d) => d.id), [codexCreated.id], 'bound to its own session');
+    assert.ok(!getDesignRepository().list('session-a').some((d) => d.id === codexCreated.id));
+    const sharedCodexEntry = await http.getSessionReaderCodexArgs();
+    assert.ok(!sharedCodexEntry.args[1].includes('env_http_headers'));
+    assert.deepEqual(sharedCodexEntry.env, {});
+
     // A shared runtime (OpenCode) names the caller in request meta.
     http.registerSessionMetaResolver('test-runtime', async (meta) => (meta && meta.chat === 'c-1' ? 'session-a' : null));
     const shared = (await http.getSessionReaderHttpConfig({ resolver: 'test-runtime' })).headers;
@@ -262,7 +277,7 @@ app.whenReady().then(async () => {
     assert.equal(fresh.project, project);
     assert.match((await call(info.url, b, 'design_read', { documentId: created.id })).result.content[0].text, /not found/i, 'other projects still cannot');
 
-    console.log('PASS design MCP: listed, session-bound writes and previews, isolation, forged headers refused, meta and history attribution, Bubble and Pi tools, quick edits, handoff');
+    console.log('PASS design MCP: listed, session-bound writes and previews, isolation, forged headers refused, per-session Codex entry, meta and history attribution, Bubble and Pi tools, quick edits, handoff');
   } catch (error) {
     console.error(error);
     code = 1;

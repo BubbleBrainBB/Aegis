@@ -45,6 +45,7 @@ const {
   resolveFastTier,
 } = require('../dist-electron/electron/libs/provider/codex-app-server-manager.js');
 const { CodexAdapter } = require('../dist-electron/electron/libs/provider/codex-adapter.js');
+const sessionHttp = require('../dist-electron/electron/libs/session-http-server.js');
 const grantsMod = require('../dist-electron/electron/libs/codex-computer-use-grants.js');
 const elicitationMod = require('../dist-electron/electron/libs/codex-computer-use-elicitation.js');
 const { computerUseGrants } = grantsMod.default ?? grantsMod;
@@ -912,6 +913,41 @@ async function testProcessLifecycle() {
     assert.equal(sent.find((m) => m.method === 'initialize').params.clientInfo.version, '9.9.9-test');
     await manager.stop();
     ok('concurrent spawn → one initialize (version injected)');
+  }
+
+  // A thread runtime's aegis-sessions entry names its Aegis session: the
+  // signed caller goes in its own environment, never argv; the shared
+  // catalog manager sends none, even if Aegis inherited one.
+  {
+    const recordDir = mkdtempSync(join(tmpdir(), 'codex-launch-record-'));
+    const previousRecord = process.env.FAKE_CODEX_LAUNCH_RECORD;
+    process.env.AEGIS_SESSION_MCP_CALLER = 'inherited.value';
+    try {
+      const launch = async (options) => {
+        process.env.FAKE_CODEX_LAUNCH_RECORD = join(recordDir, `${options.callerSessionId ?? 'shared'}.json`);
+        const manager = new CodexAppServerManager(FAKE_BIN, 'caller-test', options);
+        await manager.spawn('/tmp');
+        await manager.stop();
+        return JSON.parse(readFileSync(process.env.FAKE_CODEX_LAUNCH_RECORD, 'utf8'));
+      };
+      const { token } = await sessionHttp.ensureSessionHttpServer();
+      const bound = await launch({ callerSessionId: 'session-42' });
+      assert.match(bound.argv.join(' '), /env_http_headers=\{"x-aegis-session"="AEGIS_SESSION_MCP_CALLER"\}/);
+      assert.equal(sessionHttp.verifySessionCaller(token, bound.caller), 'session-42');
+      assert.ok(!bound.argv.join(' ').includes(bound.caller), 'signed caller stays out of argv');
+      const shared = await launch({});
+      assert.ok(!shared.argv.join(' ').includes('env_http_headers'));
+      assert.equal(shared.caller, null, 'an inherited caller value is not passed on');
+      const adapter = new CodexAdapter('/nonexistent-codex-binary');
+      assert.equal(adapter.managerFactory('session-7').callerSessionId, 'session-7', 'thread runtimes are bound to their thread');
+      assert.equal(adapter.manager.callerSessionId, undefined, 'the catalog manager is not');
+      ok('thread runtimes send their signed session header; shared manager sends none');
+    } finally {
+      delete process.env.AEGIS_SESSION_MCP_CALLER;
+      if (previousRecord === undefined) delete process.env.FAKE_CODEX_LAUNCH_RECORD;
+      else process.env.FAKE_CODEX_LAUNCH_RECORD = previousRecord;
+      rmSync(recordDir, { recursive: true, force: true });
+    }
   }
 
   // Fresh shared SQLite profile: only the cold initializer is serialized.

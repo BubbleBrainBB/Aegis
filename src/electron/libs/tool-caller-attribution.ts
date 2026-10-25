@@ -2,8 +2,8 @@ import type { StreamMessage } from '../../shared/types';
 
 /**
  * Which running session made an HTTP MCP tool call, for providers whose MCP
- * configuration is process-global (Kimi) or shared across threads (Codex
- * without a session header). The call's tool_use lands in the caller's
+ * configuration is process-global (Kimi), and for tools that do not read the
+ * session header (start_workflow). The call's tool_use lands in the caller's
  * history around the time the request arrives; match it by name and input.
  */
 export interface ToolCallerAttributionHost {
@@ -40,6 +40,16 @@ export function sameToolInput(a: unknown, b: unknown): boolean {
   return ka.length === kb.length && ka.every((k, i) => k === kb[i] && sameToolInput(ra[k], rb[k]));
 }
 
+/**
+ * A recorded tool_use input as the provider sent it: adapters add their own
+ * top-level `__aegis*` fields (display title, Computer Use action) to it.
+ */
+function sentToolInput(input: unknown): unknown {
+  const record = asRecord(input);
+  if (!record) return input;
+  return Object.fromEntries(Object.entries(record).filter(([key]) => !key.startsWith('__aegis')));
+}
+
 /** The latest unanswered top-level tool_use in `history` matching the call. */
 export function findPendingToolUse(
   history: StreamMessage[],
@@ -53,7 +63,7 @@ export function findPendingToolUse(
     if ((message as { parentToolUseId?: string | null }).parentToolUseId) continue;
     if (message.type === 'assistant') {
       for (const block of blocksOf(message)) {
-        if (block.type !== 'tool_use' || !matchesName(block.name) || !sameToolInput(block.input, input)) continue;
+        if (block.type !== 'tool_use' || !matchesName(block.name) || !sameToolInput(sentToolInput(block.input), input)) continue;
         if (typeof block.id === 'string' && block.id) candidates.push(block.id);
       }
     } else if (message.type === 'user') {
