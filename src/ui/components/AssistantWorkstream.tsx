@@ -70,7 +70,8 @@ import { SubagentAvatar } from './SubagentAvatar';
 import { getSubagentPersona } from '../utils/subagent-persona';
 import { ProviderIcon } from './AgentModelPicker';
 import { WorkflowBoard } from './workflow/WorkflowBoard';
-import { isStartWorkflowToolName } from '../../shared/workflow';
+import { isStartSessionToolName } from '../../shared/follow-up';
+import { SubSessionCard } from './follow-up/SubSessionCard';
 import { isShowWidgetToolName, widgetFromToolInput } from '../../shared/widget';
 import { InlineWidget } from './widget/InlineWidget';
 import { ImageStudioSessionContext } from '../lib/image-studio';
@@ -840,9 +841,19 @@ function TraceWidget({ entry, draft }: { entry?: WidgetEntry; draft?: WidgetDraf
   return outside || !props ? null : <InlineWidget {...props} />;
 }
 
-/** A start_workflow call: the workflow it started, live, in place of a subagent lane. */
+/** A start_workflow call: the workflow it started, live, in place of a subagent lane. A start_session call: the session's row. */
 function WorkflowEntryBoard({ entry }: { entry: TaskEntry }) {
   const resultText = entry.result ? getToolResultOutputContent(entry.result) : null;
+  if (isStartSessionToolName(entry.toolName)) {
+    return (
+      <SubSessionCard
+        toolUseId={entry.block.id}
+        input={entry.block.input}
+        resultText={resultText}
+        failed={entry.status === 'error' || entry.result?.is_error === true}
+      />
+    );
+  }
   return (
     <WorkflowBoard
       toolUseId={entry.block.id}
@@ -997,7 +1008,7 @@ function EntryRow({ entry, showChangeHint = true }: { entry: WorkstreamEntry; sh
   if (entry.type === 'compaction') return <CompactionActivity entry={entry} />;
   if (entry.type === 'backgroundTaskEnded') return <BackgroundTaskEndedEntryRow entry={entry} />;
   if (entry.type === 'task') {
-    if (isStartWorkflowToolName(entry.toolName)) return workflowsOutside ? null : <WorkflowEntryBoard entry={entry} />;
+    if (isWorkflowEntry(entry)) return workflowsOutside ? null : <WorkflowEntryBoard entry={entry} />;
     // Task entries render as a subagent chip row rather than a generic tool
     // row — clicking the chip opens the subagent's tab in the detail panel,
     // where its full working trace lives.

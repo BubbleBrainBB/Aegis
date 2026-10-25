@@ -2,7 +2,7 @@ import { toast } from 'sonner';
 import { useSessionOrganization, useSessionOrganizationStore, changeSessionOrganization } from '../store/useSessionOrganizationStore';
 import { textInputDialog } from './ui/text-input-dialog';
 import { useSessionActionsMenu } from '../hooks/useSessionActionsMenu';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type ReactNode } from 'react';
 import { Tooltip as TooltipPrimitive } from '@base-ui-components/react/tooltip';
 import { PreviewCard } from '@base-ui-components/react/preview-card';
 import {
@@ -26,7 +26,7 @@ import {
   DropdownMenuTrigger,
 } from './ui/dropdown-menu';
 import { useAppStore } from '../store/useAppStore';
-import { findProposalForChild, useFollowUpStore } from '../store/useFollowUpStore';
+import { findProposalForChild, rootSessionOf, subSessionParents, useFollowUpStore } from '../store/useFollowUpStore';
 import { allLeaves } from '../store/layout-tree';
 import { sendEvent } from '../hooks/useIPC';
 import { DEFAULT_WORKSPACE_CHANNEL_ID, type GitPullRequestSummary } from '../../shared/types';
@@ -225,6 +225,10 @@ export function FolderTreeView({
   useEffect(() => {
     if (!followUpsLoaded) void useFollowUpStore.getState().load();
   }, [followUpsLoaded]);
+  const followUpProposals = useFollowUpStore(s => s.proposals);
+  const subSessionParentMap = useMemo(() => subSessionParents(followUpProposals), [followUpProposals]);
+  // Parents whose sub-sessions are folded away; all start open.
+  const [collapsedParents, setCollapsedParents] = useState<Set<string>>(() => new Set());
   const {
     sessions,
     activeWorkspace,
@@ -280,6 +284,7 @@ export function FolderTreeView({
     sectionGroups,
     hasHiddenSessions,
     archivedCount,
+    subSessionsByRoot,
   } = useMemo(() => {
     const now = Date.now();
     const searching = Boolean(sidebarSearchQuery.trim());
@@ -308,6 +313,22 @@ export function FolderTreeView({
     });
     const hasHiddenSessions = !searching && sessionList.length < allSessions.length;
     const archivedCount = allSessions.filter((session) => organization.sessions[session.id]?.archived).length;
+
+    // Sub-sessions sit one level under the top session that started them, when
+    // it is listed too. State and date views are triage: everything stays flat.
+    const subSessionsByRoot = new Map<string, SessionView[]>();
+    if (view.groupBy === 'project' || view.groupBy === 'none') {
+      const listed = new Set(sessionList.map((session) => session.id));
+      const nested = new Set<string>();
+      for (const session of sessionList) {
+        const root = rootSessionOf(subSessionParentMap, session.id);
+        if (!root || !listed.has(root)) continue;
+        nested.add(session.id);
+        subSessionsByRoot.set(root, [...(subSessionsByRoot.get(root) ?? []), session]);
+      }
+      for (const children of subSessionsByRoot.values()) children.sort(byTime);
+      sessionList = sessionList.filter((session) => !nested.has(session.id));
+    }
 
     // Pinned 和自定义 section 只属于按项目/不分组的视图；State/Date 是分诊视图，
     // 每个会话都按自身状态或时间归位
@@ -411,8 +432,10 @@ export function FolderTreeView({
       sectionGroups,
       hasHiddenSessions,
       archivedCount,
+      subSessionsByRoot,
     };
   }, [
+    subSessionParentMap,
     projectCwd,
     sessions,
     sidebarSearchQuery,
@@ -504,22 +527,66 @@ export function FolderTreeView({
         : null;
   // 平铺列表只放会话本身；所属项目在悬停卡片里。按日期分组时（Codex 式）
   // 项目放在标题下的第二行，因为分组本身不再说明项目。
-  const renderFlatSession = (session: SessionView, keyPrefix: string) => {
-    const isSessionActive = isChatWorkspaceActive && openSessionIds.has(session.id);
+  /**
+   * A session row and, under it, the sub-sessions it started (one level),
+   * folded with the chevron in its gutter.
+   */
+  const withSubSessions = (
+    session: SessionView,
+    depth: number,
+    key: string,
+    renderRow: (row: SessionView, rowDepth: number, nest?: SubSessionNest) => ReactNode,
+  ) => {
+    const children = subSessionsByRoot.get(session.id);
+    if (!children?.length) return <Fragment key={key}>{renderRow(session, depth)}</Fragment>;
+    const expanded = !collapsedParents.has(session.id);
+    const nest: SubSessionNest = {
+      count: children.length,
+      running: children.filter((child) => child.status === 'running').length,
+      waiting: children.some((child) => child.permissionRequests.length > 0),
+      expanded,
+      onToggle: () =>
+        setCollapsedParents((current) => {
+          const next = new Set(current);
+          if (next.has(session.id)) next.delete(session.id);
+          else next.add(session.id);
+          return next;
+        }),
+    };
     return (
-      <SessionItem
-        key={`${keyPrefix}:${session.id}`}
-        session={session}
-        isActive={isSessionActive}
-        runtimeBadge={runtimeBadgeFor(session, isSessionActive)}
-        depth={0}
-        pullRequests={view.showPullRequests ? prsBySession[session.id] : null}
-        showProject={view.groupBy === 'date'}
-        onClick={() => onSessionClick(session.id)}
-        onTogglePin={() => sendEvent({ type: 'session.togglePin', payload: { sessionId: session.id } })}
-      />
+      <Fragment key={key}>
+        {renderRow(session, depth, nest)}
+        {expanded ? (
+          <div className="relative" data-sub-sessions-of={session.id}>
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute bottom-1 top-0 w-px bg-[color-mix(in_srgb,var(--text-primary)_10%,transparent)]"
+              // Under the parent's chevron, which sits in its row's gutter.
+              style={{ left: `${depth * 16 + 1.5}px` }}
+            />
+            {children.map((child) => <Fragment key={child.id}>{renderRow(child, depth + 1)}</Fragment>)}
+          </div>
+        ) : null}
+      </Fragment>
     );
   };
+  const renderFlatSession = (session: SessionView, keyPrefix: string) =>
+    withSubSessions(session, 0, `${keyPrefix}:${session.id}`, (row, rowDepth, nest) => {
+      const isSessionActive = isChatWorkspaceActive && openSessionIds.has(row.id);
+      return (
+        <SessionItem
+          session={row}
+          isActive={isSessionActive}
+          runtimeBadge={runtimeBadgeFor(row, isSessionActive)}
+          depth={rowDepth}
+          nest={nest}
+          pullRequests={view.showPullRequests ? prsBySession[row.id] : null}
+          showProject={view.groupBy === 'date'}
+          onClick={() => onSessionClick(row.id)}
+          onTogglePin={() => sendEvent({ type: 'session.togglePin', payload: { sessionId: row.id } })}
+        />
+      );
+    });
   const groupHeaderClass = 'mb-1 flex w-full items-center gap-1.5 px-2 text-left text-[13px] font-normal text-[var(--text-muted)]';
   const editSection = async (id: string, name: string, remove = false) => {
     try {
@@ -696,24 +763,25 @@ export function FolderTreeView({
                         worktreeGroups.set(session.worktreePath, list);
                       }
                     }
-                    const renderSession = (session: SessionView, depth: number) => {
-                      const isSessionActive =
-                        isChatWorkspaceActive && openSessionIds.has(session.id);
-                      return (
-                        <SessionItem
-                          key={session.id}
-                          session={session}
-                          isActive={isSessionActive}
-                          runtimeBadge={runtimeBadgeFor(session, isSessionActive)}
-                          depth={depth}
-                          pullRequests={view.showPullRequests ? prsBySession[session.id] : null}
-                          onClick={() => onSessionClick(session.id)}
-                          onTogglePin={() =>
-                            sendEvent({ type: 'session.togglePin', payload: { sessionId: session.id } })
-                          }
-                        />
-                      );
-                    };
+                    const renderSession = (session: SessionView, depth: number) =>
+                      withSubSessions(session, depth, session.id, (row, rowDepth, nest) => {
+                        const isSessionActive =
+                          isChatWorkspaceActive && openSessionIds.has(row.id);
+                        return (
+                          <SessionItem
+                            session={row}
+                            isActive={isSessionActive}
+                            runtimeBadge={runtimeBadgeFor(row, isSessionActive)}
+                            depth={rowDepth}
+                            nest={nest}
+                            pullRequests={view.showPullRequests ? prsBySession[row.id] : null}
+                            onClick={() => onSessionClick(row.id)}
+                            onTogglePin={() =>
+                              sendEvent({ type: 'session.togglePin', payload: { sessionId: row.id } })
+                            }
+                          />
+                        );
+                      });
                     return (
                       <>
                         {regularSessions.map((session) => renderSession(session, 1))}
@@ -901,11 +969,41 @@ function SessionPullRequestsGlyph({
   );
 }
 
+/** A row's sub-sessions: how many, how they are doing, and whether they show. */
+type SubSessionNest = {
+  count: number;
+  running: number;
+  waiting: boolean;
+  expanded: boolean;
+  onToggle: () => void;
+};
+
+/** Folded sub-sessions in one mark: amber when one needs you, a spinner and done/total while any runs. */
+function SubSessionSummary({ nest }: { nest: SubSessionNest }) {
+  if (nest.waiting) {
+    return <span className="h-2 w-2 flex-shrink-0 rounded-full bg-[var(--warning)]" title="A sub-session needs you" aria-label="A sub-session needs you" />;
+  }
+  if (nest.running > 0) {
+    return (
+      <span className="flex flex-shrink-0 items-center gap-1 text-[11.5px] tabular-nums text-[var(--text-muted)]" title={`${nest.running} of ${nest.count} sub-sessions running`}>
+        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+        {nest.count - nest.running}/{nest.count}
+      </span>
+    );
+  }
+  return (
+    <span className="flex-shrink-0 text-[11.5px] tabular-nums text-[var(--text-muted)]" title={`${nest.count} sub-session${nest.count === 1 ? '' : 's'}`}>
+      {nest.count}
+    </span>
+  );
+}
+
 function SessionItem({
   session,
   isActive,
   runtimeBadge,
   depth,
+  nest,
   pullRequests,
   showProject = false,
   onClick,
@@ -915,6 +1013,8 @@ function SessionItem({
   isActive: boolean;
   runtimeBadge: 'running' | 'completed' | 'error' | null;
   depth: number;
+  /** Set on a row with sub-sessions under it. */
+  nest?: SubSessionNest;
   pullRequests?: GitPullRequestSummary[] | null;
   /** Second line with the session's project (date-grouped lists). */
   showProject?: boolean;
@@ -922,8 +1022,9 @@ function SessionItem({
   onTogglePin: () => void;
 }) {
   const unread = useSessionOrganizationStore(s => s.sessions[session.id]?.unread);
-  // A follow-up task names the conversation it came from (no nesting: it already sits under its branch).
+  // A follow-up or sub-session names the conversation it came from (also when it is listed apart from it).
   const followUpParentId = useFollowUpStore(s => findProposalForChild(s.proposals, session.id)?.parentSessionId ?? null);
+  const startedBySession = useFollowUpStore(s => findProposalForChild(s.proposals, session.id)?.kind === 'session');
   const followUpParentTitle = useAppStore(s => (followUpParentId ? s.sessions[followUpParentId]?.title : undefined));
   const rowRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -1030,6 +1131,22 @@ function SessionItem({
             }}
             onClick={onClick}
           >
+            {nest ? (
+              <button
+                type="button"
+                draggable={false}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  nest.onToggle();
+                }}
+                className="absolute left-1 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-[var(--text-muted)] transition-colors duration-150 hover:text-[var(--text-primary)]"
+                aria-label={nest.expanded ? 'Hide sub-sessions' : 'Show sub-sessions'}
+                aria-expanded={nest.expanded}
+                title={nest.expanded ? 'Hide sub-sessions' : 'Show sub-sessions'}
+              >
+                <ChevronRight className={`h-3.5 w-3.5 transition-transform duration-150 ${nest.expanded ? 'rotate-90' : ''}`} />
+              </button>
+            ) : (
             <button
               type="button"
               draggable={false}
@@ -1046,6 +1163,7 @@ function SessionItem({
             >
               <Pin className="h-3.5 w-3.5" fill={session.pinned ? 'currentColor' : 'none'} />
             </button>
+            )}
 
             <div className="flex min-h-[22px] items-center gap-2">
               {session.handoffSourceProvider ? (
@@ -1076,6 +1194,7 @@ function SessionItem({
                   <GitBranch className="h-3.5 w-3.5 text-[var(--accent)]" aria-label="Runs on an isolated branch" />
                 </span>
               ) : null}
+              {nest && !nest.expanded ? <SubSessionSummary nest={nest} /> : null}
               {session.permissionRequests.length > 0 ? (
                 <span
                   className="h-2 w-2 flex-shrink-0 rounded-full bg-[var(--warning)]"
@@ -1157,7 +1276,7 @@ function SessionItem({
                 <div className="flex min-w-0 items-center gap-2">
                   <GitFork className="h-3.5 w-3.5 flex-shrink-0 text-[var(--accent)]" />
                   <span className="min-w-0 flex-1 truncate">
-                    Follow-up from {followUpParentTitle ? `“${followUpParentTitle}”` : 'another conversation'}
+                    {startedBySession ? 'Started from' : 'Follow-up from'} {followUpParentTitle ? `“${followUpParentTitle}”` : 'another conversation'}
                   </span>
                 </div>
               ) : null}

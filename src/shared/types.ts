@@ -1088,8 +1088,11 @@ export type ServerEvent =
  * `task` is a member session's full brief. The conversation shows neither as
  * a user message.
  */
-/** Prompts Aegis sent rather than the user: workflow events and tasks, and follow-up tasks and results. */
-export type WorkflowPromptKind = 'event' | 'task' | 'follow-up';
+/**
+ * Prompts Aegis sent rather than the user: workflow events and tasks, follow-up
+ * tasks and results, and the brief a sub-session starts from.
+ */
+export type WorkflowPromptKind = 'event' | 'task' | 'follow-up' | 'sub-session';
 
 export interface SessionStartPayload {
   /** The draft chat this start promotes; its browser pages move to the new id. */

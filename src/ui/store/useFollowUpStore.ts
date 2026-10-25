@@ -8,6 +8,7 @@ type FollowUpState = {
   upsert: (view: FollowUpProposalView) => void;
   act: (action: Omit<FollowUpAction, 'actionId'>) => Promise<FollowUpActionResult>;
   continueWithReport: (proposalId: string) => Promise<FollowUpActionResult>;
+  detach: (childSessionId: string) => Promise<FollowUpActionResult>;
 };
 
 let loading: Promise<void> | null = null;
@@ -51,6 +52,12 @@ export const useFollowUpStore = create<FollowUpState>((set, get) => ({
     if (result.proposal) get().upsert(result.proposal);
     return result;
   },
+
+  detach: async (childSessionId) => {
+    const result = await window.electron.followUps.detach(childSessionId);
+    if (result.proposal) get().upsert(result.proposal);
+    return result;
+  },
 }));
 
 /** The proposal a propose_follow_up call made: by its tool_use, else by the id its result returned. */
@@ -69,4 +76,44 @@ export function findProposalForChild(
   childSessionId: string,
 ): FollowUpProposalView | null {
   return Object.values(proposals).find((proposal) => proposal.childSessionId === childSessionId) ?? null;
+}
+
+/** Each nested session's direct parent: sessions started by another and not detached since. */
+export function subSessionParents(proposals: Record<string, FollowUpProposalView>): Map<string, string> {
+  const parents = new Map<string, string>();
+  for (const proposal of Object.values(proposals)) {
+    if (proposal.childSessionId && proposal.detachedAt === null) parents.set(proposal.childSessionId, proposal.parentSessionId);
+  }
+  return parents;
+}
+
+/**
+ * The top session a nested one sits under in the sidebar: sessions started by
+ * a sub-session nest beside it, one level under the top.
+ */
+export function rootSessionOf(parents: ReadonlyMap<string, string>, sessionId: string): string | null {
+  let current = parents.get(sessionId);
+  if (!current) return null;
+  const seen = new Set([sessionId]);
+  while (parents.has(current) && !seen.has(current)) {
+    seen.add(current);
+    current = parents.get(current)!;
+  }
+  return current;
+}
+
+/** Every session nested under one, at any depth. */
+export function nestedSessionIds(parents: ReadonlyMap<string, string>, sessionId: string): string[] {
+  return [...parents.keys()].filter((child) => isNestedUnder(parents, child, sessionId));
+}
+
+function isNestedUnder(parents: ReadonlyMap<string, string>, sessionId: string, ancestor: string): boolean {
+  const seen = new Set<string>();
+  let current = parents.get(sessionId);
+  while (current && !seen.has(current)) {
+    if (current === ancestor) return true;
+    seen.add(current);
+    current = parents.get(current);
+  }
+  return false;
 }

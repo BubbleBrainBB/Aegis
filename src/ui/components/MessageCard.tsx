@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { stripContentReferences } from '../utils/content-references';
 import { stripLeakedContextTags } from '../utils/leaked-context-tags';
 import { DesignCommentPromptRow } from './design/DesignCommentPromptRow';
+import { isSubSessionsFinishedPrompt, SubSessionBriefCard, SubSessionsFinishedRow } from './follow-up/SubSessionPromptRows';
 import { DesignSelectionTag } from './design/DesignSelectionChip';
 import { useDesignStore } from '../store/useDesignStore';
 import { ChevronRight, Copy, Check, History, Lightbulb, Pencil, RotateCcw, TargetArrow, Undo2, Workflow } from './icons';
@@ -77,7 +78,12 @@ export function MessageCard({
       // Prompts the workflow engine sent are not the user's words.
       if (message.workflowPrompt === 'event') return <WorkflowEventRow text={message.prompt} />;
       if (message.workflowPrompt === 'task') return <WorkflowTaskRow text={message.prompt} />;
-      if (message.workflowPrompt === 'follow-up') return <FollowUpPromptChip text={message.prompt} />;
+      if (message.workflowPrompt === 'follow-up') {
+        return isSubSessionsFinishedPrompt(message.prompt)
+          ? <SubSessionsFinishedRow text={message.prompt} />
+          : <FollowUpPromptChip text={message.prompt} />;
+      }
+      if (message.workflowPrompt === 'sub-session') return <SubSessionBriefCard text={message.prompt} sessionId={sessionId ?? undefined} createdAt={message.createdAt} />;
       // A comment sent from a design thread links back to it on the canvas.
       if (message.design && sessionId) {
         return (
@@ -746,7 +752,7 @@ function WorkflowEventRow({ text }: { text: string }) {
  * own, just a small chip above the reply naming what the reply answers.
  */
 function FollowUpPromptChip({ text }: { text: string }) {
-  const match = /^Follow-up (results?|task): ([\s\S]*)$/.exec(text);
+  const match = /^(?:Follow-up|Sub-session) (results?|task): ([\s\S]*)$/.exec(text);
   const isTask = match?.[1] === 'task';
   const label = match ? match[2] : text;
   const Icon = isTask ? Lightbulb : Undo2;

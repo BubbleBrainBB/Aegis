@@ -1,23 +1,37 @@
 // Follow-up proposals: the agent proposes, the user decides, the Host starts.
-// A proposal only becomes work through a user action. When a follow-up
-// finishes, its result goes back to the conversation that proposed it: right
-// away when that conversation is idle, otherwise once its turn ends.
+// A proposal only becomes work through a user action. Sub-sessions skip the
+// card: the user asked for them in words, so start_session starts one right
+// away. Either way, when the session finishes a turn its result goes back to
+// the conversation that started it, once that conversation is idle and none
+// of the other sessions it started is still working.
 
 import { randomUUID } from 'node:crypto';
 import type { SessionContinuePayload, SessionStartPayload } from '../../../shared/types';
 import type {
   FollowUpAction,
   FollowUpActionResult,
+  FollowUpKind,
+  FollowUpPlace,
   FollowUpProposalView,
   FollowUpStatus,
 } from '../../../shared/follow-up';
 import type { StreamMessage } from '../../types';
 import { assistantText } from '../workflow/session-hooks';
-import { buildFollowUpBrief, buildHereBrief, buildReportPrompt, FOLLOW_UP_LIMITS } from './brief';
+import {
+  buildFollowUpBrief,
+  buildHereBrief,
+  buildReportPrompt,
+  buildSubSessionBrief,
+  FOLLOW_UP_LIMITS,
+  reportPromptLabel,
+  SUB_SESSION_LIMITS,
+} from './brief';
 import type { FollowUpRow, FollowUpStore } from './store';
 
 /** Open proposals one conversation may have before it must wait for the user. */
 export const MAX_OPEN_FOLLOW_UPS = 5;
+/** A start_session call without a tool_use id matches an identical one this recent. */
+const RETRY_WINDOW_MS = 2 * 60_000;
 const REPORT_MAX_CHARS = 6_000;
 
 export interface FollowUpSessionInfo {
@@ -26,7 +40,17 @@ export interface FollowUpSessionInfo {
   provider: string;
   model: string | null;
   status: string;
+  /** The project root; differs from cwd when the session runs in a worktree. */
+  projectCwd?: string | null;
+  /** True when the session runs in a git worktree of its own. */
+  inWorktree?: boolean;
 }
+
+/** The folder a session works in, as start fields a sub-session sharing it copies. */
+export type FollowUpSharedWorkspace = Pick<
+  SessionStartPayload,
+  'cwd' | 'projectCwd' | 'envMode' | 'worktreePath' | 'associatedWorktreePath' | 'associatedWorktreeBranch' | 'associatedWorktreeRef'
+>;
 
 export interface FollowUpWorkspace {
   repoRoot: string;
@@ -45,6 +69,8 @@ export interface FollowUpHost {
   inheritedOptions(parentSessionId: string): Partial<SessionStartPayload>;
   /** A short label for the permission mode the new session would get. */
   permissionMode(parentSessionId: string): string | null;
+  /** The parent's own folder, for a sub-session that shares it. */
+  sharedWorkspace(parentSessionId: string): FollowUpSharedWorkspace | null;
   provision(projectCwd: string, label: string): Promise<FollowUpWorkspace>;
   worktreeExists(worktreePath: string): boolean;
   /** `git status --short` of a folder; null when unknown. */
@@ -57,6 +83,13 @@ export interface ProposeArgs {
   reason: string;
   plan: string;
   acceptance_criteria: string;
+}
+
+export interface StartSessionArgs {
+  title: string;
+  prompt: string;
+  /** true: a new worktree; false: the caller's folder; omitted: follow the caller. */
+  use_worktree?: boolean;
 }
 
 export type ToolOutcome = { ok: true; text: string } | { ok: false; error: string };
@@ -138,6 +171,81 @@ export class FollowUpService {
     return { ok: true, text: 'The proposal was withdrawn.' };
   }
 
+  /**
+   * start_session: the user asked for a separate session, so it starts now.
+   * A session that was itself started by another may only do this when the
+   * user typed the request there; a brief from its parent does not count.
+   */
+  async startSession(callerSessionId: string, toolUseId: string | null, args: StartSessionArgs): Promise<ToolOutcome> {
+    const session = this.host.getSession(callerSessionId);
+    if (!session) return { ok: false, error: 'This conversation could not be found.' };
+    if (!session.cwd) return { ok: false, error: 'This conversation has no project folder, so a new session has nowhere to run.' };
+    const title = args.title?.trim() ?? '';
+    const prompt = args.prompt?.trim() ?? '';
+    // A retried call gets the session it already started, whatever happened since.
+    const existing = toolUseId
+      ? this.store.findByToolUse(callerSessionId, toolUseId)
+      : this.store.findRecentSession(callerSessionId, title, prompt, RETRY_WINDOW_MS);
+    if (existing) return this.startSessionOutcome(existing);
+    // Only words the user typed start sessions: never a turn that a report,
+    // a workflow or the starting session's brief began.
+    if (!this.userTypedLatest(callerSessionId)) {
+      return {
+        ok: false,
+        error: this.children.has(callerSessionId)
+          ? 'Only the user can ask for a new session here: your current task came from the session that started you. Mention the work in your reply instead.'
+          : 'Only the user can ask for a new session: this turn began with a message from Aegis, not from the user. Mention the work in your reply instead.',
+      };
+    }
+    if (!title) return { ok: false, error: '"title" is required.' };
+    if (!prompt) return { ok: false, error: '"prompt" is required.' };
+    if (title.length > SUB_SESSION_LIMITS.title) return { ok: false, error: `"title" is longer than ${SUB_SESSION_LIMITS.title} characters.` };
+    if (prompt.length > SUB_SESSION_LIMITS.prompt) return { ok: false, error: `"prompt" is longer than ${SUB_SESSION_LIMITS.prompt} characters.` };
+    const place: FollowUpPlace = args.use_worktree === true ? 'worktree' : args.use_worktree === false ? 'shared' : session.inWorktree ? 'worktree' : 'shared';
+    const { row } = this.store.insert({
+      id: randomUUID(),
+      kind: 'session',
+      status: 'starting',
+      place,
+      parent_session_id: callerSessionId,
+      tool_use_id: toolUseId,
+      title,
+      reason: '',
+      plan: prompt,
+      acceptance_criteria: '',
+      // A worktree comes from the project, not from the parent's own worktree.
+      project_cwd: place === 'worktree' ? session.projectCwd || session.cwd : session.cwd,
+      provider: session.provider,
+      model: session.model,
+      permission_mode: this.host.permissionMode(callerSessionId),
+    });
+    this.publish(row.id);
+    if (row.status === 'starting' && !row.child_session_id) await this.runStart(row.id);
+    return this.startSessionOutcome(this.store.get(row.id) ?? row);
+  }
+
+  /** Take a session out from under the one that started it: it stops reporting back. */
+  detach(childSessionId: string): FollowUpActionResult {
+    const row = this.store.findByChild(childSessionId);
+    if (!row) return { ok: false, error: 'This session was not started by another session.' };
+    if (this.store.detach(childSessionId)) {
+      this.children.delete(childSessionId);
+      // Results its siblings held back while it ran can go now.
+      void this.deliverPending(row.parent_session_id).catch((error) => console.error('[follow-up] could not deliver a result:', error));
+    }
+    return this.done(row.id);
+  }
+
+  /**
+   * For a session working in the folder of the session that started it: that
+   * session's title. Its worktree is not this session's to apply or discard.
+   */
+  sharedWorkspaceOwner(sessionId: string): { sessionId: string; title: string | null } | null {
+    const row = this.store.findByChild(sessionId);
+    if (!row || row.place !== 'shared') return null;
+    return { sessionId: row.parent_session_id, title: this.host.getSession(row.parent_session_id)?.title ?? null };
+  }
+
   list(): FollowUpProposalView[] {
     return this.store.list().map((row) => this.view(row));
   }
@@ -191,10 +299,11 @@ export class FollowUpService {
     if (this.host.isBusy(row.parent_session_id) || this.delivering.has(row.parent_session_id)) {
       return { ok: false, error: 'This conversation is still working. Try again once it finishes.' };
     }
+    const result = [{ proposal: row, summary: latest.summary, turnStatus: latest.turnStatus }];
     const sent = await this.host.continue({
       sessionId: row.parent_session_id,
-      prompt: `Follow-up result: ${row.title}`,
-      effectivePrompt: buildReportPrompt([{ proposal: row, summary: latest.summary, turnStatus: latest.turnStatus }]),
+      prompt: reportPromptLabel(result, { byHand: true }),
+      effectivePrompt: buildReportPrompt(result),
       workflowPrompt: 'follow-up',
     });
     if (!sent) return { ok: false, error: 'The result could not be sent to this conversation.' };
@@ -209,22 +318,35 @@ export class FollowUpService {
    * user stopped starts nothing new.
    */
   async deliverAfterTurn(sessionId: string, status: 'completed' | 'error' | 'stopped'): Promise<void> {
-    const parent = this.children.has(sessionId) ? this.store.findByChild(sessionId)?.parent_session_id : status === 'stopped' ? null : sessionId;
-    if (parent) await this.deliverPending(parent);
+    // Its own report goes up first, while it is idle: once its sessions' results
+    // wake it, it counts as working and would hold its parent's delivery back.
+    if (this.children.has(sessionId)) {
+      const parent = this.store.findByChild(sessionId)?.parent_session_id;
+      if (parent) await this.deliverPending(parent);
+    }
+    // Then what its own sessions reported while it worked (a sub-session can start some too).
+    if (status !== 'stopped') await this.deliverPending(sessionId);
   }
 
   /** Send every undelivered result for one parent as a single message, when it is idle. */
   async deliverPending(parentSessionId: string): Promise<boolean> {
     if (this.delivering.has(parentSessionId) || this.host.isBusy(parentSessionId)) return false;
     if (!this.host.getSession(parentSessionId)) return false;
+    // Sessions it started that are still working report later, all at once.
+    if (this.store.childrenOf(parentSessionId).some((child) => child.kind === 'session' && this.host.isBusy(child.child_session_id!))) {
+      return false;
+    }
     const pending = this.store.undeliveredReports(parentSessionId);
     if (!pending.length) return false;
-    // One message per proposal's latest result; earlier ones are superseded.
+    // A proposal's latest result supersedes earlier ones; a sub-session's
+    // replies all go, in order (its brief says each one is sent back).
     const latest = new Map<string, (typeof pending)[number]['report']>();
     for (const item of pending) latest.set(item.proposalId, item.report);
-    const results = [...latest].flatMap(([proposalId, report]) => {
+    const results = pending.flatMap(({ proposalId, report }) => {
       const proposal = this.store.get(proposalId);
-      return proposal ? [{ proposal, summary: report.summary, turnStatus: report.turnStatus }] : [];
+      if (!proposal) return [];
+      if (proposal.kind !== 'session' && latest.get(proposalId) !== report) return [];
+      return [{ proposal, summary: report.summary, turnStatus: report.turnStatus }];
     });
     const eventIds = pending.map((item) => item.report.eventId);
     this.delivering.add(parentSessionId);
@@ -235,7 +357,7 @@ export class FollowUpService {
     try {
       sent = await this.host.continue({
         sessionId: parentSessionId,
-        prompt: `Follow-up result${results.length === 1 ? '' : 's'}: ${results.map((result) => result.proposal.title).join(' · ')}`,
+        prompt: reportPromptLabel(results),
         effectivePrompt: buildReportPrompt(results),
         workflowPrompt: 'follow-up',
       });
@@ -318,6 +440,7 @@ export class FollowUpService {
         this.store.transition(id, ['starting'], 'started', { patch: { last_error: null } });
         return;
       }
+      if (row.place === 'shared') return await this.startShared(row);
       if (!row.worktree_path || !this.host.worktreeExists(row.worktree_path)) {
         let workspace: FollowUpWorkspace;
         try {
@@ -334,20 +457,20 @@ export class FollowUpService {
         row = this.store.get(id)!;
       }
       const parent = this.host.getSession(row.parent_session_id);
-      const brief = buildFollowUpBrief({
-        proposal: row,
-        parentTitle: parent?.title ?? null,
-        branch: row.worktree_branch!,
-        baseRef: row.base_ref!,
-        parentUncommitted: await this.host.uncommitted(row.project_cwd).catch(() => null),
-      });
-      const payload: SessionStartPayload = {
-        ...this.host.inheritedOptions(row.parent_session_id),
-        title: row.title,
-        prompt: brief,
-        skipTitleGeneration: true,
-        background: true,
-        scope: 'project',
+      const prompt =
+        row.kind === 'session'
+          ? await this.subSessionPrompt(row, { branch: row.worktree_branch!, baseRef: row.base_ref! })
+          : {
+              prompt: buildFollowUpBrief({
+                proposal: row,
+                parentTitle: parent?.title ?? null,
+                branch: row.worktree_branch!,
+                baseRef: row.base_ref!,
+                parentUncommitted: await this.host.uncommitted(row.project_cwd).catch(() => null),
+              }),
+            };
+      await this.launch(row, {
+        ...prompt,
         cwd: row.worktree_path!,
         projectCwd: row.repo_root,
         envMode: 'worktree',
@@ -355,19 +478,91 @@ export class FollowUpService {
         associatedWorktreePath: row.worktree_path,
         associatedWorktreeBranch: row.worktree_branch,
         associatedWorktreeRef: row.base_ref,
-      };
-      const sessionId = await this.host.start(payload, (created) => {
-        // Registered before the runner starts, so the session never sees the proposal tool.
-        this.children.add(created);
-        this.store.bindChild(id, created);
       });
-      if (sessionId) this.store.transition(id, ['starting'], 'started', { patch: { last_error: null } });
-      else fail('The follow-up session could not start. If it appears in the sidebar, open it to see why.');
     } catch (error) {
       fail(error instanceof Error ? error.message : String(error));
     } finally {
       this.publish(id);
     }
+  }
+
+  /** A sub-session in its parent's own folder: no worktree to make. */
+  private async startShared(row: FollowUpRow): Promise<void> {
+    const workspace = this.host.sharedWorkspace(row.parent_session_id);
+    if (!workspace?.cwd) {
+      this.store.transition(row.id, ['starting'], 'start_failed', { patch: { last_error: 'The starting session has no folder to share.' } });
+      return;
+    }
+    await this.launch(row, { ...(await this.subSessionPrompt(row, null)), ...workspace });
+  }
+
+  /** The brief the user sees (what the parent wrote) and the one the agent gets. */
+  private async subSessionPrompt(
+    row: FollowUpRow,
+    worktree: { branch: string; baseRef: string } | null,
+  ): Promise<Pick<SessionStartPayload, 'prompt' | 'effectivePrompt' | 'workflowPrompt'>> {
+    const parent = this.host.getSession(row.parent_session_id);
+    return {
+      prompt: row.plan,
+      effectivePrompt: buildSubSessionBrief({
+        title: row.title,
+        prompt: row.plan,
+        parentSessionId: row.parent_session_id,
+        parentTitle: parent?.title ?? null,
+        worktree,
+      }),
+      workflowPrompt: 'sub-session',
+    };
+  }
+
+  private async launch(row: FollowUpRow, fields: Partial<SessionStartPayload> & Pick<SessionStartPayload, 'prompt'>): Promise<void> {
+    const payload: SessionStartPayload = {
+      ...this.host.inheritedOptions(row.parent_session_id),
+      title: row.title,
+      skipTitleGeneration: true,
+      background: true,
+      scope: 'project',
+      ...fields,
+    };
+    const sessionId = await this.host.start(payload, (created) => {
+      // Registered before the runner starts, so the session never sees the proposal tool.
+      this.children.add(created);
+      this.store.bindChild(row.id, created);
+    });
+    if (sessionId) this.store.transition(row.id, ['starting'], 'started', { patch: { last_error: null } });
+    else {
+      this.store.transition(row.id, ['starting'], 'start_failed', {
+        patch: { last_error: 'The session could not start. If it appears in the sidebar, open it to see why.' },
+      });
+    }
+  }
+
+  /** Whether the caller's current turn began with a message the user typed. */
+  private userTypedLatest(sessionId: string): boolean {
+    const history = this.host.history(sessionId);
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+      const message = history[index];
+      if (message.type === 'user_prompt') return !message.workflowPrompt;
+    }
+    return false;
+  }
+
+  private startSessionOutcome(row: FollowUpRow): ToolOutcome {
+    if (row.status === 'start_failed') {
+      return { ok: false, error: `The session could not start: ${row.last_error ?? 'unknown error'}` };
+    }
+    const where = row.place === 'shared' ? 'in this folder, shared with you' : row.worktree_branch ? `in its own worktree on branch ${row.worktree_branch}` : 'in its own worktree';
+    return {
+      ok: true,
+      text: JSON.stringify({
+        sessionId: row.child_session_id,
+        proposalId: row.id,
+        status: row.status,
+        note:
+          `Started session "${row.title}" ${where}. It runs on its own; its result comes back here as a message when its turn ends ` +
+          '(after the other sessions you started finish too). At most one line on that, then continue or end your turn; do not wait for it.',
+      }),
+    };
   }
 
   private proposeResultText(row: FollowUpRow): string {
@@ -402,6 +597,7 @@ export class FollowUpService {
     return {
       id: row.id,
       revision: Number(row.revision),
+      kind: (row.kind ?? 'proposal') as FollowUpKind,
       parentSessionId: row.parent_session_id,
       toolUseId: row.tool_use_id,
       title: row.title,
@@ -413,9 +609,11 @@ export class FollowUpService {
       permissionMode: row.permission_mode,
       status: row.status as FollowUpStatus,
       childSessionId: row.child_session_id,
+      place: (row.place ?? 'worktree') as FollowUpPlace,
       worktreeBranch: row.worktree_branch,
       baseRef: row.base_ref,
       lastError: row.last_error,
+      detachedAt: row.detached_at === null || row.detached_at === undefined ? null : Number(row.detached_at),
       reports: this.store.reports(row.id),
       createdAt: Number(row.created_at),
       updatedAt: Number(row.updated_at),
