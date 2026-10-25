@@ -240,6 +240,7 @@ contextBridge.exposeInMainWorld('electron', {
     list: () => ipcRenderer.invoke('follow-up-list'),
     act: (action: FollowUpAction) => ipcRenderer.invoke('follow-up-act', action),
     continueWithReport: (proposalId: string) => ipcRenderer.invoke('follow-up-continue-with-report', proposalId),
+    detach: (childSessionId: string) => ipcRenderer.invoke('follow-up-detach', childSessionId),
   },
 
   sessionHandoff: (payload: { sessionId: string; targetProvider: string }) => {

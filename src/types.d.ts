@@ -141,6 +141,8 @@ declare global {
       act: (action: FollowUpAction) => Promise<FollowUpActionResult>;
       /** Send a follow-up's latest result to its parent conversation (a user action). */
       continueWithReport: (proposalId: string) => Promise<FollowUpActionResult>;
+      /** Take a sub-session out from under the session that started it; it stops reporting back. */
+      detach: (childSessionId: string) => Promise<FollowUpActionResult>;
     };
     forkSession: (
       sessionId: string,

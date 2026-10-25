@@ -1,6 +1,6 @@
 import { isStartWorkflowToolName } from '../../shared/workflow';
 import { isShowWidgetToolName, isWidgetGuideToolName, widgetFromToolInput } from '../../shared/widget';
-import { isProposeFollowUpToolName, isWithdrawFollowUpToolName } from '../../shared/follow-up';
+import { isProposeFollowUpToolName, isStartSessionToolName, isWithdrawFollowUpToolName } from '../../shared/follow-up';
 
 const followUpTitle = (input: unknown) => {
   const title = (input as { title?: unknown } | null)?.title;
@@ -58,6 +58,7 @@ export function getToolSummary(name: string, input: unknown): string {
   if (isWidgetGuideToolName(name)) return 'Widget design guide';
   if (isProposeFollowUpToolName(name)) return `Follow-up: ${followUpTitle(input)}`;
   if (isWithdrawFollowUpToolName(name)) return 'Withdrew a follow-up task';
+  if (isStartSessionToolName(name)) return `Sub-session: ${followUpTitle(input)}`;
   const design = designToolDisplay(name, input, 'success');
   if (design) return design.target;
 
@@ -364,6 +365,9 @@ export function deriveReadableToolDisplay(
   if (isWithdrawFollowUpToolName(name)) {
     return { verb: status === 'pending' ? 'Withdrawing' : 'Withdrew', target: 'a follow-up task' };
   }
+  if (isStartSessionToolName(name)) {
+    return { verb: status === 'pending' ? 'Starting session' : 'Started session', target: followUpTitle(input) };
+  }
   const design = designToolDisplay(name, input, status);
   if (design) return design;
 
@@ -531,6 +535,8 @@ export function classifyToolUse(toolName: string, input: unknown): CanonicalTool
   // App workflows started from the chat render as a workflow board in the
   // task stage (AssistantWorkstream), next to subagent runs.
   if (isStartWorkflowToolName(normalized)) return 'subagent';
+  // Sub-sessions draw as their own row in the same place, for the same reason.
+  if (isStartSessionToolName(normalized)) return 'subagent';
   if (
     normalized === 'image_gen' ||
     normalized === 'image_edit' ||

@@ -2,12 +2,13 @@ import { z } from 'zod';
 import { READ_SESSION_DESCRIPTION, readSessionTool } from './session-reference';
 import { START_WORKFLOW_DESCRIPTION, startWorkflowSchema, startWorkflowTool, type StartWorkflowArgs } from './workflow/chat-entry';
 import { START_WORKFLOW_TOOL } from '../../shared/workflow';
-import { PROPOSE_FOLLOW_UP_TOOL, WITHDRAW_FOLLOW_UP_TOOL } from '../../shared/follow-up';
+import { PROPOSE_FOLLOW_UP_TOOL, START_SESSION_TOOL, WITHDRAW_FOLLOW_UP_TOOL } from '../../shared/follow-up';
 import {
   PROPOSE_FOLLOW_UP_DESCRIPTION, proposeFollowUpSchema, proposeFollowUpTool,
   WITHDRAW_FOLLOW_UP_DESCRIPTION, withdrawFollowUpSchema, withdrawFollowUpTool,
+  START_SESSION_DESCRIPTION, startSessionSchema, startSessionTool,
 } from './follow-up/tool';
-import type { ProposeArgs } from './follow-up/service';
+import type { ProposeArgs, StartSessionArgs } from './follow-up/service';
 import {
   SHOW_WIDGET_DESCRIPTION, SHOW_WIDGET_TOOL, showWidgetAnnotations, showWidgetSchema, showWidgetTool,
   WIDGET_GUIDE_DESCRIPTION, WIDGET_GUIDE_TOOL, widgetGuideSchema, widgetGuideTool,
@@ -104,12 +105,15 @@ export function buildSessionMcpServer(options: {
 
 /**
  * In-process server for one Claude or Qoder session. `callerSessionId`
- * identifies the session for start_workflow, the follow-up tools and the
- * design tools; workflow members and follow-up sessions get neither of the
- * first two. HTTP servers never offer the follow-up tools: their caller is
- * not bound to the session.
+ * identifies the session for start_workflow, the follow-up tools,
+ * start_session and the design tools; workflow members get none of the
+ * first three, and follow-up sessions no proposal tools (they may still
+ * start a session when their user asks). HTTP servers never offer the
+ * follow-up tools: their caller is not bound to the session.
  */
-export async function createSessionSdkMcpServer(options: { callerSessionId?: string; workflows?: boolean; followUps?: boolean } = {}) {
+export async function createSessionSdkMcpServer(
+  options: { callerSessionId?: string; workflows?: boolean; followUps?: boolean; subSessions?: boolean } = {},
+) {
   const dynamicImport = new Function('specifier', 'return import(specifier)') as
     (specifier: string) => Promise<typeof import('@anthropic-ai/claude-agent-sdk')>;
   const sdk = await dynamicImport('@anthropic-ai/claude-agent-sdk');
@@ -132,6 +136,11 @@ export async function createSessionSdkMcpServer(options: { callerSessionId?: str
             (args: { proposal_id: string }) => withdrawFollowUpTool(options.callerSessionId!, args),
             { annotations: workflowAnnotations }),
         ]
+        : []),
+      ...(options.subSessions && options.callerSessionId
+        ? [sdk.tool(START_SESSION_TOOL, START_SESSION_DESCRIPTION, startSessionSchema,
+          (args: StartSessionArgs, extra: unknown) => startSessionTool(options.callerSessionId!, args, extra),
+          { annotations: workflowAnnotations, alwaysLoad: true })]
         : []),
       // Always in the prompt, so the agent reaches for it when a visual helps.
       sdk.tool(SHOW_WIDGET_TOOL, SHOW_WIDGET_DESCRIPTION, showWidgetSchema, showWidgetTool,

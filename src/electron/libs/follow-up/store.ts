@@ -2,7 +2,7 @@
 // state change is a conditional update, so a double click, two windows or a
 // late callback cannot move a proposal twice.
 
-import type { FollowUpReportView, FollowUpStatus } from '../../../shared/follow-up';
+import type { FollowUpKind, FollowUpPlace, FollowUpReportView, FollowUpStatus } from '../../../shared/follow-up';
 
 /** The slice of better-sqlite3 (and node:sqlite, in tests) this store uses. */
 export interface FollowUpDb {
@@ -17,6 +17,7 @@ export interface FollowUpDb {
 export interface FollowUpRow {
   id: string;
   revision: number;
+  kind: FollowUpKind;
   parent_session_id: string;
   tool_use_id: string | null;
   title: string;
@@ -35,6 +36,9 @@ export interface FollowUpRow {
   worktree_branch: string | null;
   base_ref: string | null;
   last_error: string | null;
+  /** Where a session works; proposals always get a worktree. */
+  place: FollowUpPlace;
+  detached_at: number | null;
   created_at: number;
   updated_at: number;
 }
@@ -52,7 +56,8 @@ export type NewFollowUp = Pick<
   | 'provider'
   | 'model'
   | 'permission_mode'
->;
+> &
+  Partial<Pick<FollowUpRow, 'kind' | 'place' | 'status'>>;
 
 /** Columns a transition may set besides status and revision. */
 export type FollowUpPatch = Partial<
@@ -117,6 +122,10 @@ export class FollowUpStore {
       // Results from before automatic delivery count as handled: never send them late.
       db.exec('UPDATE follow_up_reports SET delivered_at = created_at');
     }
+    const columns = new Set((db.prepare('PRAGMA table_info(follow_up_proposals)').all() as Array<{ name: string }>).map((column) => column.name));
+    if (!columns.has('kind')) db.exec("ALTER TABLE follow_up_proposals ADD COLUMN kind TEXT NOT NULL DEFAULT 'proposal'");
+    if (!columns.has('place')) db.exec("ALTER TABLE follow_up_proposals ADD COLUMN place TEXT NOT NULL DEFAULT 'worktree'");
+    if (!columns.has('detached_at')) db.exec('ALTER TABLE follow_up_proposals ADD COLUMN detached_at INTEGER');
   }
 
   /**
@@ -131,12 +140,13 @@ export class FollowUpStore {
     const at = this.now();
     this.db
       .prepare(
-        `INSERT OR IGNORE INTO follow_up_proposals (id, revision, parent_session_id, tool_use_id, title, reason, plan,
-          acceptance_criteria, project_cwd, provider, model, permission_mode, status, created_at, updated_at)
-         VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'proposed', ?, ?)`,
+        `INSERT OR IGNORE INTO follow_up_proposals (id, revision, kind, parent_session_id, tool_use_id, title, reason, plan,
+          acceptance_criteria, project_cwd, provider, model, permission_mode, status, place, created_at, updated_at)
+         VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         record.id,
+        record.kind ?? 'proposal',
         record.parent_session_id,
         record.tool_use_id,
         record.title,
@@ -147,6 +157,8 @@ export class FollowUpStore {
         record.provider,
         record.model,
         record.permission_mode,
+        record.status ?? 'proposed',
+        record.place ?? 'worktree',
         at,
         at,
       );
@@ -165,6 +177,20 @@ export class FollowUpStore {
       (this.db
         .prepare('SELECT * FROM follow_up_proposals WHERE parent_session_id = ? AND tool_use_id = ?')
         .get(parentSessionId, toolUseId) as FollowUpRow | undefined) ?? null
+    );
+  }
+
+  /** The same session started from the same conversation within `withinMs`: a retry whose tool_use id was lost. */
+  findRecentSession(parentSessionId: string, title: string, plan: string, withinMs: number): FollowUpRow | null {
+    return (
+      (this.db
+        .prepare(
+          `SELECT * FROM follow_up_proposals
+           WHERE parent_session_id = ? AND kind = 'session' AND status IN ('starting', 'started')
+             AND title = ? AND plan = ? AND created_at >= ?
+           ORDER BY created_at DESC LIMIT 1`,
+        )
+        .get(parentSessionId, title, plan, this.now() - withinMs) as FollowUpRow | undefined) ?? null
     );
   }
 
@@ -190,12 +216,34 @@ export class FollowUpStore {
     return this.db.prepare('SELECT * FROM follow_up_proposals ORDER BY created_at DESC LIMIT ?').all(limit) as FollowUpRow[];
   }
 
+  /** Sessions that still report to the session that started them (detached ones do not). */
   childSessionIds(): string[] {
     return (
-      this.db.prepare('SELECT child_session_id FROM follow_up_proposals WHERE child_session_id IS NOT NULL').all() as Array<{
-        child_session_id: string;
-      }>
+      this.db
+        .prepare('SELECT child_session_id FROM follow_up_proposals WHERE child_session_id IS NOT NULL AND detached_at IS NULL')
+        .all() as Array<{ child_session_id: string }>
     ).map((row) => row.child_session_id);
+  }
+
+  /** The sessions one session started that still report to it. */
+  childrenOf(parentSessionId: string): FollowUpRow[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM follow_up_proposals
+         WHERE parent_session_id = ? AND child_session_id IS NOT NULL AND detached_at IS NULL`,
+      )
+      .all(parentSessionId) as FollowUpRow[];
+  }
+
+  /** Take a session out from under its parent; returns false when it was not nested. */
+  detach(childSessionId: string): boolean {
+    const result = this.db
+      .prepare(
+        `UPDATE follow_up_proposals SET detached_at = ?, revision = revision + 1, updated_at = ?
+         WHERE child_session_id = ? AND detached_at IS NULL`,
+      )
+      .run(this.now(), this.now(), childSessionId);
+    return Number(result.changes) > 0;
   }
 
   /**
@@ -297,7 +345,7 @@ export class FollowUpStore {
       this.db
         .prepare(
           `SELECT r.* FROM follow_up_reports r JOIN follow_up_proposals p ON p.id = r.proposal_id
-           WHERE p.parent_session_id = ? AND r.delivered_at IS NULL AND r.turn_status != 'stopped'
+           WHERE p.parent_session_id = ? AND p.detached_at IS NULL AND r.delivered_at IS NULL AND r.turn_status != 'stopped'
            ORDER BY r.created_at ASC, r.rowid ASC`,
         )
         .all(parentSessionId) as ReportRow[]

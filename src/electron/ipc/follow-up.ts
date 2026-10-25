@@ -7,4 +7,5 @@ export function setupFollowUpIPC(service: FollowUpService): void {
   ipcMainHandle('follow-up-list', () => service.list());
   ipcMainHandle('follow-up-act', (_event, action: FollowUpAction) => service.act(action));
   ipcMainHandle('follow-up-continue-with-report', (_event, proposalId: string) => service.continueWithReport(proposalId));
+  ipcMainHandle('follow-up-detach', (_event, childSessionId: string) => service.detach(childSessionId));
 }

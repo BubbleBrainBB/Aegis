@@ -10,7 +10,7 @@ const symbols: Record<SessionMenuIcon, string> = {
 const actions = new Set<SessionMenuAction>([
   'pin', 'copy-link', 'copy-cwd', 'fork', 'new-worktree-thread',
   'move-worktree', 'apply-worktree', 'discard-worktree', 'delete',
-  'rename', 'unread', 'archive', 'copy-markdown', 'project-choose', 'section-none', 'section-new', 'fork-local', 'fork-worktree', 'open-window', 'export', 'share',
+  'rename', 'unread', 'archive', 'copy-markdown', 'project-choose', 'section-none', 'section-new', 'fork-local', 'fork-worktree', 'open-window', 'export', 'share', 'detach',
 ]);
 
 export function buildSessionNativeMenu(request: SessionMenuRequest, select: (action: SessionMenuAction) => void): Menu {

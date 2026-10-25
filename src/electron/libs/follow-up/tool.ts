@@ -1,13 +1,13 @@
-// The propose_follow_up / withdraw_follow_up app tools. Only in-process
-// (Claude) session servers offer them: the caller is bound by closure, never
-// taken from the model's input or guessed across sessions.
+// The propose_follow_up / withdraw_follow_up / start_session app tools. Only
+// in-process (Claude) session servers offer them: the caller is bound by
+// closure, never taken from the model's input or guessed across sessions.
 
 import { z } from 'zod';
-import { isProposeFollowUpToolName } from '../../../shared/follow-up';
+import { isProposeFollowUpToolName, isStartSessionToolName } from '../../../shared/follow-up';
 import type { StreamMessage } from '../../types';
 import { findPendingToolUse } from '../tool-caller-attribution';
-import { FOLLOW_UP_LIMITS } from './brief';
-import type { ProposeArgs, ToolOutcome } from './service';
+import { FOLLOW_UP_LIMITS, SUB_SESSION_LIMITS } from './brief';
+import type { ProposeArgs, StartSessionArgs, ToolOutcome } from './service';
 
 export const PROPOSE_FOLLOW_UP_DESCRIPTION = [
   'Propose a separate follow-up task to the user: a problem you found that is outside your current task,',
@@ -20,6 +20,30 @@ export const PROPOSE_FOLLOW_UP_DESCRIPTION = [
 
 export const WITHDRAW_FOLLOW_UP_DESCRIPTION =
   'Withdraw a follow-up task you proposed in this conversation that the user has not acted on yet, for example because your current task ended up fixing it.';
+
+export const START_SESSION_DESCRIPTION = [
+  'Start a separate Claude session for the user, nested under this one in their sidebar, that works on one task in parallel with you.',
+  'Use it only when the user asked in their own words for a separate, parallel or background session ("open a new session to fix X",',
+  '"start another one for the tests"); one call per independent task they named. For work the user did not ask to split off, use',
+  'propose_follow_up instead, and for parts of your own task use subagents. By default the new session shares this folder;',
+  'it gets its own git worktree when this session is in one, or when use_worktree is true (set it when the user asks for a',
+  'worktree or the two of you would edit the same files). Write the prompt for someone who has not seen this conversation:',
+  'the task, the files or area, what done looks like. The session starts at once and runs on its own; each time it finishes a',
+  'turn its reply comes back to you as a message, after every session you started has finished. Do not wait for it.',
+].join(' ');
+
+export const startSessionSchema = {
+  title: z.string().min(1).max(SUB_SESSION_LIMITS.title).describe('Under 60 characters; names the task in the sidebar, such as "Fix empty export file names".'),
+  prompt: z
+    .string()
+    .min(1)
+    .max(SUB_SESSION_LIMITS.prompt)
+    .describe('The brief: the task, the files or area, constraints from this conversation, and what done looks like.'),
+  use_worktree: z
+    .boolean()
+    .optional()
+    .describe('true: its own git worktree. false: this folder. Omit to follow this session (a worktree only if this session is in one).'),
+};
 
 export const proposeFollowUpSchema = {
   title: z.string().min(1).max(FOLLOW_UP_LIMITS.title).describe('A short name for the task, such as "Fix empty file names on export".'),
@@ -38,6 +62,7 @@ export const withdrawFollowUpSchema = {
 
 export interface FollowUpToolEntry {
   propose(callerSessionId: string, toolUseId: string | null, args: ProposeArgs): ToolOutcome;
+  startSession(callerSessionId: string, toolUseId: string | null, args: StartSessionArgs): Promise<ToolOutcome>;
   withdraw(callerSessionId: string, proposalId: string): ToolOutcome;
   history(sessionId: string): StreamMessage[];
 }
@@ -58,13 +83,19 @@ const text = (outcome: ToolOutcome): ToolText =>
  * The runtime may name it in the request meta; otherwise it is the caller's
  * own pending call with the same input (its tool_use may land a moment later).
  */
-async function resolveToolUseId(host: FollowUpToolEntry, callerSessionId: string, args: unknown, extra: unknown): Promise<string | null> {
+async function resolveToolUseId(
+  host: FollowUpToolEntry,
+  callerSessionId: string,
+  args: unknown,
+  extra: unknown,
+  matches: (name: unknown) => boolean = isProposeFollowUpToolName,
+): Promise<string | null> {
   const meta = (extra as { _meta?: Record<string, unknown> } | undefined)?._meta;
   const fromMeta = meta?.['claudecode/toolUseId'];
   if (typeof fromMeta === 'string' && fromMeta) return fromMeta;
   const deadline = Date.now() + 3_000;
   for (;;) {
-    const found = findPendingToolUse(host.history(callerSessionId), isProposeFollowUpToolName, args, claimed);
+    const found = findPendingToolUse(host.history(callerSessionId), matches, args, claimed);
     if (found) {
       claimed.add(found);
       return found;
@@ -79,6 +110,16 @@ export async function proposeFollowUpTool(callerSessionId: string, args: Propose
   try {
     const toolUseId = await resolveToolUseId(entry, callerSessionId, args, extra);
     return text(entry.propose(callerSessionId, toolUseId, args));
+  } catch (error) {
+    return text({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+export async function startSessionTool(callerSessionId: string, args: StartSessionArgs, extra?: unknown): Promise<ToolText> {
+  if (!entry) return text({ ok: false, error: 'Starting sessions is not available right now.' });
+  try {
+    const toolUseId = await resolveToolUseId(entry, callerSessionId, args, extra, isStartSessionToolName);
+    return text(await entry.startSession(callerSessionId, toolUseId, args));
   } catch (error) {
     return text({ ok: false, error: error instanceof Error ? error.message : String(error) });
   }
