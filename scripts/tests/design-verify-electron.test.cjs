@@ -68,6 +68,16 @@ app.whenReady().then(async () => {
     assert.deepEqual(Object.keys(files).filter((f) => /^ppt\/slides\/slide\d+\.xml$/.test(f)).sort(), ['ppt/slides/slide1.xml', 'ppt/slides/slide2.xml', 'ppt/slides/slide3.xml']);
     assert.match(strFromU8(files['ppt/notesSlides/notesSlide3.xml']), /Thanks/);
     assert.match(strFromU8(files['ppt/presentation.xml']), /<p:sldSz cx="6096000" cy="3429000"\/>/);
+    // Slide sides stay within what PowerPoint accepts, keeping the shape.
+    const sizeOf = (w, h) => /<p:sldSz cx="(\d+)" cy="(\d+)"/.exec(strFromU8(unzipSync(buildPptx([{ png: shots[0].png, width: w, height: h }], { width: w, height: h }, 'x'))['ppt/presentation.xml'])).slice(1).map(Number);
+    for (const [w, h] of [[60, 40], [8000, 4000], [390, 6000]]) {
+      const [cx, cy] = sizeOf(w, h);
+      assert.ok(cx >= 914400 && cx <= 51206400 && cy >= 914400 && cy <= 51206400, `${w}x${h} -> ${cx}x${cy}`);
+    }
+    // A PDF of a deck and a plain board: a page per slide, then the board.
+    const plainBoard = { id: 'plain', html: '<main><h1>Plain</h1></main>', width: 400, height: 300 };
+    const mixed = Buffer.from(await designPdf([...d.boards, plainBoard]));
+    assert.equal((mixed.toString('latin1').match(/\/Type\s*\/Page\b/g) ?? []).length, 4);
 
     // Verification: every slide reviewed; the reviewer's verdict comes back.
     let seen = null;

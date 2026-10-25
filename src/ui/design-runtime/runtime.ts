@@ -511,6 +511,7 @@ function element(n: TElement, scope: Scope, ctx: RenderContext, key: string): Re
   return h(n.tag, props, ...(children.length ? children : []));
 }
 
+const mountedInstances = new WeakSet<AegisBoard>();
 interface LogicHolder {
   current: { cls: LogicClass | null; instance: AegisBoard | null };
 }
@@ -523,6 +524,16 @@ function useLogic(cls: LogicClass | null, props: Record<string, unknown>, holder
   const local = useRef<LogicHolder["current"]>({ cls: null, instance: null });
   const ref = holder ?? local;
   if (ref.current.cls !== cls) {
+    // The logic changed: its old instance is done for good.
+    const old = ref.current.instance;
+    if (old && mountedInstances.has(old)) {
+      mountedInstances.delete(old);
+      try {
+        old.unmounted();
+      } catch (error) {
+        report(error, "unmounted()");
+      }
+    }
     let instance: AegisBoard | null = null;
     if (cls) {
       try {
@@ -538,14 +549,21 @@ function useLogic(cls: LogicClass | null, props: Record<string, unknown>, holder
     instance.props = props;
     instance.__rerender = () => rerender();
   }
+  // mounted() once per instance: a saved edit remounts the tree but keeps the
+  // board's instance (and its timers), so it is neither re-mounted nor unmounted.
   useEffect(() => {
     if (!instance) return;
-    try {
-      instance.mounted();
-    } catch (error) {
-      report(error, "mounted()");
+    if (!mountedInstances.has(instance)) {
+      mountedInstances.add(instance);
+      try {
+        instance.mounted();
+      } catch (error) {
+        report(error, "mounted()");
+      }
     }
     return () => {
+      if (holder && holder.current.instance === instance) return;
+      mountedInstances.delete(instance);
       try {
         instance.unmounted();
       } catch (error) {

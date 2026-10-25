@@ -40,6 +40,14 @@ export function sanitizeDesignHtml(html: string): string {
         node.childNodes = node.childNodes.filter((n) => n.nodeName === "#text");
         return true;
       }
+      // The document's own <html> and <head> carry nothing: the frame puts its
+      // security policy right after <html><head>, and an attribute there could
+      // smuggle a fake "<head>" ahead of the real one.
+      if (node.tagName === "html" || node.tagName === "head") {
+        node.attrs = [];
+        clean(node);
+        return true;
+      }
       // A component instance's attributes are its props.
       const instance = node.tagName === "aegis-use";
       node.attrs = node.attrs.filter((attr) => {

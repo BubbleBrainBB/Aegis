@@ -89,8 +89,10 @@ export type BoardRuntimeEvent =
   | { type: "errors"; errors: string[] }
   | { type: "goto"; board: string }
   | { type: "hung" };
-const PING_MS = 2500;
-const PONG_MS = 2000;
+// A board is hung after three missed answers (~10 s): a slow render is not a hang.
+const PING_MS = 3000;
+const PONG_MS = 2500;
+const MISSES = 3;
 
 const finite = (r: unknown): r is DesignNodeRect =>
   !!r &&
@@ -154,18 +156,28 @@ export const BoardFrame = memo(
     // the bridge; changing srcDoc for every streamed chunk navigates the frame.
     // Switching runtime on or off (component ↔ static, mode) needs a new frame.
     const scripted = mode !== "static" && isDesignComponent(board.html);
+    // Only a component's frame depends on the mode; a plain board keeps its frame
+    // when, say, a finished draft switches from static to edit.
+    const frameMode = scripted ? mode : "plain";
     // The slide a new frame starts on; later changes go by message (no reload).
     const slideRef = useRef(slide ?? 0);
     slideRef.current = slide ?? 0;
     const lifetime = useMemo(() => {
       const token = crypto.randomUUID();
       return { token, html: board.html, source: designFrameHtml(board.html, token, !preview, { mode, components, system, slide: slideRef.current }) };
-    }, [board.id, preview, mode, scripted, components, system, sandboxEpoch]);
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- mode matters only through frameMode
+    }, [board.id, preview, frameMode, components, system, sandboxEpoch]);
     const { token } = lifetime;
     // What the frame holds: sanitized, with the system's asset references resolved.
     const html = useMemo(() => resolveDesignAssets(sanitizeDesignHtml(board.html), system?.assets), [board.html, system]);
     const [recovery, setRecovery] = useState<{ token: string; html: string; source: string; epoch: string } | null>(null);
-    const source = preview ? designFrameHtml(html, token, false, { mode, components, system, slide: slideRef.current })
+    // Play's frame follows the HTML, not the slide (slides switch by message) or re-renders.
+    const previewSource = useMemo(
+      () => (preview ? designFrameHtml(html, token, false, { mode, components, system, slide: slideRef.current }) : ""),
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- the slide is read when the frame is (re)built
+      [preview, html, token, frameMode, components, system],
+    );
+    const source = preview ? previewSource
       : recovery?.token === token ? recovery.source : lifetime.source;
     const onRuntimeRef = useRef(onRuntime);
     onRuntimeRef.current = onRuntime;
@@ -174,13 +186,13 @@ export const BoardFrame = memo(
     const [loadEpoch, setLoadEpoch] = useState(0);
     const onLoadRef = useRef(onLoad);
     onLoadRef.current = onLoad;
-    const request = <T,>(type: string, body: object, fallback: T) =>
+    const request = <T,>(type: string, body: object, fallback: T, timeoutMs = 1500) =>
       new Promise<any>((resolve) => {
         const id = crypto.randomUUID();
         const timer = setTimeout(() => {
           pending.current.delete(id);
           resolve(fallback);
-        }, 1500);
+        }, timeoutMs);
         pending.current.set(id, (data) => {
           clearTimeout(timer);
           resolve(data);
@@ -421,7 +433,7 @@ export const BoardFrame = memo(
           pending.current.delete(id);
           if (!live) return;
           missed += 1;
-          if (missed >= 2) {
+          if (missed >= MISSES) {
             clearInterval(timer);
             markBoardHung(board.html);
             setHungHtml(board.html);
@@ -445,7 +457,8 @@ export const BoardFrame = memo(
       if (preview || ready.current !== token || applied.current === html) return;
       let current = true;
       applied.current = null; // A → B → A must supersede an in-flight B patch too.
-      void request("aegis-design-patch", { html }, { ok: false }).then((result) => {
+      // A component re-renders on update: give it longer before calling the bridge broken.
+      void request("aegis-design-patch", { html }, { ok: false }, scripted ? 5000 : 1500).then((result) => {
         if (!current) return;
         if (result?.ok) {
           applied.current = html;

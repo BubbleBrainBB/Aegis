@@ -1,14 +1,15 @@
 import { memo, useMemo, type CSSProperties } from "react";
 import { designFrameHtml } from "../../../shared/design-frame";
-import { isDesignComponent } from "../../../shared/design-component";
-import { isBoardHung, useSandboxEpoch } from "../../utils/sandbox-frames";
+import { staticDesignPreview } from "../../../shared/design-component";
+import { useSandboxEpoch } from "../../utils/sandbox-frames";
 import type { DesignSystemPack } from "../../../shared/design-system-pack";
 import type { DesignBoard } from "../../../shared/design-types";
 
 /**
- * A board drawn small and inert, scaled to fit: static boards in a
- * script-free frame; design components with their runtime (edit mode, so
- * nothing reacts to input). For library rows and chat cards, never editing.
+ * A board drawn small and inert, scaled to fit, in a script-free frame: a
+ * design component is drawn from its props without running any of its code
+ * (thumbnails are everywhere; board logic runs only on the canvas and in Play).
+ * For library rows and chat cards, never editing.
  */
 export const BoardThumb = memo(function BoardThumb({
   board,
@@ -32,11 +33,10 @@ export const BoardThumb = memo(function BoardThumb({
 }) {
   const scale = Math.min(width / board.width, height / board.height);
   const sandboxEpoch = useSandboxEpoch();
-  const scripted = isDesignComponent(board.html) && !isBoardHung(board.html);
   // Keyed by revision so a rewritten board repaints; no inspector script.
   const srcDoc = useMemo(
-    () => designFrameHtml(board.html, `thumb-${board.id.replace(/[^a-zA-Z0-9-]/g, "")}-${board.contentRevision}`, false, { mode: scripted ? "edit" : "static", system, slide }),
-    [board.html, board.id, board.contentRevision, scripted, system, slide],
+    () => designFrameHtml(staticDesignPreview(board.html), `thumb-${board.id.replace(/[^a-zA-Z0-9-]/g, "")}-${board.contentRevision}`, false, { mode: "static", system, slide }),
+    [board.html, board.id, board.contentRevision, system, slide],
   );
   return (
     <div
@@ -48,7 +48,7 @@ export const BoardThumb = memo(function BoardThumb({
         key={sandboxEpoch}
         title=""
         tabIndex={-1}
-        sandbox={scripted ? "allow-scripts" : ""}
+        sandbox=""
         srcDoc={srcDoc}
         style={{
           position: "absolute",

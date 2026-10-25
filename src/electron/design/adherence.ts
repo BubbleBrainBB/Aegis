@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "fs";
+import { existsSync, lstatSync, readdirSync, readFileSync } from "fs";
 import { basename, extname, join } from "path";
 import { readBoardTokens } from "../../shared/design-tokens";
 import { designSystemTokens, type DesignSystemPack } from "../../shared/design-system-pack";
@@ -155,7 +155,8 @@ function safeList(dir: string): string[] {
 }
 function readText(file: string): string | null {
   try {
-    return statSync(file).size <= 300_000 ? readFileSync(file, "utf8") : null;
+    const st = lstatSync(file);
+    return st.isFile() && !st.isSymbolicLink() && st.size <= 300_000 ? readFileSync(file, "utf8") : null;
   } catch {
     return null;
   }

@@ -14,11 +14,11 @@ function fetchPack(sessionId: string, documentId: string): Promise<DesignSystemP
   const key = `${sessionId}:${documentId}`;
   let pending = inflight.get(key);
   if (!pending) {
-    pending = (window.electron?.design?.system?.({ sessionId, documentId }) ?? Promise.resolve(null))
+    const previous = cache.get(key);
+    pending = (window.electron?.design?.system?.({ sessionId, documentId, signature: previous?.signature }) ?? Promise.resolve(null))
       .catch(() => null)
-      .then((pack) => {
-        const previous = cache.get(key);
-        const next = previous && pack && previous.signature === pack.signature ? previous : pack ?? null;
+      .then((answer) => {
+        const next = answer && "unchanged" in answer ? previous ?? null : previous && answer && previous.signature === answer.signature ? previous : answer ?? null;
         cache.set(key, next);
         return next;
       })

@@ -37,7 +37,7 @@ import { CommentThread } from "./CommentThread";
 import { HistoryPanel } from "./HistoryPanel";
 import { DesignCompare } from "./DesignCompare";
 import { InlineTextEditor } from "./InlineTextEditor";
-import { editDesignText } from "../../../shared/design-component";
+import { designTextValue, editDesignText } from "../../../shared/design-component";
 import { useDesignSystem } from "./use-design-system";
 import { designSlides, isDesignDeck } from "../../../shared/design-deck";
 import { SelectionTools } from "./SelectionTools";
@@ -1610,7 +1610,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
                     zoom={ctx.view.zoom}
                     styles={textEdit.anchor.computedStyles ?? {}}
                     // A design component's {{ value }} shows what it renders, not its template.
-                    text={target.node.text.includes("{{") ? textEdit.anchor.text ?? "" : target.node.text}
+                    text={target.node.text.includes("{{") ? designTextValue(target.board.html, target.node.id, textEdit.anchor.instance) ?? textEdit.anchor.text ?? "" : target.node.text}
                     caret={textEdit.caret}
                     onCancel={() => {
                       setTextEdit(undefined);

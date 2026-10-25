@@ -66,7 +66,8 @@ Pages group boards and annotations; screens remain individual boards. Preserve e
 A board can respond in Play: switch tabs, open a menu, step through a flow, go to another board. Keep a board template-only unless that behaviour is what the user is judging; layout and visual work never needs logic.
 A board has up to three parts, set with design_update (add/content take html, js and props together):
 - Template: the board HTML, as for any board. Directives make it dynamic:
-  - {{ expr }} in text or attribute values, e.g. <h1>{{ title }}</h1>, class="tab {{ tab === 'week' ? 'is-active' : '' }}".
+  - {{ expr }} in text or attribute values, e.g. <h1>{{ title }}</h1>, class="tab {{ tab === 'week' ? 'is-active' : '' }}". It is evaluated only in a board with logic, props or another directive; elsewhere it is plain text.
+  - data-aegis-if on an element with data-aegis-for is checked once, outside the loop; to filter items, put the condition on a child.
   - data-aegis-if="expr", and data-aegis-else on the element right after it.
   - data-aegis-for="item in items" or "(item, i) in items" repeats the element (a number repeats it that many times); data-aegis-key="item.id" keeps items stable.
   - data-aegis-on-click="select('month')" (also input, change, submit, keydown, mouseenter, mouseleave…) runs a method or assigns state: data-aegis-on-click="open = !open".

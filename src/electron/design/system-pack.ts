@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "fs";
 import { createHash } from "crypto";
 import { basename, dirname, extname, join, normalize, relative, sep } from "path";
 import { designLogicOf, designPropsOf } from "../../shared/design-component";
@@ -103,10 +103,16 @@ function inside(dir: string, file: string): boolean {
   return !!rel && !rel.startsWith("..") && !rel.includes(`..${sep}`) && !rel.startsWith(sep);
 }
 
-function readFileSmall(file: string, max = MAX_FILE): Buffer | null {
+/**
+ * A regular file that really is inside the pack folder: no symlinks (a
+ * cloned repo's design-system/assets/logo.png -> ~/.ssh/id_ed25519 must not
+ * be inlined into boards) and nothing resolving outside it.
+ */
+function readFileSmall(file: string, max = MAX_FILE, root?: string): Buffer | null {
   try {
-    const st = statSync(file);
-    if (!st.isFile() || st.size > max) return null;
+    const st = lstatSync(file);
+    if (!st.isFile() || st.isSymbolicLink() || st.size > max) return null;
+    if (root && !inside(realpathSync(root), realpathSync(file))) return null;
     return readFileSync(file);
   } catch {
     return null;
@@ -115,6 +121,7 @@ function readFileSmall(file: string, max = MAX_FILE): Buffer | null {
 
 function list(dir: string): string[] {
   try {
+    if (lstatSync(dir).isSymbolicLink()) return [];
     return readdirSync(dir).filter((f) => !f.startsWith(".")).sort((a, b) => a.localeCompare(b));
   } catch {
     return [];
@@ -143,10 +150,10 @@ interface Inliner {
   budget: number;
   warnings: string[];
 }
-function dataUrl(file: string, inliner: Inliner): string | null {
+function dataUrl(file: string, inliner: Inliner, root: string): string | null {
   const mime = MIME[extname(file).toLowerCase()];
   if (!mime) return null;
-  const bytes = readFileSmall(file);
+  const bytes = readFileSmall(file, MAX_FILE, root);
   if (!bytes) {
     inliner.warnings.push(`${basename(file)} is missing or over ${MAX_FILE / 1_000_000} MB.`);
     return null;
@@ -163,7 +170,7 @@ function dataUrl(file: string, inliner: Inliner): string | null {
 function readStyles(dir: string, file: string, inliner: Inliner, seen = new Set<string>()): string {
   if (seen.has(file) || seen.size > 20) return "";
   seen.add(file);
-  const bytes = readFileSmall(file, MAX_CSS);
+  const bytes = readFileSmall(file, MAX_CSS, dir);
   if (!bytes) return "";
   let css = bytes.toString("utf8");
   css = css.replace(/@import\s+(?:url\()?\s*(['"])([^'"]+)\1\s*\)?[^;]*;/g, (all, _q, ref: string) => {
@@ -176,14 +183,14 @@ function readStyles(dir: string, file: string, inliner: Inliner, seen = new Set<
     if (/^[a-z]+:/i.test(ref) || ref.startsWith("//")) return "url()"; // remote: never loads in a board
     const target = normalize(join(dirname(file), ref.split(/[?#]/)[0]));
     if (!inside(dir, target)) return "url()";
-    const url = dataUrl(target, inliner);
+    const url = dataUrl(target, inliner, dir);
     return url ? `url("${url}")` : "url()";
   });
 }
 
 /** A component file in the board format: its template (with its own styles), logic and props. */
-function readComponent(file: string): { html: string; logic: string | null; props: Record<string, unknown> | null } | null {
-  const bytes = readFileSmall(file, 200_000);
+function readComponent(file: string, root: string): { html: string; logic: string | null; props: Record<string, unknown> | null } | null {
+  const bytes = readFileSmall(file, 200_000, root);
   if (!bytes) return null;
   const clean = sanitizeDesignHtml(bytes.toString("utf8"));
   const logic = designLogicOf(clean);
@@ -199,9 +206,9 @@ export interface ProjectPackReport {
   warnings: string[];
 }
 
-function readProjectPack(root: string): ProjectPackReport | null {
+function readProjectPack(root: string, signature: string): ProjectPackReport | null {
   const dir = join(root, FOLDER);
-  if (!existsSync(dir)) return null;
+  if (!existsSync(dir) || lstatSync(dir).isSymbolicLink()) return null;
   const inliner: Inliner = { budget: MAX_INLINED, warnings: [] };
   const stylesFile = join(dir, "styles.css");
   const css = existsSync(stylesFile) ? readStyles(dir, stylesFile, inliner) : "";
@@ -209,23 +216,23 @@ function readProjectPack(root: string): ProjectPackReport | null {
   const componentsDir = join(dir, "components");
   for (const f of list(componentsDir).filter((f) => extname(f).toLowerCase() === ".html").slice(0, MAX_COMPONENTS)) {
     const name = basename(f, ".html");
-    const c = readComponent(join(componentsDir, f));
+    const c = readComponent(join(componentsDir, f), dir);
     if (!c) {
       inliner.warnings.push(`components/${f} could not be read (over 200 KB?).`);
       continue;
     }
-    const usage = readFileSmall(join(componentsDir, `${name}.md`), 120_000)?.toString("utf8");
+    const usage = readFileSmall(join(componentsDir, `${name}.md`), 120_000, dir)?.toString("utf8");
     components[name] = { ...c, summary: summaryOf(usage) || undefined };
   }
   const assets: Record<string, string> = {};
   const assetsDir = join(dir, "assets");
   for (const f of list(assetsDir).filter((f) => MIME[extname(f).toLowerCase()]?.startsWith("image/")).slice(0, MAX_ASSETS)) {
-    const url = dataUrl(join(assetsDir, f), inliner);
+    const url = dataUrl(join(assetsDir, f), inliner, dir);
     if (url) assets[basename(f, extname(f))] = url;
   }
   if (!css.trim() && !Object.keys(components).length && !Object.keys(assets).length) return null;
   return {
-    pack: { id: PROJECT_DESIGN_SYSTEM, name: "This project", css, components, assets, fonts: declaredFontFamilies(css), signature: signatureOf(dir) },
+    pack: { id: PROJECT_DESIGN_SYSTEM, name: "This project", css, components, assets, fonts: declaredFontFamilies(css), signature },
     warnings: inliner.warnings,
   };
 }
@@ -239,7 +246,7 @@ export function projectDesignPack(root: string | null | undefined): ProjectPackR
   const signature = signatureOf(dir);
   const hit = projectCache.get(root);
   if (hit?.signature === signature) return hit.report;
-  const report = readProjectPack(root);
+  const report = readProjectPack(root, signature);
   projectCache.set(root, { signature, report });
   if (projectCache.size > 20) projectCache.delete(projectCache.keys().next().value as string);
   return report;

@@ -149,7 +149,10 @@ export function registerDesignIpc() {
     },
     system: (x) => {
       const d = getDesignRepository().read(x.sessionId, x.documentId);
-      return Promise.resolve(packForDesign(d));
+      const pack = packForDesign(d);
+      // The renderer already has this one: don't ship its fonts and images again.
+      if (pack && typeof x.signature === "string" && x.signature === pack.signature) return Promise.resolve({ unchanged: true as const, signature: pack.signature });
+      return Promise.resolve(pack);
     },
     recoverFrame: (x, owner?: BrowserWindow) => Promise.resolve({ recovered: recoverSandboxFrame(owner, x?.frameName) }),
     composer: (x) => {

@@ -58,7 +58,10 @@ export function handOffDesign(input: { sessionId: string; documentId: string; bo
     extra.push("design-system.css");
   }
   const usedComponents = pack
-    ? Object.keys(pack.components).filter((name) => chosen.some((b) => new RegExp(`<aegis-use\\b[^>]*component="${name}"`).test(b.html)))
+    ? Object.keys(pack.components).filter((name) => {
+        const pattern = new RegExp(`<aegis-use\\b[^>]*component="${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`);
+        return chosen.some((b) => pattern.test(b.html));
+      })
     : [];
   const interactive = chosen.filter((b) => designLogicOf(b.html));
   const tokens = new Map<string, string>();

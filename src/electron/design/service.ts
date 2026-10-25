@@ -87,6 +87,9 @@ let captureTail: Promise<unknown> = Promise.resolve();
 /** Fonts, images and two frames: the board as it will look, nothing measured. */
 const READY_SCRIPT =
   "(async()=>{await (window.__aegisRuntime?window.__aegisRuntime.ready:null);await document.fonts.ready;await Promise.all([...document.images].map(i=>i.decode().catch(()=>null)));await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));return []})()";
+/** Where design_preview's checks run: a world of their own, apart from board logic. */
+const CHECKS_WORLD = 1029;
+const RUNTIME_READY_MS = 5_000;
 /** A design component's logic errors, for the agent: they don't show in a screenshot. */
 const RUNTIME_ERRORS =
   "(window.__aegisRuntime?[...window.__aegisRuntime.errors]:[])";
@@ -140,19 +143,31 @@ export function previewDesign(
       const timeout = setTimeout(stop, 15000);
       signal?.addEventListener("abort", stop, { once: true });
       try {
-        await w.loadURL(
-          `data:text/html;charset=utf-8,${encodeURIComponent(designFrameHtml(b.html, randomUUID(), false, { system: packForDesign(d), slide }))}`,
-        );
+        // Logic that loops while the page starts never lets it finish loading.
+        const hung = new Error("The board's logic did not finish rendering within 5 s; it may loop forever. Fix the logic (or remove it with a logic operation) and preview again.");
+        const loaded = await Promise.race([
+          w.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(designFrameHtml(b.html, randomUUID(), false, { system: packForDesign(d), slide }))}`).then(() => true),
+          new Promise<false>((resolve) => setTimeout(() => resolve(false), RUNTIME_READY_MS + 3_000)),
+        ]);
+        if (!loaded) throw hung;
         if (scale !== 1) w.webContents.setZoomFactor(scale);
-        // A design component renders after its runtime boots.
-        await w.webContents.executeJavaScript("window.__aegisRuntime?window.__aegisRuntime.ready:null").catch(() => null);
+        // A design component renders after its runtime boots; logic that never
+        // finishes (an endless loop) fails here, with a reason, not at the window timeout.
+        const rendered = await Promise.race([
+          w.webContents.executeJavaScript("window.__aegisRuntime?window.__aegisRuntime.ready.then(()=>true):true").catch(() => true),
+          new Promise<false>((resolve) => setTimeout(() => resolve(false), RUNTIME_READY_MS)),
+        ]);
+        if (!rendered) throw hung;
         // What the screenshot alone might not show: overlaps, clipping, emptiness, size.
-        const warnings = (await w.webContents.executeJavaScript(
-          checks ? renderChecksScript(b.width, b.height) : READY_SCRIPT,
-        ).catch(() => (checks ? ["Checks could not run on this board; judge the screenshot alone."] : []))) as string[];
+        // An isolated world: the board's logic can't patch the DOM APIs the checks use.
+        const warnings = (await w.webContents.executeJavaScriptInIsolatedWorld(CHECKS_WORLD, [
+          { code: checks ? renderChecksScript(b.width, b.height) : READY_SCRIPT },
+        ]).catch(() => (checks ? ["Checks could not run on this board; judge the screenshot alone."] : []))) as string[];
         if (checks) {
-          const errors = (await w.webContents.executeJavaScript(RUNTIME_ERRORS).catch(() => [])) as string[];
-          for (const error of errors.slice(0, 8)) warnings.push(`Logic error: ${error}`);
+          // Reported from inside the board, so it is the board's text: quoted, one line, short.
+          const errors = (await w.webContents.executeJavaScript(RUNTIME_ERRORS).catch(() => [])) as unknown[];
+          for (const error of errors.filter((e): e is string => typeof e === "string").slice(0, 8))
+            warnings.push(`Logic error (reported by the board): ${JSON.stringify(error.replace(/[\u0000-\u001f\u2028\u2029]+/g, " ").slice(0, 200))}`);
           // How far the board strays from the design system it loads.
           const pack = packForDesign(d);
           if (pack) warnings.push(...adherenceWarnings(b.html, pack));

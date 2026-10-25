@@ -307,7 +307,7 @@ export interface DesignAPI {
    */
   recoverFrame(input: { frameName: string }): Promise<{ recovered: boolean }>;
   /** The design system the design's boards load, or null. */
-  system(input: { sessionId: string; documentId: string }): Promise<import("./design-system-pack").DesignSystemPack | null>;
+  system(input: { sessionId: string; documentId: string; signature?: string }): Promise<import("./design-system-pack").DesignSystemPack | { unchanged: true; signature: string } | null>;
   /** A chat joins a design (a new chat started on it). */
   join(input: { sessionId: string; documentId: string }): Promise<void>;
   /** Deletes a design for good; its chats stay. */

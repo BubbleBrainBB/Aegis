@@ -1850,7 +1850,7 @@ export function DesignCanvas(props: Props) {
                 board={patches[b.id] ? { ...b, ...p } : b}
                 mode={writingBoard(b) ? "static" : "edit"}
                 system={props.system}
-                slide={isDesignDeck(b.html) ? deckSlide[b.id] ?? 0 : undefined}
+                slide={isDesignDeck(b.html) ? Math.min(deckSlide[b.id] ?? 0, Math.max(0, designSlides(b.html).length - 1)) : undefined}
                 onRuntime={(event) => onBoardRuntime(b.id, event)}
                 onLoad={() => {
                   setLoads((n) => n + 1);

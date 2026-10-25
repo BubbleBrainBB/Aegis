@@ -115,10 +115,15 @@ export function designFrameHtml(
   const board = runtime
     ? `${components}<script data-aegis-frame data-aegis-runtime data-mode="${mode === "play" ? "play" : "edit"}" nonce="${nonce}">${DESIGN_RUNTIME_SCRIPT}</script>`
     : "";
-  // parse5 serializes a single document; insert CSP before all user styles.
-  // A replacer function: the runtime bundle contains `$&`-style sequences.
-  return resolveDesignAssets(sanitizeDesignHtml(html), options.system?.assets).replace(
-    "<head>",
-    () => `<head><meta data-aegis-frame http-equiv="Content-Security-Policy" content="${policy}"><meta data-aegis-frame name="referrer" content="no-referrer">${system}<style data-aegis-frame>html{color-scheme:light}body{margin:0}*{box-sizing:border-box}[data-aegis-hidden="true"]{display:none!important}[data-aegis-masked]{-webkit-text-fill-color:transparent!important;-webkit-text-stroke-color:transparent!important;text-shadow:none!important;text-decoration-color:transparent!important}</style>${deck}${inspector}${board}`,
-  );
+  // parse5 serializes one document, and the sanitizer leaves <html> and <head>
+  // bare, so it starts with exactly [<!DOCTYPE html>]<html><head>. The frame's
+  // policy goes right there, before everything the board wrote; anything else
+  // means the policy could land in the wrong place, so nothing is rendered.
+  const doc = resolveDesignAssets(sanitizeDesignHtml(html), options.system?.assets);
+  const start = /^(?:<!DOCTYPE html>)?<html><head>/.exec(doc);
+  if (!start) throw new Error("Board HTML did not sanitize to a plain document head.");
+  return doc.slice(0, start[0].length) + framePrelude() + doc.slice(start[0].length);
+  function framePrelude() {
+    return `<meta data-aegis-frame http-equiv="Content-Security-Policy" content="${policy}"><meta data-aegis-frame name="referrer" content="no-referrer">${system}<style data-aegis-frame>html{color-scheme:light}body{margin:0}*{box-sizing:border-box}[data-aegis-hidden="true"]{display:none!important}[data-aegis-masked]{-webkit-text-fill-color:transparent!important;-webkit-text-stroke-color:transparent!important;text-shadow:none!important;text-decoration-color:transparent!important}</style>${deck}${inspector}${board}`;
+  }
 }

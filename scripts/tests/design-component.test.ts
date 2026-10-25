@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import {
   designPropsOf,
   designTextSource,
+  designTextValue,
   editDesignText,
   setDesignProps,
+  staticDesignPreview,
 } from "../../src/shared/design-component";
 import { editDesignLayer } from "../../src/shared/design-layers";
 import { sanitizeDesignHtml } from "../../src/shared/design-html";
@@ -51,4 +53,22 @@ assert.equal(designTextSource(withProps, "item").kind, "logic", "without a rende
 assert.throws(() => text(withProps, "total", "9"), /comes from the board's logic/);
 assert.throws(() => text(withProps, "state", "x"), /comes from the board's logic/, "state is logic, not a prop");
 assert.throws(() => text(withProps, "greeting", "Hi"), /mixes words and template values/);
-console.log("design-component: text sources, prop and $preview edits, list items, numbers and refusals passed");
+// The full value behind a {{ }} layer (the canvas only sends a trimmed excerpt).
+const long = "x".repeat(400);
+const withLong = setDesignProps(withProps, { ...designPropsOf(withProps)!, heading: { type: "string", default: long }, $preview: {} });
+assert.equal(designTextValue(withLong, "title"), long);
+assert.equal(designTextValue(withProps, "item", "1"), "Yearly");
+assert.equal(designTextValue(withProps, "lede"), null);
+
+// Nested loops: an inner list from an outer item is the logic's business, not a prop path.
+const nested = setDesignProps(sanitizeDesignHtml(`<html><head></head><body><div data-aegis-for="g in groups"><span data-aegis-node-id="leaf" data-aegis-for="it in g.items">{{ it }}</span></div></body></html>`), { groups: { type: "list", default: [{ items: ["a"] }] } });
+assert.equal(designTextSource(nested, "leaf", "0").kind, "logic", "an inner loop is not mistaken for a list prop");
+
+// Thumbnails: a component drawn from its props without running any code.
+const thumb = staticDesignPreview(withProps);
+assert.match(thumb, /<h1[^>]*>Preview plans<\/h1>/);
+assert.match(thumb, />Monthly<[\s\S]*>Yearly</, "loops repeat with their items");
+assert.match(thumb, /<em[^>]*><\/em>/, "logic-only values render empty");
+assert.equal(staticDesignPreview("<p>static {{ x }}</p>"), "<p>static {{ x }}</p>", "static boards are left alone");
+
+console.log("design-component: text sources, prop and $preview edits, list items, numbers, refusals, full values, nested loops and static previews passed");

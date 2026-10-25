@@ -35,8 +35,16 @@ const CLR_MAP = '<p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="acce
 
 export function buildPptx(slides: PptxSlide[], size: { width: number; height: number }, title: string): Uint8Array {
   if (!slides.length) throw new Error("No slides to export.");
-  const cx = Math.round(size.width * EMU_PER_PX);
-  const cy = Math.round(size.height * EMU_PER_PX);
+  // PowerPoint takes slide sides of 914400–51206400 EMU (1–56 in): scale into range, keeping the shape.
+  const [MIN, MAX] = [914_400, 51_206_400];
+  let cx = size.width * EMU_PER_PX;
+  let cy = size.height * EMU_PER_PX;
+  const grow = Math.max(1, MIN / Math.min(cx, cy));
+  cx *= grow;
+  cy *= grow;
+  const shrink = Math.min(1, MAX / Math.max(cx, cy));
+  cx = Math.round(Math.min(MAX, Math.max(MIN, cx * shrink)));
+  cy = Math.round(Math.min(MAX, Math.max(MIN, cy * shrink)));
   const files: Record<string, Uint8Array> = {};
   const put = (path: string, xml: string) => (files[path] = strToU8(xml));
   const n = slides.length;

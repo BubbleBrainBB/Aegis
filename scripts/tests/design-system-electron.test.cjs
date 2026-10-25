@@ -37,6 +37,10 @@ fs.writeFileSync(path.join(ds, 'components', 'Badge.html'), `<!doctype html><htm
 fs.writeFileSync(path.join(ds, 'components', 'Badge.md'), 'A small count badge.');
 fs.writeFileSync(path.join(ds, 'components', 'Broken.html'), '<span>x</span><script type="text/x-aegis-logic">class Component extends AegisBoard { oops( }</script>');
 fs.writeFileSync(path.join(ds, 'templates', 'home.html'), '<main><aegis-use component="Hero"></aegis-use></main>');
+// A symlink out of the folder (a cloned repo pointing at a secret) is never read.
+fs.writeFileSync(path.join(temp, 'secret.png'), 'SECRET-KEY-MATERIAL');
+fs.symlinkSync(path.join(temp, 'secret.png'), path.join(ds, 'assets', 'stolen.png'));
+fs.symlinkSync(path.join(temp, 'secret.png'), path.join(ds, 'fonts', 'Leak.woff2'));
 
 app.whenReady().then(async () => {
   let code = 0;
@@ -56,6 +60,8 @@ app.whenReady().then(async () => {
     assert.ok(!pack.css.includes('example.com'), 'remote URLs never reach a board');
     assert.deepEqual(pack.fonts.sort(), ['Atlas Sans', 'Remote']);
     assert.match(pack.assets.logo, /^data:image\/svg\+xml;base64,/);
+    assert.equal(pack.assets.stolen, undefined, 'a symlinked asset is not inlined');
+    assert.ok(!JSON.stringify(pack).includes(Buffer.from('SECRET-KEY-MATERIAL').toString('base64')), 'no symlinked bytes anywhere in the pack');
     assert.equal(pack.components.Badge.summary, 'A small count badge.');
     assert.match(pack.components.Badge.html, /<style>\.badge/, 'a component keeps its styles');
     assert.match(pack.components.Badge.logic, /class Component/);

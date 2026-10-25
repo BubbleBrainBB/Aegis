@@ -96,6 +96,15 @@ app.whenReady().then(async () => {
     assert.ok(errors.some((e) => /n\.missing\.deep/.test(e)), `expression error reported: ${errors}`);
     assert.equal(await js(bad, 'document.querySelectorAll("[data-aegis-node-id=item]").length'), 3, 'template renders without logic');
     bad.destroy();
+    // mounted() runs once per logic instance, not on every saved edit.
+    const COUNT = `<!doctype html><html><head></head><body><p data-aegis-node-id="n" data-aegis-if="true">{{ $board.count }}</p><script type="text/x-aegis-logic">class Board extends AegisBoard { count = 0; mounted() { this.count++; } }</script></body></html>`;
+    const mw = new BrowserWindow({ show: false, width: 400, height: 200, webPreferences: { sandbox: true, contextIsolation: true } });
+    await mw.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(designFrameHtml(COUNT, 'n0nce', false, { mode: 'play' }))}`);
+    await js(mw, 'window.__aegisRuntime.ready');
+    await js(mw, `window.__aegisRuntime.update(${JSON.stringify(sanitizeDesignHtml(COUNT.replace('<p ', '<p title="edited" ')))});window.__aegisRuntime.update(${JSON.stringify(sanitizeDesignHtml(COUNT))})`);
+    assert.equal(await js(mw, 'document.querySelector("[data-aegis-node-id=n]").textContent'), '1', 'mounted once across saved edits');
+    mw.destroy();
+
     // Components: props from attributes and bindings, slots, own state per instance, styles, missing ones.
     const components = { Card: { html: '<style>.card{padding:4px}</style><div class="card"><h3 data-aegis-node-id="c-title">{{ title }}</h3><aegis-slot></aegis-slot><button data-aegis-node-id="c-btn" data-aegis-on-click="n = n + 1">{{ n }}</button></div>', logic: 'class Component extends AegisBoard { state = { n: 0 } }', props: { title: { type: 'string', default: 'Card' } } } };
     const USES = `<!doctype html><html><head></head><body><main data-aegis-node-id="m">

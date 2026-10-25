@@ -23,8 +23,9 @@ type Node = DefaultTreeAdapterMap["node"];
 type Element = DefaultTreeAdapterMap["element"];
 type ParentNode = DefaultTreeAdapterMap["parentNode"];
 
-const DIRECTIVE =
-  /\sdata-aegis-(?:if|else|for|on-[a-z]+|bind-[a-z-]+|goto|deck)\b|<aegis-use\b|\{\{[\s\S]*?\}\}/i;
+// Opt-in only: {{ }} alone is ordinary text (a board may show template syntax);
+// it is evaluated in boards that have logic, props, a directive or a component.
+const DIRECTIVE = /\sdata-aegis-(?:if|else|for|on-[a-z]+|bind-[a-z-]+|goto)\b|<aegis-use\b/i;
 
 /** Whether a board needs the runtime: logic, props, directives or components. */
 export function isDesignComponent(html: string): boolean {
@@ -67,7 +68,8 @@ function block(doc: DefaultTreeAdapterMap["document"], type: string) {
 /** The board's logic source, or null. */
 export function designLogicOf(html: string): string | null {
   const e = block(parse(html), DESIGN_LOGIC_TYPE);
-  return e ? textOf(e) : null;
+  // Stored with `<\/script` so it can't end its block; read back as written.
+  return e ? textOf(e).replace(/<\\\/(script)/gi, "</$1") : null;
 }
 
 /** The board's props definition, or null when absent or not valid JSON. */
@@ -252,6 +254,18 @@ export function designTextSource(html: string, nodeId: string, instance?: string
   return { kind: "logic", expression };
 }
 
+/** The full current text of a layer whose text comes from a prop, or null (the canvas shows a trimmed excerpt). */
+export function designTextValue(html: string, nodeId: string, instance?: string): string | null {
+  if (!isDesignComponent(html)) return null;
+  const source = designTextSource(html, nodeId, instance);
+  if (source.kind !== "prop") return null;
+  const spec = designPropsOf(html);
+  if (!spec) return null;
+  let value: unknown = propValue(spec, source.prop).value;
+  for (const key of source.path) value = value && typeof value === "object" ? (value as Record<string | number, unknown>)[key] : undefined;
+  return value === undefined || value === null ? "" : typeof value === "object" ? JSON.stringify(value) : String(value);
+}
+
 /** The value a prop renders with ($preview first) and where an edit writes it. */
 function propValue(spec: DesignPropsSpec, prop: string): { value: unknown; target: "preview" | "default" } {
   if (spec.$preview && prop in spec.$preview) return { value: spec.$preview[prop], target: "preview" };
@@ -269,7 +283,8 @@ export function editDesignText(
   instance: string | undefined,
   editTemplate: (html: string) => string,
 ): string {
-  const source = designTextSource(html, nodeId, instance);
+  // In a static board, {{ }} is just text.
+  const source = isDesignComponent(html) ? designTextSource(html, nodeId, instance) : { kind: "template" as const };
   if (source.kind === "template") return editTemplate(html);
   if (source.kind === "mixed")
     throw new Error("This text mixes words and template values. Edit it in the board HTML, or ask the agent.");
@@ -290,4 +305,94 @@ function setAt(current: unknown, path: (string | number)[], value: string): unkn
   const base = Array.isArray(current) ? [...current] : current && typeof current === "object" ? { ...(current as Record<string, unknown>) } : typeof key === "number" ? [] : {};
   (base as Record<string | number, unknown>)[key] = setAt((current as Record<string | number, unknown> | undefined)?.[key], rest, value);
   return base;
+}
+
+// ── A component board drawn without running it ───────────────────────────
+
+const SIMPLE_PATH = /^\s*([A-Za-z_$][\w$]*)((?:\.[A-Za-z_$][\w$]*|\[\d+\])*)\s*$/;
+const MAX_STATIC_ITEMS = 24;
+
+function lookup(scope: Record<string, unknown>[], expr: string): { found: boolean; value?: unknown } {
+  const m = SIMPLE_PATH.exec(expr);
+  if (!m) return { found: false };
+  for (let i = scope.length - 1; i >= 0; i--) {
+    if (!(m[1] in scope[i])) continue;
+    let value: unknown = scope[i][m[1]];
+    for (const key of segments(m[2])) value = value && typeof value === "object" ? (value as Record<string | number, unknown>)[key] : undefined;
+    return { found: true, value };
+  }
+  return { found: false };
+}
+function cloneElement(e: Element): Element {
+  const copy = { ...e, attrs: e.attrs.map((a) => ({ ...a })), childNodes: [] as DefaultTreeAdapterMap["childNode"][] } as Element;
+  copy.childNodes = e.childNodes.map((c) => {
+    const child = isElement(c) ? cloneElement(c) : ({ ...c } as DefaultTreeAdapterMap["childNode"]);
+    (child as { parentNode: unknown }).parentNode = copy;
+    return child;
+  });
+  return copy;
+}
+const shown = (v: unknown) => (v === null || v === undefined || v === false ? "" : typeof v === "object" ? JSON.stringify(v) : String(v));
+const fill = (text: string, scope: Record<string, unknown>[]) => text.replace(/\{\{([\s\S]+?)\}\}/g, (_, e: string) => shown(lookup(scope, e).value));
+
+/**
+ * A design component as static HTML, without running any of its code: simple
+ * {{ path }} values and conditions come from its props (loops over list props
+ * repeat with their items); anything that needs its logic renders empty. For
+ * thumbnails and covers, which never run board code.
+ */
+export function staticDesignPreview(html: string): string {
+  if (!isDesignComponent(html)) return html;
+  const doc = parse(html);
+  const values = designPropValues(designPropsOf(html));
+  const walk = (parent: ParentNode, scope: Record<string, unknown>[]) => {
+    const out: DefaultTreeAdapterMap["childNode"][] = [];
+    let lastIf: boolean | null = null;
+    for (const node of parent.childNodes) {
+      if (node.nodeName === "#text" && "value" in node) {
+        node.value = fill(node.value, scope);
+        out.push(node);
+        continue;
+      }
+      if (!isElement(node) || node.tagName === "script") {
+        out.push(node);
+        continue;
+      }
+      const ifExpr = attrOf(node, "data-aegis-if");
+      const isElse = node.attrs.some((a) => a.name === "data-aegis-else");
+      if (isElse) {
+        if (lastIf !== false) {
+          lastIf = null;
+          continue;
+        }
+        lastIf = null;
+      } else if (ifExpr !== undefined) {
+        const hit = lookup(scope, ifExpr.replace(/^\s*!\s*/, ""));
+        const truthy = hit.found ? (/^\s*!/.test(ifExpr) ? !hit.value : !!hit.value) : true;
+        lastIf = truthy;
+        if (!truthy) continue;
+      } else lastIf = null;
+      const loop = attrOf(node, "data-aegis-for");
+      const l = loop ? /^\s*(?:\(\s*([\w$]+)\s*(?:,\s*([\w$]+)\s*)?\)|([\w$]+))\s+(?:in|of)\s+([\s\S]+)$/.exec(loop) : null;
+      const copies: Record<string, unknown>[] = [];
+      if (l) {
+        const list = lookup(scope, l[4]).value;
+        const items = Array.isArray(list) ? list : typeof list === "number" ? Array.from({ length: list }, (_, i) => i) : [];
+        items.slice(0, MAX_STATIC_ITEMS).forEach((item, i) => copies.push({ [l[1] ?? l[3]]: item, ...(l[2] ? { [l[2]]: i } : {}) }));
+      } else copies.push({});
+      for (const local of copies) {
+        const target = l ? cloneElement(node) : node;
+        const inner = [...scope, local];
+        target.attrs = target.attrs.map((a) => (a.value.includes("{{") ? { ...a, value: fill(a.value, inner) } : a));
+        target.childNodes = walk(target, inner);
+        target.parentNode = parent as Element;
+        out.push(target);
+      }
+    }
+    return out;
+  };
+  const html_ = find(doc, (e) => e.tagName === "html");
+  const body = html_ && find(html_, (e) => e.tagName === "body");
+  if (body) body.childNodes = walk(body, [values]);
+  return serialize(doc);
 }
