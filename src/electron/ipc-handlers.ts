@@ -4944,8 +4944,12 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
       });
     },
     stop: sessionId => handleSessionStop(mainWindow, sessionId),
-    // No updatedInput on allow: the request input is the approval card, not the tool's arguments.
-    permission: (request, decision) => handlePermissionResponse({ sessionId: request.sessionId, toolUseId: request.toolUseId, result: { behavior: decision, scope: 'once', ...(decision === 'allow' ? {} : { message: 'Declined from iPhone' }) } }),
+    // No updatedInput on a plain allow: the request input is the approval card, not the tool's arguments.
+    // Questions and plans come resolved like the desktop card resolves them.
+    permission: (request, decision, resolution) => {
+      const behavior = resolution?.behavior ?? decision;
+      return handlePermissionResponse({ sessionId: request.sessionId, toolUseId: request.toolUseId, result: { scope: 'once', ...resolution, behavior, ...(behavior === 'allow' ? {} : { message: 'Declined from iPhone' }) } });
+    },
     hasPermission: (sessionId, toolUseId) => sessionStates.get(sessionId)?.pendingPermissions.has(toolUseId) ?? false,
   });
   attachComputerUsePreviewHost(mainWindow);

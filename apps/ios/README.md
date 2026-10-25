@@ -44,7 +44,7 @@ This command:
   - Noise interop in both directions against the desktop's real `secure-channel` (`Tests/interop/noise-peer.mjs`);
   - concurrent large-message ordering;
   - JavaScriptCore rendering;
-  - an end-to-end run of `RemoteClient` against `scripts/remote/fixture.mjs` (pair, snapshot, history, moving from the relay to the Mac's direct listener, a reply streamed as pushed events, approval, chunked upload, create with settings and attachments, reconnecting directly, forget).
+  - an end-to-end run of `RemoteClient` against `scripts/remote/fixture.mjs` (pair, snapshot, history, moving from the relay to the Mac's direct listener, a reply streamed as pushed events, approval, answering a question, approving a plan, chunked upload, create with settings and attachments, reconnecting directly, forget).
 
 ## Run against Aegis Dev
 
@@ -65,7 +65,7 @@ A Release app pairs only with a packaged desktop (`npm run dist`), and a Debug a
 
 ## Notes
 
-- **Not available on the phone yet:** answering agent questions and approving plans. These need host APIs.
+- **Questions and plans:** a permission that carries `questions` opens the question sheet (listed options, several where the question allows it, and free "Other" text); one that carries `plan` opens the plan sheet (Approve, or Keep planning). The Mac resolves them the way its own question card does. Computer use still needs the Mac.
 - **Notifications:** the app asks after the first task it starts and sends its APNs token to the Mac over the encrypted channel. The Mac notifies through the relay only while no phone is connected, and only with status ("A task needs your approval"). Tapping a notification opens that task.
 - **Drafts** are files under Application Support, written on every change.
 - **The snapshot cache** is a per-Mac JSON file.

@@ -399,12 +399,18 @@ final class AppModel {
         }
     }
 
+    /// Allow or deny; on a plan, allow approves it and deny keeps planning.
     func decide(_ permission: RemotePermission, _ decision: String) async {
         await perform {
-            try await self.client.mutate([
-                "method": "permission", "sessionId": .string(permission.sessionId), "runId": .string(permission.runId),
-                "requestId": .string(permission.requestId), "decision": .string(decision),
-            ])
+            try await self.client.mutate(permission.command(decision))
+            self.approval = nil
+        }
+    }
+
+    /// Answers the agent's questions, keyed by question text.
+    func answer(_ permission: RemotePermission, _ answers: [String: QuestionAnswer]) async {
+        await perform {
+            try await self.client.mutate(permission.command("allow", answers: answers))
             self.approval = nil
         }
     }

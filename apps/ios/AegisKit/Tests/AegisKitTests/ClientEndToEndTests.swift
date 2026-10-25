@@ -59,12 +59,37 @@ import Testing
         client.select("design")
 
         // Approval, as the approval sheet sends it.
-        let permission = try #require(snapshot.permissions.first)
-        let decided = try await client.mutate([
-            "method": "permission", "sessionId": .string(permission.sessionId), "runId": .string(permission.runId),
-            "requestId": .string(permission.requestId), "decision": "allow",
-        ])
+        let permission = try #require(snapshot.permissions.first { $0.kind == .approval })
+        let decided = try await client.mutate(permission.command("allow"))
         #expect(decided.state == .completed)
+        _ = try await fixture.line(containing: "fixture permission Bash {\"behavior\":\"allow\"}")
+
+        // A question: its options reach the phone, and the answers reach the Mac as the desktop card sends them.
+        let question = try #require(snapshot.permissions.first { $0.kind == .question })
+        #expect(!question.canApprove) // older phones send it to the Mac
+        #expect(question.questions?.map(\.allowsMany) == [false, true])
+        #expect(question.questions?.first?.options.first == RemoteQuestion.Option(label: "User-facing only", description: "Features and fixes people will notice"))
+        var notes = QuestionAnswer()
+        notes.pick("RELEASE_NOTES.md", many: true)
+        notes.pick("GitHub release", many: true)
+        notes.type(" Slack ", many: true)
+        let answered = try await client.mutate(question.command("allow", answers: [
+            "Which changes should the notes cover?": QuestionAnswer(selected: ["Everything merged"]),
+            "Where should the notes go?": notes,
+        ]))
+        #expect(answered.state == .completed)
+        let answer = try await fixture.line(containing: "fixture permission AskUserQuestion")
+        #expect(answer.contains(#""Where should the notes go?":"RELEASE_NOTES.md,GitHub release,Slack""#))
+        #expect(answer.contains(#""Where should the notes go?":{"selected":["RELEASE_NOTES.md","GitHub release"],"other":"Slack"}"#))
+
+        // A plan, with the text of its ExitPlanMode call; approving picks the card's approve answer.
+        let plan = try #require(snapshot.permissions.first { $0.kind == .plan })
+        #expect(plan.plan?.markdown.hasPrefix("## Replay tests for remote commands") == true)
+        #expect(plan.plan?.truncated == nil && plan.questions == nil)
+        #expect(try await client.mutate(plan.command("allow")).state == .completed)
+        let approved = try await fixture.line(containing: "fixture permission ExitPlanMode")
+        #expect(approved.contains(#""answers":{"Approve this plan and let Claude start implementing it?":"Approve and execute"}"#))
+        try await waitUntil { client.snapshot?.permissions.isEmpty == true }
 
         // Chunked upload (two chunks) and a new task carrying it plus settings.
         let attachment = try await client.upload(name: "notes.txt", bytes: Data(repeating: 65, count: attachmentChunkBytes + 10))

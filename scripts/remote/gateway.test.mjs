@@ -26,6 +26,7 @@ writeFileSync(join(projectDir, "node_modules", "pkg", "app.js"), "x");
 writeFileSync(join(dir, "outside.txt"), "outside\n");
 symlinkSync(join(dir, "outside.txt"), join(projectDir, "escape.txt"));
 let lastExtras;
+let lastPermission;
 let starts = 0,
   sends = 0,
   stops = 0,
@@ -71,7 +72,8 @@ const runtime = {
   stop: () => {
     stops++;
   },
-  permission: () => {
+  permission: (request, decision, resolution) => {
+    lastPermission = { request, decision, resolution };
     approvals++;
     pending = false;
     return true;
@@ -236,6 +238,129 @@ try {
     requestId: longPermission.requestId, decision: "allow",
   }))).error, "DESKTOP_REQUIRED");
   assert.equal(approvals, 1, "A truncated request must never be approved remotely");
+
+  // Questions: options and multi-select reach the phone; answers come back as the desktop card sends them.
+  const questionInput = {
+    questions: [
+      { question: "Which database?", header: "Storage", options: [{ label: "SQLite", description: "File" }, { label: "Postgres, managed" }] },
+      { question: "Which checks?", options: [{ label: "Lint" }, { label: "Tests" }], multiSelect: true },
+    ],
+  };
+  gateway.capture({
+    type: "permission.request",
+    payload: { sessionId: "visible", toolUseId: "ask", toolName: "AskUserQuestion", input: questionInput },
+  });
+  const question = gateway.snapshot().permissions.find((p) => p.toolName === "AskUserQuestion");
+  assert.equal(question.canApprove, false, "Older phones keep sending questions to the Mac");
+  assert.deepEqual(question.questions, [
+    { question: "Which database?", header: "Storage", options: [{ label: "SQLite", description: "File" }, { label: "Postgres, managed" }] },
+    { question: "Which checks?", options: [{ label: "Lint" }, { label: "Tests" }], multiSelect: true },
+  ]);
+  assert.equal(question.plan, undefined);
+  const answer = (answers) => command({
+    method: "permission", sessionId: "visible", runId, requestId: question.requestId, decision: "allow", ...(answers ? { answers } : {}),
+  });
+  for (const bad of [
+    undefined,
+    { "Which database?": { selected: ["SQLite"] } },
+    { "Which database?": { selected: ["MySQL"] }, "Which checks?": { selected: ["Lint"] } },
+    { "Which database?": { selected: ["SQLite", "Postgres, managed"] }, "Which checks?": { selected: ["Lint"] } },
+    { "Which database?": { selected: ["SQLite"], other: "Both" }, "Which checks?": { selected: ["Lint"] } },
+    { "Which database?": { selected: ["SQLite"] }, "Which checks?": { selected: ["Lint"] }, "Extra?": { selected: [] } },
+  ])
+    assert.equal((await request(answer(bad))).error, "INVALID_ANSWER", JSON.stringify(bad));
+  assert.equal(approvals, 1);
+  assert.equal((await request(command({
+    method: "permission", sessionId: "visible", runId, requestId: longPermission.requestId, decision: "deny",
+    answers: { x: { selected: [] } },
+  }))).error, "INVALID_ANSWER", "Only question requests take answers");
+  const answered = await request(answer({
+    "Which database?": { selected: ["Postgres, managed"] },
+    "Which checks?": { selected: ["Tests", "Lint"], other: " Types " },
+  }));
+  assert.equal(answered.result.state, "completed");
+  assert.equal(lastPermission.decision, "allow");
+  assert.deepEqual(lastPermission.resolution, {
+    behavior: "allow",
+    updatedInput: { ...questionInput, answers: { "Which database?": "Postgres, managed", "Which checks?": "Tests,Lint,Types" } },
+    questionAnswers: {
+      "Which database?": { selected: ["Postgres, managed"] },
+      "Which checks?": { selected: ["Tests", "Lint"], other: "Types" },
+    },
+  });
+  assert.equal((await request(command({
+    method: "permission", sessionId: "visible", runId, requestId: question.requestId, decision: "deny",
+  }))).error, "PERMISSION_EXPIRED", "An answered question is gone");
+
+  // Plans: Claude asks with the approval card only; the plan comes from the ExitPlanMode call.
+  pending = true;
+  const planCard = {
+    questions: [{
+      header: "Plan approval",
+      question: "Approve this plan and let Claude start implementing it?",
+      options: [{ label: "Approve and execute", description: "Go" }, { label: "Stay in plan mode", description: "Wait" }],
+    }],
+  };
+  gateway.capture({
+    type: "stream.message",
+    payload: {
+      sessionId: "visible",
+      message: { type: "assistant", uuid: "m", message: { content: [{ type: "tool_use", id: "plan-call", name: "ExitPlanMode", input: { plan: "## Plan\n\n1. Do it" } }] } },
+    },
+  });
+  gateway.capture({
+    type: "permission.request",
+    payload: { sessionId: "visible", toolUseId: "plan", toolName: "ExitPlanMode", input: planCard },
+  });
+  const plan = gateway.snapshot().permissions.find((p) => p.toolName === "ExitPlanMode");
+  assert.equal(plan.canApprove, false);
+  assert.deepEqual(plan.plan, { markdown: "## Plan\n\n1. Do it" });
+  assert.equal(plan.questions, undefined, "The phone shows a plan, not the approval card");
+  assert.equal((await request(command({
+    method: "permission", sessionId: "visible", runId, requestId: plan.requestId, decision: "allow",
+    answers: { [planCard.questions[0].question]: { selected: ["Approve and execute"] } },
+  }))).error, "INVALID_ANSWER");
+  await request(command({ method: "permission", sessionId: "visible", runId, requestId: plan.requestId, decision: "allow" }));
+  assert.deepEqual(lastPermission.resolution, {
+    behavior: "allow",
+    updatedInput: { ...planCard, answers: { [planCard.questions[0].question]: "Approve and execute" } },
+    questionAnswers: { [planCard.questions[0].question]: { selected: ["Approve and execute"] } },
+  });
+  // Keep planning is the card's "Stay in plan mode"; Bubble sends its plan with the request.
+  pending = true;
+  gateway.capture({
+    type: "permission.request",
+    payload: { sessionId: "visible", toolUseId: "plan2", toolName: "ExitPlanMode", input: { ...planCard, plan: "Bubble plan" } },
+  });
+  const bubblePlan = gateway.snapshot().permissions.find((p) => p.toolName === "ExitPlanMode");
+  assert.deepEqual(bubblePlan.plan, { markdown: "Bubble plan" });
+  await request(command({ method: "permission", sessionId: "visible", runId, requestId: bubblePlan.requestId, decision: "deny" }));
+  assert.equal(lastPermission.resolution.behavior, "allow");
+  assert.deepEqual(lastPermission.resolution.questionAnswers, { [planCard.questions[0].question]: { selected: ["Stay in plan mode"] } });
+  // A plan too long to show in full is approved on the Mac; keeping on planning still works here.
+  pending = true;
+  gateway.capture({
+    type: "permission.request",
+    payload: { sessionId: "visible", toolUseId: "plan3", toolName: "ExitPlanMode", input: { ...planCard, plan: "p".repeat(50000) } },
+  });
+  const longPlan = gateway.snapshot().permissions.find((p) => p.toolName === "ExitPlanMode");
+  assert.equal(longPlan.plan.truncated, true);
+  assert.equal(longPlan.plan.markdown.length, 48000);
+  assert.equal((await request(command({
+    method: "permission", sessionId: "visible", runId, requestId: longPlan.requestId, decision: "allow",
+  }))).error, "DESKTOP_REQUIRED");
+  await request(command({ method: "permission", sessionId: "visible", runId, requestId: longPlan.requestId, decision: "deny" }));
+  assert.deepEqual(lastPermission.resolution.questionAnswers, { [planCard.questions[0].question]: { selected: ["Stay in plan mode"] } });
+  // A new turn forgets the streamed plan.
+  gateway.capture({ type: "stream.user_prompt", payload: { sessionId: "visible", prompt: "again" } });
+  pending = true;
+  gateway.capture({
+    type: "permission.request",
+    payload: { sessionId: "visible", toolUseId: "plan4", toolName: "ExitPlanMode", input: planCard },
+  });
+  assert.deepEqual(gateway.snapshot().permissions.find((p) => p.toolName === "ExitPlanMode").plan, { markdown: "" });
+  gateway.capture({ type: "permission.dismissed", payload: { sessionId: "visible", toolUseId: "plan4" } });
+  pending = false;
   journal.update((s) => {
     s.commands.crashed = {
       fingerprint: "hash",
@@ -327,7 +452,7 @@ try {
   gateway.revoke("phone");
   assert.equal((await request({ method: "snapshot" })).error, "UNAUTHORIZED");
   console.log(
-    "Gateway: authorization, scope isolation, whitelist, deduplication, payload conflicts, expiry, stale-run stop, approval race, crash recovery, agent catalog, chunked uploads, task settings and revocation passed",
+    "Gateway: authorization, scope isolation, whitelist, deduplication, payload conflicts, expiry, stale-run stop, approval race, questions and plans, crash recovery, agent catalog, chunked uploads, task settings and revocation passed",
   );
 } finally {
   gateway.close();

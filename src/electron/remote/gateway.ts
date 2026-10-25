@@ -5,6 +5,7 @@ import { join } from "path";
 import type { AddressInfo } from "net";
 import WebSocket from "ws";
 import { RemoteJournal } from "./journal";
+import { PLAN_LIMIT, planOf, promptFields, remotePrompt, resolvePrompt, type RemoteResolution } from "./prompts";
 import { defaultRelay, hostProof, identityKeys, pushRequest, relayHttpOrigin, roomFor } from "./relay-auth";
 import {
   EMPTY_HISTORY,
@@ -30,7 +31,8 @@ import {
   type RemoteProvider,
   providerSchema,
 } from "../../shared/remote/protocol";
-import type { ServerEvent, PermissionRequestPayload, Attachment } from "../../shared/types";
+import type { ServerEvent, PermissionRequestPayload, Attachment, StreamMessage } from "../../shared/types";
+import { getMessageContentBlocks, normalizeToolUseBlock } from "../../ui/utils/message-content";
 
 /** Settings a phone may attach to a new task or a follow-up. */
 export interface RemoteTaskExtras {
@@ -90,9 +92,11 @@ export interface RemoteRuntime {
   /** Stores uploaded bytes as a desktop attachment (type and size validated). */
   attach?(name: string, data: Uint8Array): Promise<Attachment>;
   stop(id: string): void;
+  /** `resolution`, when given, is the whole result (a question's answers, a plan's choice). */
   permission(
     request: PermissionRequestPayload,
     decision: "allow" | "deny",
+    resolution?: RemoteResolution,
   ): boolean;
   hasPermission(id: string, toolUseId: string): boolean;
   confirm(name: string, peerId: string): Promise<boolean>;
@@ -158,6 +162,8 @@ export class RemoteGateway {
   private invite?: { value: string; expiresAt: number; claimed: boolean };
   private runIds = new Map<string, string>();
   private permissions = new Map<string, PermissionRequestPayload>();
+  /** Per session, the plan from its latest ExitPlanMode call (Claude asks without it). */
+  private plans = new Map<string, string>();
   private live = new Map<string, { id: number; text: string; total: number }>();
   private liveIds = 0;
   private histories = new Map<string, History>();
@@ -644,6 +650,7 @@ export class RemoteGateway {
         this.runtime.hasPermission(p.sessionId, p.toolUseId)
       ) {
         const detail = permissionDetail(p);
+        const prompt = remotePrompt(p);
         permissions.push({
           requestId,
           sessionId: p.sessionId,
@@ -653,6 +660,7 @@ export class RemoteGateway {
             ? detail.slice(0, 24000) + "\n… Too long to show here. Review the full request on your Mac."
             : detail,
           canApprove: canApproveRemotely(p),
+          ...promptFields(p, prompt, this.plans.get(p.sessionId)),
         });
       }
     }
@@ -951,11 +959,7 @@ export class RemoteGateway {
           )
         )
           throw new Error("PERMISSION_EXPIRED");
-        if (
-          request.decision === "allow" &&
-          !canApproveRemotely(permission)
-        )
-          throw new Error("DESKTOP_REQUIRED");
+        this.resolution(permission, request.decision, request.answers);
       }
       const result: CommandResult = {
         commandId: request.commandId,
@@ -1006,12 +1010,8 @@ export class RemoteGateway {
             )
           )
             throw new Error("PERMISSION_EXPIRED");
-          if (
-            request.decision === "allow" &&
-            !canApproveRemotely(permission)
-          )
-            throw new Error("DESKTOP_REQUIRED");
-          if (!this.runtime.permission(permission, request.decision))
+          const resolution = this.resolution(permission, request.decision, request.answers);
+          if (!this.runtime.permission(permission, request.decision, resolution))
             throw new Error("PERMISSION_EXPIRED");
           this.permissions.delete(request.requestId);
         }
@@ -1036,6 +1036,23 @@ export class RemoteGateway {
         error: error instanceof Error ? error.message : "REQUEST_FAILED",
       };
     }
+  }
+  /** What a phone's decision resolves to; throws when the phone may not make it. */
+  private resolution(
+    permission: PermissionRequestPayload,
+    decision: "allow" | "deny",
+    answers?: Parameters<typeof resolvePrompt>[3],
+  ): RemoteResolution | undefined {
+    const prompt = remotePrompt(permission);
+    if (!prompt) {
+      if (answers) throw new Error("INVALID_ANSWER");
+      if (decision === "allow" && !canApproveRemotely(permission)) throw new Error("DESKTOP_REQUIRED");
+      return undefined;
+    }
+    // A plan approved from the phone must be one the phone could read in full.
+    if (prompt.kind === "plan" && decision === "allow" && planOf(permission, this.plans.get(permission.sessionId)).length > PLAN_LIMIT)
+      throw new Error("DESKTOP_REQUIRED");
+    return resolvePrompt(permission, prompt, decision, answers);
   }
   private async receiveChunk(
     request: { uploadId: string; name: string; index: number; total: number; data: string },
@@ -1084,6 +1101,7 @@ export class RemoteGateway {
       this.live.delete(id);
       for (const [key, value] of this.permissions)
         if (value.sessionId === id) this.permissions.delete(key);
+      this.plans.delete(id);
     }
     if (event.type === "stream.message" && id) {
       const message = p.message;
@@ -1099,6 +1117,11 @@ export class RemoteGateway {
         this.live.set(id, live);
       } else if (message.type === "assistant" && !message.streaming)
         this.live.delete(id);
+      if (message.type === "assistant" && !message.parentToolUseId && Array.isArray(message.message?.content))
+        for (const block of getMessageContentBlocks(message as StreamMessage)) {
+          const tool = normalizeToolUseBlock(block);
+          if (tool?.name === "ExitPlanMode" && typeof tool.input.plan === "string") this.plans.set(id, tool.input.plan);
+        }
     }
     if (event.type === "permission.request" && id) this.notify("approval", id);
     if (event.type === "session.status" && id) {
@@ -1121,6 +1144,7 @@ export class RemoteGateway {
     ) {
       this.runIds.delete(id);
       this.live.delete(id);
+      this.plans.delete(id);
     }
     if (
       event.type.startsWith("session.") ||

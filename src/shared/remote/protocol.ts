@@ -39,6 +39,22 @@ export const EMPTY_HISTORY = "0";
 export const EVENTS_FEATURE = "events";
 /** Upload chunks stay well under the relay's 256 KB message cap. */
 export const ATTACHMENT_CHUNK_BYTES = 96 * 1024;
+/**
+ * A phone's answers to a question request, keyed by question text: option
+ * labels exactly as listed, plus the "Other" text, as the desktop card sends them.
+ */
+export const questionAnswersSchema = z
+  .record(
+    z.string().max(4000),
+    z
+      .object({
+        selected: z.array(z.string().max(1000)).max(50),
+        other: z.string().trim().max(4000).optional(),
+      })
+      .strict(),
+  )
+  .refine((answers) => Object.keys(answers).length <= 20);
+export type RemoteQuestionAnswers = z.infer<typeof questionAnswersSchema>;
 export const requestSchema = z.discriminatedUnion("method", [
   z.object({ id, method: z.literal("ping") }).strict(),
   z
@@ -144,7 +160,10 @@ export const requestSchema = z.discriminatedUnion("method", [
       sessionId: id,
       runId: id,
       requestId: id,
+      /** On a plan: allow approves it, deny keeps planning. */
       decision: z.enum(["allow", "deny"]),
+      /** A question's answers, sent with allow. Only for permissions that carry `questions`. */
+      answers: questionAnswersSchema.optional(),
     })
     .strict(),
 ]);
@@ -272,13 +291,28 @@ export interface RemoteMessage {
    */
   raw?: unknown;
 }
+/** A question the agent asks, as the desktop's question card shows it. */
+export interface RemoteQuestion {
+  question: string;
+  header?: string;
+  options: Array<{ label: string; description?: string }>;
+  multiSelect?: boolean;
+}
 export interface RemotePermission {
   requestId: string;
   sessionId: string;
   runId: string;
   toolName: string;
   detail: string;
+  /** Allow without anything else. False for questions and plans, so older phones send them to the Mac. */
   canApprove: boolean;
+  /**
+   * The agent is asking. Answered with allow plus `answers`; every question
+   * takes its listed options and free "Other" text, as on the desktop.
+   */
+  questions?: RemoteQuestion[];
+  /** A plan to approve (allow) or keep planning on (deny). A truncated plan is approved on the Mac. */
+  plan?: { markdown: string; truncated?: boolean };
 }
 export interface RemoteSnapshot {
   protocol: typeof REMOTE_PROTOCOL;

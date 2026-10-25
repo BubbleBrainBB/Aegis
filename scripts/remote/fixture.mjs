@@ -48,7 +48,7 @@ const sessions = [
     projectId: "project",
     title: "Add sync protocol tests",
     provider: "claude",
-    status: "idle",
+    status: "running",
     updatedAt: Date.now() - 50 * minute,
     runId: null,
   },
@@ -75,7 +75,7 @@ const sessions = [
     projectId: "site",
     title: "Write this week’s release notes",
     provider: "bubble",
-    status: "idle",
+    status: "running",
     updatedAt: Date.now() - 4 * 24 * 60 * minute,
     runId: null,
   },
@@ -149,7 +149,8 @@ const history = {
   ),
   notes: [{ id: "a5", role: "assistant", text: "Release notes drafted in RELEASE_NOTES.md." }],
 };
-let pending = true;
+// Waiting requests by toolUseId: a command approval, a question and a plan.
+const pending = new Set(["check", "ask", "plan"]);
 let gateway;
 const runtime = {
   // "development" lets the Aegis Dev simulator build pair with it.
@@ -198,7 +199,7 @@ const runtime = {
   sessions: () => sessions,
   history: (id) => history[id] || [],
   confirm: async () => true,
-  hasPermission: () => pending,
+  hasPermission: (_id, toolUseId) => pending.has(toolUseId),
   start: async (project, provider, prompt, extras) => {
     console.log("fixture start", provider, JSON.stringify({ settings: extras?.settings, worktree: extras?.worktree, attachments: extras?.attachments?.map((a) => a.name) }));
     const id = crypto.randomUUID();
@@ -258,17 +259,18 @@ const runtime = {
   },
   stop: (id) => {
     sessions.find((s) => s.id === id).status = "idle";
-    pending = false;
     gateway.capture({
       type: "session.status",
       payload: { sessionId: id, status: "idle" },
     });
   },
-  permission: () => {
-    pending = false;
+  // Prints what the desktop would receive, so a phone's answer can be checked.
+  permission: (request, decision, resolution) => {
+    console.log("fixture permission", request.toolName, JSON.stringify(resolution ?? { behavior: decision }));
+    pending.delete(request.toolUseId);
     gateway.capture({
       type: "permission.dismissed",
-      payload: { sessionId: "design", toolUseId: "check" },
+      payload: { sessionId: request.sessionId, toolUseId: request.toolUseId },
     });
     return true;
   },
@@ -294,6 +296,86 @@ gateway.capture({
     toolUseId: "check",
     toolName: "Bash",
     input: { command: "npm run test -- src/auth/redirect.test.ts", cwd: "/fixture/coworker" },
+  },
+});
+// A question (one single-choice, one multi-select) for the Bubble task and a plan
+// for the Claude task, shaped like the desktop's AskUserQuestion and ExitPlanMode requests.
+for (const sessionId of ["tests", "notes"])
+  gateway.capture({ type: "stream.user_prompt", payload: { sessionId, prompt: "test" } });
+gateway.capture({
+  type: "permission.request",
+  payload: {
+    sessionId: "notes",
+    toolUseId: "ask",
+    toolName: "AskUserQuestion",
+    input: {
+      questions: [
+        {
+          header: "Scope",
+          question: "Which changes should the notes cover?",
+          options: [
+            { label: "User-facing only", description: "Features and fixes people will notice" },
+            { label: "Everything merged", description: "Include refactors and tooling" },
+          ],
+        },
+        {
+          header: "Checks",
+          question: "Where should the notes go?",
+          multiSelect: true,
+          options: [{ label: "RELEASE_NOTES.md" }, { label: "GitHub release" }, { label: "Changelog page" }],
+        },
+      ],
+    },
+  },
+});
+gateway.capture({
+  type: "stream.message",
+  payload: {
+    sessionId: "tests",
+    message: {
+      type: "assistant",
+      uuid: "plan-call",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            id: "plan-call",
+            name: "ExitPlanMode",
+            input: {
+              plan: [
+                "## Replay tests for remote commands",
+                "",
+                "1. Add a test that sends the same `create` command twice and checks one task starts.",
+                "2. Cover `send` and `permission` the same way, including a **changed payload** under a reused ID.",
+                "3. Run `npm run verify:remote` and fix anything it finds.",
+                "",
+                "Only test files change; the gateway stays as it is.",
+              ].join("\n"),
+            },
+          },
+        ],
+      },
+    },
+  },
+});
+gateway.capture({
+  type: "permission.request",
+  payload: {
+    sessionId: "tests",
+    toolUseId: "plan",
+    toolName: "ExitPlanMode",
+    input: {
+      questions: [
+        {
+          header: "Plan approval",
+          question: "Approve this plan and let Claude start implementing it?",
+          options: [
+            { label: "Approve and execute", description: "Exit plan mode and continue with implementation." },
+            { label: "Stay in plan mode", description: "Keep planning without executing tools yet." },
+          ],
+        },
+      ],
+    },
   },
 });
 const publish = () => {
