@@ -3902,6 +3902,39 @@ function broadcastAutomationChanged(mainWindow: BrowserWindow): void {
 }
 
 // worktree ↔ local 切换后同步 renderer 的 workspace 字段（cwd/envMode/worktree*）
+/**
+ * After a worktree is applied or discarded: the other conversations that
+ * worked in it (a sub-session sharing its parent's folder, a local fork) move
+ * back to the project with the one that owned it, instead of pointing at a
+ * folder that no longer exists.
+ */
+function moveWorktreeSharersToProject(
+  mainWindow: BrowserWindow,
+  sharers: ReadonlyArray<NonNullable<ReturnType<typeof sessions.getSession>>>,
+  projectCwd: string | null,
+): void {
+  for (const sharer of sharers) {
+    sessions.updateSessionWorkspace(sharer.id, {
+      envMode: 'local',
+      projectCwd: sharer.project_cwd || projectCwd,
+      worktreePath: null,
+      associatedWorktreePath: null,
+      associatedWorktreeBranch: null,
+      associatedWorktreeRef: null,
+    });
+    retireSessionRunner(sharer.id);
+    broadcastSessionWorkspace(mainWindow, sharer.id);
+  }
+}
+
+/** Other conversations working in this worktree. */
+function sessionsSharingWorktree(worktreePath: string | null, excludedSessionId: string) {
+  if (!worktreePath) return [];
+  return sessions
+    .listSessions()
+    .filter((row) => row.id !== excludedSessionId && row.env_mode === 'worktree' && row.worktree_path === worktreePath);
+}
+
 function broadcastSessionWorkspace(mainWindow: BrowserWindow, sessionId: string): void {
   const row = sessions.getSession(sessionId);
   if (!row) return;
@@ -4846,6 +4879,21 @@ function setupWorkflows(mainWindow: BrowserWindow): void {
 
 let followUps: FollowUpService | null = null;
 
+/**
+ * A sub-session in the folder of the session that started it does not own
+ * that worktree: applying or discarding it would take the parent's work too.
+ */
+function sharedWorktreeRefusal(sessionId: string): { ok: false; message: string } | null {
+  const owner = followUps?.sharedWorkspaceOwner(sessionId);
+  if (!owner) return null;
+  const row = sessions.getSession(sessionId);
+  if (row?.env_mode !== 'worktree' || !row.worktree_path) return null;
+  return {
+    ok: false,
+    message: `This conversation shares its worktree with “${owner.title || 'the session that started it'}”. Apply or discard it from there.`,
+  };
+}
+
 /** Turn-end observers: workflow members, and follow-up sessions reporting back to their parent. */
 function settleWorkflowTurn(sessionId: string, status: 'completed' | 'error' | 'stopped', error?: string): void {
   settleWorkflowMemberTurn(sessionId, status, error);
@@ -4873,7 +4921,15 @@ function setupFollowUps(mainWindow: BrowserWindow): void {
     getSession: (sessionId) => {
       const row = sessions.getSession(sessionId);
       return row
-        ? { title: row.title, cwd: row.cwd, provider: row.provider || 'claude', model: row.model ?? null, status: row.status }
+        ? {
+            title: row.title,
+            cwd: row.cwd,
+            provider: row.provider || 'claude',
+            model: row.model ?? null,
+            status: row.status,
+            projectCwd: row.project_cwd ?? null,
+            inWorktree: row.env_mode === 'worktree' && Boolean(row.worktree_path),
+          }
         : null;
     },
     history: (sessionId) => sessions.getSessionHistory(sessionId),
@@ -4902,6 +4958,24 @@ function setupFollowUps(mainWindow: BrowserWindow): void {
       const row = sessions.getSession(parentSessionId);
       return row?.provider === 'claude' || !row?.provider ? row?.claude_access_mode ?? null : null;
     },
+    sharedWorkspace: (parentSessionId) => {
+      const row = sessions.getSession(parentSessionId);
+      if (!row?.cwd) return null;
+      const inWorktree = row.env_mode === 'worktree' && Boolean(row.worktree_path);
+      return {
+        cwd: row.cwd,
+        projectCwd: row.project_cwd ?? null,
+        envMode: inWorktree ? 'worktree' : 'local',
+        ...(inWorktree
+          ? {
+              worktreePath: row.worktree_path,
+              associatedWorktreePath: row.associated_worktree_path ?? row.worktree_path,
+              associatedWorktreeBranch: row.associated_worktree_branch ?? null,
+              associatedWorktreeRef: row.associated_worktree_ref ?? null,
+            }
+          : {}),
+      };
+    },
     provision: (projectCwd, label) => provisionIsolatedWorkspace(projectCwd, label),
     worktreeExists: (worktreePath) => existsSync(worktreePath),
     uncommitted: (cwd) => getShortStatus(cwd),
@@ -4912,6 +4986,7 @@ function setupFollowUps(mainWindow: BrowserWindow): void {
   setFollowUpSessionCheck((sessionId) => service.isFollowUpSession(sessionId));
   setFollowUpToolEntry({
     propose: (callerSessionId, toolUseId, args) => service.propose(callerSessionId, toolUseId, args),
+    startSession: (callerSessionId, toolUseId, args) => service.startSession(callerSessionId, toolUseId, args),
     withdraw: (callerSessionId, proposalId) => service.withdraw(callerSessionId, proposalId),
     history: (sessionId) => sessions.getSessionHistory(sessionId),
   });
@@ -6054,11 +6129,14 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
   });
 
   ipcMainHandle('apply-worktree-changes', async (_event, sessionId: string) => {
+    const shared = sharedWorktreeRefusal(sessionId);
+    if (shared) return shared;
     // Capture before the apply: on success the row's worktree fields are
     // cleared and the directory is force-removed.
     const row = sessions.getSession(sessionId);
     const worktreePath = row?.worktree_path || null;
     const projectCwd = row?.project_cwd || null;
+    const sharers = sessionsSharingWorktree(worktreePath, sessionId);
     // The worktree is force-removed without a reference check — a sibling
     // session running inside it would lose its checkout mid-turn.
     const runningSibling = worktreePath ? findRunningSessionUnderPath(worktreePath, sessionId) : null;
@@ -6070,6 +6148,7 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
     }
     const result = await applyIsolatedWorkspace(sessionId);
     if (result.ok) {
+      moveWorktreeSharersToProject(mainWindow, sharers, projectCwd);
       // The worktree directory is gone and the session moved back to the
       // project folder — retire its kept-alive runner plus any other runner
       // anchored inside the removed checkout.
@@ -6084,7 +6163,11 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
   });
 
   ipcMainHandle('discard-worktree-changes', async (_event, sessionId: string) => {
-    const worktreePath = sessions.getSession(sessionId)?.worktree_path || null;
+    const shared = sharedWorktreeRefusal(sessionId);
+    if (shared) return shared;
+    const discarding = sessions.getSession(sessionId);
+    const worktreePath = discarding?.worktree_path || null;
+    const sharers = sessionsSharingWorktree(worktreePath, sessionId);
     const runningSibling = worktreePath ? findRunningSessionUnderPath(worktreePath, sessionId) : null;
     if (runningSibling) {
       return {
@@ -6094,6 +6177,7 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
     }
     const result = await discardIsolatedWorkspace(sessionId);
     if (result.ok) {
+      moveWorktreeSharersToProject(mainWindow, sharers, discarding?.project_cwd || null);
       // Same as apply: the checkout was force-removed; no live runner may
       // keep the dead cwd. (No project-root flush here — discard does not
       // touch the project checkout's contents.)

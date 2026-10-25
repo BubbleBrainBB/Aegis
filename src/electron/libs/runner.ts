@@ -36,6 +36,7 @@ import { captureGitTreeSnapshot, diffGitTreeSnapshots } from './git-turn-snapsho
 import { createAegisMemoryMcpServer, buildMemoryContext, MEMORY_SYSTEM_PROMPT } from './memory-mcp';
 import { isDelegateExecutionSession } from './delegate-service';
 import { isFollowUpSession } from './follow-up/registry';
+import { isStartSessionToolName } from '../../shared/follow-up';
 import { BROWSER_USE_SERVER_NAME, createBrowserUseMcpServer } from './browser-use-mcp';
 import { setBrowserUseSessionFullAccess } from './browser-use-consent';
 import { isBrowserUseEnabled } from './browser-use-permissions';
@@ -832,6 +833,7 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
         callerSessionId: session.id,
         workflows: offersWorkflows,
         followUps: offersWorkflows && !isFollowUpSession(session.id),
+        subSessions: offersWorkflows,
       });
       if (workflowPolicy?.readOnly) {
         for (const name of Object.keys(mcpServers)) delete (mcpServers as Record<string, unknown>)[name];
@@ -1036,6 +1038,13 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
             // anything that needs it (unrequested members, commands).
             if (isStartWorkflowToolName(toolName)) {
               return { behavior: 'allow' as const, updatedInput: input };
+            }
+            // The user asked for the session in words; the service refuses a
+            // request that did not come from them. Not while planning.
+            if (isStartSessionToolName(toolName)) {
+              return currentPermissionMode === 'plan'
+                ? { behavior: 'deny' as const, message: 'This session is in plan mode. Start the session once the plan is approved.' }
+                : { behavior: 'allow' as const, updatedInput: input };
             }
             // A widget only draws in the chat: nothing to approve, plan mode included.
             if (isShowWidgetToolName(toolName) || isWidgetGuideToolName(toolName)) {

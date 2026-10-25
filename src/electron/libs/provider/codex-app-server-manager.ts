@@ -5,7 +5,7 @@ import { materializeGoalObjective, readGoalObjective } from '../codex-goal-objec
 import { normalizeCodexReasoningEffort } from '../../../shared/codex-reasoning';
 import { validateGoalAction, type GoalAction, type ThreadGoal } from '../../../shared/session-goal';
 import { getSessionProjectSources } from '../session-store';
-import { getSessionReaderCodexArgs, SESSION_TOKEN_ENV_VAR } from '../session-http-server';
+import { getSessionReaderCodexArgs, SESSION_CALLER_ENV_VAR, SESSION_TOKEN_ENV_VAR } from '../session-http-server';
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import { EventEmitter } from 'events';
 import { existsSync, promises as fsPromises, readFileSync } from 'fs';
@@ -271,6 +271,20 @@ const TURN_TIMEOUT_MS = envTimeout('AEGIS_CODEX_TURN_TIMEOUT_MS', 300_000);
 // unconfirmed (P0-6).
 const STOP_CONFIRM_TIMEOUT_MS = envTimeout('AEGIS_CODEX_STOP_CONFIRM_TIMEOUT_MS', 10_000);
 const PROCESS_STOP_TIMEOUT_MS = envTimeout('AEGIS_CODEX_PROCESS_STOP_TIMEOUT_MS', 2_000);
+// config/read before thread/start; a slow answer must not hold up the thread.
+const CONFIG_READ_TIMEOUT_MS = envTimeout('AEGIS_CODEX_CONFIG_READ_TIMEOUT_MS', 5_000);
+
+/**
+ * Thread-level developer message for every new Aegis thread. Codex leaves MCP
+ * tools out of the prompt (code mode lists them only in ALL_TOOLS) while its
+ * own imagegen skill is listed and image_gen is a built-in tool, so "draw a
+ * mockup" went to imagegen instead of the Aegis design canvas.
+ */
+const CODEX_DESIGN_CANVAS_INSTRUCTIONS =
+  'Aegis provides a design canvas through its aegis-sessions tools (design_guide, design_create, design_update, design_preview and the other design_* tools). ' +
+  'When the user asks for a design, mockup, wireframe, UI screen, prototype or 设计稿, draw it on that canvas, starting with design_guide. ' +
+  'These tools may be left out of the tool description; they are still on the `tools` object, so find them by filtering ALL_TOOLS for names containing "design_". ' +
+  'Use imagegen / image_gen only when the user explicitly wants a generated bitmap image such as a photo, illustration or texture, not for UI design.';
 
 function resolveSkillsDiscoveryCwd(cwd: string | undefined): string {
   const trimmed = cwd?.trim();
@@ -353,11 +367,21 @@ export class CodexAppServerManager extends EventEmitter {
   private lastAuthRefreshAnswer: { accessToken: string; at: number } | null = null;
   private computerUsePolicy: ComputerUseSpawnPolicy = 'mutating';
 
+  /**
+   * The Aegis session this app-server serves (one per thread runtime). Its
+   * aegis-sessions entry then names that session, so design calls are bound
+   * to it instead of being matched against running sessions' histories.
+   * Unset for the shared catalog manager.
+   */
+  private readonly callerSessionId: string | undefined;
+
   constructor(
     private readonly binaryPath = 'codex',
-    private readonly clientVersion = '0.0.0'
+    private readonly clientVersion = '0.0.0',
+    options: { callerSessionId?: string } = {}
   ) {
     super();
+    this.callerSessionId = options.callerSessionId;
   }
 
   // ── Lifecycle ────────────────────────────────────────────────────────────
@@ -387,10 +411,14 @@ export class CodexAppServerManager extends EventEmitter {
     // managers can start while it binds; they must not alter this launch.
     const launchEnv = { ...process.env };
     const configArgs = buildCodexMcpConfigOverrideArgs({ computerUsePolicy: this.computerUsePolicy });
-    const readerArgs = await getSessionReaderCodexArgs();
+    const reader = await getSessionReaderCodexArgs(this.callerSessionId);
+    const readerArgs = reader.args;
     recordSpawnDefinedMcpServers([...configArgs, ...readerArgs]);
     if (epoch !== this.lifecycleEpoch || signal?.aborted) throw new CodexRpcTransportError('stopped', 'initialize');
     launchEnv[SESSION_TOKEN_ENV_VAR] = process.env[SESSION_TOKEN_ENV_VAR];
+    // Only this runtime's own caller value, never one inherited from Aegis's environment.
+    delete launchEnv[SESSION_CALLER_ENV_VAR];
+    Object.assign(launchEnv, reader.env);
 
     const child = spawn(
       this.binaryPath,
@@ -1231,11 +1259,14 @@ export class CodexAppServerManager extends EventEmitter {
     options: CodexRunOptions = {}
   ): Promise<Record<string, unknown>> {
     if (options.workflowReadOnly) await this.learnMcpServerNames();
+    // Read-only workflow steps run without aegis-sessions, so no canvas to point at.
+    const developerInstructions = options.workflowReadOnly ? undefined : await this.threadDeveloperInstructions(cwd);
     return (await this.sendRequest(
       'thread/start',
       {
         cwd,
         ...(options.model ? { model: options.model } : {}),
+        ...(developerInstructions ? { developerInstructions } : {}),
         ...this.buildThreadPermissionOptions(
           cwd,
           options.codexPermissionMode,
@@ -1245,6 +1276,31 @@ export class CodexAppServerManager extends EventEmitter {
       },
       REQUEST_TIMEOUT_MS
     )) as Record<string, unknown>;
+  }
+
+  /**
+   * developerInstructions for thread/start: the configured
+   * developer_instructions (config.toml and project layers) plus the canvas
+   * note. The parameter replaces the configured value rather than adding to
+   * it, so the configured one is read back first; when it cannot be read the
+   * thread starts without the note instead of dropping the user's own.
+   * Only new threads get it: thread/resume keeps the developer message from
+   * the rollout and ignores the parameter, and thread/fork copies the source
+   * rollout (checked against codex-cli 0.162.1). A Codex without config/read
+   * gets no note: reading config.toml here would miss profile and project layers.
+   */
+  private async threadDeveloperInstructions(cwd: string): Promise<string | undefined> {
+    let configured: string | null;
+    try {
+      const result = await this.sendRequest<unknown>('config/read', { includeLayers: false, cwd }, CONFIG_READ_TIMEOUT_MS);
+      configured = this.readString(this.asObject(this.asObject(result)?.config), 'developer_instructions');
+    } catch (error) {
+      if (isDev()) {
+        console.log('[Codex AppServer] config/read failed, starting thread without the canvas note:', error instanceof Error ? error.message : String(error));
+      }
+      return undefined;
+    }
+    return [configured?.trim(), CODEX_DESIGN_CANVAS_INSTRUCTIONS].filter(Boolean).join('\n\n');
   }
 
   /** True while the thread has a live turn we could steer instead of starting a new one. */

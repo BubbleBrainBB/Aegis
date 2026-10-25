@@ -194,19 +194,19 @@ app.whenReady().then(async()=>{
   store.addMessage(devin.id,result({model:'swe-2-high',costSource:'unavailable',usage:{input_tokens:500,output_tokens:5}}));
   store.addMessage(devin.id,result({model:'claude-opus-5-5-medium',modelLabel:'Claude Opus 5.5',thoughtLevel:'high',thoughtLevelLabel:'High',costSource:'unavailable',usage:{input_tokens:2000,output_tokens:20}}));
   store.addMessage(devin.id,result({model:'claude-opus-5-5-medium',modelLabel:'Claude Opus 5.5',thoughtLevel:'xhigh',thoughtLevelLabel:'XHigh',costSource:'unavailable',usage:{input_tokens:300,output_tokens:3}}));
-  // No catalog names recorded: the id stays whole (no suffix guessing) and the level reads as in the composer.
+  // "max" ends a model name, not a level suffix: the level is appended.
   store.addMessage(devin.id,result({model:'gpt-5.1-codex-max',thoughtLevel:'xhigh',costSource:'unavailable',usage:{input_tokens:40,output_tokens:1}}));
-  // A model without thinking control still shows its catalog name.
+  // A model without thinking control keeps its id, not its catalog name.
   store.addMessage(devin.id,result({model:'swe-2-medium',modelLabel:'SWE-2 Medium',costSource:'unavailable',usage:{input_tokens:20,output_tokens:1}}));
   // Malformed stored fields neither throw nor leak into the label.
-  store.addMessage(devin.id,result({model:'swe-2-medium',modelLabel:42,thoughtLevel:'high',thoughtLevelLabel:{},costSource:'unavailable',usage:{input_tokens:5,output_tokens:0}}));
+  store.addMessage(devin.id,result({model:'swe-2-medium',modelLabel:42,thoughtLevel:' Low ',thoughtLevelLabel:{},costSource:'unavailable',usage:{input_tokens:5,output_tokens:0}}));
   const devinModels=store.getAgentUsageReport('devin',365).models;
-  assert.deepEqual(devinModels.map(m=>m.model).sort(),['Claude Opus 5.5 · High','Claude Opus 5.5 · XHigh','SWE-2 Medium','claude-opus-5-5-medium','gpt-5.1-codex-max · Xhigh','swe-2-high','swe-2-medium · High'],'Devin rows keep their Claude name and split by recorded thinking level');
-  assert.equal(devinModels.find(m=>m.model==='Claude Opus 5.5 · High').inputTokens,2000);
+  assert.deepEqual(devinModels.map(m=>m.model).sort(),['claude-opus-5-5-high','claude-opus-5-5-medium','claude-opus-5-5-xhigh','gpt-5.1-codex-max-xhigh','swe-2-high','swe-2-low','swe-2-medium'],'Devin rows keep their Claude id and split by recorded thinking level');
+  assert.equal(devinModels.find(m=>m.model==='claude-opus-5-5-high').inputTokens,2000);
   // A row without a model id stays under the provider label, undecorated.
   const devinBare=store.createSession({provider:'devin',cwd:temp,title:'Devin without a model'});
   store.addMessage(devinBare.id,result({thoughtLevel:'high',costSource:'unavailable',usage:{input_tokens:7,output_tokens:0}}));
-  assert(store.getAgentUsageReport('devin',365).models.some(m=>m.model==='Devin'),'no "Devin · High"');
+  assert(store.getAgentUsageReport('devin',365).models.some(m=>m.model==='Devin'),'no "Devin-high"');
   // Pricing uses the model id, not the label: a level does not change a row's price or coverage.
   const devinPriced=store.createSession({provider:'devin',model:'claude-opus-4-7',cwd:temp,title:'Devin priced'});
   const pricedUsage={input_tokens:1000000,output_tokens:10000};
@@ -218,6 +218,24 @@ app.whenReady().then(async()=>{
   assert(plain.totals.totalCostUsd>before.totals.totalCostUsd,'the Devin id is priced');
   near(leveled.totals.totalCostUsd-plain.totals.totalCostUsd,plain.totals.totalCostUsd-before.totals.totalCostUsd);
   assert.equal(leveled.costMode,plain.costMode,'the level does not change cost coverage');
+  // Devin bills in agent messages (quota plans) and credits (credit plans), per model and day.
+  assert.deepEqual(leveled.billing,{agentMessages:0,credits:0},'rows recorded before billing count as nothing billed');
+  const devinBilled=store.createSession({provider:'devin',model:'swe-2-high',cwd:temp,title:'Devin billed'});
+  store.addMessage(devinBilled.id,result({model:'swe-2-high',costSource:'unavailable',devinBilling:{agentMessages:3,credits:0},usage:{input_tokens:10,output_tokens:1}}));
+  store.addMessage(devinBilled.id,result({model:'swe-2-high',costSource:'unavailable',devinBilling:{agentMessages:2,credits:0},usage:{input_tokens:10,output_tokens:1}}));
+  store.addMessage(devinBilled.id,result({model:'claude-opus-5-5-medium',thoughtLevel:'high',costSource:'unavailable',devinBilling:{agentMessages:1,credits:1.25},usage:{input_tokens:10,output_tokens:1}}));
+  store.addMessage(devinBilled.id,result({model:'swe-2-high',costSource:'unavailable',devinBilling:{agentMessages:'x',credits:null},usage:{input_tokens:1,output_tokens:0}}));
+  // A turn that failed after billing: messages, no tokens.
+  store.addMessage(devinBilled.id,result({model:'adaptive',subtype:'error',costSource:'unavailable',devinBilling:{agentMessages:1,credits:0},usage:{input_tokens:0,output_tokens:0}}));
+  const devinReport=store.getAgentUsageReport('devin',365);
+  assert.deepEqual(devinReport.billing,{agentMessages:7,credits:1.25},'billing totals add up; malformed values count as zero');
+  assert.equal(devinReport.models.find(m=>m.model==='swe-2-high').agentMessages,5);
+  assert.equal(devinReport.models.find(m=>m.model==='claude-opus-5-5-high').credits,1.25,'billing goes under the leveled model label');
+  assert.equal(devinReport.models.find(m=>m.model==='adaptive').agentMessages,1,'a zero-token billed turn still counts');
+  const devinToday=devinReport.daily.at(-1);
+  assert.deepEqual(devinToday.byModelAgentMessages,{'swe-2-high':5,'claude-opus-5-5-high':1,adaptive:1});
+  assert.deepEqual(devinToday.byModelCredits,{'swe-2-high':0,'claude-opus-5-5-high':1.25,adaptive:0});
+  assert.equal(store.getAgentUsageReport('minimax',365).billing,undefined,'other agents carry no Devin billing');
   const grok=store.createSession({provider:'grok',model:'claude-sonnet-4-6',cwd:temp,title:'Grok under an alias'});
   store.addMessage(grok.id,result({model:'claude-sonnet-4-6',costSource:'unavailable',usage:{input_tokens:100,output_tokens:1}}));
   const grokModels=store.getAgentUsageReport('grok',365).models.map(m=>m.model);
@@ -261,6 +279,32 @@ app.whenReady().then(async()=>{
   assert(await js(oneLine),'Estimated cost fits on one line');await shot('minimax-estimated');
   await load(current);await until('document.body.innerText.includes("API equivalent cost")');assert(await js(oneLine),'API equivalent cost fits on one line');
   await load(mixed);await until('document.body.innerText.includes("Priced usage only")');assert(await js(oneLine),'Priced usage only fits on one line');
+  // Devin: messages and credits replace the cost columns; a By day table splits them by model.
+  await load(devinReport,'devin');await until('!!document.querySelector("[data-usage-daily-billing]")');
+  copy=await js('document.body.innerText');
+  assert(copy.includes('7 agent messages · 1.25 credits'),'headline shows billed totals');
+  assert(!copy.includes('Estimated cost')&&!copy.includes('Per 1M'),'no USD cost columns for Devin');
+  assert.equal(await js('document.querySelector("[data-usage-model-row=\\"swe-2-high\\"] [data-usage-messages]").textContent'),'5');
+  assert.equal(await js('document.querySelector("[data-usage-model-row=\\"claude-opus-5-5-high\\"] [data-usage-credits]").textContent'),'1.25');
+  assert.equal(await js('document.querySelector("[data-usage-model-row=\\"swe-2-high\\"] [data-usage-credits]").textContent'),'—','no credits reads as a dash, not 0');
+  const dayRows=await js('Array.from(document.querySelectorAll("[data-usage-day-row]")).map(r=>Array.from(r.querySelectorAll("[data-usage-day-model]")).map(m=>m.dataset.usageDayModel+" "+m.innerText.trim().replace(/\\s+/g," ")))');
+  assert.equal(dayRows.length,1,'only days with billed messages are listed');
+  assert.deepEqual(dayRows[0],['swe-2-high swe-2-high 5','claude-opus-5-5-high claude-opus-5-5-high 1 · 1.25 credits','adaptive adaptive 1'],'busiest model first');
+  await js('Array.from(document.querySelectorAll("[data-usage-model-row=\\"others\\"] button")).forEach(b=>b.click())');
+  assert.equal(await js('document.querySelector("[data-usage-model-row=\\"adaptive\\"] [data-usage-messages]")?.textContent'),'1','a billed model without tokens stays in the ledger');
+  await shot('devin-billing');
+  // Only billed, zero-token turns in the year: the report still shows instead of hiding.
+  const billedOnly={...devinReport,totals:{...devinReport.totals,totalTokens:0,inputTokens:0,outputTokens:0,sessionCount:1},billing:{agentMessages:2,credits:0},
+    models:[{model:'adaptive',inputTokens:0,outputTokens:0,totalTokens:0,totalCostUsd:0,sessionCount:1,cacheReadTokens:0,agentMessages:2,credits:0}],
+    daily:devinReport.daily.map((d,i,all)=>({date:d.date,totalTokens:0,byModel:{},byModelCostUsd:{},byModelAgentMessages:i===all.length-1?{adaptive:2}:{},byModelCredits:i===all.length-1?{adaptive:0}:{}}))};
+  await load(billedOnly,'devin');await until('document.body.innerText.includes("2 agent messages")');
+  copy=await js('document.body.innerText');
+  assert(!copy.includes('No usage recorded in the last year'),'billed-only usage is not reported as empty');
+  assert(await js('!!document.querySelector("[data-usage-range]")'),'the range switch stays');
+  assert.equal(await js('document.querySelector("[data-usage-model-row=\\"adaptive\\"] [data-usage-messages]")?.textContent'),'2');
+  assert.equal(await js('document.querySelectorAll("[data-usage-day-row]").length'),1);
+  await load({...devinReport,billing:{agentMessages:0,credits:0},daily:devinReport.daily.map(d=>({...d,byModelAgentMessages:{},byModelCredits:{}}))},'devin');
+  await until('document.body.innerText.includes("No billed messages recorded in this range")');
   assert.deepEqual(errors,[]);store.close();db.close();
   console.log('codex-usage-cost: persisted rollouts, mixed/unknown/known/empty/range coverage, cache and Electron UI passed');app.exit(0);
  }catch(error){console.error(error);store?.close();db?.close();app.exit(1)}

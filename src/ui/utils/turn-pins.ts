@@ -1,4 +1,5 @@
 import { isStartWorkflowToolName } from '../../shared/workflow';
+import { isStartSessionToolName } from '../../shared/follow-up';
 import { isShowWidgetToolName, widgetFromToolInput } from '../../shared/widget';
 import type { WorkstreamEntry } from './workstream';
 import { stripLeakedContextTags } from './leaked-context-tags';
@@ -20,8 +21,9 @@ export function isRejectedWidget(entry: WidgetEntry): boolean {
   return entry.status === 'error' || entry.result?.is_error === true;
 }
 
+/** A start_workflow board or a start_session row: part of the answer, kept outside a collapsed trace. */
 export function isWorkflowEntry(entry: WorkstreamEntry): entry is TaskEntry {
-  return entry.type === 'task' && isStartWorkflowToolName(entry.toolName);
+  return entry.type === 'task' && (isStartWorkflowToolName(entry.toolName) || isStartSessionToolName(entry.toolName));
 }
 
 function hasVisibleText(entry: NoteEntry): boolean {

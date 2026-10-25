@@ -9,6 +9,7 @@ import type { SessionMenuAction, SessionMenuItem } from '../../shared/session-me
 
 import { textInputDialog } from '../components/ui/text-input-dialog';
 import { useSessionOrganization, changeSessionOrganization } from '../store/useSessionOrganizationStore';
+import { findProposalForChild, nestedSessionIds, subSessionParents, useFollowUpStore } from '../store/useFollowUpStore';
 import type { EnvironmentEditorLauncher } from '../../shared/types';
 
 let launcherRequest: Promise<EnvironmentEditorLauncher[]> | undefined;
@@ -82,8 +83,30 @@ export function useSessionActionsMenu(session: SessionView) {
     })();
   };
 
+  // Other conversations working in this worktree: they move back to the project with it.
+  const worktreeSharers = () =>
+    session.worktreePath
+      ? Object.values(useAppStore.getState().sessions).filter(
+          other => other.id !== session.id && !other.isDraft && other.envMode === 'worktree' && other.worktreePath === session.worktreePath,
+        )
+      : [];
+  const sharersNote = (sharers: SessionView[], what: string) => {
+    if (!sharers.length) return '';
+    const names = sharers.slice(0, 3).map(other => `“${other.title}”`).join(', ') + (sharers.length > 3 ? ` and ${sharers.length - 3} more` : '');
+    return ` ${names} also ${sharers.length === 1 ? 'works' : 'work'} in this worktree: ${what}`;
+  };
+
   const handleApplyWorktree = () => {
     void (async () => {
+      const sharers = worktreeSharers();
+      if (sharers.length) {
+        const confirmed = await confirmDialog({
+          title: 'Squash-merge this worktree into the project?',
+          description: `The worktree is removed afterwards.${sharersNote(sharers, `${sharers.length === 1 ? 'its' : 'their'} changes are merged too, and ${sharers.length === 1 ? 'it moves' : 'they move'} back to the project.`)}`,
+          confirmLabel: 'Squash-merge',
+        });
+        if (!confirmed) return;
+      }
       setWorktreeAction('apply');
       const toastId = toast.loading('Squash-merging worktree changes into the project…');
       try {
@@ -108,9 +131,10 @@ export function useSessionActionsMenu(session: SessionView) {
     window.setTimeout(() => {
       const branchName = session.associatedWorktreeBranch;
       void (async () => {
+        const sharers = worktreeSharers();
         const confirmed = await confirmDialog({
           title: branchName ? `Remove this worktree and branch ${branchName}?` : 'Remove this worktree?',
-          description: 'All uncommitted changes in it are lost. The conversation stays.',
+          description: `All uncommitted changes in it are lost. The conversation stays.${sharersNote(sharers, `${sharers.length === 1 ? 'its' : 'their'} changes are lost too, and ${sharers.length === 1 ? 'it moves' : 'they move'} back to the project.`)}`,
           confirmLabel: 'Remove worktree',
         });
         if (!confirmed) {
@@ -150,11 +174,15 @@ export function useSessionActionsMenu(session: SessionView) {
   };
 
   const editable = !session.isDraft;
+  const nestedParentId = useFollowUpStore(s => subSessionParents(s.proposals).get(session.id) ?? null);
+  // A sub-session in its parent's worktree: the worktree is the parent's to apply or discard.
+  const sharesParentWorktree = useFollowUpStore(s => findProposalForChild(s.proposals, session.id)?.place === 'shared') && inWorktree;
   const items: SessionMenuItem[] = [
     { id: 'rename', label: 'Rename…', icon: 'rename', enabled: session.source !== 'claude_remote' },
     { id: 'pin', label: session.pinned ? 'Unpin' : 'Pin', icon: 'pin' },
     { id: 'unread', label: metadata?.unread || session.runtimeNotice ? 'Mark as read' : 'Mark as unread', icon: 'unread', enabled: editable },
     { id: 'archive', label: metadata?.archived ? 'Unarchive' : 'Archive', icon: 'archive', enabled: editable && session.status !== 'running' },
+    ...(nestedParentId ? [{ id: 'detach' as const, label: 'Detach from parent', icon: 'fork' as const }] : []),
     { type: 'separator' },
     { label: 'Project', icon: 'folder', enabled: editable && session.source !== 'claude_remote' && canChangeWorktree && !inWorktree, submenu: [
       ...projects.map((cwd, i): SessionMenuItem => ({ id: `project:${i}`, label: cwd.length > 115 ? '…' + cwd.slice(-114) : cwd, icon: 'folder', checked: cwd === projectIdentity(session.projectCwd || session.cwd || '') })),
@@ -187,8 +215,8 @@ export function useSessionActionsMenu(session: SessionView) {
     { id: 'open-window', label: 'Open in new window', icon: 'window', enabled: editable },
     { label: 'Worktree', icon: 'worktree', submenu: inWorktree ? [
       { id: 'new-worktree-thread', label: 'New thread in this worktree', icon: 'worktree', enabled: !worktreeAction },
-      { id: 'apply-worktree', label: 'Squash-merge back into project', icon: 'apply', enabled: canChangeWorktree },
-      { id: 'discard-worktree', label: 'Discard worktree…', icon: 'trash', enabled: canChangeWorktree },
+      { id: 'apply-worktree', label: 'Squash-merge back into project', icon: 'apply', enabled: canChangeWorktree && !sharesParentWorktree },
+      { id: 'discard-worktree', label: 'Discard worktree…', icon: 'trash', enabled: canChangeWorktree && !sharesParentWorktree },
     ] : [
       { id: 'move-worktree', label: worktreeAction === 'move' ? 'Moving into a new worktree…' : 'Move into a new worktree', icon: 'worktree', enabled: canChangeWorktree },
     ] },
@@ -250,10 +278,33 @@ export function useSessionActionsMenu(session: SessionView) {
         useAppStore.setState(s => ({ sessions: { ...s.sessions, [session.id]: { ...s.sessions[session.id], runtimeNotice: undefined } } }));
         break;
       }
-      case 'archive':
-        await changeSessionOrganization({ kind: 'archive', sessionId: session.id, archived: !metadata?.archived });
-        if (!metadata?.archived && useAppStore.getState().activeSessionId === session.id) useAppStore.getState().setShowNewSession(true);
+      case 'archive': {
+        const archived = !metadata?.archived;
+        // Sub-sessions nested under this one follow it in and out of the archive.
+        const nested = nestedSessionIds(subSessionParents(useFollowUpStore.getState().proposals), session.id)
+          .filter(id => sessions[id] && Boolean(organization.sessions[id]?.archived) !== archived);
+        if (archived && nested.length) {
+          const running = nested.filter(id => sessions[id]?.status === 'running');
+          if (running.length) {
+            const names = running.map(id => `“${sessions[id].title}”`).join(', ');
+            const confirmed = await confirmDialog({
+              title: `Archive “${session.title}” and its ${nested.length} sub-session${nested.length === 1 ? '' : 's'}?`,
+              description: `${names} ${running.length === 1 ? 'is' : 'are'} still running and will be stopped. Changes in worktrees are kept.`,
+              confirmLabel: 'Archive all',
+            });
+            if (!confirmed) break;
+            for (const id of running) sendEvent({ type: 'session.stop', payload: { sessionId: id } });
+          }
+        }
+        for (const id of [session.id, ...nested]) await changeSessionOrganization({ kind: 'archive', sessionId: id, archived });
+        if (archived && useAppStore.getState().activeSessionId === session.id) useAppStore.getState().setShowNewSession(true);
         break;
+      }
+      case 'detach': {
+        const result = await useFollowUpStore.getState().detach(session.id);
+        if (!result.ok && result.error) toast.error(result.error);
+        break;
+      }
       case 'section-new': {
         const name = await textInputDialog({ title: 'New section', label: 'Section name', maxLength: 80 });
         if (name) await changeSessionOrganization({ kind: 'create-section', sessionId: session.id, name });

@@ -85,7 +85,7 @@ export function GeneralSettingsContent() {
       <SettingsRow variant="card" label="Prevent sleep while running" description="Keep your computer awake while Aegis runs a task.">{toggle('preventSleep', 'Prevent sleep while running')}</SettingsRow>
     </SettingsGroup>
     <SettingsGroup title="Composer">
-      <SettingsRow variant="card" label="Plain text input" description="Keep links as literal text while writing messages.">{toggle('plainTextComposer', 'Plain text input')}</SettingsRow>
+      <SettingsRow variant="card" label="Plain text input" description="Keep links and Markdown as literal text while writing messages.">{toggle('plainTextComposer', 'Plain text input')}</SettingsRow>
       <SettingsRow variant="card" label="Show context usage">{toggle('showContextUsage', 'Show context usage')}</SettingsRow>
       <SettingsRow variant="card" label="Send with">
         <PreferenceSelect label="Send with" value={preferences.enterBehavior} disabled={disabled} onChange={value => void save({ enterBehavior: value as AppPreferences['enterBehavior'] })} options={[

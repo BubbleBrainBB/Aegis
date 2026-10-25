@@ -141,7 +141,7 @@ export function ClaudeUsageSettingsContent() {
           : activeProvider === 'qoder' ? qoderPlanLimits(qoderPlanUsage, qoderPlanUsageLoading, qoderPlanUsageError)
             : null;
   const tokenReportHidden = Boolean(
-    activeReport && activeReport.totals.totalTokens <= 0 && activeReport.totals.sessionCount > 0
+    activeReport && activeReport.totals.totalTokens <= 0 && activeReport.totals.sessionCount > 0 && !hasBilledUsage(activeReport)
   );
 
   return (
@@ -174,9 +174,16 @@ export function ClaudeUsageSettingsContent() {
                   {formatCompactNumber(ledgerTotalTokens(rangeReport!))}
                 </span>
                 <span className="text-[17px] font-medium text-[var(--text-secondary)]">tokens</span>
+                {rangeReport!.billing ? (
+                  <span className="ml-2 text-[13px] text-[var(--text-muted)]" data-usage-billing-total>
+                    {formatBillingSummary(rangeReport!.billing.agentMessages, rangeReport!.billing.credits)}
+                  </span>
+                ) : null}
               </div>
 
               <ModelLedger report={rangeReport!} yearDaily={activeReport!.daily} />
+
+              {rangeReport!.billing ? <DailyBillingSection report={rangeReport!} /> : null}
 
               <TokenActivitySection daily={activeReport!.daily} stats={stats!} />
             </>
@@ -423,6 +430,9 @@ type LedgerRow = {
   sessions: number | null;
   cacheHit: number | null;
   models: string[];
+  /** Devin: billed agent messages and credits. */
+  messages: number;
+  credits: number;
 };
 
 /**
@@ -436,7 +446,7 @@ function ModelLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDai
   const costKnown = report.costMode !== 'unavailable';
   const unpriced = new Set(report.costCoverage?.unpricedModels ?? []);
   const models = [...report.models]
-    .filter((model) => model.totalTokens > 0 || model.totalCostUsd > 0)
+    .filter((model) => model.totalTokens > 0 || model.totalCostUsd > 0 || (model.agentMessages ?? 0) > 0 || (model.credits ?? 0) > 0)
     .sort((a, b) => b.totalTokens - a.totalTokens);
   // Shares and the total row add up the rows themselves, so they always reach 100%.
   const totalTokens = ledgerTotalTokens(report);
@@ -448,6 +458,8 @@ function ModelLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDai
     sessions: model.sessionCount,
     cacheHit: model.inputTokens + model.cacheReadTokens > 0 ? model.cacheReadTokens / (model.inputTokens + model.cacheReadTokens) : null,
     models: [model.model],
+    messages: model.agentMessages ?? 0,
+    credits: model.credits ?? 0,
   });
   const visible = models.length > LEDGER_VISIBLE_MODELS + 1 ? models.slice(0, LEDGER_VISIBLE_MODELS) : models;
   const rest = models.slice(visible.length);
@@ -463,8 +475,12 @@ function ModelLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDai
           return input > 0 ? rest.reduce((sum, model) => sum + model.cacheReadTokens, 0) / input : null;
         })(),
         models: rest.map((model) => model.model),
+        messages: rest.reduce((sum, model) => sum + (model.agentMessages ?? 0), 0),
+        credits: rest.reduce((sum, model) => sum + (model.credits ?? 0), 0),
       }
     : null;
+  // Devin bills in agent messages and credits, not USD: those replace the cost columns.
+  const billing = report.billing;
   const trendLabel = report.rangeDays <= 30 ? `Last ${report.rangeDays} days` : 'Last 13 weeks';
   const used = (row: LedgerRow) => (point: ClaudeUsageDailyPoint) => row.models.some((model) => (point.byModel[model] ?? 0) > 0);
   const tokensOf = (row: LedgerRow) => (point: ClaudeUsageDailyPoint) => row.models.reduce((sum, model) => sum + (point.byModel[model] ?? 0), 0);
@@ -500,8 +516,17 @@ function ModelLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDai
         </div>
       </td>
       <td className={`${cell} text-right text-[var(--text-secondary)]`}>{totalTokens > 0 ? `${Math.round((row.tokens / totalTokens) * 100)}%` : '—'}</td>
-      <td className={`${cell} text-right text-[var(--text-primary)]`}>{row.cost === null ? '—' : formatCurrency(row.cost, estimated)}</td>
-      <td className={`${cell} text-right text-[var(--text-secondary)]`}>{row.cost && row.tokens > 0 ? formatPerMillion((row.cost / row.tokens) * 1_000_000) : '—'}</td>
+      {billing ? (
+        <>
+          <td className={`${cell} text-right text-[var(--text-primary)]`} data-usage-messages>{formatBillingCount(row.messages)}</td>
+          <td className={`${cell} text-right text-[var(--text-secondary)]`} data-usage-credits>{formatBillingCount(row.credits)}</td>
+        </>
+      ) : (
+        <>
+          <td className={`${cell} text-right text-[var(--text-primary)]`}>{row.cost === null ? '—' : formatCurrency(row.cost, estimated)}</td>
+          <td className={`${cell} text-right text-[var(--text-secondary)]`}>{row.cost && row.tokens > 0 ? formatPerMillion((row.cost / row.tokens) * 1_000_000) : '—'}</td>
+        </>
+      )}
       <td className={`${cell} text-right text-[var(--text-secondary)]`}>{row.sessions === null ? '—' : row.sessions.toLocaleString('en-US')}</td>
       <td className={`${cell} text-right text-[var(--text-secondary)]`}>{row.cacheHit === null ? '—' : formatPercent(row.cacheHit)}</td>
       <td className={cell}>{kind === 'others' ? null : <Sparkline values={trendSeries(yearDaily, report.rangeDays, tokensOf(row))} />}</td>
@@ -534,8 +559,17 @@ function ModelLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDai
                 <th className={`${header} text-left`}>Model</th>
                 <th className={`${header} text-right`}>Tokens</th>
                 <th className={`${header} text-right`}>Share</th>
-                <th className={`${header} whitespace-nowrap text-right`} data-usage-cost-label title={report.note}>{costColumnLabel(report)}</th>
-                <th className={`${header} text-right`}>Per 1M</th>
+                {billing ? (
+                  <>
+                    <th className={`${header} text-right`} title="Agent messages Devin billed">Messages</th>
+                    <th className={`${header} text-right`} title="Credits Devin billed (credit-billed accounts only)">Credits</th>
+                  </>
+                ) : (
+                  <>
+                    <th className={`${header} whitespace-nowrap text-right`} data-usage-cost-label title={report.note}>{costColumnLabel(report)}</th>
+                    <th className={`${header} text-right`}>Per 1M</th>
+                  </>
+                )}
                 <th className={`${header} text-right`}>Sessions</th>
                 <th className={`${header} text-right`}>Cache hit</th>
                 <th className={`${header} text-left`}>{trendLabel}</th>
@@ -552,8 +586,17 @@ function ModelLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDai
                 <td className={cell}>Total</td>
                 <td className={`${cell} text-right`}>{formatCompactNumber(totalTokens)}</td>
                 <td className={`${cell} text-right`}>100%</td>
-                <td className={`${cell} text-right`}>{costKnown ? formatCurrency(report.totals.totalCostUsd, estimated) : 'Unavailable'}</td>
-                <td className={`${cell} text-right`}>{costKnown && report.totals.totalCostUsd > 0 && totalTokens > 0 ? formatPerMillion((report.totals.totalCostUsd / totalTokens) * 1_000_000) : '—'}</td>
+                {billing ? (
+                  <>
+                    <td className={`${cell} text-right`}>{formatBillingCount(billing.agentMessages)}</td>
+                    <td className={`${cell} text-right`}>{formatBillingCount(billing.credits)}</td>
+                  </>
+                ) : (
+                  <>
+                    <td className={`${cell} text-right`}>{costKnown ? formatCurrency(report.totals.totalCostUsd, estimated) : 'Unavailable'}</td>
+                    <td className={`${cell} text-right`}>{costKnown && report.totals.totalCostUsd > 0 && totalTokens > 0 ? formatPerMillion((report.totals.totalCostUsd / totalTokens) * 1_000_000) : '—'}</td>
+                  </>
+                )}
                 <td className={`${cell} text-right`}>{report.totals.sessionCount.toLocaleString('en-US')}</td>
                 <td className={`${cell} text-right`}>{formatPercent(report.totals.cacheHitRate)}</td>
                 <td className={cell} />
@@ -561,6 +604,95 @@ function ModelLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDai
               </tr>
             </tfoot>
           </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const DAILY_BILLING_VISIBLE_DAYS = 10;
+
+/** Devin: billed agent messages and credits per day in the range, newest first, split by model. */
+function DailyBillingSection({ report }: { report: ClaudeUsageReport }) {
+  const [expanded, setExpanded] = useState(false);
+  const days = report.daily
+    .map((point) => {
+      const messages = point.byModelAgentMessages ?? {};
+      const credits = point.byModelCredits ?? {};
+      const models = Array.from(new Set([...Object.keys(messages), ...Object.keys(credits)]))
+        .map((model) => ({ model, messages: messages[model] ?? 0, credits: credits[model] ?? 0 }))
+        .filter((entry) => entry.messages > 0 || entry.credits > 0)
+        .sort((a, b) => b.messages - a.messages || b.credits - a.credits || a.model.localeCompare(b.model));
+      return {
+        date: point.date,
+        models,
+        messages: models.reduce((sum, entry) => sum + entry.messages, 0),
+        credits: models.reduce((sum, entry) => sum + entry.credits, 0),
+      };
+    })
+    .filter((day) => day.models.length > 0)
+    .reverse();
+  const shown = expanded ? days : days.slice(0, DAILY_BILLING_VISIBLE_DAYS);
+  const header = 'px-3 pb-2 pt-3 align-bottom text-[11.5px] font-normal leading-[15px] text-[var(--text-muted)]';
+  const cell = 'px-3 py-2.5 align-top tabular-nums';
+
+  return (
+    <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--bg-primary)]" data-usage-daily-billing>
+      <div className="px-5 pt-4 text-[13.5px] font-semibold text-[var(--text-primary)]">By day</div>
+      {days.length === 0 ? (
+        <div className="px-5 py-5 text-[13px] text-[var(--text-muted)]">
+          No billed messages recorded in this range. Devin turns record them from this version on.
+        </div>
+      ) : (
+        <div className="overflow-x-auto px-2 pb-1">
+          <table className="w-full min-w-[640px] table-fixed border-collapse text-[13px]">
+            <colgroup>
+              <col className="w-[132px]" />
+              <col className="w-[96px]" />
+              <col className="w-[96px]" />
+              <col />
+            </colgroup>
+            <thead>
+              <tr>
+                <th className={`${header} text-left`}>Date</th>
+                <th className={`${header} text-right`}>Messages</th>
+                <th className={`${header} text-right`}>Credits</th>
+                <th className={`${header} text-left`}>By model</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map((day) => (
+                <tr key={day.date} className="border-t border-[var(--border)]" data-usage-day-row={day.date}>
+                  <td className={`${cell} whitespace-nowrap text-[var(--text-primary)]`}>{formatLongDate(day.date)}</td>
+                  <td className={`${cell} text-right font-medium text-[var(--text-primary)]`}>{formatBillingCount(day.messages)}</td>
+                  <td className={`${cell} text-right text-[var(--text-secondary)]`}>{formatBillingCount(day.credits)}</td>
+                  <td className={`${cell} text-[var(--text-secondary)]`}>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1">
+                      {day.models.map((entry) => (
+                        <span key={entry.model} className="inline-flex min-w-0 items-center gap-1.5" data-usage-day-model={entry.model}>
+                          <ModelProviderLogo model={entry.model} color="var(--text-muted)" />
+                          <span className="truncate">{entry.model}</span>
+                          <span className="font-medium text-[var(--text-primary)]">{formatBillingCount(entry.messages)}</span>
+                          {entry.credits > 0 ? <span>· {formatBillingCount(entry.credits)} credits</span> : null}
+                        </span>
+                      ))}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {days.length > DAILY_BILLING_VISIBLE_DAYS ? (
+            <button
+              type="button"
+              onClick={() => setExpanded(!expanded)}
+              aria-expanded={expanded}
+              className="mx-3 my-2 inline-flex items-center gap-1 text-[12.5px] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+            >
+              {expanded ? 'Show fewer days' : `Show ${days.length - DAILY_BILLING_VISIBLE_DAYS} more days`}
+              <ChevronDown className={`h-3.5 w-3.5 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+            </button>
+          ) : null}
         </div>
       )}
     </div>
@@ -1129,7 +1261,7 @@ function renderUsageState(provider: UsageProviderCard) {
     );
   }
 
-  if (provider.report && provider.report.totals.totalTokens <= 0) {
+  if (provider.report && provider.report.totals.totalTokens <= 0 && !hasBilledUsage(provider.report)) {
     return <InlineEmpty label="No usage recorded in the last year." />;
   }
 
@@ -1361,8 +1493,7 @@ function getProviderLogoForModel(model: string): string | null {
   }
 
   if (
-    // Devin rows use catalog names ("GPT-6.1 Sol", "GPT 5.5").
-    /^gpt[\s-]/.test(normalized) ||
+    normalized.startsWith('gpt-') ||
     normalized.startsWith('codex') ||
     normalized === 'chatgpt' ||
     /^o[134]/.test(normalized)
@@ -1372,9 +1503,9 @@ function getProviderLogoForModel(model: string): string | null {
 
   if (
     normalized.startsWith('claude-') ||
-    // Devin rows use catalog names ("Claude Opus 5.5 · High", "Sonnet 4.5").
-    normalized.startsWith('claude ') ||
-    /^(opus|sonnet|haiku)\b/.test(normalized)
+    normalized === 'opus' ||
+    normalized === 'sonnet' ||
+    normalized === 'haiku'
   ) {
     return claudeLogo;
   }
@@ -1472,4 +1603,21 @@ function formatLongDate(dateKey: string): string {
 
 function trimTrailingZero(value: string): string {
   return value.endsWith('.0') ? value.slice(0, -2) : value;
+}
+
+/** Devin turns can bill messages or credits with no token usage (a turn that failed after billing). */
+function hasBilledUsage(report: ClaudeUsageReport): boolean {
+  return (report.billing?.agentMessages ?? 0) > 0 || (report.billing?.credits ?? 0) > 0;
+}
+
+/** A billed count (messages, credits); credits can be fractional. */
+function formatBillingCount(value: number): string {
+  if (!(value > 0)) return '—';
+  return Number.isInteger(value) ? value.toLocaleString('en-US') : value.toLocaleString('en-US', { maximumFractionDigits: 2 });
+}
+
+function formatBillingSummary(messages: number, credits: number): string {
+  const parts = [`${messages.toLocaleString('en-US')} agent ${messages === 1 ? 'message' : 'messages'}`];
+  if (credits > 0) parts.push(`${formatBillingCount(credits)} credits`);
+  return parts.join(' · ');
 }

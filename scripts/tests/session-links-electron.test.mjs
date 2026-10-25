@@ -186,8 +186,8 @@ app.whenReady().then(async()=>{
   codexConfig.upsertCodexMcpServer=()=>{throw Error('Unexpected user config write')};
   kimiConfig.upsertKimiMcpServerRaw=()=>{throw Error('Unexpected user config write')};
   try {
-    const args=await sessionHttp.getSessionReaderCodexArgs();
-    assert.equal(args[0],'-c');assert.ok(args[1].startsWith('mcp_servers.aegis-sessions='));
+    const {args,env}=await sessionHttp.getSessionReaderCodexArgs();
+    assert.equal(args[0],'-c');assert.ok(args[1].startsWith('mcp_servers.aegis-sessions='));assert.deepEqual(env,{});
     const config=await sessionHttp.getSessionReaderHttpConfig();
     assert.equal(config.type,'http');assert.ok(config.url.startsWith('http://127.0.0.1:'));
     const denied=await fetch(config.url,{method:'POST'});assert.equal(denied.status,401);

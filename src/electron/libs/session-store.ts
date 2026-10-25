@@ -3396,19 +3396,16 @@ function resolveUsageRowModel(
   return USAGE_PROVIDER_MODEL_FALLBACK[provider] || 'Unknown';
 }
 
-// A Devin row names the model in Devin's catalog words, plus the thinking
-// level it ran at ("Claude Opus 5.5 · High"): the id's own suffix is fixed
-// (claude-opus-5-5-medium at every level). Rows recorded before names and
-// levels were kept stay under the bare id, apart from newer rows. The level
-// label falls back as the composer's picker does.
+// A Devin row names the model id with the thinking level it ran at
+// ("claude-opus-5-5-high"): the id's own suffix is fixed
+// (claude-opus-5-5-medium at every level), so it gives way to the recorded
+// level. "max" stays, as it also ends model names (gpt-5.1-codex-max). Rows
+// recorded before levels were kept stay under the bare id.
+const DEVIN_ID_LEVEL_SUFFIX = /-(?:minimal|low|medium|high|xhigh)$/;
 function devinUsageLabel(model: string, result: StoredClaudeResultMessage): string {
   if (model === USAGE_PROVIDER_MODEL_FALLBACK.devin) return model;
-  const text = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
-  const label = text(result.modelLabel);
-  const name = label && text(result.model) === model ? label : model;
-  const level = text(result.thoughtLevel);
-  if (!level) return name;
-  return `${name} · ${text(result.thoughtLevelLabel) || level.charAt(0).toUpperCase() + level.slice(1)}`;
+  const level = typeof result.thoughtLevel === 'string' ? result.thoughtLevel.trim().toLowerCase() : '';
+  return level ? `${model.replace(DEVIN_ID_LEVEL_SUFFIX, '')}-${level}` : model;
 }
 
 /** Same historical repair and request-time pricing as the Usage report. */
@@ -3518,11 +3515,15 @@ function getClaudeProtocolUsageReport(
     totalTokens: number;
     byModel: Record<string, number>;
     byModelCostUsd: Record<string, number>;
+    byModelAgentMessages: Record<string, number>;
+    byModelCredits: Record<string, number>;
   }>();
   for (let index = 0; index < safeDays; index += 1) {
     const dayStart = rangeStart + index * DAY_MS;
-    dailyMap.set(formatDateKey(dayStart), { totalTokens: 0, byModel: {}, byModelCostUsd: {} });
+    dailyMap.set(formatDateKey(dayStart), { totalTokens: 0, byModel: {}, byModelCostUsd: {}, byModelAgentMessages: {}, byModelCredits: {} });
   }
+  // Devin bills in agent messages (quota plans) and credits (credit plans).
+  const devinBilling = provider === 'devin' ? { agentMessages: 0, credits: 0 } : null;
 
   const sessionIds = new Set<string>();
   const modelSummaries = new Map<string, ClaudeUsageModelSummary>();
@@ -3670,6 +3671,19 @@ function getClaudeProtocolUsageReport(
       dayBucket.byModelCostUsd[fallbackModel] =
         (dayBucket.byModelCostUsd[fallbackModel] || 0) + (resultCostUsd ?? 0);
     }
+
+    if (devinBilling) {
+      const agentMessages = toNumber(result.devinBilling?.agentMessages);
+      const credits = toNumber(result.devinBilling?.credits);
+      devinBilling.agentMessages += agentMessages;
+      devinBilling.credits += credits;
+      summary.agentMessages = (summary.agentMessages || 0) + agentMessages;
+      summary.credits = (summary.credits || 0) + credits;
+      if (dayBucket && (agentMessages || credits)) {
+        dayBucket.byModelAgentMessages[fallbackModel] = (dayBucket.byModelAgentMessages[fallbackModel] || 0) + agentMessages;
+        dayBucket.byModelCredits[fallbackModel] = (dayBucket.byModelCredits[fallbackModel] || 0) + credits;
+      }
+    }
   }
 
   const modelList = Array.from(modelSummaries.values())
@@ -3696,12 +3710,14 @@ function getClaudeProtocolUsageReport(
       cacheReadTokens: totalCacheReadTokens,
       cacheHitRate: cacheDenominator > 0 ? totalCacheReadTokens / cacheDenominator : 0,
     },
+    ...(devinBilling ? { billing: devinBilling } : {}),
     models: modelList,
     daily: Array.from(dailyMap.entries()).map(([date, bucket]) => ({
       date,
       totalTokens: bucket.totalTokens,
       byModel: bucket.byModel,
       byModelCostUsd: bucket.byModelCostUsd,
+      ...(devinBilling ? { byModelAgentMessages: bucket.byModelAgentMessages, byModelCredits: bucket.byModelCredits } : {}),
     })),
   };
 

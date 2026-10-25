@@ -22,6 +22,13 @@ import { join } from 'node:path';
 import * as readline from 'node:readline';
 
 const mode = process.env.FAKE_CODEX_MODE || 'normal';
+// How this process was launched, for tests of the spawn argv/environment.
+if (process.env.FAKE_CODEX_LAUNCH_RECORD) {
+  writeFileSync(process.env.FAKE_CODEX_LAUNCH_RECORD, JSON.stringify({
+    argv: process.argv.slice(2),
+    caller: process.env.AEGIS_SESSION_MCP_CALLER ?? null,
+  }));
+}
 const migrationDir = process.env.FAKE_CODEX_MIGRATION_DIR || '';
 let ownsMigration = false;
 let migrationConflict = false;

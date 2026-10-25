@@ -51,6 +51,7 @@ import { TurnChangesCard } from './TurnChangesCard';
 import { DesignChatCard } from './design/DesignChatCard';
 import { designChangesInMessages, type DesignTurnChange } from '../utils/design-entries';
 import { followUpCallsInMessages, type FollowUpCall } from '../utils/follow-up-entries';
+import { findProposalForChild, useFollowUpStore } from '../store/useFollowUpStore';
 import { workDisclosureScope, type WorkDisclosureScope } from '../utils/work-disclosure-scope';
 import { findTimelineItemWithToolCall, findToolCallMessage, findWorkGroupWithToolCall } from '../utils/tool-call-lookup';
 import { FollowUpCard } from './follow-up/FollowUpCard';
@@ -149,6 +150,12 @@ export function SessionWorkspaceControl({
   const projectCwd = session.projectCwd || session.cwd || null;
   const effectiveCwd = session.worktreePath || session.cwd || projectCwd;
   const isWorktree = session.envMode === 'worktree' && Boolean(session.worktreePath);
+  // A sub-session in the folder of the session that started it.
+  const sharedWith = useFollowUpStore((state) => {
+    const link = findProposalForChild(state.proposals, session.id);
+    return link && link.place === 'shared' && link.detachedAt === null ? link.parentSessionId : null;
+  });
+  const sharedWithTitle = useAppStore((state) => (sharedWith ? state.sessions[sharedWith]?.title : undefined));
   const isRunning = session.status === 'running';
   const [branches, setBranches] = useState<GitBranchInfo[]>([]);
   const [branchesError, setBranchesError] = useState<string | null>(null);
@@ -499,10 +506,10 @@ export function SessionWorkspaceControl({
             type="button"
             className={rowButtonClass}
             disabled={busyAction !== null || !currentBranch}
-            title={isWorktree ? session.worktreePath || 'Worktree' : projectCwd}
+            title={`${isWorktree ? session.worktreePath || 'Worktree' : projectCwd}${sharedWith ? ` · shared with ${sharedWithTitle || 'the session that started this one'}` : ''}`}
           >
             {BusyIcon ? <BusyIcon className="h-3.5 w-3.5 animate-spin" /> : isWorktree ? <GitFork className="h-3.5 w-3.5" /> : <Monitor className="h-3.5 w-3.5" />}
-            <span className="min-w-0 flex-1 truncate text-left">{isWorktree ? 'Worktree' : 'Local'}</span>
+            <span className="min-w-0 flex-1 truncate text-left">{sharedWith ? 'Shared folder' : isWorktree ? 'Worktree' : 'Local'}</span>
             <ChevronDown className="h-3 w-3 shrink-0" />
           </button>
         </DropdownMenu.Trigger>
@@ -2346,7 +2353,7 @@ export function ChatPane({
               </WorkstreamDisclosureRegistry>
               {session.status === 'error' && <div role="status" data-turn-failure className="my-3 text-[13px] text-[var(--text-secondary)]">
                 <div className="text-[var(--error)]">This turn did not finish.</div>
-                <div>{session.lastTurnError || 'The connection ended before completion. Send a message to continue.'}</div>
+                <div><LinkifiedText text={session.lastTurnError || 'The connection ended before completion. Send a message to continue.'} /></div>
               </div>}
 
               {apiRetry ? <StreamRetryStatus retry={apiRetry} /> : null}
@@ -2411,4 +2418,19 @@ export function ChatPane({
       )}
     </div>
   );
+}
+
+/** Plain text whose http(s) URLs open in the browser (e.g. a provider's usage settings). */
+function LinkifiedText({ text }: { text: string }) {
+  return <>{text.split(/(https?:\/\/[^\s]+)/).map((part, index) => index % 2 === 1 ? (
+    <a
+      key={index}
+      href={part}
+      className="text-[var(--accent)] underline-offset-2 hover:underline"
+      onClick={(event) => {
+        event.preventDefault();
+        void window.electron.openExternalUrl(part).then((result) => { if (!result.ok) toast.error(result.message || 'Could not open the link.'); });
+      }}
+    >{part}</a>
+  ) : part)}</>;
 }
