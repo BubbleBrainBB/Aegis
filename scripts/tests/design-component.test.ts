@@ -70,5 +70,10 @@ assert.match(thumb, /<h1[^>]*>Preview plans<\/h1>/);
 assert.match(thumb, />Monthly<[\s\S]*>Yearly</, "loops repeat with their items");
 assert.match(thumb, /<em[^>]*><\/em>/, "logic-only values render empty");
 assert.equal(staticDesignPreview("<p>static {{ x }}</p>"), "<p>static {{ x }}</p>", "static boards are left alone");
+// …and a design system's components draw as themselves (props from attributes, slot from children).
+const usesButton = sanitizeDesignHtml(`<html><head></head><body><aegis-use data-aegis-node-id="b" component="Button" label="Save" variant="secondary"><i>!</i></aegis-use></body></html>`);
+const drawn = staticDesignPreview(usesButton, { Button: { html: '<style>.btn{color:red}</style><button class="btn btn--{{ variant }}">{{ label }}<aegis-slot></aegis-slot></button>', props: { label: { type: "string", default: "" }, variant: { type: "enum", options: ["primary", "secondary"], default: "primary" } } } });
+assert.match(drawn, /<button class="btn btn--secondary" data-aegis-node-id="b">Save<i[^>]*>!<\/i><\/button>/, drawn);
+assert.match(drawn, /<style>\.btn\{color:red\}<\/style>/);
 
 console.log("design-component: text sources, prop and $preview edits, list items, numbers, refusals, full values, nested loops and static previews passed");

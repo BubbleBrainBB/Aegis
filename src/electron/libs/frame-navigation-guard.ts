@@ -17,13 +17,14 @@ export function guardSandboxFrameNavigation(contents: WebContents): void {
 }
 
 /**
- * The same rule at the network layer, in case a navigation slips past the
- * frame event: a request to load a frame, made from inside a srcdoc frame,
- * to anything but about:, data: or blob: is cancelled. Only frame loads:
+ * Defense in depth for the default session: a request to load a frame from
+ * inside a srcdoc frame (http(s) or file) is cancelled, in case a navigation
+ * slips past the frame event. The navigation guard above is the complete
+ * rule; this filter sees only the schemes it matches. Only frame loads:
  * other requests are each frame's own CSP's business.
  */
 export function guardSandboxFrameRequests(session: Session): void {
-  session.webRequest.onBeforeRequest({ urls: ['*://*/*'], types: ['subFrame'] }, (details, done) => {
+  session.webRequest.onBeforeRequest({ urls: ['*://*/*', 'file://*/*'], types: ['subFrame'] }, (details, done) => {
     const from = details.frame?.url ?? '';
     done({ cancel: from.startsWith('about:srcdoc') });
   });

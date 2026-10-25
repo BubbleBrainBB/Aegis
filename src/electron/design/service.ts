@@ -146,7 +146,11 @@ export function previewDesign(
         // Logic that loops while the page starts never lets it finish loading.
         const hung = new Error("The board's logic did not finish rendering within 5 s; it may loop forever. Fix the logic (or remove it with a logic operation) and preview again.");
         const loaded = await Promise.race([
-          w.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(designFrameHtml(b.html, randomUUID(), false, { system: packForDesign(d), slide }))}`).then(() => true),
+          // After a timeout the window is destroyed and this rejects; the race is already decided.
+          w.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(designFrameHtml(b.html, randomUUID(), false, { system: packForDesign(d), slide }))}`).then(() => true, (error) => {
+            if (w.isDestroyed()) return false;
+            throw error;
+          }),
           new Promise<false>((resolve) => setTimeout(() => resolve(false), RUNTIME_READY_MS + 3_000)),
         ]);
         if (!loaded) throw hung;

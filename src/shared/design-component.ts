@@ -1,4 +1,4 @@
-import { parse, serialize, type DefaultTreeAdapterMap } from "parse5";
+import { parse, parseFragment, serialize, type DefaultTreeAdapterMap } from "parse5";
 
 /**
  * A board is a design component: one HTML document in three parts.
@@ -341,14 +341,53 @@ const fill = (text: string, scope: Record<string, unknown>[]) => text.replace(/\
  * repeat with their items); anything that needs its logic renders empty. For
  * thumbnails and covers, which never run board code.
  */
-export function staticDesignPreview(html: string): string {
+export function staticDesignPreview(
+  html: string,
+  /** The design system's components, so <aegis-use> draws as its component. */
+  components?: Record<string, { html: string; props?: Record<string, unknown> | null }>,
+): string {
   if (!isDesignComponent(html)) return html;
   const doc = parse(html);
   const values = designPropValues(designPropsOf(html));
-  const walk = (parent: ParentNode, scope: Record<string, unknown>[]) => {
+  const styles: string[] = [];
+  // Loop copies keep their template's layer id: fine in a script-free
+  // thumbnail, but never hand this HTML to the inspector.
+  const walk = (parent: ParentNode, scope: Record<string, unknown>[], slot?: DefaultTreeAdapterMap["childNode"][]) => {
     const out: DefaultTreeAdapterMap["childNode"][] = [];
     let lastIf: boolean | null = null;
     for (const node of parent.childNodes) {
+      if (isElement(node) && node.tagName === "aegis-slot") {
+        out.push(...(slot ?? []));
+        continue;
+      }
+      if (isElement(node) && node.tagName === "aegis-use" && components) {
+        const name = attrOf(node, "component") ?? "";
+        const component = Object.entries(components).find(([n]) => n === name)?.[1];
+        if (component) {
+          const props: Record<string, unknown> = { ...designPropValues(component.props as DesignPropsSpec | null) };
+          for (const a of node.attrs) {
+            const key = a.name.startsWith("data-aegis-bind-") ? a.name.slice(16) : a.name;
+            if (["component", "data-aegis-node-id", "data-aegis-layer-name", "style", "class"].includes(a.name) || key.startsWith("data-aegis-")) continue;
+            const camel = key.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
+            props[camel] = a.name.startsWith("data-aegis-bind-") ? lookup(scope, a.value).value : fill(a.value, scope);
+          }
+          const slotted = walk(node, scope, slot);
+          const fragment = parseFragment(component.html.replace(/<style[^>]*>([\s\S]*?)<\/style>/gi, (_, css: string) => (styles.push(css), "")));
+          const rendered = walk(fragment as unknown as ParentNode, [props], slotted);
+          const root = rendered.find(isElement);
+          if (root) {
+            root.attrs = root.attrs.filter((a) => a.name !== "data-aegis-node-id" && a.name !== "data-aegis-layer-name");
+            for (const keep of ["data-aegis-node-id", "data-aegis-layer-name"]) {
+              const value = attrOf(node, keep);
+              if (value !== undefined) root.attrs.push({ name: keep, value });
+            }
+          }
+          for (const r of rendered) (r as { parentNode: unknown }).parentNode = parent;
+          out.push(...rendered);
+          lastIf = null;
+          continue;
+        }
+      }
       if (node.nodeName === "#text" && "value" in node) {
         node.value = fill(node.value, scope);
         out.push(node);
@@ -384,7 +423,7 @@ export function staticDesignPreview(html: string): string {
         const target = l ? cloneElement(node) : node;
         const inner = [...scope, local];
         target.attrs = target.attrs.map((a) => (a.value.includes("{{") ? { ...a, value: fill(a.value, inner) } : a));
-        target.childNodes = walk(target, inner);
+        target.childNodes = walk(target, inner, slot);
         target.parentNode = parent as Element;
         out.push(target);
       }
@@ -394,5 +433,11 @@ export function staticDesignPreview(html: string): string {
   const html_ = find(doc, (e) => e.tagName === "html");
   const body = html_ && find(html_, (e) => e.tagName === "body");
   if (body) body.childNodes = walk(body, [values]);
+  const head = html_ && find(html_, (e) => e.tagName === "head");
+  if (head && styles.length) {
+    const style = parseFragment(`<style>${[...new Set(styles)].join("\n")}</style>`).childNodes[0] as Element;
+    (style as { parentNode: unknown }).parentNode = head;
+    head.childNodes.push(style);
+  }
   return serialize(doc);
 }

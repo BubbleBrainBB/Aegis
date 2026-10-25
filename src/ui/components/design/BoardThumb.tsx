@@ -35,7 +35,7 @@ export const BoardThumb = memo(function BoardThumb({
   const sandboxEpoch = useSandboxEpoch();
   // Keyed by revision so a rewritten board repaints; no inspector script.
   const srcDoc = useMemo(
-    () => designFrameHtml(staticDesignPreview(board.html), `thumb-${board.id.replace(/[^a-zA-Z0-9-]/g, "")}-${board.contentRevision}`, false, { mode: "static", system, slide }),
+    () => designFrameHtml(staticDesignPreview(board.html, system?.components), `thumb-${board.id.replace(/[^a-zA-Z0-9-]/g, "")}-${board.contentRevision}`, false, { mode: "static", system, slide }),
     [board.html, board.id, board.contentRevision, system, slide],
   );
   return (
