@@ -5,7 +5,7 @@ import { materializeGoalObjective, readGoalObjective } from '../codex-goal-objec
 import { normalizeCodexReasoningEffort } from '../../../shared/codex-reasoning';
 import { validateGoalAction, type GoalAction, type ThreadGoal } from '../../../shared/session-goal';
 import { getSessionProjectSources } from '../session-store';
-import { getSessionReaderCodexArgs, SESSION_TOKEN_ENV_VAR } from '../session-http-server';
+import { getSessionReaderCodexArgs, SESSION_CALLER_ENV_VAR, SESSION_TOKEN_ENV_VAR } from '../session-http-server';
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import { EventEmitter } from 'events';
 import { existsSync, promises as fsPromises, readFileSync } from 'fs';
@@ -367,11 +367,21 @@ export class CodexAppServerManager extends EventEmitter {
   private lastAuthRefreshAnswer: { accessToken: string; at: number } | null = null;
   private computerUsePolicy: ComputerUseSpawnPolicy = 'mutating';
 
+  /**
+   * The Aegis session this app-server serves (one per thread runtime). Its
+   * aegis-sessions entry then names that session, so design calls are bound
+   * to it instead of being matched against running sessions' histories.
+   * Unset for the shared catalog manager.
+   */
+  private readonly callerSessionId: string | undefined;
+
   constructor(
     private readonly binaryPath = 'codex',
-    private readonly clientVersion = '0.0.0'
+    private readonly clientVersion = '0.0.0',
+    options: { callerSessionId?: string } = {}
   ) {
     super();
+    this.callerSessionId = options.callerSessionId;
   }
 
   // ── Lifecycle ────────────────────────────────────────────────────────────
@@ -401,10 +411,14 @@ export class CodexAppServerManager extends EventEmitter {
     // managers can start while it binds; they must not alter this launch.
     const launchEnv = { ...process.env };
     const configArgs = buildCodexMcpConfigOverrideArgs({ computerUsePolicy: this.computerUsePolicy });
-    const readerArgs = await getSessionReaderCodexArgs();
+    const reader = await getSessionReaderCodexArgs(this.callerSessionId);
+    const readerArgs = reader.args;
     recordSpawnDefinedMcpServers([...configArgs, ...readerArgs]);
     if (epoch !== this.lifecycleEpoch || signal?.aborted) throw new CodexRpcTransportError('stopped', 'initialize');
     launchEnv[SESSION_TOKEN_ENV_VAR] = process.env[SESSION_TOKEN_ENV_VAR];
+    // Only this runtime's own caller value, never one inherited from Aegis's environment.
+    delete launchEnv[SESSION_CALLER_ENV_VAR];
+    Object.assign(launchEnv, reader.env);
 
     const child = spawn(
       this.binaryPath,

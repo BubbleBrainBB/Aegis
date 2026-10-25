@@ -7,6 +7,8 @@ import { DESIGN_TOOL_NAMES } from '../../shared/design-tools';
 
 export { SESSION_MCP_SERVER_NAME } from './session-mcp';
 export const SESSION_TOKEN_ENV_VAR = 'AEGIS_SESSION_MCP_TOKEN';
+/** A per-session Codex runtime's signed caller value (see getSessionReaderCodexArgs). */
+export const SESSION_CALLER_ENV_VAR = 'AEGIS_SESSION_MCP_CALLER';
 export interface SessionHttpServerInfo { url: string; port: number; token: string }
 let pending: Promise<SessionHttpServerInfo> | null = null;
 let http: Server | null = null;
@@ -164,7 +166,17 @@ export function releaseKimiWidgetEntrySync(): void {
   }
 }
 
-export async function getSessionReaderCodexArgs(): Promise<string[]> {
+/**
+ * The Codex entry, as `-c` arguments plus the environment it reads. With
+ * `callerSessionId` (a Codex app-server serving that one Aegis session) the
+ * entry sends the signed session header, read from the process environment
+ * like the token so neither appears in the argv.
+ */
+export async function getSessionReaderCodexArgs(callerSessionId?: string): Promise<{ args: string[]; env: Record<string, string> }> {
   const info = await ensureSessionHttpServer();
-  return ['-c', `mcp_servers.aegis-sessions={url=${JSON.stringify(info.url)},bearer_token_env_var="${SESSION_TOKEN_ENV_VAR}",enabled=true}`];
+  const caller = callerSessionId ? `,env_http_headers={${JSON.stringify(SESSION_CALLER_HEADER)}="${SESSION_CALLER_ENV_VAR}"}` : '';
+  return {
+    args: ['-c', `mcp_servers.aegis-sessions={url=${JSON.stringify(info.url)},bearer_token_env_var="${SESSION_TOKEN_ENV_VAR}"${caller},enabled=true}`],
+    env: callerSessionId ? { [SESSION_CALLER_ENV_VAR]: sessionCallerValue(info.token, callerSessionId) } : {},
+  };
 }

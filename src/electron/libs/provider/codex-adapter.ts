@@ -322,7 +322,7 @@ interface StreamingThinkingState {
 
 export interface CodexAdapterOptions {
   /** Test seam; production creates one fresh manager for every active thread. */
-  managerFactory?: () => CodexAppServerManager;
+  managerFactory?: (threadId: string) => CodexAppServerManager;
 }
 
 export class CodexAdapter implements ProviderAdapter {
@@ -335,7 +335,7 @@ export class CodexAdapter implements ProviderAdapter {
   private manager: CodexAppServerManager;
   /** One app-server process owner per active Aegis thread. */
   private runtimeManagers = new Map<string, CodexAppServerManager>();
-  private readonly managerFactory: () => CodexAppServerManager;
+  private readonly managerFactory: (threadId: string) => CodexAppServerManager;
   private sessions = new Map<string, ActiveSession>();
   /** Resume cursors claimed while a per-thread app-server is still starting. */
   private providerThreadClaims = new Map<string, string>();
@@ -412,7 +412,7 @@ export class CodexAdapter implements ProviderAdapter {
   constructor(binaryPath?: string, options: CodexAdapterOptions = {}) {
     this.managerFactory =
       options.managerFactory ??
-      (() => new CodexAppServerManager(binaryPath, resolveClientVersion()));
+      ((threadId) => new CodexAppServerManager(binaryPath, resolveClientVersion(), { callerSessionId: threadId }));
     this.manager = new CodexAppServerManager(binaryPath, resolveClientVersion());
     this.setupEventForwarding(this.manager);
     computerUseGrants.on('change', this.grantListener);
@@ -1526,7 +1526,7 @@ export class CodexAdapter implements ProviderAdapter {
     if (previous) {
       await this.retireRuntimeManager(threadId, previous);
     }
-    const manager = this.managerFactory();
+    const manager = this.managerFactory(threadId);
     this.runtimeManagers.set(threadId, manager);
     this.setupEventForwarding(manager, threadId);
     return manager;

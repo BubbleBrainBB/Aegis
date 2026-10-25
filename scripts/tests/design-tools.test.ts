@@ -35,6 +35,11 @@ const history = [call('c1', { documentId: 'd' }), result('c1'), sub, call('c2', 
 assert.equal(findPendingToolUse(history, match, { documentId: 'd' }), 'c2', 'the latest unanswered top-level call');
 assert.equal(findPendingToolUse(history, match, { documentId: 'd' }, new Set(['c2'])), null, 'claimed calls are skipped');
 assert.equal(findPendingToolUse(history, match, { documentId: 'x' }), null);
+// Adapters annotate recorded inputs (Codex: a `title` argument gains __aegisDisplayTitle); the call sent no such key.
+const createMatch = (name: unknown) => designToolNameOf(name) === 'design_create';
+const annotated = [call('k1', { title: 'Atlas', operationId: 'op', __aegisDisplayTitle: 'Atlas' }, 'mcp__aegis-sessions__design_create')];
+assert.equal(findPendingToolUse(annotated, createMatch, { title: 'Atlas', operationId: 'op' }), 'k1', 'Aegis annotations are not part of the call');
+assert.equal(findPendingToolUse(annotated, createMatch, { title: 'Other', operationId: 'op' }), null);
 
 // Trace wording.
 assert.deepEqual(designToolDisplay('design_create', { title: 'Atlas website' }, 'success'), { verb: 'Created design', target: 'Atlas website' });
