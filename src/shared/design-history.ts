@@ -14,6 +14,11 @@ export function summarizeOperations(
       case "patch":
       case "content":
         return `Edited ${name(op.boardId)}`;
+      case "logic":
+      case "logic_patch":
+        return `Edited ${name(op.boardId)} logic`;
+      case "props":
+        return `Edited ${name(op.boardId)} props`;
       case "remove":
         return `Deleted ${name(op.boardId)}`;
       case "duplicate":

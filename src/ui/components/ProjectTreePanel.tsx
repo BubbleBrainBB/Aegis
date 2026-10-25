@@ -1,3 +1,4 @@
+import { useSandboxEpoch } from '../utils/sandbox-frames';
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react';
 import { FolderClosed, FolderOpen, Folders, ChevronDown, ChevronLeft, ChevronRight, Copy, Check, Search, X, Maximize2, Minimize2, File, Files, FileAddIcon, FolderAddIcon } from './icons';
 import { pptxToHtml } from '@jvmr/pptx-to-html';
@@ -3855,6 +3856,8 @@ function PptxPreview({
 }) {
   const [slideHtml, setSlideHtml] = useState<string[]>([]);
   const [rendering, setRendering] = useState(true);
+  // A recovered sandbox process (see sandbox-frames) remounts the slide frame.
+  const sandboxEpoch = useSandboxEpoch();
   const [renderError, setRenderError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -3933,7 +3936,7 @@ function PptxPreview({
         <div className="text-sm text-[var(--error)]">{renderError}</div>
       ) : currentSlideHtml ? (
         <iframe
-          key={`${preview.path}:${safeIndex}:${viewportWidth}`}
+          key={`${preview.path}:${safeIndex}:${viewportWidth}:${sandboxEpoch}`}
           title={`${preview.name} slide ${safeIndex + 1}`}
           sandbox="allow-scripts"
           srcDoc={buildPptxSlideDocument(currentSlideHtml)}

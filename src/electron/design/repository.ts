@@ -20,6 +20,7 @@ import type {
 import { summarizeOperations } from "../../shared/design-history";
 import { validateDesignMarks, MAX_DESIGN_MARKS } from "../../shared/design-marks";
 import { sanitizeDesignHtml } from "./html";
+import { patchDesignLogic, setDesignLogic, setDesignProps } from "../../shared/design-component";
 
 const boardName = z.string().transform(normalizeBoardName);
 const name = z.string().trim().min(1).max(160);
@@ -30,6 +31,17 @@ const point = z.number().finite().min(-100000).max(100000);
 const pagesSchema = z.array(z.object({ id, name: z.string().trim().min(1).max(120) }).strict())
   .max(40).refine((pages) => new Set(pages.map((page) => page.id)).size === pages.length, "Page IDs must be unique.");
 const marksSchema = z.array(z.unknown()).max(MAX_DESIGN_MARKS).transform(validateDesignMarks);
+/**
+ * A board's HTML from a whole-board write: the template, with logic and
+ * props set when given (they replace any blocks the template carried).
+ */
+function componentHtml(html: string, js?: string, props?: Record<string, unknown>): string {
+  let out = sanitizeDesignHtml(html);
+  if (js !== undefined) out = setDesignLogic(out, js);
+  if (props !== undefined) out = setDesignProps(out, props);
+  return js !== undefined || props !== undefined ? sanitizeDesignHtml(out) : out;
+}
+
 const operations = z
   .array(
     z.discriminatedUnion("type", [
@@ -38,6 +50,8 @@ const operations = z
           type: z.literal("add"),
           name: boardName.optional(),
           html: z.string().optional(),
+          js: z.string().max(200_000).optional(),
+          props: z.record(z.string(), z.unknown()).optional(),
           x: point.optional(),
           y: point.optional(),
           width: size.optional(),
@@ -51,8 +65,29 @@ const operations = z
           boardId: id,
           expectedRevision: revision,
           html: z.string(),
+          js: z.string().max(200_000).optional(),
+          props: z.record(z.string(), z.unknown()).optional(),
         })
         .strict(),
+      z.object({
+        type: z.literal("logic"),
+        boardId: id,
+        expectedRevision: revision,
+        js: z.string().max(200_000),
+      }).strict(),
+      z.object({
+        type: z.literal("logic_patch"),
+        boardId: id,
+        expectedRevision: revision,
+        find: z.string().min(1).max(200_000),
+        replace: z.string().max(200_000),
+      }).strict(),
+      z.object({
+        type: z.literal("props"),
+        boardId: id,
+        expectedRevision: revision,
+        props: z.record(z.string(), z.unknown()).nullable(),
+      }).strict(),
       z.object({
         type: z.literal("patch"),
         boardId: id,
@@ -823,9 +858,11 @@ export class DesignRepository {
               height: op.height ?? 640,
               contentRevision: 1,
               placementRevision: 1,
-              html: sanitizeDesignHtml(
+              html: componentHtml(
                 op.html ??
                   '<main style="padding:48px;color:#999;font:16px system-ui">Waiting for design…</main>',
+                op.js,
+                op.props,
               ),
             });
             continue;
@@ -839,7 +876,19 @@ export class DesignRepository {
           )
             conflict();
           if (op.type === "content") {
-            b.html = sanitizeDesignHtml(op.html);
+            b.html = componentHtml(op.html, op.js, op.props);
+            b.contentRevision++;
+          }
+          if (op.type === "logic") {
+            b.html = sanitizeDesignHtml(setDesignLogic(b.html, op.js));
+            b.contentRevision++;
+          }
+          if (op.type === "logic_patch") {
+            b.html = sanitizeDesignHtml(patchDesignLogic(b.html, op.find, op.replace));
+            b.contentRevision++;
+          }
+          if (op.type === "props") {
+            b.html = sanitizeDesignHtml(setDesignProps(b.html, op.props));
             b.contentRevision++;
           }
           if (op.type === "patch") {

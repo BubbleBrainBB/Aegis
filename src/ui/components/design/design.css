@@ -171,6 +171,10 @@
   color: var(--text-muted);
   white-space: nowrap;
 }
+.design-board-heading > span.design-board-issue {
+  color: var(--error, #d92d20);
+  cursor: help;
+}
 .design-panel .design-board-preview {
   display: inline-grid;
   place-items: center;

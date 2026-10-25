@@ -29,6 +29,27 @@ async function user(): Promise<DesignAuthor> {
   return name ? { kind: "user", name } : { kind: "user" };
 }
 
+/**
+ * Ends the renderer process of one hung sandboxed frame of `owner`. Board,
+ * widget and preview frames are opaque-origin srcdoc iframes that Chromium
+ * runs out of process, all of a window's in one shared process: a board whose
+ * logic never yields stalls them all until that process is gone. Only a
+ * srcdoc subframe's process that is not the window's own is ever ended.
+ */
+function recoverSandboxFrame(owner: BrowserWindow | undefined, frameName: unknown): boolean {
+  if (!owner || owner.isDestroyed() || typeof frameName !== "string" || !/^[a-zA-Z0-9-]{8,80}$/.test(frameName)) return false;
+  const main = owner.webContents.mainFrame;
+  const frame = main.framesInSubtree.find((f) => f !== main && f.name === frameName && f.url === "about:srcdoc");
+  const pid = frame?.osProcessId;
+  if (!pid || pid === main.osProcessId || pid === process.pid) return false;
+  try {
+    process.kill(pid, "SIGKILL");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function registerDesignIpc() {
   const handlers: Omit<DesignAPI, "onChanged"> = {
     list: (sessionId) => Promise.resolve(getDesignRepository().list(sessionId)),
@@ -124,6 +145,7 @@ export function registerDesignIpc() {
       if (typeof x?.requestId === "string") cancelQuickEdit(x.requestId);
       return Promise.resolve();
     },
+    recoverFrame: (x, owner?: BrowserWindow) => Promise.resolve({ recovered: recoverSandboxFrame(owner, x?.frameName) }),
     composer: (x) => {
       if (typeof x?.sessionId === "string") setDesignComposerPrefs(x.sessionId, x);
       return Promise.resolve();

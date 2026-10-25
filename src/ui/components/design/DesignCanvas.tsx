@@ -2,6 +2,7 @@ import { boardIdsInView } from "./canvas-geometry";
 import type { DesignCanvasAwareness } from "../../../shared/design-types";
 import { BoardNameInput } from "./BoardNameInput";
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -20,7 +21,7 @@ import { rendererStateStorage } from "../../utils/renderer-state-storage";
 import { findDesignLayer, readDesignLayers } from "../../../shared/design-layers";
 import { ArrowsDiagonal, ChevronDown, Check, Download, Hand, Hash, MessageCircle, MousePointer, PanelRight, Play, Type } from "../icons";
 import { DesignActionMenu, DesignToolButton, useDesignMenu } from "./DesignChrome";
-import { BoardFrame, type BoardInspector, type DragState, type DropTarget } from "./BoardFrame";
+import { BoardFrame, type BoardInspector, type BoardRuntimeEvent, type DragState, type DropTarget } from "./BoardFrame";
 import { FRAME_SIZE, snapBoard, textTagFor } from "./design-insert";
 import { CanvasMarks } from "./CanvasMarks";
 import { useLayoutGuides } from "./design-prefs";
@@ -288,6 +289,21 @@ export function DesignCanvas(props: Props) {
   const [hover, setHover] = useState<ElementSelection>();
   const hoverBoard = useRef<string | undefined>(undefined);
   const [previewId, setPreviewId] = useState<string>();
+  // What each component board's runtime last reported: logic errors, a hang.
+  const [runtimeIssues, setRuntimeIssues] = useState<Record<string, { errors: string[]; hung: boolean }>>({});
+  const onBoardRuntime = useCallback((boardId: string, event: BoardRuntimeEvent) => {
+    if (event.type === "goto") return;
+    setRuntimeIssues((all) => {
+      const was = all[boardId];
+      const next = event.type === "hung" ? { errors: was?.errors ?? [], hung: true } : { errors: event.errors, hung: false };
+      if (!next.hung && !next.errors.length) {
+        if (!was) return all;
+        const { [boardId]: _, ...rest } = all;
+        return rest;
+      }
+      return { ...all, [boardId]: next };
+    });
+  }, []);
   const [zoomMenu, setZoomMenu] = useState(false);
   const [shapesMenu, setShapesMenu] = useState(false);
   const shapesTrigger = useRef<HTMLButtonElement>(null);
@@ -1773,6 +1789,14 @@ export function DesignCanvas(props: Props) {
                   onClick={e => { if (e.detail === 0) onSelectionChange([b.id]); }}
                 >{b.name}</button>}
                 {writingBoard(b) ? <span>Writing…</span> : null}
+                {runtimeIssues[b.id] ? (
+                  <span
+                    className="design-board-issue"
+                    title={runtimeIssues[b.id].hung ? "This board's logic stopped responding; showing its template without logic." : runtimeIssues[b.id].errors.join("\n")}
+                  >
+                    {runtimeIssues[b.id].hung ? "Logic paused" : "Logic error"}
+                  </span>
+                ) : null}
                 <button
                   data-canvas-ui
                   className="design-board-preview"
@@ -1802,6 +1826,8 @@ export function DesignCanvas(props: Props) {
                   else inspectors.current.delete(b.id);
                 }}
                 board={patches[b.id] ? { ...b, ...p } : b}
+                mode={writingBoard(b) ? "static" : "edit"}
+                onRuntime={(event) => onBoardRuntime(b.id, event)}
                 onLoad={() => {
                   setLoads((n) => n + 1);
                   // A layer picked for this board (e.g. just inserted) while its frame reloaded.
@@ -2318,7 +2344,17 @@ function BoardPreview({
               transformOrigin: "top left",
             }}
           >
-            <BoardFrame board={board} preview />
+            <BoardFrame
+              board={board}
+              preview
+              onRuntime={(event) => {
+                if (event.type !== "goto") return;
+                // A board link names its target by name (or id).
+                const want = event.board.trim().toLowerCase();
+                const target = boards.find((b) => b.id === event.board) ?? boards.find((b) => b.name.trim().toLowerCase() === want);
+                if (target) onNavigate(target.id);
+              }}
+            />
           </div>
         </div>
       </div>

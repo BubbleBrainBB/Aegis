@@ -72,7 +72,10 @@ export function settleDesignTurn(sessionId: string, agentName?: string) {
 let captureTail: Promise<unknown> = Promise.resolve();
 /** Fonts, images and two frames: the board as it will look, nothing measured. */
 const READY_SCRIPT =
-  "(async()=>{await document.fonts.ready;await Promise.all([...document.images].map(i=>i.decode().catch(()=>null)));await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));return []})()";
+  "(async()=>{await (window.__aegisRuntime?window.__aegisRuntime.ready:null);await document.fonts.ready;await Promise.all([...document.images].map(i=>i.decode().catch(()=>null)));await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));return []})()";
+/** A design component's logic errors, for the agent: they don't show in a screenshot. */
+const RUNTIME_ERRORS =
+  "(window.__aegisRuntime?[...window.__aegisRuntime.errors]:[])";
 export function previewDesign(
   sessionId: string,
   documentId: string,
@@ -125,10 +128,16 @@ export function previewDesign(
           `data:text/html;charset=utf-8,${encodeURIComponent(designFrameHtml(b.html, randomUUID(), false))}`,
         );
         if (scale !== 1) w.webContents.setZoomFactor(scale);
+        // A design component renders after its runtime boots.
+        await w.webContents.executeJavaScript("window.__aegisRuntime?window.__aegisRuntime.ready:null").catch(() => null);
         // What the screenshot alone might not show: overlaps, clipping, emptiness, size.
         const warnings = (await w.webContents.executeJavaScript(
           checks ? renderChecksScript(b.width, b.height) : READY_SCRIPT,
         ).catch(() => (checks ? ["Checks could not run on this board; judge the screenshot alone."] : []))) as string[];
+        if (checks) {
+          const errors = (await w.webContents.executeJavaScript(RUNTIME_ERRORS).catch(() => [])) as string[];
+          for (const error of errors.slice(0, 8)) warnings.push(`Logic error: ${error}`);
+        }
         signal?.throwIfAborted();
         let image = await w.webContents.capturePage();
         // HiDPI displays capture at the device pixel ratio; export exact pixels.
@@ -196,11 +205,12 @@ export function designPdf(
       const pages = boards
         .map(
           (b, i) =>
-            `<section class="page p${i}"><iframe sandbox="" srcdoc="${escape(designFrameHtml(b.html, randomUUID(), false))}" style="width:${b.width}px;height:${b.height}px"></iframe></section>`,
+            `<section class="page p${i}"><iframe sandbox="allow-scripts" srcdoc="${escape(designFrameHtml(b.html, randomUUID(), false, { mode: "edit" }))}" style="width:${b.width}px;height:${b.height}px"></iframe></section>`,
         )
         .join("");
       const sizes = boards.map((b, i) => `@page s${i}{size:${b.width}px ${b.height}px;margin:0}.p${i}{page:s${i}}`).join("");
-      const doc = `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; frame-src about: data:"><style>${sizes}html,body{margin:0;padding:0}.page{display:block;break-after:page}.page:last-child{break-after:auto}iframe{display:block;border:0}</style></head><body>${pages}</body></html>`;
+      // srcdoc frames inherit this policy: allow what each board's own nonce policy allows.
+      const doc = `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data:; font-src data:; frame-src about: data:"><style>${sizes}html,body{margin:0;padding:0}.page{display:block;break-after:page}.page:last-child{break-after:auto}iframe{display:block;border:0}</style></head><body>${pages}</body></html>`;
       const partition = `design-pdf-${randomUUID()}`;
       const isolated = electronSession.fromPartition(partition);
       isolated.setPermissionRequestHandler((_wc, _permission, cb) => cb(false));
@@ -222,6 +232,12 @@ export function designPdf(
       signal?.addEventListener("abort", stop, { once: true });
       try {
         await w.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(doc)}`);
+        // Design components render in their own (sandboxed, out-of-process) frames.
+        await Promise.all(
+          w.webContents.mainFrame.framesInSubtree
+            .filter((f) => f !== w.webContents.mainFrame)
+            .map((f) => f.executeJavaScript("window.__aegisRuntime?window.__aegisRuntime.ready:null").catch(() => null)),
+        );
         await w.webContents.executeJavaScript(
           "(async()=>{await document.fonts.ready;await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));return true})()",
         );

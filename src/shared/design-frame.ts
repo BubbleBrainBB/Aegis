@@ -2,16 +2,39 @@ import { designTextStyles } from "./design-text";
 import { sanitizeDesignHtml } from "./design-html";
 import { designFramePatchScript } from "./design-frame-patch";
 import { editableLayerStyles } from "./design-layers";
+import { DESIGN_COMPONENTS_TYPE, isDesignComponent } from "./design-component";
+import { DESIGN_RUNTIME_SCRIPT } from "./design-runtime-bundle";
 
-// No generated script can execute. Only this trusted, nonce-bound inspector
-// runs in the opaque-origin iframe; it has no preload or host capabilities.
+/** A component another board can use: its template, logic and props. */
+export interface DesignComponentSource {
+  html: string;
+  logic?: string | null;
+  props?: Record<string, unknown> | null;
+}
+export interface DesignFrameOptions {
+  /**
+   * edit: the canvas owns input, the board's logic runs without events.
+   * play: events and board links work. static: no runtime at all (drafts,
+   * a board whose script stopped responding).
+   */
+  mode?: "edit" | "play" | "static";
+  /** Components the board may use (its design system), by name. */
+  components?: Record<string, DesignComponentSource>;
+}
+
+// Only nonce-bound scripts run, in an opaque-origin, network-less iframe with
+// no preload or host capabilities: the inspector, and for design components
+// the board runtime, which evaluates the board's own logic and expressions.
 export function designFrameHtml(
   html: string,
   nonce: string,
   inspect = true,
+  options: DesignFrameOptions = {},
 ): string {
   if (!/^[a-zA-Z0-9-]+$/.test(nonce)) throw new Error("Invalid frame nonce");
-  const policy = `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'`;
+  const mode = options.mode ?? (inspect ? "edit" : "play");
+  const runtime = mode !== "static" && isDesignComponent(html);
+  const policy = `default-src 'none'; script-src 'nonce-${nonce}'${runtime ? " 'unsafe-eval'" : ""}; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'`;
   const inspector = inspect
     ? `<script data-aegis-frame nonce="${nonce}">
       ${designFramePatchScript}
@@ -52,7 +75,7 @@ export function designFrameHtml(
         const domIndex=index<vis.length?all.indexOf(vis[index]):vis.length?all.indexOf(vis[vis.length-1])+1:all.length;const near=ref||vis[index-1]||vis[index];
         return {containerId:c===document.body?null:c.getAttribute('data-aegis-node-id'),index:domIndex,position:index+1,count:vis.length+1,direction:dir,name:nameOf(c),line,containerTag:c.tagName.toLowerCase(),nearTag:near?near.tagName.toLowerCase():null}};
       window.addEventListener('message',e=>{const d=e.data;if(e.source!==parent||d?.nonce!==${JSON.stringify(nonce)})return;
-        if(d.type==='aegis-design-patch'&&typeof d.html==='string'){try{patchDocument(d.html);drag=null;ruleList=null;reply('aegis-design-patched',d.request,{ok:true})}catch{reply('aegis-design-patched',d.request,{ok:false})}return}
+        if(d.type==='aegis-design-patch'&&typeof d.html==='string'){if(window.__aegisRuntime){try{window.__aegisRuntime.update(d.html);drag=null;ruleList=null;reply('aegis-design-patched',d.request,{ok:true})}catch{reply('aegis-design-patched',d.request,{ok:false})}return}try{patchDocument(d.html);drag=null;ruleList=null;reply('aegis-design-patched',d.request,{ok:true})}catch{reply('aegis-design-patched',d.request,{ok:false})}return}
         if(d.type==='aegis-design-drag-start'){const t=byId(d.nodeId);if(!t||t.closest('[data-aegis-locked="true"]')||!t.parentElement||getComputedStyle(t).position==='absolute'||getComputedStyle(t).position==='fixed'){reply('aegis-design-drag-state',d.request,{ok:false});return}drag={node:t,parent:t.parentElement,next:t.nextSibling,style:t.getAttribute('style'),at:null,origin:[...t.parentElement.children].filter(k=>k!==t&&k.hasAttribute('data-aegis-node-id')).indexOf(t.nextElementSibling)};if(drag.origin<0)drag.origin=[...t.parentElement.children].filter(k=>k!==t&&k.hasAttribute('data-aegis-node-id')).length;t.style.setProperty('pointer-events','none','important');t.style.setProperty('opacity','.35','important');t.style.setProperty('outline','2px dashed rgba(13,153,255,.7)','important');t.style.setProperty('outline-offset','-2px','important');reply('aegis-design-drag-state',d.request,{ok:true});return}
         if(d.type==='aegis-design-drag-over'&&drag&&Number.isFinite(d.x)&&Number.isFinite(d.y)){const n=drag.node;let c=null;for(let e=document.elementFromPoint(d.x,d.y);e&&e!==document.documentElement;e=e.parentElement){if(e===n||n.contains(e)||!e.hasAttribute('data-aegis-node-id'))continue;if(e.closest('[data-aegis-locked="true"]'))continue;if(e===drag.parent){c=e;break}if(!/flex|grid/.test(getComputedStyle(e).display))continue;if(e.parentElement===drag.parent){const r=e.getBoundingClientRect(),m=Math.min(r.width,r.height)*.25;if(d.x<r.left+m||d.x>r.right-m||d.y<r.top+m||d.y>r.bottom-m)continue}c=e;break}
           if(!c)c=drag.parent;const kids=[...c.children].filter(k=>k!==n&&k.hasAttribute('data-aegis-node-id'));const vis=kids.filter(k=>getComputedStyle(k).display!=='none');const dir=flow(c);let index=0;if(vis.length){let best=0,bd=Infinity;vis.forEach((k,i)=>{const r=k.getBoundingClientRect();const dx=Math.max(r.left-d.x,0,d.x-r.right),dy=Math.max(r.top-d.y,0,d.y-r.bottom);const dist=Math.hypot(dx,dy);if(dist<bd){bd=dist;best=i}});const r=vis[best].getBoundingClientRect();const before=dir==='row'?d.x<r.left+r.width/2:dir==='column'||dir==='stack'?d.y<r.top+r.height/2:(d.y<r.top?true:d.y>r.bottom?false:d.x<r.left+r.width/2);index=kids.indexOf(vis[best])+(before?0:1)}
@@ -73,9 +96,16 @@ export function designFrameHtml(
         if(d.type==='aegis-design-select-node'&&typeof d.nodeId==='string'){send([...document.querySelectorAll('[data-aegis-node-id]')].find(t=>t.getAttribute('data-aegis-node-id')===d.nodeId),false,true);return}if(d.type!=='aegis-design-hit-test'||!Number.isFinite(d.x)||!Number.isFinite(d.y))return;let t=document.elementFromPoint(d.x,d.y);if(t?.closest('[data-aegis-locked="true"]'))return;send(t,d.hover===true)});
       </script>`
     : "";
+  const components = runtime && options.components && Object.keys(options.components).length
+    ? `<script type="${DESIGN_COMPONENTS_TYPE}" data-aegis-frame>${JSON.stringify(options.components).replace(/</g, "\\u003c")}</script>`
+    : "";
+  const board = runtime
+    ? `${components}<script data-aegis-frame data-aegis-runtime data-mode="${mode === "play" ? "play" : "edit"}" nonce="${nonce}">${DESIGN_RUNTIME_SCRIPT}</script>`
+    : "";
   // parse5 serializes a single document; insert CSP before all user styles.
+  // A replacer function: the runtime bundle contains `$&`-style sequences.
   return sanitizeDesignHtml(html).replace(
     "<head>",
-    `<head><meta data-aegis-frame http-equiv="Content-Security-Policy" content="${policy}"><meta data-aegis-frame name="referrer" content="no-referrer"><style data-aegis-frame>html{color-scheme:light}body{margin:0}*{box-sizing:border-box}[data-aegis-hidden="true"]{display:none!important}[data-aegis-masked]{-webkit-text-fill-color:transparent!important;-webkit-text-stroke-color:transparent!important;text-shadow:none!important;text-decoration-color:transparent!important}</style>${inspector}`,
+    () => `<head><meta data-aegis-frame http-equiv="Content-Security-Policy" content="${policy}"><meta data-aegis-frame name="referrer" content="no-referrer"><style data-aegis-frame>html{color-scheme:light}body{margin:0}*{box-sizing:border-box}[data-aegis-hidden="true"]{display:none!important}[data-aegis-masked]{-webkit-text-fill-color:transparent!important;-webkit-text-stroke-color:transparent!important;text-shadow:none!important;text-decoration-color:transparent!important}</style>${inspector}${board}`,
   );
 }

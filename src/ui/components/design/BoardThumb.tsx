@@ -1,10 +1,13 @@
 import { memo, useMemo, type CSSProperties } from "react";
 import { designFrameHtml } from "../../../shared/design-frame";
+import { isDesignComponent } from "../../../shared/design-component";
+import { isBoardHung, useSandboxEpoch } from "../../utils/sandbox-frames";
 import type { DesignBoard } from "../../../shared/design-types";
 
 /**
- * A board drawn small and inert: its HTML in a script-free sandboxed frame,
- * scaled to fit. For library rows and chat cards, never for editing.
+ * A board drawn small and inert, scaled to fit: static boards in a
+ * script-free frame; design components with their runtime (edit mode, so
+ * nothing reacts to input). For library rows and chat cards, never editing.
  */
 export const BoardThumb = memo(function BoardThumb({
   board,
@@ -21,10 +24,12 @@ export const BoardThumb = memo(function BoardThumb({
   style?: CSSProperties;
 }) {
   const scale = Math.min(width / board.width, height / board.height);
+  const sandboxEpoch = useSandboxEpoch();
+  const scripted = isDesignComponent(board.html) && !isBoardHung(board.html);
   // Keyed by revision so a rewritten board repaints; no inspector script.
   const srcDoc = useMemo(
-    () => designFrameHtml(board.html, `thumb-${board.id.replace(/[^a-zA-Z0-9-]/g, "")}-${board.contentRevision}`, false),
-    [board.html, board.id, board.contentRevision],
+    () => designFrameHtml(board.html, `thumb-${board.id.replace(/[^a-zA-Z0-9-]/g, "")}-${board.contentRevision}`, false, { mode: scripted ? "edit" : "static" }),
+    [board.html, board.id, board.contentRevision, scripted],
   );
   return (
     <div
@@ -33,9 +38,10 @@ export const BoardThumb = memo(function BoardThumb({
       style={{ width, height, overflow: "hidden", position: "relative", pointerEvents: "none", ...style }}
     >
       <iframe
+        key={sandboxEpoch}
         title=""
         tabIndex={-1}
-        sandbox=""
+        sandbox={scripted ? "allow-scripts" : ""}
         srcDoc={srcDoc}
         style={{
           position: "absolute",

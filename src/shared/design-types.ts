@@ -115,6 +115,10 @@ export type DesignOperation =
       type: "add";
       name?: string;
       html?: string;
+      /** The board's logic (class Board extends AegisBoard …), when it is a design component. */
+      js?: string;
+      /** The board's props definition. */
+      props?: Record<string, unknown>;
       /** Canvas position; defaults to the right of the existing boards. */
       x?: number;
       y?: number;
@@ -123,7 +127,10 @@ export type DesignOperation =
       pageId?: string;
     }
   | { type: "patch"; boardId: string; expectedRevision: number; find: string; replace: string }
-  | { type: "content"; boardId: string; expectedRevision: number; html: string }
+  | { type: "content"; boardId: string; expectedRevision: number; html: string; js?: string; props?: Record<string, unknown> }
+  | { type: "logic"; boardId: string; expectedRevision: number; js: string }
+  | { type: "logic_patch"; boardId: string; expectedRevision: number; find: string; replace: string }
+  | { type: "props"; boardId: string; expectedRevision: number; props: Record<string, unknown> | null }
   | {
       type: "placement";
       boardId: string;
@@ -284,6 +291,12 @@ export interface DesignAPI {
     { ok: true; html: string; contentRevision: number } | { ok: false; handoff: string } | { ok: false; error: string }
   >;
   quickEditCancel(input: { requestId: string }): Promise<void>;
+  /**
+   * A sandboxed frame (by its name) stopped answering: end the sandbox
+   * process it runs in. Every sandboxed frame of the window shares it, so
+   * the renderer remounts them all afterwards.
+   */
+  recoverFrame(input: { frameName: string }): Promise<{ recovered: boolean }>;
   /** A chat joins a design (a new chat started on it). */
   join(input: { sessionId: string; documentId: string }): Promise<void>;
   /** Deletes a design for good; its chats stay. */

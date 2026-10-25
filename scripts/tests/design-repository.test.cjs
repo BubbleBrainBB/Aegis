@@ -591,6 +591,33 @@ try {
     assert.deepEqual(repo.read("naming-qa", names.id).boards, names.boards, "names persist");
     console.log("Artboard naming: defaults, gaps, copies, sanitization, identity and persistence passed.");
   }
+  {
+    // Design components: add with logic and props, then edit each part on its own.
+    const { designLogicOf, designPropsOf } = require("../../dist-electron/shared/design-component.js");
+    let c = repo.create("component-qa", "Components", "", "c-create");
+    const write = (id, operations) => (c = repo.update("component-qa", { documentId: c.id, operationId: id, operations }));
+    write("c-add", [{ type: "add", name: "Tabs", html: '<main><button data-aegis-on-click="tab = 1">{{ label }}</button></main><script>alert(1)</script>', js: "class Board extends AegisBoard { state = { tab: 0 } }", props: { label: { type: "string", default: "Week" } } }]);
+    let b = c.boards[0];
+    assert.match(designLogicOf(b.html), /state = \{ tab: 0 \}/);
+    assert.equal(designPropsOf(b.html).label.default, "Week");
+    assert.ok(!b.html.includes("alert(1)"), "executable scripts never reach a board");
+    write("c-logic", [{ type: "logic_patch", boardId: b.id, expectedRevision: b.contentRevision, find: "tab: 0", replace: "tab: 1" }]);
+    b = c.boards[0];
+    assert.match(designLogicOf(b.html), /tab: 1/);
+    assert.equal(b.contentRevision, 2);
+    write("c-props", [{ type: "props", boardId: b.id, expectedRevision: b.contentRevision, props: { label: { type: "string", default: "Month" }, $preview: { label: "Day" } } }]);
+    b = c.boards[0];
+    assert.equal(designPropsOf(b.html).$preview.label, "Day");
+    assert.throws(() => write("c-bad", [{ type: "props", boardId: b.id, expectedRevision: b.contentRevision, props: { x: { type: "nope" } } }]), /needs a type/);
+    assert.throws(() => write("c-stale", [{ type: "logic", boardId: b.id, expectedRevision: 1, js: "" }]), /REVISION_CONFLICT/);
+    write("c-clear", [{ type: "logic", boardId: b.id, expectedRevision: b.contentRevision, js: "" }, { type: "props", boardId: b.id, expectedRevision: b.contentRevision + 1, props: null }]);
+    b = c.boards[0];
+    assert.equal(designLogicOf(b.html), null);
+    assert.equal(designPropsOf(b.html), null);
+    assert.match(b.html, /data-aegis-on-click/, "the template keeps its directives");
+    assert.match(c.revisionSummary ?? repo.history("component-qa", c.id)[0].summary, /logic|props|Edited/);
+    console.log("Design components: add with js/props, logic_patch, props, validation, conflicts and removal passed.");
+  }
   console.log(
     "Design repository: persistence, atomicity, idempotency, ownership, conflict, cancellation, threads, history metadata, board restore, migration, HTML isolation and session lifecycle passed.",
   );

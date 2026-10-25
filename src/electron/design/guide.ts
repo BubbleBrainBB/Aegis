@@ -3,7 +3,7 @@
  * descriptions say what the canvas allows; this is about making the work good.
  * Adapted from the Bubble desktop app's design skill.
  */
-export const DESIGN_GUIDE_TOPICS = ['treatment', 'options', 'structure', 'tokens', 'type', 'color', 'avoid', 'content', 'review'] as const;
+export const DESIGN_GUIDE_TOPICS = ['treatment', 'options', 'structure', 'components', 'tokens', 'type', 'color', 'avoid', 'content', 'review'] as const;
 export type DesignGuideTopic = (typeof DESIGN_GUIDE_TOPICS)[number];
 
 const sections: Record<DesignGuideTopic, string> = {
@@ -62,6 +62,23 @@ Pages group boards and annotations; screens remain individual boards. Preserve e
 - A change to one element is not a change to the system: edit a shared token or class only when the request is meant to apply everywhere.
 - Turning absolutely positioned layers into auto layout is a re-layout, not a conversion: decide direction, gap, padding, sizing and wrapping on purpose, then check reading order and the result.
 - Prefer text that grows with its content; give a fixed height only to regions that are meant to clip, scroll or keep a ratio. Never hide an accidental overflow with overflow: hidden.`,
+  components: `## Interactive boards (design components)
+A board can respond in Play: switch tabs, open a menu, step through a flow, go to another board. Keep a board template-only unless that behaviour is what the user is judging; layout and visual work never needs logic.
+A board has up to three parts, set with design_update (add/content take html, js and props together):
+- Template: the board HTML, as for any board. Directives make it dynamic:
+  - {{ expr }} in text or attribute values, e.g. <h1>{{ title }}</h1>, class="tab {{ tab === 'week' ? 'is-active' : '' }}".
+  - data-aegis-if="expr", and data-aegis-else on the element right after it.
+  - data-aegis-for="item in items" or "(item, i) in items" repeats the element (a number repeats it that many times); data-aegis-key="item.id" keeps items stable.
+  - data-aegis-on-click="select('month')" (also input, change, submit, keydown, mouseenter, mouseleave…) runs a method or assigns state: data-aegis-on-click="open = !open".
+  - data-aegis-bind-ATTR="expr" sets an attribute to a value (checked, disabled, style or class objects).
+  - data-aegis-goto="Board name" makes the element go to that board in Play.
+- Logic (js): one class, class Board extends AegisBoard { state = {…}; methods; values() { return {…} } }. this.props, this.state and this.setState({…}) work as in React; mounted(), updated() and unmounted() are lifecycle hooks; values() adds computed names for the template. Methods and state keys are names in the template.
+- Props (props): {"items":{"type":"list","default":[…]},"title":{"type":"string","default":"…"}}; types string, number, boolean, color, enum (with options), image, list, object. "$preview" overrides values for the canvas. Props make sample data editable without touching markup.
+Rules:
+- Logic runs in a sandbox with no network, storage or host access: no fetch, timers only for animation or demo state. Put sample data in props, not in logic.
+- Keep data-aegis-node-id on template elements as usual; repeated items share their template layer, so a hand edit applies to every item.
+- On the canvas, logic runs but input goes to the editor; Play (and exported HTML) is where it responds. design_preview reports logic errors as warnings; fix them before you finish.
+- Change logic with logic_patch for small edits, props with props, and the template with patch, as you would any board.`,
   tokens: `## Tokens first
 Before the first board, write a compact token set as CSS variables on :root and derive every color and type decision from it:
 - Color: a handful of named tokens: background (a subtly toned white or black), text, muted text, line, and 0–2 accents; add a surface only where the page really layers, not as a darker page under white cards.
@@ -112,7 +129,7 @@ Say what you made, the decisions that matter, what you checked (previews, warnin
 };
 
 export const DESIGN_GUIDE_DESCRIPTION =
-  `Read design guidance before creating or reworking boards with the design tools: treatment, board sizes, option sheets for comparing candidates, HTML structure that edits well, tokens, type, color, patterns to avoid, content and review. Pass topics to read only some (${DESIGN_GUIDE_TOPICS.join(', ')}); omit them for all. Also returns the style guide the user picked for this design, if any.`;
+  `Read design guidance before creating or reworking boards with the design tools: treatment, board sizes, option sheets for comparing candidates, HTML structure that edits well, interactive boards (template directives, logic and props), tokens, type, color, patterns to avoid, content and review. Pass topics to read only some (${DESIGN_GUIDE_TOPICS.join(', ')}); omit them for all. Also returns the style guide the user picked for this design, if any.`;
 
 export function designGuideText(topics?: readonly string[], styleGuide?: { name: string; text: string } | null): string {
   const wanted = topics?.length

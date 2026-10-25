@@ -13,7 +13,9 @@ import type {
   DesignNodeSnapshot,
 } from "../../../shared/design-diff";
 import { sanitizeDesignHtml } from "../../../shared/design-html";
-import { designFrameHtml } from "../../../shared/design-frame";
+import { designFrameHtml, type DesignComponentSource } from "../../../shared/design-frame";
+import { isDesignComponent } from "../../../shared/design-component";
+import { isBoardHung, markBoardHung, recoverSandboxFrames, useSandboxEpoch } from "../../utils/sandbox-frames";
 import type { LayerLayout } from "./design-spacing";
 import { toLayerCss, type LayerCss } from "./design-css";
 
@@ -81,6 +83,14 @@ export interface DragState {
   rect: DesignNodeRect;
   moved: boolean;
 }
+/** What a board's runtime tells the canvas: logic errors, board links, a hang. */
+export type BoardRuntimeEvent =
+  | { type: "errors"; errors: string[] }
+  | { type: "goto"; board: string }
+  | { type: "hung" };
+const PING_MS = 2500;
+const PONG_MS = 2000;
+
 const finite = (r: unknown): r is DesignNodeRect =>
   !!r &&
   typeof r === "object" &&
@@ -115,24 +125,41 @@ export const BoardFrame = memo(
     {
       board: DesignBoard;
       preview?: boolean;
+      /**
+       * static: render the template without its runtime (a board the agent
+       * is still writing). Defaults to edit on the canvas, play in preview.
+       */
+      mode?: "edit" | "play" | "static";
+      /** Components the board can use, from its design system. */
+      components?: Record<string, DesignComponentSource>;
       /** `requested`: the frame answering selectNode rather than reporting a click. */
       onInspect?: (anchor: DesignAnchor, hover: boolean, requested?: boolean) => void;
       onLoad?: () => void;
+      onRuntime?: (event: BoardRuntimeEvent) => void;
     }
-  >(function BoardFrame({ board, preview = false, onInspect, onLoad }, ref) {
+  >(function BoardFrame({ board, preview = false, mode: requestedMode, components, onInspect, onLoad, onRuntime }, ref) {
     const frame = useRef<HTMLIFrameElement>(null);
     const pending = useRef(new Map<string, (data: any) => void>());
+    // A hung board falls back to its template without the runtime until its HTML changes.
+    const [hungHtml, setHungHtml] = useState<string | null>(null);
+    const mode = (hungHtml !== null && hungHtml === board.html) || isBoardHung(board.html) ? "static" : requestedMode ?? (preview ? "play" : "edit");
+    // A recovered sandbox process: every frame starts over in a fresh one.
+    const sandboxEpoch = useSandboxEpoch();
     // A board owns one iframe/nonce for its lifetime. Content updates go through
     // the bridge; changing srcDoc for every streamed chunk navigates the frame.
+    // Switching runtime on or off (component ↔ static, mode) needs a new frame.
+    const scripted = mode !== "static" && isDesignComponent(board.html);
     const lifetime = useMemo(() => {
       const token = crypto.randomUUID();
-      return { token, html: board.html, source: designFrameHtml(board.html, token, !preview) };
-    }, [board.id, preview]);
+      return { token, html: board.html, source: designFrameHtml(board.html, token, !preview, { mode, components }) };
+    }, [board.id, preview, mode, scripted, components, sandboxEpoch]);
     const { token } = lifetime;
     const html = useMemo(() => sanitizeDesignHtml(board.html), [board.html]);
     const [recovery, setRecovery] = useState<{ token: string; html: string; source: string; epoch: string } | null>(null);
-    const source = preview ? designFrameHtml(html, token, false)
+    const source = preview ? designFrameHtml(html, token, false, { mode, components })
       : recovery?.token === token ? recovery.source : lifetime.source;
+    const onRuntimeRef = useRef(onRuntime);
+    onRuntimeRef.current = onRuntime;
     const ready = useRef<string | null>(null);
     const applied = useRef<string | null>(null);
     const [loadEpoch, setLoadEpoch] = useState(0);
@@ -306,6 +333,17 @@ export const BoardFrame = memo(
           e.data?.nonce !== token
         )
           return;
+        if (e.data.type === "aegis-design-runtime") {
+          const d = e.data;
+          if (d.event === "pong" && typeof d.request === "string") {
+            pending.current.get(d.request)?.(d);
+            pending.current.delete(d.request);
+          } else if (d.event === "errors" && Array.isArray(d.errors))
+            onRuntimeRef.current?.({ type: "errors", errors: d.errors.filter((x: unknown) => typeof x === "string").slice(0, 20).map((x: string) => x.slice(0, 500)) });
+          else if (d.event === "goto" && typeof d.board === "string") onRuntimeRef.current?.({ type: "goto", board: d.board.slice(0, 200) });
+          else if (d.event === "updated" || d.event === "ready") onRuntimeRef.current?.({ type: "errors", errors: [] });
+          return;
+        }
         if (
           (e.data.type === "aegis-design-patched" ||
             e.data.type === "aegis-design-rects" ||
@@ -358,6 +396,37 @@ export const BoardFrame = memo(
       return () => window.removeEventListener("message", receive);
     }, [token, onInspect]);
     useEffect(() => {
+      if (!scripted || ready.current !== token) return;
+      // Watchdog: a board whose logic stops answering falls back to static.
+      let missed = 0;
+      let live = true;
+      const timer = setInterval(() => {
+        const id = crypto.randomUUID();
+        const answered = setTimeout(() => {
+          pending.current.delete(id);
+          if (!live) return;
+          missed += 1;
+          if (missed >= 2) {
+            clearInterval(timer);
+            markBoardHung(board.html);
+            setHungHtml(board.html);
+            onRuntimeRef.current?.({ type: "hung" });
+            // The stuck process holds every sandboxed frame; end it so they all come back.
+            void recoverSandboxFrames(token);
+          }
+        }, PONG_MS);
+        pending.current.set(id, () => {
+          clearTimeout(answered);
+          missed = 0;
+        });
+        frame.current?.contentWindow?.postMessage({ type: "aegis-design-ping", nonce: token, request: id }, "*");
+      }, PING_MS);
+      return () => {
+        live = false;
+        clearInterval(timer);
+      };
+    }, [scripted, token, loadEpoch, board.html]);
+    useEffect(() => {
       if (preview || ready.current !== token || applied.current === html) return;
       let current = true;
       applied.current = null; // A → B → A must supersede an in-flight B patch too.
@@ -370,7 +439,7 @@ export const BoardFrame = memo(
         } else {
           // A broken bridge gets one full, sandboxed recovery for these bytes.
           ready.current = null;
-          setRecovery({ token, html, source: designFrameHtml(html, token, true), epoch: crypto.randomUUID() });
+          setRecovery({ token, html, source: designFrameHtml(html, token, true, { mode, components }), epoch: crypto.randomUUID() });
         }
       });
       return () => { current = false; };
@@ -379,6 +448,7 @@ export const BoardFrame = memo(
       <iframe
         key={recovery?.token === token ? recovery.epoch : token}
         ref={frame}
+        name={token}
         title={board.name}
         srcDoc={source}
         sandbox="allow-scripts"
