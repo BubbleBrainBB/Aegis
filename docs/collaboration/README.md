@@ -137,7 +137,7 @@ Claude 当前没有注册进 `ProviderService`，由 `runAgentLoop` 回退到原
 
 输入框增加“单 Agent / 协作”模式。协作模式下发送动作直接提交给 WorkflowService，不先进入普通 Agent。
 
-2026-10-05 改版：入口在当前聊天中。用户照常对当前 Agent 说话（“让 DeepSeek review 一下你的改动”）；当前 Agent 识别到需要其他 Agent 参与时调用应用工具 `start_workflow({request, context, cwd?})`，只提交请求、立即结束本轮。工作目录默认是该会话的目录；改动在同一仓库的另一个 worktree 时传 `cwd`（必须是绝对路径且属于同一仓库，否则工具报错）。此时只读副本和 diff 取自 `cwd`，`current` 成员仍留在自己的目录、按任务说明在 `cwd` 中修改（2026-10-25：此前审查者拿到会话目录的 diff，与要求审查的 worktree 不符而判 blocked）。之后由程序编排：Planner 生成流程，引擎执行，当前会话作为 `current` 成员按需接收任务（如修复），结束后结果以后续消息交回。不再有单独的协作页面或输入框模式切换；@-mention 直达入口延后。
+2026-10-05 改版：入口在当前聊天中。用户照常对当前 Agent 说话（“让 DeepSeek review 一下你的改动”）；当前 Agent 识别到需要其他 Agent 参与时调用应用工具 `start_workflow({request, context, cwd?})`，只提交请求、立即结束本轮。工作目录默认是该会话的目录；改动在同一仓库的另一个 worktree 时传 `cwd`（必须是绝对路径、在工作区内且属于同一仓库，子模块和 `.git` 目录不算，否则工具报错；成功返回里带实际使用的 `cwd`）。此时只读副本和 diff 取自 `cwd`，`current` 成员仍留在自己的目录、按任务说明在 `cwd` 中修改，该轮期间 `cwd` 临时算作会话的项目目录（`grantSessionFolder` → `getSessionProjectSources`，Claude/Codex/Bubble/OpenCode 的目录权限都按它判断），轮次结束即撤销（2026-10-25：此前审查者拿到会话目录的 diff，与要求审查的 worktree 不符而判 blocked）。之后由程序编排：Planner 生成流程，引擎执行，当前会话作为 `current` 成员按需接收任务（如修复），结束后结果以后续消息交回。不再有单独的协作页面或输入框模式切换；@-mention 直达入口延后。
 
 | 入口 | 流程来源 | 阶段 |
 |---|---|---|

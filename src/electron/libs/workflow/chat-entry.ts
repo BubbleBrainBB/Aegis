@@ -9,7 +9,7 @@ import * as path from 'path';
 import { z } from 'zod';
 import { isStartWorkflowToolName } from '../../../shared/workflow';
 import type { StreamMessage } from '../../types';
-import { sameRepository } from './workspace-snapshot';
+import { repoInfo, sameRepository } from './workspace-snapshot';
 
 export const START_WORKFLOW_DESCRIPTION = [
   'Hand a request that involves other coding agents to the Aegis workflow engine, for example',
@@ -73,11 +73,15 @@ export async function workflowTargetFolder(
   sessionCwd: string,
   requested: string | undefined,
 ): Promise<{ ok: true; cwd: string } | { ok: false; error: string }> {
-  const cwd = requested?.trim();
-  if (!cwd || path.resolve(sessionCwd, cwd) === path.resolve(sessionCwd)) return { ok: true, cwd: sessionCwd };
-  if (!path.isAbsolute(cwd)) return { ok: false, error: `cwd must be an absolute path: ${cwd}` };
+  const raw = requested?.trim();
+  if (!raw || path.resolve(sessionCwd, raw) === path.resolve(sessionCwd)) return { ok: true, cwd: sessionCwd };
+  if (!path.isAbsolute(raw)) return { ok: false, error: `cwd must be an absolute path: ${raw}` };
+  const cwd = path.resolve(raw);
   const stat = await fs.stat(cwd).catch(() => null);
   if (!stat?.isDirectory()) return { ok: false, error: `cwd is not a folder: ${cwd}` };
+  if (!(await repoInfo(cwd).then(() => true, () => false))) {
+    return { ok: false, error: `cwd is not inside a Git working tree: ${cwd}` };
+  }
   if (!(await sameRepository(sessionCwd, cwd))) {
     return { ok: false, error: `${cwd} is not part of this conversation's Git repository (${sessionCwd}).` };
   }

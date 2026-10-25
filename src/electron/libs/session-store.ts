@@ -1232,12 +1232,31 @@ export function getProjectSources(projectCwd: string | null | undefined): string
 }
 
 /** Runtime roots replace the primary checkout with the worktree, keeping extra project folders. */
+/** Folders a session may use for now on top of its project's: a workflow step working in another worktree. */
+const grantedFolders = new Map<string, string[]>();
+
+/** Lets the session work in `folder` like a project folder until the returned release is called. */
+export function grantSessionFolder(sessionId: string, folder: string): () => void {
+  const entry = canonicalProjectPath(folder);
+  grantedFolders.set(sessionId, [...(grantedFolders.get(sessionId) ?? []), entry]);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const rest = [...(grantedFolders.get(sessionId) ?? [])];
+    rest.splice(rest.indexOf(entry), 1);
+    if (rest.length) grantedFolders.set(sessionId, rest);
+    else grantedFolders.delete(sessionId);
+  };
+}
+
 export function getSessionProjectSources(sessionId: string, cwd: string): string[] {
+  const granted = grantedFolders.get(sessionId) ?? [];
   const row = db ? getSession(sessionId) : undefined;
-  if (!row) return [canonicalProjectPath(cwd)];
+  if (!row) return [...new Set([canonicalProjectPath(cwd), ...granted])];
   const sources = getProjectSources(row.project_cwd || row.cwd);
   const replacePrimary = row.env_mode === 'worktree' && Boolean(row.worktree_path);
-  return [...new Set([canonicalProjectPath(cwd), ...sources.slice(replacePrimary ? 1 : 0)])];
+  return [...new Set([canonicalProjectPath(cwd), ...sources.slice(replacePrimary ? 1 : 0), ...granted])];
 }
 
 export function buildProjectSourcesContext(projectCwd: string | null | undefined, cwd: string | null | undefined, replacePrimary = false): string {

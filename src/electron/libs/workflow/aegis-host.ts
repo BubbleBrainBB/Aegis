@@ -45,6 +45,8 @@ export type SessionBridge = {
   sessionCwd(sessionId: string): string | null;
   /** The session is running a turn (its own, or one the user sent). */
   isBusy(sessionId: string): boolean;
+  /** Lets the session work in a folder outside its own until the returned release is called. */
+  grantFolder(sessionId: string, folder: string): () => void;
 };
 
 export type RunControl = {
@@ -158,6 +160,7 @@ export class AegisWorkflowHost implements WorkflowHost {
     let workspaceDir: string;
     let versionIn = instance.version;
     let releaseLease: (() => void) | null = null;
+    let releaseFolder: (() => void) | null = null;
     let copy: { dir: string; root: string; fingerprint: string } | null = null;
     const briefContext: Parameters<typeof renderBrief>[1] = { runTitle: run.title, workspaceDir: run.cwd };
 
@@ -191,13 +194,15 @@ export class AegisWorkflowHost implements WorkflowHost {
       const role = member.role;
       const policy: WorkflowSessionPolicy = { runId: run.id, role, readOnly: role !== 'implementer' };
       const isCurrent = member.agent === CURRENT_SESSION_AGENT;
+      const ownFolder = memberSessionCwd(isCurrent, run, workspaceDir);
+      if (ownFolder !== workspaceDir) briefContext.outsideSessionFolder = true;
       // The chat session keeps its own permission mode: nothing is overridden.
       const payload = isCurrent ? {} : memberSessionPayload(declaration, role, run.options.permissionModes).payload;
       const prompt = renderBrief(instance, briefContext);
       const display = isCurrent ? currentSessionDisplay(instance, this.deps.members()) : undefined;
 
       const reuse =
-        instance.session === 'continue' && member.currentSessionId && this.deps.bridge.sessionCwd(member.currentSessionId) === memberSessionCwd(isCurrent, run, workspaceDir)
+        instance.session === 'continue' && member.currentSessionId && this.deps.bridge.sessionCwd(member.currentSessionId) === ownFolder
           ? member.currentSessionId
           : null;
       let sessionId: string;
@@ -213,6 +218,9 @@ export class AegisWorkflowHost implements WorkflowHost {
         sessionId = reuse;
         if (!(await this.waitUntilIdle(sessionId))) return { status: 'cancelled' };
         await this.attachSession(instance.key, sessionId);
+        // The chat works in the run's folder for this step only, with the
+        // same access it has to its own project folders.
+        if (ownFolder !== workspaceDir) releaseFolder = this.deps.bridge.grantFolder(sessionId, workspaceDir);
         turn = await this.continueTurn(sessionId, prompt, member.provider, payload, display);
       } else if (reuse) {
         sessionId = reuse;
@@ -271,6 +279,7 @@ export class AegisWorkflowHost implements WorkflowHost {
     } catch (error) {
       return this.snapshotFailure(error);
     } finally {
+      releaseFolder?.();
       releaseLease?.();
     }
   }

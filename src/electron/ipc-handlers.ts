@@ -4774,6 +4774,7 @@ function setupWorkflows(mainWindow: BrowserWindow): void {
       stop: (sessionId) => handleSessionStop(mainWindow, sessionId),
       sessionCwd: (sessionId) => sessions.getSession(sessionId)?.cwd ?? null,
       isBusy: (sessionId) => sessions.getSession(sessionId)?.status === 'running',
+      grantFolder: (sessionId, folder) => sessions.grantSessionFolder(sessionId, folder),
     },
     reportToParent: async (sessionId, display, prompt) => {
       // The chat session finishes whatever it is doing first.
@@ -4871,6 +4872,7 @@ function setupWorkflows(mainWindow: BrowserWindow): void {
       text: JSON.stringify({
         workflowId: result.run.id,
         status: result.run.status,
+        cwd: target.cwd,
         note:
           'The workflow is running in the background and its progress is shown in this conversation. ' +
           'End your turn now. Fix requests and the final result will arrive as follow-up messages.',
