@@ -13,6 +13,7 @@ process.env.AEGIS_CODEX_INITIALIZE_TIMEOUT_MS = '3000';
 process.env.AEGIS_CODEX_REQUEST_TIMEOUT_MS = '2000';
 process.env.AEGIS_CODEX_TURN_TIMEOUT_MS = '4000';
 process.env.AEGIS_CODEX_STOP_CONFIRM_TIMEOUT_MS = '250';
+process.env.AEGIS_CODEX_CONFIG_READ_TIMEOUT_MS = '100';
 
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
@@ -72,6 +73,8 @@ function createCapturingManager() {
   manager.child = { stdin: { writable: true, write() {} }, kill() {} };
   const outbound = [];
   const responders = new Map();
+  // thread/start reads config first (developerInstructions); answer by default.
+  responders.set('config/read', () => ({ result: { config: {} } }));
   manager.writeMessage = (message) => {
     outbound.push(message);
     if (message && message.id !== undefined && message.method) {
@@ -125,6 +128,8 @@ function createCapturingAdapter({ attachThread = true } = {}) {
   }
   const outbound = [];
   const responders = new Map();
+  // thread/start reads config first (developerInstructions); answer by default.
+  responders.set('config/read', () => ({ result: { config: {} } }));
   manager.writeMessage = (message) => {
     outbound.push(message);
     if (message && message.id !== undefined && message.method) {
@@ -1839,10 +1844,81 @@ async function testComputerUseGrants() {
   }
 }
 
+// ── Design canvas developer message ───────────────────────────────────────
+async function testDesignCanvasInstructions() {
+  console.log('Design canvas developer instructions');
+  const startThread = async (configReply, options = {}) => {
+    const { manager, outbound, responders } = createCapturingManager();
+    if (configReply) responders.set('config/read', configReply);
+    responders.set('thread/start', () => ({ result: { thread: { id: 'p-new', model: 'fake-model' }, cwd: '/tmp/proj' } }));
+    responders.set('mcpServerStatus/list', () => ({ result: { data: [] } }));
+    await manager.createNewThread('/tmp/proj', options);
+    return outbound;
+  };
+
+  {
+    const outbound = await startThread();
+    const read = outbound.find((m) => m.method === 'config/read');
+    assert.equal(read.params.cwd, '/tmp/proj', 'config/read resolves project layers for the thread cwd');
+    const start = outbound.find((m) => m.method === 'thread/start');
+    assert.match(start.params.developerInstructions, /design_guide/);
+    assert.match(start.params.developerInstructions, /ALL_TOOLS/);
+    ok('new thread points design requests at the canvas');
+  }
+
+  {
+    const outbound = await startThread(() => ({ result: { config: { developer_instructions: '  Always answer in haiku.  ' } } }));
+    const text = outbound.find((m) => m.method === 'thread/start').params.developerInstructions;
+    assert.ok(text.startsWith('Always answer in haiku.\n\n'), 'configured developer_instructions kept first');
+    assert.match(text, /design_guide/);
+    ok('configured developer_instructions survive the override');
+  }
+
+  {
+    const outbound = await startThread(() => ({ error: { code: -32601, message: 'unsupported config/read' } }));
+    const start = outbound.find((m) => m.method === 'thread/start');
+    assert.ok(!('developerInstructions' in start.params), 'unreadable config: leave the thread alone');
+    ok('unreadable config → no developerInstructions');
+  }
+
+  {
+    const outbound = await startThread(() => undefined);
+    const start = outbound.find((m) => m.method === 'thread/start');
+    assert.ok(!('developerInstructions' in start.params), 'config/read timeout: leave the thread alone');
+    ok('config/read timeout → thread still starts, no developerInstructions');
+  }
+
+  {
+    const { adapter, outbound, responders } = createCapturingAdapter({ attachThread: false });
+    responders.set('thread/resume', () => ({ error: { code: -32602, message: 'thread not found' } }));
+    responders.set('thread/start', () => ({ result: { thread: { id: 'p-fresh', model: 'fake-model' }, cwd: '/tmp/proj' } }));
+    await adapter.startSession({ provider: 'codex', threadId: 't1', cwd: '/tmp/proj', prompt: '', resumeSessionId: 'p-dead' });
+    assert.match(outbound.find((m) => m.method === 'thread/start').params.developerInstructions, /design_guide/);
+    ok('resume fallback to a fresh thread carries the canvas note');
+  }
+
+  {
+    const outbound = await startThread(undefined, { workflowReadOnly: true });
+    assert.ok(!outbound.some((m) => m.method === 'config/read'));
+    assert.ok(!('developerInstructions' in outbound.find((m) => m.method === 'thread/start').params));
+    ok('read-only workflow threads get no canvas note');
+  }
+
+  {
+    const { manager, outbound, responders } = createCapturingManager();
+    responders.set('thread/resume', () => ({ result: { thread: { id: 'p-resumed', model: 'fake-model' }, cwd: '/tmp/proj' } }));
+    await manager.createSession('t1', '/tmp/proj', 'p-resumed', {});
+    assert.ok(!('developerInstructions' in outbound.find((m) => m.method === 'thread/resume').params));
+    assert.ok(!outbound.some((m) => m.method === 'config/read'), 'resume does not read config for a note it cannot add');
+    ok('resume keeps the rollout\'s developer message (no parameter)');
+  }
+}
+
 async function main() {
   await testTurnTerminals();
   await testAutoPermissionMode();
   await testServiceTier();
+  await testDesignCanvasInstructions();
   await testMcpStatus();
   await testResume();
   await testTwoPhaseStop();
