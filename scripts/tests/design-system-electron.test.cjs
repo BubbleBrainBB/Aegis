@@ -72,7 +72,7 @@ app.whenReady().then(async () => {
     assert.equal(warm.id, 'warm-paper');
     assert.match(warm.css, /--accent:#7a5c3e/);
     assert.match(warm.css, /\.ds-button/);
-    assert.deepEqual(Object.keys(warm.components).sort(), ['Button', 'Card', 'Field', 'Tag']);
+    assert.ok(['Button', 'Card', 'Field', 'Tag', 'Tabs', 'Toggle'].every((n) => warm.components[n]), Object.keys(warm.components).join(', '));
     assert.equal(designSystemPack(undefined, project).id, 'project', "a project's system applies by default");
     assert.equal(designSystemPack(NO_DESIGN_SYSTEM, project), null);
     assert.equal(designSystemPack(undefined, path.join(temp, 'elsewhere')), null);

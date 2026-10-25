@@ -4,7 +4,7 @@ import { getDesignRepository } from "./service";
 import { designProjectRoot } from "./styles";
 import { readBoardTokens } from "../../shared/design-tokens";
 import { randomUUID } from "crypto";
-import { packForDesign } from "./service";
+import { renderSystemFor } from "./service";
 import { designFrameHtml } from "./html";
 import { isDesignComponent, designLogicOf } from "../../shared/design-component";
 import { designSystemTokens } from "../../shared/design-system-pack";
@@ -37,7 +37,7 @@ export function handOffDesign(input: { sessionId: string; documentId: string; bo
   if (!chosen.length) throw new Error("Choose at least one board.");
   const dir = join(root, ".aegis", "design", slugOf(doc.title, "design"));
   mkdirSync(dir, { recursive: true });
-  const pack = packForDesign(doc);
+  const pack = renderSystemFor(doc);
   const extra: string[] = [];
   const used = new Set<string>();
   const boards = chosen.map((b, i) => {
@@ -53,9 +53,20 @@ export function handOffDesign(input: { sessionId: string; documentId: string; bo
     } else writeFileSync(join(dir, file), b.html, "utf8");
     return { name: b.name, file, width: b.width, height: b.height };
   });
-  if (pack) {
+  if (pack?.css) {
     writeFileSync(join(dir, "design-system.css"), pack.css, "utf8");
     extra.push("design-system.css");
+  }
+  // The design's images as files, for the implementing agent to copy into the project.
+  const images = getDesignRepository().assetList(input.sessionId, doc.id).filter((a) => chosen.some((b) => b.html.includes(`aegis-asset:${a.id}`)));
+  if (images.length) {
+    mkdirSync(join(dir, "images"), { recursive: true });
+    const data = getDesignRepository().assetData(input.sessionId, doc.id, images.map((a) => a.id));
+    for (const a of images) {
+      const ext = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif", "image/svg+xml": "svg" }[a.mime] ?? "bin";
+      writeFileSync(join(dir, "images", `${a.id}.${ext}`), Buffer.from(data[a.id].split(",")[1], "base64"));
+      extra.push(join("images", `${a.id}.${ext}`));
+    }
   }
   const usedComponents = pack
     ? Object.keys(pack.components).filter((name) => {
@@ -78,7 +89,10 @@ export function handOffDesign(input: { sessionId: string; documentId: string; bo
     ...boards.map((b) => `- ${b.name} (${b.width} × ${b.height}): ${b.file}`),
     "",
     ...(tokens.size ? ["## Tokens", ...[...tokens].map(([name, value]) => `- ${name}: ${value}`), ""] : []),
-    ...(pack
+    ...(images.length
+      ? ["## Images", `images/ holds the images the boards use (aegis-asset:<id> in source/ is images/<id>.*): ${images.map((a) => `${a.id} (${a.name}${a.width ? `, ${a.width} × ${a.height}` : ""})`).join(", ")}.`, ""]
+      : []),
+    ...(pack?.css
       ? [
           `## Design system: ${pack.name}`,
           "design-system.css is what every board loads (tokens, fonts, component classes).",

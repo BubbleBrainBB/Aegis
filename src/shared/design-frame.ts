@@ -4,7 +4,7 @@ import { designFramePatchScript } from "./design-frame-patch";
 import { editableLayerStyles } from "./design-layers";
 import { DESIGN_COMPONENTS_TYPE, isDesignComponent } from "./design-component";
 import { DESIGN_RUNTIME_SCRIPT } from "./design-runtime-bundle";
-import { resolveDesignAssets } from "./design-system-pack";
+import { resolveFrameAssets } from "./design-system-pack";
 import { deckSlideCss, isDesignDeck } from "./design-deck";
 
 /** A component another board can use: its template, logic and props. */
@@ -119,7 +119,7 @@ export function designFrameHtml(
   // bare, so it starts with exactly [<!DOCTYPE html>]<html><head>. The frame's
   // policy goes right there, before everything the board wrote; anything else
   // means the policy could land in the wrong place, so nothing is rendered.
-  const doc = resolveDesignAssets(sanitizeDesignHtml(html), options.system?.assets);
+  const doc = resolveFrameAssets(sanitizeDesignHtml(html), options.system?.assets);
   const start = /^(?:<!DOCTYPE html>)?<html><head>/.exec(doc);
   if (!start) throw new Error("Board HTML did not sanitize to a plain document head.");
   return doc.slice(0, start[0].length) + framePrelude() + doc.slice(start[0].length);

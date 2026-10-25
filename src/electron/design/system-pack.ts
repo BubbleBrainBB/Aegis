@@ -6,6 +6,8 @@ import { declaredFontFamilies, type DesignSystemPack } from "../../shared/design
 import { sanitizeDesignHtml } from "./html";
 import { summaryOf } from "./design-system";
 import { builtinDesignStyles, PROJECT_DESIGN_SYSTEM, type BuiltinStyle } from "./styles";
+import { BUILTIN_COMPONENT_CSS, BUILTIN_COMPONENTS } from "./builtin-components";
+import { expandDesignIcons } from "./icons";
 
 /**
  * Design system packs: what a design's boards load. A project's pack is its
@@ -17,7 +19,8 @@ import { builtinDesignStyles, PROJECT_DESIGN_SYSTEM, type BuiltinStyle } from ".
  *   components/Name.md    how to use it (first line: what it is)
  *   assets/name.svg|png…  images boards use as aegis-asset:name
  *
- * Built-in styles have packs too: their tokens and a small set of components.
+ * Built-in styles have packs too: their bundled fonts, tokens and the
+ * built-in components (builtin-components.ts).
  */
 
 const FOLDER = "design-system";
@@ -35,50 +38,6 @@ const MIME: Record<string, string> = {
 
 // ── Built-in packs ─────────────────────────────────────────────────────────
 
-/** Component classes every built-in pack shares, styled only through its tokens. */
-const BASE_CSS = `
-.ds-button{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:1px solid transparent;border-radius:var(--radius-control);font:500 15px/1 var(--font-body);cursor:pointer;white-space:nowrap;text-decoration:none}
-.ds-button--md{height:40px;padding:0 18px}
-.ds-button--sm{height:32px;padding:0 12px;font-size:13px}
-.ds-button--lg{height:48px;padding:0 24px;font-size:16px}
-.ds-button--primary{background:var(--accent);color:var(--on-accent)}
-.ds-button--secondary{background:transparent;color:var(--text);border-color:var(--line)}
-.ds-button--ghost{background:transparent;color:var(--text)}
-.ds-card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:20px;display:flex;flex-direction:column;gap:10px;color:var(--text)}
-.ds-card__title{margin:0;font:600 17px/1.3 var(--font-display)}
-.ds-tag{display:inline-flex;align-items:center;gap:4px;height:24px;padding:0 10px;border-radius:999px;font:500 12px/1 var(--font-body);background:color-mix(in oklch, var(--text) 8%, transparent);color:var(--text)}
-.ds-tag--accent{background:color-mix(in oklch, var(--accent) 16%, transparent);color:var(--accent)}
-.ds-field{display:flex;flex-direction:column;gap:6px;font:13px/1.3 var(--font-body);color:var(--muted)}
-.ds-input{height:40px;padding:0 12px;border:1px solid var(--line);border-radius:var(--radius-control);background:var(--surface);color:var(--text);font:15px var(--font-body)}
-`.trim();
-
-const BUILTIN_COMPONENTS: DesignSystemPack["components"] = {
-  Button: {
-    summary: "An action: primary for the main one, secondary or ghost for the rest.",
-    html: '<button class="ds-button ds-button--{{ variant }} ds-button--{{ size }}">{{ label }}<aegis-slot></aegis-slot></button>',
-    props: {
-      label: { type: "string", default: "" },
-      variant: { type: "enum", options: ["primary", "secondary", "ghost"], default: "primary" },
-      size: { type: "enum", options: ["sm", "md", "lg"], default: "md" },
-    },
-  },
-  Card: {
-    summary: "A surface grouping related content, with an optional title.",
-    html: '<section class="ds-card"><h3 class="ds-card__title" data-aegis-if="title">{{ title }}</h3><aegis-slot></aegis-slot></section>',
-    props: { title: { type: "string", default: "" } },
-  },
-  Tag: {
-    summary: "A short status or category label.",
-    html: '<span class="ds-tag ds-tag--{{ tone }}">{{ label }}<aegis-slot></aegis-slot></span>',
-    props: { label: { type: "string", default: "" }, tone: { type: "enum", options: ["neutral", "accent"], default: "neutral" } },
-  },
-  Field: {
-    summary: "A labelled text input.",
-    html: '<label class="ds-field"><span>{{ label }}</span><input class="ds-input" placeholder="{{ placeholder }}" value="{{ value }}"></label>',
-    props: { label: { type: "string", default: "Label" }, placeholder: { type: "string", default: "" }, value: { type: "string", default: "" } },
-  },
-};
-
 /** Readable text on the accent: dark ink on light accents, white on dark ones. */
 function onAccent(hex: string): string {
   const m = /^#([0-9a-f]{6})$/i.exec(hex);
@@ -87,11 +46,45 @@ function onAccent(hex: string): string {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.4 ? "#111111" : "#ffffff";
 }
 
+const SEMANTIC = {
+  light: { success: "#1f8a5b", warning: "#b26b00", danger: "#c4362b" },
+  dark: { success: "#5cc48d", warning: "#e3a948", danger: "#ef7a6d" },
+};
+
+/** A bundled font as a data URL (fonts/ sits next to the compiled main process). */
+function fontDataUrl(file: string): string | null {
+  try {
+    return `data:font/woff2;base64,${readFileSync(join(__dirname, "fonts", file)).toString("base64")}`;
+  } catch {
+    return null;
+  }
+}
+
+const builtinCache = new Map<string, DesignSystemPack>();
 function builtinPack(style: BuiltinStyle): DesignSystemPack {
+  const hit = builtinCache.get(style.id);
+  if (hit) return hit;
   const p = style.palette;
-  const tokens = `:root{--background:${p.background};--surface:${p.surface};--text:${p.text};--muted:${p.muted};--accent:${p.accent};--on-accent:${onAccent(p.accent)};--line:${p.line};--font-display:${style.type.display};--font-body:${style.type.body};--radius:${style.shape.radius};--radius-control:${style.shape.control};--shadow:${style.shape.shadow}}`;
-  const css = `${tokens}\n${BASE_CSS}`;
-  return { id: style.id, name: style.name, css, components: BUILTIN_COMPONENTS, assets: {}, fonts: [], signature: hash(css) };
+  const semantic = style.dark ? SEMANTIC.dark : SEMANTIC.light;
+  const raised = `color-mix(in oklch, ${p.surface} 92%, ${style.dark ? "#ffffff" : p.text})`;
+  const faces = style.fonts
+    .map((f) => {
+      const url = fontDataUrl(f.file);
+      return url ? `@font-face{font-family:"${f.family}";src:url("${url}") format("woff2");font-weight:${f.weight};font-style:${f.style ?? "normal"};font-display:block}` : "";
+    })
+    .filter(Boolean);
+  const families = [...new Set(style.fonts.map((f) => f.family))];
+  const tokens = `:root{--background:${p.background};--surface:${p.surface};--raised:${raised};--text:${p.text};--muted:${p.muted};--accent:${p.accent};--on-accent:${onAccent(p.accent)};--line:${p.line};--success:${semantic.success};--warning:${semantic.warning};--danger:${semantic.danger};--font-display:${style.type.display};--font-body:${style.type.body};--font-mono:${style.type.mono};--radius:${style.shape.radius};--radius-control:${style.shape.control};--shadow:${style.shape.shadow}}`;
+  const css = [
+    `/* ${style.name}. Fonts: ${families.join(", ")} (SIL Open Font License 1.1). */`,
+    ...faces,
+    tokens,
+    style.dark ? "html{color-scheme:dark}" : "",
+    BUILTIN_COMPONENT_CSS,
+  ].filter(Boolean).join("\n");
+  const pack: DesignSystemPack = { id: style.id, name: style.name, css, components: BUILTIN_COMPONENTS, assets: {}, fonts: families, signature: hash(css) };
+  builtinCache.set(style.id, pack);
+  return pack;
 }
 
 // ── Project packs ──────────────────────────────────────────────────────────
@@ -192,7 +185,7 @@ function readStyles(dir: string, file: string, inliner: Inliner, seen = new Set<
 function readComponent(file: string, root: string): { html: string; logic: string | null; props: Record<string, unknown> | null } | null {
   const bytes = readFileSmall(file, 200_000, root);
   if (!bytes) return null;
-  const clean = sanitizeDesignHtml(bytes.toString("utf8"));
+  const clean = sanitizeDesignHtml(expandDesignIcons(bytes.toString("utf8")));
   const logic = designLogicOf(clean);
   const props = designPropsOf(clean) as Record<string, unknown> | null;
   const styles = [...clean.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi)].map((m) => `<style>${m[1]}</style>`).join("");
@@ -216,7 +209,13 @@ function readProjectPack(root: string, signature: string): ProjectPackReport | n
   const componentsDir = join(dir, "components");
   for (const f of list(componentsDir).filter((f) => extname(f).toLowerCase() === ".html").slice(0, MAX_COMPONENTS)) {
     const name = basename(f, ".html");
-    const c = readComponent(join(componentsDir, f), dir);
+    let c: ReturnType<typeof readComponent>;
+    try {
+      c = readComponent(join(componentsDir, f), dir);
+    } catch (error) {
+      inliner.warnings.push(`components/${f}: ${error instanceof Error ? error.message : String(error)}`);
+      continue;
+    }
     if (!c) {
       inliner.warnings.push(`components/${f} could not be read (over 200 KB?).`);
       continue;

@@ -81,6 +81,28 @@ export function packForDesign(d: Pick<DesignDocument, "system" | "project" | "se
   }
 }
 
+/**
+ * What a design's boards load when the main process renders them: its
+ * design system, plus the design's own images (aegis-asset:img_…).
+ */
+export function renderSystemFor(d: Pick<DesignDocument, "id" | "system" | "project" | "sessionId">): DesignSystemPack | null {
+  const pack = packForDesign(d);
+  let images: Record<string, string> = {};
+  try {
+    images = getDesignRepository().renderAssets(d.id);
+  } catch {}
+  if (!pack && !Object.keys(images).length) return null;
+  return {
+    id: pack?.id ?? "none",
+    name: pack?.name ?? "",
+    css: pack?.css ?? "",
+    components: pack?.components ?? {},
+    assets: { ...(pack?.assets ?? {}), ...images },
+    fonts: pack?.fonts ?? [],
+    signature: `${pack?.signature ?? ""}:${Object.keys(images).join(",")}`,
+  };
+}
+
 // Each capture owns a fresh, nonpersistent Chromium session, with no preload.
 // Serialize captures to bound Chromium/GPU memory even when tools run in parallel.
 let captureTail: Promise<unknown> = Promise.resolve();
@@ -147,7 +169,7 @@ export function previewDesign(
         const hung = new Error("The board's logic did not finish rendering within 5 s; it may loop forever. Fix the logic (or remove it with a logic operation) and preview again.");
         const loaded = await Promise.race([
           // After a timeout the window is destroyed and this rejects; the race is already decided.
-          w.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(designFrameHtml(b.html, randomUUID(), false, { system: packForDesign(d), slide }))}`).then(() => true, (error) => {
+          w.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(designFrameHtml(b.html, randomUUID(), false, { system: renderSystemFor(d), slide }))}`).then(() => true, (error) => {
             if (w.isDestroyed()) return false;
             throw error;
           }),

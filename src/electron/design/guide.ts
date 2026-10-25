@@ -75,6 +75,7 @@ A board has up to three parts, set with design_update (add/content take html, js
   - data-aegis-goto="Board name" makes the element go to that board in Play.
 - Logic (js): one class, class Board extends AegisBoard { state = {…}; methods; values() { return {…} } }. this.props, this.state and this.setState({…}) work as in React; mounted(), updated() and unmounted() are lifecycle hooks; values() adds computed names for the template. Methods and state keys are names in the template.
 - Props (props): {"items":{"type":"list","default":[…]},"title":{"type":"string","default":"…"}}; types string, number, boolean, color, enum (with options), image, list, object. "$preview" overrides values for the canvas. Props make sample data editable without touching markup.
+  No prop name starts with "on": attributes like that are dropped as event handlers.
 Rules:
 - Logic runs in a sandbox with no network, storage or host access: no fetch, timers only for animation or demo state. Put sample data in props, not in logic.
 - Keep data-aegis-node-id on template elements as usual; repeated items share their template layer, so a hand edit applies to every item.
@@ -98,7 +99,7 @@ Before the first board, write a compact token set as CSS variables on :root and 
 - A one-line comment above them naming the layout idea.
 Reuse the same tokens on every board in the design.`,
   type: `## Typography
-- Remote fonts don't load on the canvas. Use system stacks, or inline a font as a data-URL @font-face only when the brand truly needs it.
+- Remote fonts don't load on the canvas. A design on a built-in style already has that style's fonts (bundled, with CJK fallbacks): use var(--font-display), var(--font-body) and var(--font-mono). Otherwise use system stacks, or inline a font as a data-URL @font-face only when the brand truly needs it.
   - Sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif
   - Serif: "New York", Georgia, "Songti SC", "Noto Serif SC", serif
   - Mono: "SF Mono", ui-monospace, Menlo, Consolas, monospace
@@ -125,8 +126,8 @@ Instead, ground the design in the subject: its real content, units, terms and co
   content: `## Content and images
 - Real content only, never lorem ipsum. Use plausible names, numbers and copy from the subject's world.
 - Try realistic lengths: a long name, mixed Chinese and English, a big number, a long link. Show the states the page needs (an empty list, a loading area, an error in a form), not every state of everything.
-- Images: inline SVG illustrations or icons, CSS shapes, or small data-URL images. No remote images.
-- Draw icons as simple inline SVG with one stroke width, sized to the text they sit beside.
+- Images: real ones where the subject wants them (product shots, people, places, food): make or find the image as a file (your own image tool, a file in the project), add it with design_add_image and use its aegis-asset:img_… reference in <img> or CSS. Remote URLs never load on the canvas. Without a real image, prefer a composed block of color, type or an SVG illustration over a grey placeholder box.
+- Icons come from the icon library: find them with design_icons and place them with <aegis-icon name="…" size="20">, one size and stroke width per context, sized to the text they sit beside. Hand-draw an SVG only for a mark the library doesn't have (a logo, an illustration).
 
 ## Writing the copy
 - Write from the user's side of the screen: name things by what people recognize.

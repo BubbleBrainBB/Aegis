@@ -306,6 +306,10 @@ export interface DesignAPI {
    * the renderer remounts them all afterwards.
    */
   recoverFrame(input: { frameName: string }): Promise<{ recovered: boolean }>;
+  /** Adds an image (dropped or pasted) to a design; boards use it as aegis-asset:<id>. */
+  addAsset(input: { sessionId: string; documentId: string; bytes: Uint8Array; mime: string; name: string }): Promise<{ id: string; name: string; mime: string; width: number | null; height: number | null; size: number }>;
+  /** A design's images as data URLs, by id; `have` skips ids the caller already holds. */
+  assets(input: { sessionId: string; documentId: string; have?: string[] }): Promise<Record<string, string>>;
   /** The design system the design's boards load, or null. */
   system(input: { sessionId: string; documentId: string; signature?: string }): Promise<import("./design-system-pack").DesignSystemPack | { unchanged: true; signature: string } | null>;
   /** A chat joins a design (a new chat started on it). */

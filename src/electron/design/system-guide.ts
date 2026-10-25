@@ -1,5 +1,6 @@
 import { getDesignRepository, packForDesign } from "./service";
-import { designStyleGuideFor, readDesignResource } from "./styles";
+import { designStyleGuideFor, PROJECT_DESIGN_SYSTEM, readDesignResource } from "./styles";
+import { BUILTIN_TEMPLATES } from "./builtin-templates";
 import { designSystemTokens, type DesignSystemPack } from "../../shared/design-system-pack";
 import type { DesignDocument } from "../../shared/design-types";
 
@@ -48,6 +49,14 @@ function example(name: string, props: Record<string, unknown> | null | undefined
   return `<aegis-use component="${name}"${attrs.length ? " " + attrs.join(" ") : ""}>…</aegis-use>`;
 }
 
+/** The built-in styles' reference pages, listed for a design that loads one. */
+function builtinTemplateIndex(): string {
+  return [
+    "Templates (reference pages written against these tokens and components; when one fits, read it with design_resources kind=\"template\" and build from its structure, sizes and components with the task's real content):",
+    ...BUILTIN_TEMPLATES.map((t) => `- ${t.id}: ${t.summary} (${t.width} × ${t.height})`),
+  ].join("\n");
+}
+
 export function describePack(pack: DesignSystemPack): string {
   const tokens = designSystemTokens(pack.css);
   const components = Object.entries(pack.components);
@@ -61,6 +70,7 @@ export function describePack(pack: DesignSystemPack): string {
       "Components (design components; place one with <aegis-use component=\"Name\" prop=\"value\">children</aegis-use>, kebab-case attributes for props, data-aegis-bind-prop for values; read one with design_resources):",
       ...components.map(([name, c]) => `- ${name}: ${c.summary ? c.summary + " " : ""}Props: ${propsLine(c.props)}. e.g. ${example(name, c.props)}`),
     );
+  if (pack.id !== PROJECT_DESIGN_SYSTEM) lines.push("", builtinTemplateIndex());
   if (assets.length) lines.push("", `Images (use as <img src="aegis-asset:name"> or url(aegis-asset:name)): ${assets.slice(0, 60).join(", ")}.`);
   if (pack.css.trim()) {
     const css = elideData(pack.css);
@@ -99,6 +109,11 @@ export function designResources(sessionId: string, documentId: string | undefine
         usage && !usage.startsWith("No component") ? `## Usage notes\n${usage}` : "",
       ].filter(Boolean).join("\n\n");
     }
+  }
+  if (pack && pack.id !== PROJECT_DESIGN_SYSTEM && kind === "template") {
+    const t = BUILTIN_TEMPLATES.find((x) => x.id.toLowerCase() === (name ?? "").toLowerCase());
+    if (!t) return `No template named ${JSON.stringify(name ?? "")}. ${builtinTemplateIndex()}`;
+    return `# Template: ${t.name}\n${t.summary}\nBoard size: ${t.width} × ${t.height}.\n\nBuild from its structure, sizes and components; replace its sample copy with the task's content. It already uses ${pack.name}'s tokens and components, so keep them rather than hard-coding colors or fonts.\n\n${t.html.trim()}`;
   }
   const project = readDesignResource(sessionId, kind, name);
   if (!pack || kind) return project;

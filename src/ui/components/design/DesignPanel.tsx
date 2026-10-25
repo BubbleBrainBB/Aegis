@@ -1,4 +1,4 @@
-import type { DesignCanvasAwareness } from "../../../shared/design-types";
+import type { DesignBoard, DesignCanvasAwareness } from "../../../shared/design-types";
 import { nextBoardName } from "../../../shared/design-names";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
@@ -130,7 +130,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
   const [list, setList] = useState<DesignSummary[]>([]);
   const [doc, setDoc] = useState<DesignDocument | null>(null);
   // What every board of the open design loads: its design system.
-  const system = useDesignSystem(sessionId ?? undefined, doc?.id, doc?.system);
+  const system = useDesignSystem(sessionId ?? undefined, doc?.id, `${doc?.system ?? ""}:${doc?.revision ?? 0}`);
   const pageKey = "aegis.design.page:" + documentId;
   const [pageChoice, setPageChoice] = useState<string>(() => rendererStateStorage.getItem(pageKey) ?? "");
   const pages = designPages(doc ?? {});
@@ -317,6 +317,8 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
     !!session && !session.readOnly && !historical && !writing;
   const canMention = canSendDesignComment(sessionId);
   const activeBoard = doc?.boards.find((b) => b.id === selected);
+  const activeBoardRef = useRef(activeBoard);
+  activeBoardRef.current = activeBoard;
   const queue = useComposerQueueStore((s) =>
     sessionId ? s.queues[sessionId] ?? EMPTY_QUEUE : EMPTY_QUEUE,
   );
@@ -872,6 +874,47 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
     }
   };
   /** Text and Frame tools: one write per new layer, which then becomes the selection. */
+  /**
+   * Dropped or pasted images: each is added to the design, then placed where it
+   * landed in a board (an image layer at that spot) or, off any board, as a
+   * new board of its size.
+   */
+  const placeImages = async (files: File[], at: { board?: DesignBoard; target: DropTarget | null; world?: { x: number; y: number } }) => {
+    if (!doc || !sessionId || !editable) return;
+    for (const file of files.slice(0, 8)) {
+      try {
+        const info = await window.electron.design.addAsset({ sessionId, documentId: doc.id, bytes: new Uint8Array(await file.arrayBuffer()), mime: file.type, name: file.name || "image" });
+        const src = `aegis-asset:${info.id}`;
+        const name = (file.name || "Image").replace(/\.[a-z0-9]+$/i, "");
+        if (at.board) {
+          const fill = at.target?.direction === "row" ? "max-width:100%" : "width:100%";
+          await insertLayer(at.board.id, at.board.contentRevision, at.target?.containerId ?? null, at.target?.index ?? 1e6, { tag: "img", name, attrs: { src, alt: name }, style: `display:block;${fill};height:auto` }, `Added ${name} to ${at.board.name}`);
+        } else {
+          const width = Math.max(200, Math.min(1440, info.width ?? 800));
+          const height = Math.max(100, Math.min(4096, Math.round(info.height && info.width ? (info.height * width) / info.width : 600)));
+          await update([{ type: "add", name, pageId: activePageId, width, height, ...(at.world ? { x: Math.round(at.world.x), y: Math.round(at.world.y) } : {}), html: `<main style="margin:0"><img src="${src}" alt="${name.replace(/"/g, "&quot;")}" data-aegis-layer-name="${name.replace(/"/g, "&quot;")}" style="display:block;width:100%;height:auto"></main>` }], `Added ${name}`);
+        }
+      } catch (e) {
+        setFailure(errorText(e));
+      }
+    }
+  };
+  // Pasting an image on the canvas: into the selected board, or as a new board.
+  const placeImagesRef = useRef(placeImages);
+  placeImagesRef.current = placeImages;
+  useEffect(() => {
+    if (hidden) return;
+    const paste = (e: ClipboardEvent) => {
+      const at = e.target instanceof Element ? e.target : null;
+      if (!at?.closest(".design-panel") || at.closest("input, textarea, [contenteditable='true']")) return;
+      const files = [...(e.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/"));
+      if (!files.length) return;
+      e.preventDefault();
+      void placeImagesRef.current(files, { board: activeBoardRef.current, target: null });
+    };
+    window.addEventListener("paste", paste);
+    return () => window.removeEventListener("paste", paste);
+  }, [hidden]);
   const insertLayer = (
     boardId: string,
     revision: number,
@@ -1427,6 +1470,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
                 ? { boardId: textEdit.boardId, nodeId: textEdit.anchor.nodeId }
                 : undefined
           }
+          onDropImages={(files, at) => void placeImages(files, at)}
           onInsertText={(board, target, tag, preview) => {
             setSelection(undefined);
             setLayerTarget(undefined);

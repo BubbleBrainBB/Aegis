@@ -6,11 +6,13 @@ import { DESIGN_GUIDE_DESCRIPTION, DESIGN_GUIDE_TOPICS, designGuideText } from '
 import { designProjectRoot, effectiveDesignStyle } from './styles';
 import { checkProjectDesignSystem } from './adherence';
 import { verificationText, verifyDesign } from './verify';
+import { searchDesignIcons } from './icons';
+import { prepareDesignImage } from './images';
 import { designGuideStyle, designResources } from './system-guide';
 import { DESIGN_STARTER_DESCRIPTION, DESIGN_STARTER_KINDS, designStarterText } from './starters';
 import {
   DESIGN_COMMENTS_TOOL, DESIGN_CREATE_TOOL, DESIGN_GUIDE_TOOL, DESIGN_PREVIEW_TOOL, DESIGN_READ_TOOL,
-  DESIGN_REPLY_TOOL, DESIGN_RESOURCES_TOOL, DESIGN_STARTER_TOOL, DESIGN_SYSTEM_CHECK_TOOL, DESIGN_UPDATE_TOOL, DESIGN_VERIFY_TOOL, type DesignToolName,
+  DESIGN_REPLY_TOOL, DESIGN_RESOURCES_TOOL, DESIGN_STARTER_TOOL, DESIGN_ADD_IMAGE_TOOL, DESIGN_ICONS_TOOL, DESIGN_SYSTEM_CHECK_TOOL, DESIGN_UPDATE_TOOL, DESIGN_VERIFY_TOOL, type DesignToolName,
 } from '../../shared/design-tools';
 import type { DesignAuthor, DesignUpdate } from '../../shared/design-types';
 import { looksEscapedMarkup } from '../../shared/design-html';
@@ -242,7 +244,7 @@ const specs: DesignToolSpec[] = [
   },
   {
     name: DESIGN_RESOURCES_TOOL,
-    description: "The design system a design's boards load (a built-in style or the project's design-system/ folder): its tokens, stylesheet, components with their props, images and fonts, and the project's templates (representative pages). With no arguments, lists them; pass documentId to include the design's own system. Read a component before using it and follow its usage rather than guessing variants; when a template fits the request, read it and build from its structure, sizes and components with the task's real content. Templates come before generic starting points.",
+    description: "The design system a design's boards load (a built-in style or the project's design-system/ folder): its tokens, stylesheet, components with their props, images and fonts, and its templates (representative pages: a built-in style's reference pages, or the project's own). With no arguments, lists them; pass documentId to include the design's own system. Read a component before using it and follow its usage rather than guessing variants; when a template fits the request, read it and build from its structure, sizes and components with the task's real content. Templates come before generic starting points.",
     readOnly: true,
     shape: {
       kind: z.enum(['component', 'template']).optional(),
@@ -317,6 +319,44 @@ const specs: DesignToolSpec[] = [
       return { guide: verificationText(v), verdict: v.verdict };
     },
   },
+  {
+    name: DESIGN_ICONS_TOOL,
+    description: `Search the canvas's icon library (Tabler Icons, ~5000 consistent 24px line icons, many with a filled style) by name or meaning ("search", "arrow right", "settings", "cart"). Use one with <aegis-icon name="NAME" size="20"> anywhere in a board (optional stroke-width="1.5", variant="filled", class, style, aria-label); it is saved as inline SVG drawn in currentColor, so color it with CSS color. Prefer these over hand-drawn SVG icons, and keep one size and stroke width per context.`,
+    readOnly: true,
+    shape: { query: z.string().describe('What the icon shows, e.g. "calendar", "arrow left", "notification".'), limit: z.number().int().min(1).max(80).optional() },
+    jsonSchema: object({ query: { type: 'string', description: 'What the icon shows, e.g. "calendar", "arrow left", "notification".' }, limit: { type: 'integer', minimum: 1, maximum: 80 } }, ['query']),
+    run(_sessionId, a) {
+      const hits = searchDesignIcons(a.query, a.limit ?? 30);
+      return {
+        guide: hits.length
+          ? `${hits.length} icon${hits.length === 1 ? '' : 's'} for ${JSON.stringify(a.query)} (name: terms${hits.some((h) => h.filled) ? '; ● has a filled style' : ''}):\n${hits.map((h) => `- ${h.name}${h.filled ? ' ●' : ''}: ${h.terms}`).join('\n')}\n\nUse: <aegis-icon name="${hits[0].name}" size="20">`
+          : `No icons match ${JSON.stringify(a.query)}. Try a simpler word (e.g. "user", "home", "chart").`,
+      };
+    },
+  },
+  {
+    name: DESIGN_ADD_IMAGE_TOOL,
+    description: "Add an image to a design so its boards can show it: a photo, an illustration or a logo you generated or found as a file (absolute path), or a base64 data URL. Large images are scaled to 2400 px. Returns its reference, aegis-asset:img_…; use it as <img src=\"aegis-asset:img_…\" alt=\"…\"> or in CSS url(aegis-asset:img_…). Remote URLs never load on the canvas, so download or generate the image first, then add it here.",
+    readOnly: false,
+    shape: {
+      documentId: z.string(),
+      path: z.string().optional().describe('Absolute path of a .png, .jpg, .webp, .gif or .svg file.'),
+      dataUrl: z.string().optional().describe('A base64 data:image/… URL, when there is no file.'),
+      name: z.string().optional().describe('A short name for the image, e.g. "hero photo".'),
+    },
+    jsonSchema: object({
+      documentId: string,
+      path: { type: 'string', description: 'Absolute path of a .png, .jpg, .webp, .gif or .svg file.' },
+      dataUrl: { type: 'string', description: 'A base64 data:image/… URL, when there is no file.' },
+      name: { type: 'string', description: 'A short name for the image, e.g. "hero photo".' },
+    }, ['documentId']),
+    run(sessionId, a) {
+      const image = prepareDesignImage({ path: a.path, dataUrl: a.dataUrl, name: a.name });
+      const info = getDesignRepository().addAsset(sessionId, a.documentId, image);
+      const size = info.width && info.height ? `${info.width} × ${info.height}` : 'size unknown';
+      return { guide: `Added ${JSON.stringify(info.name)} (${info.mime}, ${size}) as aegis-asset:${info.id}. Use <img src="aegis-asset:${info.id}" alt="…" style="width:100%;height:auto;object-fit:cover"> or url(aegis-asset:${info.id}) in CSS.` };
+    },
+  },
 ];
 
 export const DESIGN_TOOL_SPECS: readonly Pick<DesignToolSpec, 'name' | 'description' | 'readOnly' | 'shape' | 'jsonSchema'>[] = specs;
@@ -341,7 +381,7 @@ export async function runDesignTool(
         image: { mimeType: 'image/png', data: p.dataUrl.split(',')[1] },
       };
     }
-    if (name === DESIGN_GUIDE_TOOL || name === DESIGN_RESOURCES_TOOL || name === DESIGN_STARTER_TOOL || name === DESIGN_SYSTEM_CHECK_TOOL || name === DESIGN_VERIFY_TOOL) return { text: (result as { guide: string }).guide };
+    if (name === DESIGN_GUIDE_TOOL || name === DESIGN_RESOURCES_TOOL || name === DESIGN_STARTER_TOOL || name === DESIGN_SYSTEM_CHECK_TOOL || name === DESIGN_VERIFY_TOOL || name === DESIGN_ICONS_TOOL || name === DESIGN_ADD_IMAGE_TOOL) return { text: (result as { guide: string }).guide };
     return { text: JSON.stringify(result) };
   } catch (e) {
     return { text: e instanceof Error ? e.message : String(e), isError: true };

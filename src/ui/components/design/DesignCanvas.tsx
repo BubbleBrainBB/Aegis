@@ -214,6 +214,8 @@ type Props = {
   focusTarget?: { boardId: string; rect?: Rect; nonce: number };
   apiRef?: React.MutableRefObject<CanvasApi | null>;
   /** Text tool: a new text layer is previewed at `target`; the panel edits and saves it. */
+  /** Image files dropped on the canvas: on a board (with where in it), or on the canvas itself. */
+  onDropImages?(files: File[], at: { board?: DesignBoard; target: DropTarget | null; world: Point }): void;
   onInsertText?(
     board: DesignBoard,
     target: DropTarget,
@@ -1572,6 +1574,21 @@ export function DesignCanvas(props: Props) {
       ref={viewport}
       tabIndex={0}
       aria-label="Design canvas viewport"
+      onDragOver={(e) => {
+        if (!props.onDropImages || !e.dataTransfer.types.includes("Files")) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+      }}
+      onDrop={(e) => {
+        const files = [...e.dataTransfer.files].filter((f) => f.type.startsWith("image/"));
+        if (!props.onDropImages || !files.length) return;
+        e.preventDefault();
+        const world = toWorld(local(e), viewRef.current);
+        // The board under the drop (frames swallow the event target, so by geometry).
+        const board = [...boards].reverse().find((b) => world.x >= b.x && world.x <= b.x + b.width && world.y >= b.y && world.y <= b.y + b.height && !writingBoard(b));
+        const target = board ? inspectors.current.get(board.id)?.dropTarget(world.x - board.x, world.y - board.y) ?? Promise.resolve(null) : Promise.resolve(null);
+        void target.then((t) => props.onDropImages?.(files, { board, target: t ?? null, world }));
+      }}
       className={[
         "design-viewport",
         (mode === "pan" || space) && "is-pan",

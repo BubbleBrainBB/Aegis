@@ -4,8 +4,9 @@ import { isAbsolute } from "path";
 import { randomUUID } from "crypto";
 import { strToU8, zipSync } from "fflate";
 import { ipcMainHandle } from "../util";
-import { designPdf, getDesignRepository, packForDesign, previewDesign } from "./service";
+import { designPdf, getDesignRepository, packForDesign, previewDesign, renderSystemFor } from "./service";
 import { buildPptx, type PptxSlide } from "./pptx";
+import { prepareDesignImage } from "./images";
 import { designSlides, isDesignDeck } from "../../shared/design-deck";
 import { designForPage } from "../../shared/design-pages";
 import { setDesignComposerPrefs, setDesignFocus } from "./focus";
@@ -154,6 +155,17 @@ export function registerDesignIpc() {
       if (pack && typeof x.signature === "string" && x.signature === pack.signature) return Promise.resolve({ unchanged: true as const, signature: pack.signature });
       return Promise.resolve(pack);
     },
+    addAsset: (x) => {
+      if (!(x?.bytes instanceof Uint8Array) || typeof x.mime !== "string") throw new Error("Give the image's bytes and type.");
+      const image = prepareDesignImage({ bytes: x.bytes, mime: x.mime, name: typeof x.name === "string" ? x.name : "image" });
+      return Promise.resolve(getDesignRepository().addAsset(x.sessionId, x.documentId, image));
+    },
+    assets: (x) => {
+      const all = getDesignRepository().assetList(x.sessionId, x.documentId).map((a) => a.id);
+      const have = new Set(Array.isArray(x.have) ? x.have : []);
+      const missing = all.filter((id) => !have.has(id));
+      return Promise.resolve(missing.length ? getDesignRepository().assetData(x.sessionId, x.documentId, missing) : {});
+    },
     recoverFrame: (x, owner?: BrowserWindow) => Promise.resolve({ recovered: recoverSandboxFrame(owner, x?.frameName) }),
     composer: (x) => {
       if (typeof x?.sessionId === "string") setDesignComposerPrefs(x.sessionId, x);
@@ -184,7 +196,7 @@ export function registerDesignIpc() {
         throw new Error("Unsupported export format");
       let bytes: Uint8Array;
       if (x.format === "pdf") {
-        bytes = await designPdf(d.boards, undefined, packForDesign(d));
+        bytes = await designPdf(d.boards, undefined, renderSystemFor(d));
       } else if (pptx) {
         // Each deck slide (or each other board) as a picture slide, with its notes.
         const slides: PptxSlide[] = [];
@@ -226,7 +238,7 @@ export function registerDesignIpc() {
           ),
         };
         // Each board stands alone: its system's styles, components and assets inlined, and interactive.
-        const system = packForDesign(d);
+        const system = renderSystemFor(d);
         for (const board of d.boards)
           files[`boards/${board.id}.html`] = strToU8(
             designFrameHtml(board.html, randomUUID(), false, { system }),

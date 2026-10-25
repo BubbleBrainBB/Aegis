@@ -37,6 +37,15 @@ export function declaredFontFamilies(css: string): string[] {
   return [...out];
 }
 
+/**
+ * A board's assets as a frame shows them: resolved, and an image the frame
+ * doesn't have yet (just added, still on its way) left blank instead of
+ * requesting a URL the frame's policy blocks; checks still see it unloaded.
+ */
+export function resolveFrameAssets(html: string, assets: Record<string, string> | undefined): string {
+  return resolveDesignAssets(html, assets).replace(/(<img\b[^>]*?\s)src="aegis-asset:([\w.-]{1,80})"/g, '$1src="" data-aegis-missing-asset="$2"');
+}
+
 /** `aegis-asset:name` references in a board, resolved to the pack's data URLs (unknown names stay). */
 export function resolveDesignAssets(html: string, assets: Record<string, string> | undefined): string {
   if (!assets || !Object.keys(assets).length) return html;

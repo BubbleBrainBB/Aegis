@@ -146,5 +146,27 @@ exports.run = async ({ w, js, repo, sessionId, documentId, screenshotDir }) => {
   await wait(400); // let the compositor paint the presenter before capturing
   if (screenshotDir) fs.writeFileSync(path.join(screenshotDir, "design-deck-presenter.png"), (await w.webContents.capturePage()).toPNG());
   await js('[...document.querySelectorAll(".design-board-preview-overlay button")].find(b=>b.textContent.includes("Back to canvas")).click()');
-  console.log("PASS design components on canvas: runtime render with layer ids, inert edit mode, in-place props update, props panel edits, Play handlers, board links, logic error badge, watchdog static fallback and recovery, deck slides on canvas and in Play, presenter notes");
+  step("images");
+  // An image dropped on a board becomes an image layer there; dropped off the boards, a new board; pasted, too.
+  const makePng = (color) => `(async()=>{const c=document.createElement('canvas');c.width=60;c.height=40;const x=c.getContext('2d');x.fillStyle='${color}';x.fillRect(0,0,60,40);const blob=await new Promise(r=>c.toBlob(r,'image/png'));return new File([blob],'${color.slice(1)}.png',{type:'image/png'})})()`;
+  const checkout = () => doc().boards.find((b) => b.name === "Checkout");
+  const checkoutRevision = checkout().contentRevision;
+  await js(`(async()=>{const f=await ${makePng("#ff0000")};const dt=new DataTransfer();dt.items.add(f);const b=document.querySelector('[data-board-id="${checkout().id}"]').getBoundingClientRect();const v=document.querySelector('.design-viewport');v.dispatchEvent(new DragEvent('dragover',{dataTransfer:dt,bubbles:true,cancelable:true,clientX:b.x+b.width/2,clientY:b.y+b.height/2}));v.dispatchEvent(new DragEvent('drop',{dataTransfer:dt,bubbles:true,cancelable:true,clientX:b.x+b.width/2,clientY:b.y+b.height/2}))})()`);
+  await until(() => checkout().contentRevision > checkoutRevision && /<img[^>]*src="aegis-asset:img_/.test(checkout().html), "dropped image becomes a layer");
+  await until(async () => {
+    for (const fr of frames())
+      if (await fr.executeJavaScript('(()=>{const i=document.querySelector("img[alt=ff0000]");return !!i && i.complete && i.naturalWidth===60})()').catch(() => false)) return true;
+    return false;
+  }, "the image renders on the canvas");
+  const boardsBefore = doc().boards.length;
+  await js(`(async()=>{const f=await ${makePng("#00ff00")};const dt=new DataTransfer();dt.items.add(f);const v=document.querySelector('.design-viewport');const r=v.getBoundingClientRect();const boards=[...document.querySelectorAll('[data-board-id]')].map((b)=>b.getBoundingClientRect());let at=null;for(let y=r.bottom-8;y>r.y&&!at;y-=24)for(let x=r.x+8;x<r.right;x+=24)if(!boards.some((b)=>x>=b.left-4&&x<=b.right+4&&y>=b.top-4&&y<=b.bottom+4)&&v.contains(document.elementFromPoint(x,y))){at={x,y};break}if(!at)throw new Error('no empty canvas point');v.dispatchEvent(new DragEvent('drop',{dataTransfer:dt,bubbles:true,cancelable:true,clientX:at.x,clientY:at.y}))})()`);
+  await until(() => doc().boards.length === boardsBefore + 1 && doc().boards.some((b) => b.name === "00ff00"), "dropped off the boards: a new board");
+  const sized = doc().boards.find((b) => b.name === "00ff00");
+  assert.deepEqual([sized.width, sized.height], [200, 133], "a new board takes the image's shape (at least 200 wide)");
+  await js(`(async()=>{const f=await ${makePng("#0000ff")};const dt=new DataTransfer();dt.items.add(f);document.querySelector('.design-viewport').dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true}))})()`);
+  await until(() => doc().boards.some((b) => b.name === "0000ff" || /alt="0000ff"/.test(b.html)), "a pasted image lands").catch((e) => {
+    console.log("  paste debug", JSON.stringify(doc().boards.map((b) => [b.name, (b.html.match(/alt="[0-9a-f]+"/g) || []).join(" ")])));
+    throw e;
+  });
+  console.log("PASS design components on canvas: runtime render with layer ids, inert edit mode, in-place props update, props panel edits, Play handlers, board links, logic error badge, watchdog static fallback and recovery, deck slides on canvas and in Play, presenter notes, dropped and pasted images");
 };

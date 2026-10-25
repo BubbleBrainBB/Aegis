@@ -12,7 +12,7 @@ const PAD = 14;
  * of its first page, laid out as they sit on the canvas, scaled to fit.
  */
 export function DesignCover({ sessionId, documentId, revision }: { sessionId: string; documentId: string; revision: number }) {
-  const system = useDesignSystem(sessionId, documentId);
+  const system = useDesignSystem(sessionId, documentId, revision);
   const [doc, setDoc] = useState<DesignDocument | null>(null);
   const host = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });

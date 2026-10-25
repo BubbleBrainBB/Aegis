@@ -15,7 +15,7 @@ import type {
 import { sanitizeDesignHtml } from "../../../shared/design-html";
 import { designFrameHtml, type DesignComponentSource } from "../../../shared/design-frame";
 import { isDesignComponent } from "../../../shared/design-component";
-import { resolveDesignAssets, type DesignSystemPack } from "../../../shared/design-system-pack";
+import { resolveFrameAssets, type DesignSystemPack } from "../../../shared/design-system-pack";
 import { isBoardHung, markBoardHung, recoverSandboxFrames, useSandboxEpoch } from "../../utils/sandbox-frames";
 import type { LayerLayout } from "./design-spacing";
 import { toLayerCss, type LayerCss } from "./design-css";
@@ -169,7 +169,7 @@ export const BoardFrame = memo(
     }, [board.id, preview, frameMode, components, system, sandboxEpoch]);
     const { token } = lifetime;
     // What the frame holds: sanitized, with the system's asset references resolved.
-    const html = useMemo(() => resolveDesignAssets(sanitizeDesignHtml(board.html), system?.assets), [board.html, system]);
+    const html = useMemo(() => resolveFrameAssets(sanitizeDesignHtml(board.html), system?.assets), [board.html, system]);
     const [recovery, setRecovery] = useState<{ token: string; html: string; source: string; epoch: string } | null>(null);
     // Play's frame follows the HTML, not the slide (slides switch by message) or re-renders.
     const previewSource = useMemo(
@@ -484,7 +484,7 @@ export const BoardFrame = memo(
         referrerPolicy="no-referrer"
         onLoad={() => {
           ready.current = token;
-          applied.current = resolveDesignAssets(sanitizeDesignHtml(recovery?.token === token ? recovery.html : lifetime.html), system?.assets);
+          applied.current = resolveFrameAssets(sanitizeDesignHtml(recovery?.token === token ? recovery.html : lifetime.html), system?.assets);
           setLoadEpoch(n => n + 1);
           onLoadRef.current?.();
         }}

@@ -13,7 +13,7 @@ const dataScripts = new Set([DESIGN_LOGIC_TYPE, DESIGN_PROPS_TYPE]);
 /** Template directives the board runtime reads (never event-handler attributes). */
 const directive = /^data-aegis-(?:if|else|for|key|on-[a-z]+|bind-[a-z][a-z0-9-]*|goto|deck|slide|notes|asset)$/;
 const attrs = new Set(
-  "class id style title role type value placeholder disabled checked selected for name width height viewbox d fill stroke stroke-width stroke-linecap stroke-linejoin opacity x y x1 y1 x2 y2 cx cy r rx ry points transform offset stop-color stop-opacity preserveaspectratio clip-path colspan rowspan alt data-aegis-node-id data-aegis-layer-name data-aegis-hidden data-aegis-locked data-aegis-tweaks data-aegis-starter".split(
+  "class id style title role type value placeholder disabled checked selected for name width height viewbox d fill stroke stroke-width stroke-linecap stroke-linejoin opacity x y x1 y1 x2 y2 cx cy r rx ry points transform offset stop-color stop-opacity preserveaspectratio clip-path colspan rowspan alt data-aegis-node-id data-aegis-layer-name data-aegis-hidden data-aegis-locked data-aegis-tweaks data-aegis-starter data-aegis-icon".split(
     " ",
   ),
 );
