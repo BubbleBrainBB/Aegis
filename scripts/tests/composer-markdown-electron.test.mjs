@@ -39,8 +39,6 @@ app.whenReady().then(async()=>{
  const until=async(s,label)=>{for(let i=0;i<100;i++){if(await js(s))return;await delay(50)}throw Error('Timed out: '+label)};
  const errors=[];win.webContents.on('console-message',e=>{if(e.level==='error')errors.push(e.message)});
  const shot=async name=>{win.webContents.invalidate();await delay(150);fs.mkdirSync(process.env.QA_CAPTURE,{recursive:true});fs.writeFileSync(path.join(process.env.QA_CAPTURE,name+'.png'),(await win.webContents.capturePage()).toPNG())};
- const toggle=label=>'document.querySelector("button[aria-label=\\"'+label+'\\"]")';
- const editorHidden='getComputedStyle(document.querySelector("[role=textbox]")).display==="none"';
  const typeText=async s=>{for(const ch of s){win.webContents.insertText(ch);await delay(20)}await delay(60)};
  const key=async(keyCode,modifiers=[])=>{win.webContents.sendInputEvent({type:'keyDown',keyCode,modifiers});win.webContents.sendInputEvent({type:'keyUp',keyCode,modifiers});await delay(80)};
  // Editor children as [style, text]; "hidden" = collapsed syntax marker. Scaffolding (trailing break, empty caret anchor) is skipped.
@@ -55,7 +53,7 @@ app.whenReady().then(async()=>{
   console.log('Testing composer:',mode);
   await js('qa.store.setState({pendingStart:false})');
   await js('qa.mode('+JSON.stringify(mode)+')');await delay(100);
-  await until(toggle('Preview Markdown')+'?.disabled===true','preview disabled while empty '+mode);
+  assert.equal(await js('!!document.querySelector("button[aria-label=\\"Preview Markdown\\"]")'),false,'no preview toggle '+mode);
   // Live styling: closing *好* renders italic at once and hides the asterisks.
   await js('document.querySelector("[role=textbox]").focus()');
   await typeText('*好*');
@@ -111,33 +109,14 @@ app.whenReady().then(async()=>{
   win.webContents.selectAll();await key('Backspace');
   await until('document.querySelector("[role=textbox]").textContent===""',mode+' cleared');
   await js('(()=>{const e=document.querySelector("[role=textbox]");e.focus();const data=new DataTransfer();data.setData("text/plain",'+JSON.stringify(text)+');e.dispatchEvent(new ClipboardEvent("paste",{clipboardData:data,bubbles:true,cancelable:true}))})()');
-  await until(toggle('Preview Markdown')+'?.disabled===false','preview enabled '+mode);
-  await js(toggle('Preview Markdown')+'.click()');
-  await until('!!document.querySelector(".aegis-composer-markdown-preview h1")','rendered preview '+mode);
-  const rendered=await js('(()=>{const p=document.querySelector(".aegis-composer-markdown-preview");return {h1:p.querySelector("h1")?.textContent,strong:p.querySelector("strong")?.textContent,code:p.querySelector("code")?.textContent,items:p.querySelectorAll("li").length,cells:p.querySelectorAll("td").length,pressed:'+toggle('Back to editing')+'?.getAttribute("aria-pressed")}})()');
-  assert.deepEqual(rendered,{h1:'Release notes',strong:'Bold',code:'inline code',items:2,cells:2,pressed:'true'},mode+' renders GFM markdown');
-  assert(await js(editorHidden),mode+' editor hidden while previewing');
-  await shot(mode+'-preview');
-  // Escape inside the preview returns to the editor with the draft intact.
-  await js('document.querySelector(".aegis-composer-markdown-preview").focus()');
-  win.webContents.sendInputEvent({type:'keyDown',keyCode:'Escape'});win.webContents.sendInputEvent({type:'keyUp',keyCode:'Escape'});
-  await until('!document.querySelector(".aegis-composer-markdown-preview") && !('+editorHidden+')','escape exits preview '+mode);
-  await until('document.activeElement===document.querySelector("[role=textbox]")','editor refocused '+mode);
-  assert.equal(await js('document.querySelector("[role=textbox]").textContent'),text,mode+' draft unchanged');
-  // Sending from preview sends the raw markdown and returns to editing.
-  await js(toggle('Preview Markdown')+'.click()');
-  await until('!!document.querySelector(".aegis-composer-markdown-preview")','preview again '+mode);
+  // Sending keeps the raw markdown.
   const before=await js('qa.events.length');
   await until('!!document.querySelector("button[aria-label=\\"Send\\"]") && !document.querySelector("button[aria-label=\\"Send\\"]").disabled','send enabled '+mode);
   await js('document.querySelector("button[aria-label=\\"Send\\"]").click()');
   await until('qa.events.length>'+before,'send '+mode);
   assert.equal((await js('qa.events.at(-1)')).payload.prompt,text,mode+' sends raw markdown');
-  if(mode==='chat'){
-   await until('!document.querySelector(".aegis-composer-markdown-preview") && !('+editorHidden+')','send exits preview');
-   assert.equal(await js(toggle('Preview Markdown')+'?.disabled'),true,'preview disabled after send');
-  }
  }
- assert.deepEqual(errors,[]);console.log('PASS: composer styles Markdown live while typing, preview renders GFM and toggles back with Escape, and raw markdown is sent');app.exit(0);
+ assert.deepEqual(errors,[]);console.log('PASS: composer styles Markdown live while typing, and raw markdown is sent');app.exit(0);
  }catch(e){console.error(e,errors);await shot('failure');app.exit(1)}
 });
 `;
