@@ -649,7 +649,8 @@ struct ApprovalCard: View {
     /// The plan's first lines without Markdown marks.
     private var planPreview: String {
         let lines = (permission.plan?.markdown ?? "").split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "#>*-` ")) }
+            .map { $0.replacingOccurrences(of: "`", with: "").replacingOccurrences(of: "**", with: "") }
+            .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "#>*- ")) }
             .filter { !$0.isEmpty }
         return lines.isEmpty ? "Approve it to let the agent start, or keep it planning." : lines.prefix(3).joined(separator: " · ")
     }

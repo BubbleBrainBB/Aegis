@@ -83,7 +83,7 @@ struct QuestionSheet: View {
                     .accessibilityAddTraits(answer.selected.contains(option.label) ? .isSelected : [])
                 }
                 if !question.options.isEmpty { Divider().padding(.leading, 48) }
-                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                HStack(spacing: 12) {
                     Image(systemName: "square.and.pencil").font(.app(15)).foregroundStyle(Color.text3).frame(width: 22)
                     TextField(question.options.isEmpty ? "Your answer" : "Other answer", text: Binding(
                         get: { answers[key]?.other ?? "" },
