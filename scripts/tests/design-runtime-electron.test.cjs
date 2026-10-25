@@ -96,7 +96,27 @@ app.whenReady().then(async () => {
     assert.ok(errors.some((e) => /n\.missing\.deep/.test(e)), `expression error reported: ${errors}`);
     assert.equal(await js(bad, 'document.querySelectorAll("[data-aegis-node-id=item]").length'), 3, 'template renders without logic');
     bad.destroy();
-    console.log('PASS design runtime: format helpers, sanitizer, props/$preview, loops, if/else, values, play-only events, state assignment, board links, updates keep state, error reporting');
+    // Components: props from attributes and bindings, slots, own state per instance, styles, missing ones.
+    const components = { Card: { html: '<style>.card{padding:4px}</style><div class="card"><h3 data-aegis-node-id="c-title">{{ title }}</h3><aegis-slot></aegis-slot><button data-aegis-node-id="c-btn" data-aegis-on-click="n = n + 1">{{ n }}</button></div>', logic: 'class Component extends AegisBoard { state = { n: 0 } }', props: { title: { type: 'string', default: 'Card' } } } };
+    const USES = `<!doctype html><html><head></head><body><main data-aegis-node-id="m">
+<aegis-use data-aegis-node-id="card1" component="Card" title="First"><p data-aegis-node-id="slotp">Inside</p></aegis-use>
+<aegis-use data-aegis-node-id="card2" component="Card" data-aegis-bind-title="'Second ' + 2"></aegis-use>
+<aegis-use data-aegis-node-id="missing" component="Nope"></aegis-use></main></body></html>`;
+    const cw = new BrowserWindow({ show: false, width: 800, height: 600, webPreferences: { sandbox: true, contextIsolation: true } });
+    await cw.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(designFrameHtml(USES, 'n0nce', false, { mode: 'play', components }))}`);
+    await js(cw, 'window.__aegisRuntime.ready');
+    assert.equal(await js(cw, 'document.querySelector("[data-aegis-node-id=card1]").className'), 'card', 'the instance root takes the instance layer id');
+    assert.equal(await js(cw, 'document.querySelector("[data-aegis-node-id=card1] h3").textContent'), 'First');
+    assert.equal(await js(cw, 'document.querySelector("[data-aegis-node-id=card1] h3").hasAttribute("data-aegis-node-id")'), false, "a component's own layers are not board layers");
+    assert.equal(await js(cw, 'document.querySelector("[data-aegis-node-id=card1] [data-aegis-node-id=slotp]")?.textContent'), 'Inside', 'slot content keeps its board layer');
+    assert.equal(await js(cw, 'document.querySelector("[data-aegis-node-id=card2] h3").textContent'), 'Second 2');
+    assert.equal(await js(cw, 'getComputedStyle(document.querySelector("[data-aegis-node-id=card1]")).paddingTop'), '4px', 'component styles apply');
+    await js(cw, 'document.querySelector("[data-aegis-node-id=card1] button").click();document.querySelector("[data-aegis-node-id=card1] button").click();document.querySelector("[data-aegis-node-id=card2] button").click()');
+    assert.deepEqual(await js(cw, '[...document.querySelectorAll(".card button")].map(b=>b.textContent)'), ['2', '1'], 'each instance has its own state');
+    assert.match(await js(cw, 'document.querySelector("[data-aegis-node-id=missing]").textContent'), /Missing component Nope/);
+    assert.ok((await js(cw, 'window.__aegisRuntime.errors')).some((e) => /Nope/.test(e)));
+    cw.destroy();
+    console.log('PASS design runtime: format helpers, sanitizer, props/$preview, loops, if/else, values, play-only events, state assignment, board links, updates keep state, error reporting, components (props, bindings, slots, per-instance state, styles, missing)');
   } catch (error) {
     console.error(error);
     code = 1;

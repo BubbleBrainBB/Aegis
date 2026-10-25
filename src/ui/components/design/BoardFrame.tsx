@@ -385,6 +385,7 @@ export const BoardFrame = memo(
             ...(typeof a.nodeId === "string"
               ? { nodeId: a.nodeId.slice(0, 200) }
               : {}),
+            ...(typeof a.instance === "string" && /^\d{1,4}$/.test(a.instance) ? { instance: a.instance } : {}),
             rect: { x: r.x, y: r.y, width: r.width, height: r.height },
           },
           e.data.hover === true,

@@ -350,6 +350,11 @@ function scopeFor(instance: AegisBoard | null, props: Record<string, unknown>): 
   if (!instance) return base;
   return new Proxy(base, {
     has: (target, key) => key in target,
+    // State reads are live: a second click before the re-render sees the first's update.
+    get(target, key) {
+      if (typeof key === "string" && key in instance.state) return instance.state[key];
+      return target[key as string];
+    },
     set(target, key, value) {
       if (typeof key === "string" && key in instance.state) {
         instance.setState({ [key]: value });
@@ -401,6 +406,15 @@ function componentOf(name: string): CompiledComponent | null {
   let compiled: CompiledComponent | null = null;
   if (source && typeof source.html === "string") {
     const doc = new DOMParser().parseFromString(source.html, "text/html");
+    // A component's own styles (parsed into its head) apply once per board.
+    const styles = [...doc.querySelectorAll("style")].map((st) => st.textContent ?? "").join("\n");
+    if (styles.trim() && !document.head.querySelector(`style[data-aegis-component="${CSS.escape(name)}"]`)) {
+      const el = document.createElement("style");
+      el.setAttribute("data-aegis-component", name);
+      el.setAttribute("data-aegis-frame", "");
+      el.textContent = styles;
+      document.head.append(el);
+    }
     compiled = {
       template: compileChildren(doc.body.childNodes),
       logic: compileLogic(source.logic ?? null, `<${name}>`),

@@ -8,7 +8,7 @@ exports.run = async ({ w, js, repo, sessionId, documentId, screenshotDir }) => {
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   const until = async (fn, label, tries = 160) => {
     for (let i = 0; i < tries; i++) {
-      if (await fn().catch(() => false)) return;
+      if (await Promise.resolve().then(fn).catch(() => false)) return;
       await wait(50);
     }
     throw Error("Design components timeout: " + label);
@@ -80,6 +80,19 @@ exports.run = async ({ w, js, repo, sessionId, documentId, screenshotDir }) => {
   await js('[...document.querySelectorAll(".design-board-preview-overlay button")].find(b=>b.textContent.includes("Back to canvas")).click()');
   await until(() => js('!document.querySelector(".design-board-preview-overlay")'), "back to canvas");
 
+  step("props panel");
+  // The board inspector edits props by hand; the canvas re-renders from them.
+  await js(`document.querySelector('[data-board-id="${plans().id}"] .design-board-label').click()`);
+  if (await js('!!document.querySelector(\'[aria-label="Show inspector"]\')')) await js('document.querySelector(\'[aria-label="Show inspector"]\').click()');
+  await until(() => js('!!document.querySelector(\'.design-inspector [aria-label="Prop heading"]\')'), "props panel shows");
+  assert.equal(await js('document.querySelector(\'.design-inspector [aria-label="Prop heading"]\').value'), "Pick your plan");
+  // As the layers test does: set the value, then the focusout React's onBlur listens to.
+  w.focus();
+  await js(`(()=>{const el=document.querySelector('.design-inspector [aria-label="Prop heading"]');el.focus();Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,'Plans for teams');el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new FocusEvent('focusout',{bubbles:true}))})()`);
+  await until(() => /Plans for teams/.test(plans().html), "prop edit saved");
+  await until(() => f.executeJavaScript('document.querySelector("[data-aegis-node-id=plans-title]")?.textContent==="Plans for teams"'), "prop edit re-renders");
+  assert.match(await js('document.querySelector(".design-logic summary")?.textContent||""'), /Logic · \d+ lines/);
+  if (await js('!!document.querySelector(\'[aria-label="Hide inspector"]\')')) await js('document.querySelector(\'[aria-label="Hide inspector"]\').click()');
   step("error badge");
   // A logic error shows on the board.
   let b = plans();
@@ -110,5 +123,5 @@ exports.run = async ({ w, js, repo, sessionId, documentId, screenshotDir }) => {
       if (await fr.executeJavaScript('window.__aegisRuntime && document.querySelector(".plan.on")?.textContent==="Yearly"').catch(() => false)) return true;
     return false;
   }, "runtime back");
-  console.log("PASS design components on canvas: runtime render with layer ids, inert edit mode, in-place props update, Play handlers, board links, logic error badge, watchdog static fallback and recovery");
+  console.log("PASS design components on canvas: runtime render with layer ids, inert edit mode, in-place props update, props panel edits, Play handlers, board links, logic error badge, watchdog static fallback and recovery");
 };

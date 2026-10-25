@@ -2749,3 +2749,15 @@ details.design-section > .design-grid {
   border-radius: 4px;
   outline: none;
 }
+
+/* A design component's props and logic (board inspector). */
+.design-props { display: grid; gap: 6px; }
+.design-prop { display: grid; grid-template-columns: 84px 1fr; align-items: center; gap: 8px; font-size: 12px; }
+.design-prop > span { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.design-prop input:not([type="checkbox"]):not([type="color"]), .design-prop select, .design-prop textarea { width: 100%; min-width: 0; font: inherit; font-size: 12px; }
+.design-prop textarea { font-family: var(--font-mono, ui-monospace, monospace); resize: vertical; }
+.design-prop .design-color { display: flex; gap: 6px; align-items: center; }
+.design-prop-error { color: var(--error, #d92d20); font-size: 12px; margin: 6px 0 0; }
+.design-logic { margin-top: 8px; font-size: 12px; }
+.design-logic summary { cursor: pointer; color: var(--text-secondary); }
+.design-logic pre { margin: 6px 0 0; max-height: 240px; overflow: auto; padding: 8px; border-radius: 6px; background: var(--bg-tertiary); font: 11px/1.5 var(--font-mono, ui-monospace, monospace); white-space: pre-wrap; }

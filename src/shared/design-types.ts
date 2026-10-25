@@ -32,6 +32,8 @@ export interface DesignAnchor {
   /** An area comment: `rect` is the region, `nodeIds` the layers inside it. */
   area?: boolean;
   nodeIds?: string[];
+  /** A design component's repeated layer: which rendered copy (its loop index). */
+  instance?: string;
 }
 export type DesignAuthor =
   | { kind: "user"; name?: string }

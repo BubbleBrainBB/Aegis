@@ -3,6 +3,7 @@ import { useMemo } from "react";
 import type { DesignBoard, DesignOperation } from "../../../shared/design-types";
 import { readBoardBackground, setBoardBackground } from "../../../shared/design-layers";
 import { isImeComposing } from "../../utils/ime";
+import { BoardComponentSection } from "./BoardComponentSection";
 
 export const DEVICES = [
   { name: "Desktop", width: 1440 },
@@ -11,7 +12,7 @@ export const DEVICES = [
   { name: "Phone", width: 390 },
 ] as const;
 
-/** Board-level properties: size, devices, background and export. */
+/** Board-level properties: size, devices, background, component props and export. */
 export function BoardDesignTab({
   board,
   revision,
@@ -128,6 +129,7 @@ export function BoardDesignTab({
           />
         </div>
       </section>
+      <BoardComponentSection board={board} can={can} onUpdate={onUpdate} />
       <section className="design-section">
         <h4>Export</h4>
         <button className="design-secondary" disabled={busy} onClick={onExport}>

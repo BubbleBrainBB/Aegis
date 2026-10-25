@@ -37,6 +37,7 @@ import { CommentThread } from "./CommentThread";
 import { HistoryPanel } from "./HistoryPanel";
 import { DesignCompare } from "./DesignCompare";
 import { InlineTextEditor } from "./InlineTextEditor";
+import { editDesignText } from "../../../shared/design-component";
 import { SelectionTools } from "./SelectionTools";
 import { frameStyle } from "./design-insert";
 import type { DropTarget } from "./BoardFrame";
@@ -1603,18 +1604,30 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
                     rect={r}
                     zoom={ctx.view.zoom}
                     styles={textEdit.anchor.computedStyles ?? {}}
-                    text={target.node.text}
+                    // A design component's {{ value }} shows what it renders, not its template.
+                    text={target.node.text.includes("{{") ? textEdit.anchor.text ?? "" : target.node.text}
                     caret={textEdit.caret}
                     onCancel={() => {
                       setTextEdit(undefined);
                       canvas.current?.focus();
                     }}
                     onCommit={(value) => {
+                      const instance = textEdit.anchor.instance;
                       setTextEdit(undefined);
                       canvas.current?.focus();
+                      let html: string;
+                      try {
+                        // Written where the text comes from: the markup, or the prop it renders.
+                        html = editDesignText(target.board.html, target.node.id, value, instance, (h) =>
+                          editDesignLayer(h, target.node.id, { type: "text", value }),
+                        );
+                      } catch (e) {
+                        setFailure(errorText(e));
+                        return;
+                      }
                       void changeLayer(
                         target.board,
-                        editDesignLayer(target.board.html, target.node.id, { type: "text", value }),
+                        html,
                         `Edited text of ${target.node.name.split(" · ")[0]} on ${target.board.name}`,
                       ).catch((e) => setFailure(errorText(e)));
                     }}

@@ -197,3 +197,97 @@ export function designPropValues(spec: DesignPropsSpec | null | undefined): Reco
   }
   return { ...values, ...(spec.$preview ?? {}) };
 }
+
+// ── Where a layer's text comes from ────────────────────────────────────────
+
+/**
+ * template: literal text in the markup. prop: one {{ path }} that resolves
+ * into a prop value (directly, or through a loop over a list prop), so an
+ * edit changes that value. logic: computed by the board's logic. mixed:
+ * literal text around template values.
+ */
+export type DesignTextSource =
+  | { kind: "template" }
+  | { kind: "prop"; prop: string; path: (string | number)[] }
+  | { kind: "logic"; expression: string }
+  | { kind: "mixed" };
+
+const PATH = /^([A-Za-z_$][\w$]*)((?:\.[A-Za-z_$][\w$]*|\[\d+\])*)$/;
+const LOOP = /^\s*(?:\(\s*([\w$]+)\s*(?:,\s*[\w$]+\s*)?\)|([\w$]+))\s+(?:in|of)\s+([A-Za-z_$][\w$]*)\s*$/;
+const attrOf = (e: Element, name: string) => e.attrs.find((a) => a.name === name)?.value;
+
+function layer(html: string, nodeId: string) {
+  const doc = parse(html);
+  const node = find(doc, (e) => attrOf(e, "data-aegis-node-id") === nodeId);
+  if (!node) throw new Error("Layer no longer exists. Select a current layer.");
+  return { doc, node };
+}
+const ownText = (e: Element) =>
+  e.childNodes.map((n) => (n.nodeName === "#text" && "value" in n ? n.value : "")).join("");
+function segments(rest: string): (string | number)[] {
+  return [...rest.matchAll(/\.([A-Za-z_$][\w$]*)|\[(\d+)\]/g)].map((m) => (m[1] !== undefined ? m[1] : Number(m[2])));
+}
+
+export function designTextSource(html: string, nodeId: string, instance?: string): DesignTextSource {
+  const { node } = layer(html, nodeId);
+  const text = ownText(node);
+  if (!text.includes("{{")) return { kind: "template" };
+  const single = /^\s*\{\{\s*([\s\S]+?)\s*\}\}\s*$/.exec(text);
+  if (!single || single[1].includes("}}")) return { kind: "mixed" };
+  const expression = single[1];
+  const m = PATH.exec(expression);
+  if (!m) return { kind: "logic", expression };
+  const spec = designPropsOf(html) ?? {};
+  const [root, rest] = [m[1], segments(m[2])];
+  if (root !== "$preview" && root in spec) return { kind: "prop", prop: root, path: rest };
+  // A loop variable over a list prop: the rendered copy says which item.
+  for (let e: Element | null = node; e && "attrs" in e; e = (e.parentNode as Element | null) ?? null) {
+    const loop = attrOf(e, "data-aegis-for");
+    if (!loop) continue;
+    const l = LOOP.exec(loop);
+    if (l && (l[1] ?? l[2]) === root && l[3] in spec && instance !== undefined && /^\d+$/.test(instance))
+      return { kind: "prop", prop: l[3], path: [Number(instance), ...rest] };
+    break;
+  }
+  return { kind: "logic", expression };
+}
+
+/** The value a prop renders with ($preview first) and where an edit writes it. */
+function propValue(spec: DesignPropsSpec, prop: string): { value: unknown; target: "preview" | "default" } {
+  if (spec.$preview && prop in spec.$preview) return { value: spec.$preview[prop], target: "preview" };
+  return { value: (spec[prop] as DesignPropDef | undefined)?.default, target: "default" };
+}
+
+/**
+ * A text edit on a layer, written where the text comes from: the markup,
+ * or the prop value it renders. Text computed by logic is refused.
+ */
+export function editDesignText(
+  html: string,
+  nodeId: string,
+  value: string,
+  instance: string | undefined,
+  editTemplate: (html: string) => string,
+): string {
+  const source = designTextSource(html, nodeId, instance);
+  if (source.kind === "template") return editTemplate(html);
+  if (source.kind === "mixed")
+    throw new Error("This text mixes words and template values. Edit it in the board HTML, or ask the agent.");
+  if (source.kind === "logic")
+    throw new Error(`This text comes from the board's logic ({{ ${source.expression} }}). Change it in the logic, or ask the agent.`);
+  const spec = designPropsOf(html);
+  if (!spec) throw new Error("This board's props could not be read.");
+  const { value: current, target } = propValue(spec, source.prop);
+  const next = setAt(current, source.path, value);
+  if (target === "preview") spec.$preview = { ...spec.$preview, [source.prop]: next };
+  else spec[source.prop] = { ...(spec[source.prop] as DesignPropDef), default: next };
+  return setDesignProps(html, spec);
+}
+
+function setAt(current: unknown, path: (string | number)[], value: string): unknown {
+  if (!path.length) return typeof current === "number" && value.trim() !== "" && Number.isFinite(Number(value)) ? Number(value) : value;
+  const [key, ...rest] = path;
+  const base = Array.isArray(current) ? [...current] : current && typeof current === "object" ? { ...(current as Record<string, unknown>) } : typeof key === "number" ? [] : {};
+  (base as Record<string | number, unknown>)[key] = setAt((current as Record<string | number, unknown> | undefined)?.[key], rest, value);
+  return base;
+}

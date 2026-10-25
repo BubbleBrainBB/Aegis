@@ -130,6 +130,7 @@ export function readDesignLayers(html: string): DesignLayer[] {
       name:
         attr(e, "data-aegis-layer-name") ||
         attr(e, "aria-label") ||
+        (e.tagName === "aegis-use" && attr(e, "component")) ||
         e.tagName + (text ? " · " + text.slice(0, 42) : ""),
       named: !!attr(e, "data-aegis-layer-name"),
       text,
