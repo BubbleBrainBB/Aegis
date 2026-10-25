@@ -114,7 +114,8 @@ private struct NeedsCards: View {
                         ForEach(model.permissions) { p in
                             Button {
                                 model.open(session: p.sessionId)
-                                model.approval = p
+                                // A question is docked in the task; others open their sheet.
+                                if p.kind != .question { model.approval = p }
                             } label: { card(p) }
                             .buttonStyle(.plain)
                         }

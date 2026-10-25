@@ -65,7 +65,7 @@ import Testing
         _ = try await fixture.line(containing: "fixture permission Bash {\"behavior\":\"allow\"}")
 
         // A question: its options reach the phone, and the answers reach the Mac as the desktop card sends them.
-        let question = try #require(snapshot.permissions.first { $0.kind == .question })
+        let question = try #require(snapshot.permissions.first { $0.kind == .question && $0.sessionId == "notes" })
         #expect(!question.canApprove) // older phones send it to the Mac
         #expect(question.questions?.map(\.allowsMany) == [false, true])
         #expect(question.questions?.first?.options.first == RemoteQuestion.Option(label: "User-facing only", description: "Features and fixes people will notice"))
@@ -89,7 +89,8 @@ import Testing
         #expect(try await client.mutate(plan.command("allow")).state == .completed)
         let approved = try await fixture.line(containing: "fixture permission ExitPlanMode")
         #expect(approved.contains(#""answers":{"Approve this plan and let Claude start implementing it?":"Approve and execute"}"#))
-        try await waitUntil { client.snapshot?.permissions.isEmpty == true }
+        // What's left is the fixture's single question, still waiting.
+        try await waitUntil { client.snapshot?.permissions.map(\.sessionId) == ["deps"] }
 
         // Chunked upload (two chunks) and a new task carrying it plus settings.
         let attachment = try await client.upload(name: "notes.txt", bytes: Data(repeating: 65, count: attachmentChunkBytes + 10))

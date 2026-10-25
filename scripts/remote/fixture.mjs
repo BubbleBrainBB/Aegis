@@ -71,6 +71,15 @@ const sessions = [
     runId: null,
   },
   {
+    id: "deps",
+    projectId: "site",
+    title: "Update the docs site dependencies",
+    provider: "claude",
+    status: "running",
+    updatedAt: Date.now() - 3 * 60 * minute,
+    runId: null,
+  },
+  {
     id: "notes",
     projectId: "site",
     title: "Write this week’s release notes",
@@ -148,9 +157,13 @@ const history = {
       : { id: `long-${i}`, role: "user", at: t0 - (260 - i) * 1000, text: `Message #${i}` },
   ),
   notes: [{ id: "a5", role: "assistant", text: "Release notes drafted in RELEASE_NOTES.md." }],
+  deps: [
+    { id: "u6", role: "user", text: "Update the docs site dependencies and make sure the build still passes." },
+    { id: "a6", role: "assistant", text: "Astro has a new major version. Everything else is a minor bump." },
+  ],
 };
 // Waiting requests by toolUseId: a command approval, a question and a plan.
-const pending = new Set(["check", "ask", "plan"]);
+const pending = new Set(["check", "ask", "plan", "pick"]);
 let gateway;
 const runtime = {
   // "development" lets the Aegis Dev simulator build pair with it.
@@ -300,7 +313,7 @@ gateway.capture({
 });
 // A question (one single-choice, one multi-select) for the Bubble task and a plan
 // for the Claude task, shaped like the desktop's AskUserQuestion and ExitPlanMode requests.
-for (const sessionId of ["tests", "notes"])
+for (const sessionId of ["tests", "notes", "deps"])
   gateway.capture({ type: "stream.user_prompt", payload: { sessionId, prompt: "test" } });
 gateway.capture({
   type: "permission.request",
@@ -377,6 +390,35 @@ gateway.capture({
       ],
     },
   },
+});
+gateway.capture({
+  type: "permission.request",
+  payload: {
+    sessionId: "deps",
+    toolUseId: "pick",
+    toolName: "AskUserQuestion",
+    input: {
+      questions: [
+        {
+          question: "Should I include the Astro major upgrade?",
+          options: [
+            { label: "Yes, upgrade Astro", description: "Follow the migration guide; may touch layouts" },
+            { label: "No, minor bumps only", description: "Leave Astro on the current major" },
+          ],
+        },
+      ],
+    },
+  },
+});
+// `kill -USR2 <pid>` ends the turns still waiting on a question, as when a turn stops on the Mac.
+process.on("SIGUSR2", () => {
+  for (const id of ["ask", "pick"]) {
+    if (!pending.delete(id)) continue;
+    const sessionId = id === "ask" ? "notes" : "deps";
+    sessions.find((s) => s.id === sessionId).status = "idle";
+    gateway.capture({ type: "session.status", payload: { sessionId, status: "idle" } });
+    console.log("fixture turn ended", sessionId);
+  }
 });
 const publish = () => {
   const offer = gateway.pairing();

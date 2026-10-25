@@ -207,9 +207,23 @@ struct ApprovalSheet: View {
 
     var body: some View {
         switch permission.kind {
-        case .question: QuestionSheet(permission: permission)
+        // Questions are answered in the task's dock, never in a sheet.
+        case .question: QuestionRedirect(permission: permission)
         case .plan: PlanSheet(permission: permission)
         case .approval, .desktop: ToolApprovalSheet(permission: permission)
+        }
+    }
+}
+
+/// Closes at once and opens the task, where the question is docked.
+private struct QuestionRedirect: View {
+    @Environment(AppModel.self) private var model
+    let permission: RemotePermission
+
+    var body: some View {
+        Color.clear.task {
+            model.approval = nil
+            model.open(session: permission.sessionId)
         }
     }
 }
