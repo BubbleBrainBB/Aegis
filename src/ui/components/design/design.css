@@ -2761,3 +2761,25 @@ details.design-section > .design-grid {
 .design-logic { margin-top: 8px; font-size: 12px; }
 .design-logic summary { cursor: pointer; color: var(--text-secondary); }
 .design-logic pre { margin: 6px 0 0; max-height: 240px; overflow: auto; padding: 8px; border-radius: 6px; background: var(--bg-tertiary); font: 11px/1.5 var(--font-mono, ui-monospace, monospace); white-space: pre-wrap; }
+
+/* A deck board's slide control in its label row. */
+.design-board-heading > .design-deck-nav { display: inline-flex; align-items: center; gap: 2px; font-variant-numeric: tabular-nums; color: var(--text-secondary); }
+.design-panel .design-deck-nav button { min-width: 16px; height: 16px; padding: 0 3px; line-height: 1; border-radius: 4px; color: inherit; }
+.design-panel .design-deck-nav button:disabled { opacity: 0.35; }
+
+/* Presenter view: next slide, notes and time beside the playing deck. */
+.design-board-preview-overlay .design-preview-stage { position: relative; }
+.design-presenter { position: absolute; top: 16px; right: 16px; bottom: 16px; width: 292px; display: flex; flex-direction: column; gap: 14px; padding: 16px; border-radius: 12px; background: var(--bg-secondary); border: 1px solid var(--border); color: var(--text-primary); overflow: auto; }
+.design-presenter-time { font: 600 28px/1 var(--font-mono, ui-monospace, monospace); font-variant-numeric: tabular-nums; }
+.design-presenter-next, .design-presenter-notes { display: flex; flex-direction: column; gap: 6px; }
+.design-presenter-next > span, .design-presenter-notes > span { font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.04em; }
+.design-presenter-notes p { margin: 0; font-size: 14px; line-height: 1.55; white-space: pre-wrap; }
+
+/* A deck's slides in the board inspector. */
+.design-slides { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.design-slides li { display: grid; gap: 4px; }
+.design-panel .design-slide-go { display: flex; gap: 8px; align-items: baseline; text-align: left; padding: 2px 0; font-size: 12px; color: var(--text-primary); }
+.design-slide-go > span:first-child { color: var(--text-muted); font-variant-numeric: tabular-nums; min-width: 16px; }
+.design-slide-go > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.design-slides textarea { width: 100%; font: 12px/1.45 inherit; resize: vertical; }
+.design-board-preview-overlay .design-preview-stage.is-presenting { padding-right: 324px; }

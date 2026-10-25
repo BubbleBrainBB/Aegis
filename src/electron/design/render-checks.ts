@@ -32,6 +32,12 @@ export function renderChecksScript(width: number, height: number): string {
   const root = document.body;
   const doc = document.documentElement;
 
+  // A deck's slide: text below 24px is hard to read projected.
+  if (document.querySelector("[data-aegis-deck]")) {
+    const small = [...root.querySelectorAll("*")].filter((el) => visible(el) && [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim()) && parseFloat(getComputedStyle(el).fontSize) < 24);
+    if (small.length) out.push("Slide text under 24px (" + small.slice(0, MAX).map((el) => label(el) + " " + Math.round(parseFloat(getComputedStyle(el).fontSize)) + "px").join(", ") + "): too small to read projected.");
+  }
+
   // Empty: nothing visible with text or size.
   const any = [...root.querySelectorAll("*")].some((el) => visible(el) && (el.textContent.trim() || ["IMG", "SVG", "svg"].includes(el.tagName)));
   if (!any) out.push("The board renders empty: nothing visible is drawn.");

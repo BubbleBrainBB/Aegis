@@ -4,6 +4,7 @@ import type { DesignBoard, DesignOperation } from "../../../shared/design-types"
 import { readBoardBackground, setBoardBackground } from "../../../shared/design-layers";
 import { isImeComposing } from "../../utils/ime";
 import { BoardComponentSection } from "./BoardComponentSection";
+import { BoardSlidesSection } from "./BoardSlidesSection";
 
 export const DEVICES = [
   { name: "Desktop", width: 1440 },
@@ -21,6 +22,7 @@ export function BoardDesignTab({
   onUpdate,
   onFitHeight,
   onExport,
+  onShowSlide,
 }: {
   board: DesignBoard;
   revision: number;
@@ -29,6 +31,8 @@ export function BoardDesignTab({
   onUpdate(ops: DesignOperation[]): Promise<unknown>;
   onFitHeight(): void;
   onExport(): void;
+  /** Show a deck's slide on the canvas. */
+  onShowSlide?(index: number): void;
 }) {
   const background = useMemo(() => readBoardBackground(board.html) ?? "", [board.html]);
   const place = (patch: Partial<Pick<DesignBoard, "name" | "width" | "height">>) =>
@@ -129,6 +133,7 @@ export function BoardDesignTab({
           />
         </div>
       </section>
+      <BoardSlidesSection board={board} can={can} onUpdate={onUpdate} onShowSlide={(i) => onShowSlide?.(i)} />
       <BoardComponentSection board={board} can={can} onUpdate={onUpdate} />
       <section className="design-section">
         <h4>Export</h4>

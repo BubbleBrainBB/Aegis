@@ -5,6 +5,8 @@ import { randomUUID } from "crypto";
 import { strToU8, zipSync } from "fflate";
 import { ipcMainHandle } from "../util";
 import { designPdf, getDesignRepository, packForDesign, previewDesign } from "./service";
+import { buildPptx, type PptxSlide } from "./pptx";
+import { designSlides, isDesignDeck } from "../../shared/design-deck";
 import { designForPage } from "../../shared/design-pages";
 import { setDesignComposerPrefs, setDesignFocus } from "./focus";
 import { listDesignStyles, listProjectTemplates } from "./styles";
@@ -168,17 +170,29 @@ export function registerDesignIpc() {
       }
       // PDF and HTML can be one board or a chosen few; a PDF goes in canvas order.
       const only = x.format === "png" ? [] : Array.isArray(x.boardIds) && x.boardIds.length ? x.boardIds : x.boardId ? [x.boardId] : [];
+      const pptx = x.format === "pptx";
       if (only.length) {
         d = { ...d, boards: d.boards.filter((board) => only.includes(board.id)) };
         if (!d.boards.length) throw new Error("Those boards are not in this design.");
       }
-      if (x.format === "pdf") d = { ...d, boards: [...d.boards].sort((a, b) => a.y - b.y || a.x - b.x) };
+      if (x.format === "pdf" || pptx) d = { ...d, boards: [...d.boards].sort((a, b) => a.y - b.y || a.x - b.x) };
       if (!d.boards.length && x.format !== "html") throw new Error("This page has no boards to export.");
-      if (x.format !== "png" && x.format !== "html" && x.format !== "pdf")
+      if (x.format !== "png" && x.format !== "html" && x.format !== "pdf" && !pptx)
         throw new Error("Unsupported export format");
       let bytes: Uint8Array;
       if (x.format === "pdf") {
         bytes = await designPdf(d.boards, undefined, packForDesign(d));
+      } else if (pptx) {
+        // Each deck slide (or each other board) as a picture slide, with its notes.
+        const slides: PptxSlide[] = [];
+        for (const board of d.boards) {
+          const deck = isDesignDeck(board.html) ? designSlides(board.html) : null;
+          for (const [i, s] of (deck?.length ? deck.map((s, i) => [i, s] as const) : [[undefined, null] as const])) {
+            const shot = await previewDesign(x.sessionId, x.documentId, board.id, x.revision, undefined, 4096, 1, false, i);
+            slides.push({ png: Buffer.from(shot.dataUrl.split(",")[1], "base64"), width: board.width, height: board.height, notes: s?.notes || undefined });
+          }
+        }
+        bytes = buildPptx(slides, { width: d.boards[0].width, height: d.boards[0].height }, d.title);
       } else if (x.format === "png") {
         if (!x.boardId) throw new Error("Select a board to export as PNG.");
         const preview = await previewDesign(
@@ -216,12 +230,12 @@ export function registerDesignIpc() {
           );
         bytes = zipSync(files);
       }
-      const extension = x.format === "png" ? "png" : x.format === "pdf" ? "pdf" : "zip";
+      const extension = x.format === "png" ? "png" : x.format === "pdf" ? "pdf" : pptx ? "pptx" : "zip";
       const options: SaveDialogOptions = {
         defaultPath: `${(only.length === 1 ? `${d.title} - ${d.boards[0].name}` : d.title).replace(/[^\p{L}\p{N} _-]/gu, "").slice(0, 80) || "Design"}.${extension}`,
         filters: [
           {
-            name: x.format === "png" ? "PNG image" : x.format === "pdf" ? "PDF, a page per board" : "HTML design bundle",
+            name: x.format === "png" ? "PNG image" : x.format === "pdf" ? "PDF, a page per board (a deck: per slide)" : pptx ? "PowerPoint, a slide per board or deck slide" : "HTML design bundle",
             extensions: [extension],
           },
         ],

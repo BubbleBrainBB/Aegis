@@ -281,7 +281,7 @@ export interface DesignAPI {
     sessionId: string;
     documentId: string;
     revision: number;
-    format: "html" | "png" | "pdf";
+    format: "html" | "png" | "pdf" | "pptx";
     pageId?: string;
     /** PNG: the board to render. PDF and HTML: only this board. */
     boardId?: string;

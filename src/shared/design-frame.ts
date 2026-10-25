@@ -5,6 +5,7 @@ import { editableLayerStyles } from "./design-layers";
 import { DESIGN_COMPONENTS_TYPE, isDesignComponent } from "./design-component";
 import { DESIGN_RUNTIME_SCRIPT } from "./design-runtime-bundle";
 import { resolveDesignAssets } from "./design-system-pack";
+import { deckSlideCss, isDesignDeck } from "./design-deck";
 
 /** A component another board can use: its template, logic and props. */
 export interface DesignComponentSource {
@@ -23,6 +24,8 @@ export interface DesignFrameOptions {
   components?: Record<string, DesignComponentSource>;
   /** The design system the board loads: its stylesheet, components and assets. */
   system?: { css: string; components: Record<string, DesignComponentSource>; assets: Record<string, string> } | null;
+  /** A deck's slide to show (0-based); the canvas switches it later by message. */
+  slide?: number;
 }
 
 // Only nonce-bound scripts run, in an opaque-origin, network-less iframe with
@@ -103,6 +106,10 @@ export function designFrameHtml(
   const components = runtime && Object.keys(available).length
     ? `<script type="${DESIGN_COMPONENTS_TYPE}" data-aegis-frame>${JSON.stringify(available).replace(/</g, "\\u003c")}</script>`
     : "";
+  // A deck shows one slide; the host picks which (a frame-owned stylesheet, never the board).
+  const deck = isDesignDeck(html)
+    ? `<style data-aegis-frame data-aegis-slide-style>${deckSlideCss(options.slide ?? 0)}</style><script data-aegis-frame nonce="${nonce}">addEventListener('message',e=>{const d=e.data;if(e.source!==parent||d?.nonce!==${JSON.stringify(nonce)}||d.type!=='aegis-design-slide'||!Number.isInteger(d.index))return;const n=Math.max(0,d.index)+1;document.querySelector('style[data-aegis-slide-style]').textContent='[data-aegis-deck]>[data-aegis-slide]:not(:nth-child('+n+' of [data-aegis-slide])){display:none!important}';parent.postMessage({type:'aegis-design-slide-shown',nonce:${JSON.stringify(nonce)},index:d.index},'*')})</script>`
+    : "";
   // The system's stylesheet comes first, so the board's own styles win.
   const system = options.system?.css ? `<style data-aegis-frame data-aegis-system>${options.system.css.replace(/<\/(style)/gi, "<\\/$1")}</style>` : "";
   const board = runtime
@@ -112,6 +119,6 @@ export function designFrameHtml(
   // A replacer function: the runtime bundle contains `$&`-style sequences.
   return resolveDesignAssets(sanitizeDesignHtml(html), options.system?.assets).replace(
     "<head>",
-    () => `<head><meta data-aegis-frame http-equiv="Content-Security-Policy" content="${policy}"><meta data-aegis-frame name="referrer" content="no-referrer">${system}<style data-aegis-frame>html{color-scheme:light}body{margin:0}*{box-sizing:border-box}[data-aegis-hidden="true"]{display:none!important}[data-aegis-masked]{-webkit-text-fill-color:transparent!important;-webkit-text-stroke-color:transparent!important;text-shadow:none!important;text-decoration-color:transparent!important}</style>${inspector}${board}`,
+    () => `<head><meta data-aegis-frame http-equiv="Content-Security-Policy" content="${policy}"><meta data-aegis-frame name="referrer" content="no-referrer">${system}<style data-aegis-frame>html{color-scheme:light}body{margin:0}*{box-sizing:border-box}[data-aegis-hidden="true"]{display:none!important}[data-aegis-masked]{-webkit-text-fill-color:transparent!important;-webkit-text-stroke-color:transparent!important;text-shadow:none!important;text-decoration-color:transparent!important}</style>${deck}${inspector}${board}`,
   );
 }

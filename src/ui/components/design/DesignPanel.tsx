@@ -39,6 +39,7 @@ import { DesignCompare } from "./DesignCompare";
 import { InlineTextEditor } from "./InlineTextEditor";
 import { editDesignText } from "../../../shared/design-component";
 import { useDesignSystem } from "./use-design-system";
+import { designSlides, isDesignDeck } from "../../../shared/design-deck";
 import { SelectionTools } from "./SelectionTools";
 import { frameStyle } from "./design-insert";
 import type { DropTarget } from "./BoardFrame";
@@ -1092,12 +1093,12 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
    * file ready is not a file saved until the user picked where.
    */
   const exportAs = (
-    format: "pdf" | "html" | "png",
+    format: "pdf" | "html" | "png" | "pptx",
     boardId?: string,
     only?: { boardIds?: string[]; scale?: 1 | 2 },
   ) =>
     run(async () => {
-      const what = format === "pdf" ? "PDF" : format === "html" ? "HTML bundle" : "PNG";
+      const what = format === "pdf" ? "PDF" : format === "html" ? "HTML bundle" : format === "pptx" ? "PowerPoint" : "PNG";
       setExporting(true);
       try {
       const r = await window.electron.design.export({
@@ -2017,6 +2018,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
                       ]);
                   }}
                   onExport={() => void exportBoard(activeBoard.id)}
+                  onShowSlide={(index) => canvas.current?.showSlide(activeBoard.id, index)}
                 />
               ) : (
                 <div className="design-inspector-empty"><strong>Nothing selected</strong><span>Click any element in the design to edit it here.</span></div>
@@ -2098,6 +2100,9 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
             <button role="menuitem" onClick={() => (setExportMenu(undefined), void exportAs("html"))}>
               HTML bundle <span>{exportAllPages ? "all pages" : "current page"}, zipped</span>
             </button>
+            <button role="menuitem" onClick={() => (setExportMenu(undefined), void exportAs("pptx"))}>
+              PowerPoint <span>a slide per board or deck slide, with notes</span>
+            </button>
             <button
               role="menuitem"
               disabled={!activeBoard}
@@ -2127,6 +2132,11 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
           <button role="menuitem" onClick={() => (close(), void exportAs("html", board.id))}>
             HTML (.zip) <span>This board as a web page</span>
           </button>
+          {isDesignDeck(board.html) ? (
+            <button role="menuitem" onClick={() => (close(), void exportAs("pptx", board.id))}>
+              PowerPoint (.pptx) <span>{designSlides(board.html).length} slides, with notes</span>
+            </button>
+          ) : null}
           <div className="design-menu-divider" role="separator" />
           <button role="menuitem" disabled={!canvasBoards.length} onClick={() => (close(), void exportAs("pdf", undefined, { boardIds: canvasBoards.map((b) => b.id) }))}>
             All boards (.pdf) <span>{canvasBoards.length} on this page, in canvas order</span>

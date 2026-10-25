@@ -123,5 +123,28 @@ exports.run = async ({ w, js, repo, sessionId, documentId, screenshotDir }) => {
       if (await fr.executeJavaScript('window.__aegisRuntime && document.querySelector(".plan.on")?.textContent==="Yearly"').catch(() => false)) return true;
     return false;
   }, "runtime back");
-  console.log("PASS design components on canvas: runtime render with layer ids, inert edit mode, in-place props update, props panel edits, Play handlers, board links, logic error badge, watchdog static fallback and recovery");
+  step("deck");
+  // A deck: one slide on the canvas, ‹ › in its label, slides in Play, presenter view with notes.
+  write("deck-add", [{ type: "add", name: "Pitch", x: 1400, y: 1400, width: 640, height: 360, html: '<!doctype html><html><head><style>html,body,main{margin:0;height:100%}section{height:100%;display:flex;align-items:center;justify-content:center;font:48px system-ui}</style></head><body><main data-aegis-deck><section data-aegis-slide data-aegis-notes="Welcome everyone"><h1>Hello</h1></section><section data-aegis-slide data-aegis-notes="The ask"><h1>The ask</h1></section></main></body></html>' }]);
+  const pitch = () => doc().boards.find((b) => b.name === "Pitch");
+  await until(() => js(`document.querySelector('[data-board-id="${pitch().id}"] .design-deck-nav [aria-label=Slide]')?.textContent==="1 / 2"`), "deck nav");
+  const pitchFrame = async () => {
+    for (const fr of frames())
+      if (await fr.executeJavaScript('!!document.querySelector("[data-aegis-deck]") && !document.querySelector(".design-board-preview-overlay")').catch(() => false)) return fr;
+    return null;
+  };
+  const visibleSlides = (fr) => fr.executeJavaScript('[...document.querySelectorAll("[data-aegis-slide]")].map(s=>getComputedStyle(s).display!=="none")');
+  await until(async () => JSON.stringify(await visibleSlides(await pitchFrame())) === "[true,false]", "first slide shows");
+  await js(`document.querySelector('[aria-label="Next slide of Pitch"]').click()`);
+  await until(async () => JSON.stringify(await visibleSlides(await pitchFrame())) === "[false,true]", "next slide on the canvas");
+  await js(`document.querySelector('[data-board-id="${pitch().id}"] .design-board-preview').click()`);
+  await until(() => js('document.querySelector(".design-board-preview-overlay [aria-label=Slide]")?.textContent==="Slide 1 / 2"'), "play starts at slide 1");
+  await js('document.querySelector(".design-board-preview-overlay [aria-label=\'Next slide\']").click()');
+  await until(() => js('document.querySelector(".design-board-preview-overlay [aria-label=Slide]")?.textContent==="Slide 2 / 2"'), "play steps slides");
+  await js('[...document.querySelectorAll(".design-board-preview-overlay button")].find(b=>b.textContent.includes("Presenter view")).click()');
+  await until(() => js('document.querySelector(".design-presenter-notes p")?.textContent==="The ask"'), "presenter shows notes");
+  await wait(400); // let the compositor paint the presenter before capturing
+  if (screenshotDir) fs.writeFileSync(path.join(screenshotDir, "design-deck-presenter.png"), (await w.webContents.capturePage()).toPNG());
+  await js('[...document.querySelectorAll(".design-board-preview-overlay button")].find(b=>b.textContent.includes("Back to canvas")).click()');
+  console.log("PASS design components on canvas: runtime render with layer ids, inert edit mode, in-place props update, props panel edits, Play handlers, board links, logic error badge, watchdog static fallback and recovery, deck slides on canvas and in Play, presenter notes");
 };

@@ -9,6 +9,7 @@ import { designProjectRoot } from "./styles";
 import type { DesignDocument, DesignPreview } from "../../shared/design-types";
 import { designSystemPack } from "./system-pack";
 import { adherenceWarnings } from "./adherence";
+import { designSlides, isDesignDeck } from "../../shared/design-deck";
 import type { DesignSystemPack } from "../../shared/design-system-pack";
 
 let repository: DesignRepository | undefined;
@@ -99,6 +100,8 @@ export function previewDesign(
   scale: 1 | 2 = 1,
   /** Measure the board for the agent (exports skip this). */
   checks = true,
+  /** A deck's slide to capture (0-based). */
+  slide?: number,
 ): Promise<DesignPreview> {
   const job = captureTail
     .catch(() => {})
@@ -138,7 +141,7 @@ export function previewDesign(
       signal?.addEventListener("abort", stop, { once: true });
       try {
         await w.loadURL(
-          `data:text/html;charset=utf-8,${encodeURIComponent(designFrameHtml(b.html, randomUUID(), false, { system: packForDesign(d) }))}`,
+          `data:text/html;charset=utf-8,${encodeURIComponent(designFrameHtml(b.html, randomUUID(), false, { system: packForDesign(d), slide }))}`,
         );
         if (scale !== 1) w.webContents.setZoomFactor(scale);
         // A design component renders after its runtime boots.
@@ -219,13 +222,15 @@ export function designPdf(
     .then(async () => {
       if (!boards.length) throw new Error("This design has no boards to export.");
       const escape = (html: string) => html.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
-      const pages = boards
+      // A deck is one page per slide.
+      const sheets = boards.flatMap((b) => (isDesignDeck(b.html) ? designSlides(b.html).map((_, slide) => ({ ...b, slide })) : [{ ...b, slide: undefined as number | undefined }]));
+      const pages = sheets
         .map(
           (b, i) =>
-            `<section class="page p${i}"><iframe sandbox="allow-scripts" srcdoc="${escape(designFrameHtml(b.html, randomUUID(), false, { mode: "edit", system }))}" style="width:${b.width}px;height:${b.height}px"></iframe></section>`,
+            `<section class="page p${i}"><iframe sandbox="allow-scripts" srcdoc="${escape(designFrameHtml(b.html, randomUUID(), false, { mode: "edit", system, slide: b.slide }))}" style="width:${b.width}px;height:${b.height}px"></iframe></section>`,
         )
         .join("");
-      const sizes = boards.map((b, i) => `@page s${i}{size:${b.width}px ${b.height}px;margin:0}.p${i}{page:s${i}}`).join("");
+      const sizes = sheets.map((b, i) => `@page s${i}{size:${b.width}px ${b.height}px;margin:0}.p${i}{page:s${i}}`).join("");
       // srcdoc frames inherit this policy: allow what each board's own nonce policy allows.
       const doc = `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data:; font-src data:; frame-src about: data:"><style>${sizes}html,body{margin:0;padding:0}.page{display:block;break-after:page}.page:last-child{break-after:auto}iframe{display:block;border:0}</style></head><body>${pages}</body></html>`;
       const partition = `design-pdf-${randomUUID()}`;

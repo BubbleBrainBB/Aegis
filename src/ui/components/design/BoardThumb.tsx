@@ -17,6 +17,7 @@ export const BoardThumb = memo(function BoardThumb({
   className,
   style,
   system,
+  slide,
 }: {
   board: Pick<DesignBoard, "id" | "html" | "width" | "height" | "contentRevision">;
   width: number;
@@ -26,14 +27,16 @@ export const BoardThumb = memo(function BoardThumb({
   style?: CSSProperties;
   /** The design system the board loads. */
   system?: DesignSystemPack | null;
+  /** A deck's slide to draw. */
+  slide?: number;
 }) {
   const scale = Math.min(width / board.width, height / board.height);
   const sandboxEpoch = useSandboxEpoch();
   const scripted = isDesignComponent(board.html) && !isBoardHung(board.html);
   // Keyed by revision so a rewritten board repaints; no inspector script.
   const srcDoc = useMemo(
-    () => designFrameHtml(board.html, `thumb-${board.id.replace(/[^a-zA-Z0-9-]/g, "")}-${board.contentRevision}`, false, { mode: scripted ? "edit" : "static", system }),
-    [board.html, board.id, board.contentRevision, scripted, system],
+    () => designFrameHtml(board.html, `thumb-${board.id.replace(/[^a-zA-Z0-9-]/g, "")}-${board.contentRevision}`, false, { mode: scripted ? "edit" : "static", system, slide }),
+    [board.html, board.id, board.contentRevision, scripted, system, slide],
   );
   return (
     <div

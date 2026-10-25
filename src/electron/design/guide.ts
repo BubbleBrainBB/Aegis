@@ -3,7 +3,7 @@
  * descriptions say what the canvas allows; this is about making the work good.
  * Adapted from the Bubble desktop app's design skill.
  */
-export const DESIGN_GUIDE_TOPICS = ['treatment', 'options', 'structure', 'components', 'tokens', 'type', 'color', 'avoid', 'content', 'review'] as const;
+export const DESIGN_GUIDE_TOPICS = ['treatment', 'options', 'structure', 'components', 'decks', 'tokens', 'type', 'color', 'avoid', 'content', 'review'] as const;
 export type DesignGuideTopic = (typeof DESIGN_GUIDE_TOPICS)[number];
 
 const sections: Record<DesignGuideTopic, string> = {
@@ -79,6 +79,17 @@ Rules:
 - Keep data-aegis-node-id on template elements as usual; repeated items share their template layer, so a hand edit applies to every item.
 - On the canvas, logic runs but input goes to the editor; Play (and exported HTML) is where it responds. design_preview reports logic errors as warnings; fix them before you finish.
 - Change logic with logic_patch for small edits, props with props, and the template with patch, as you would any board.`,
+  decks: `## Decks (slides)
+A deck is one board, sized as a slide (1920 × 1080 unless asked otherwise), whose deck element holds the slides:
+<main data-aegis-deck style="width:100%;height:100%">
+  <section data-aegis-slide data-aegis-notes="What to say on this slide">…</section>
+  <section data-aegis-slide>…</section>
+</main>
+- Slides are the deck element's direct children; nothing else goes there (no loops or components as slides), so the canvas, thumbnails, notes and the presenter view line up with the source.
+- Each slide fills the board (width and height 100%, its own padding); the canvas shows one at a time with ‹ › in the board's label, Play steps through them, and the presenter view shows the next slide and the notes.
+- Projected text: 24px at the very least, body 28–36px, titles 56–96px. design_preview flags slide text under 24px.
+- One idea per slide; put what the speaker says in data-aegis-notes rather than on the slide.
+- design_preview takes a slide index to render any slide; design_verify looks at every slide. PDF and PowerPoint exports have a page or slide per deck slide, notes included.`,
   tokens: `## Tokens first
 Before the first board, write a compact token set as CSS variables on :root and derive every color and type decision from it:
 - Color: a handful of named tokens: background (a subtly toned white or black), text, muted text, line, and 0–2 accents; add a surface only where the page really layers, not as a darker page under white cards.
@@ -125,11 +136,11 @@ Instead, ground the design in the subject: its real content, units, terms and co
 After each board, preview it once. The preview lists what it measured (text over other text, text cut off by a clipping box, an empty page, content wider or taller than the board, images that failed): treat these as leads, then look at the screenshot yourself for what geometry can't see: misaligned edges in repeated items, low contrast, an empty or stretched area, weak hierarchy, and anything from "Avoid the generated look". Fix the cause in one pass (not by shrinking text or hiding content), then move on. Don't loop on previews; the user reviews and comments on the canvas.
 
 ## When you finish
-Say what you made, the decisions that matter, what you checked (previews, warnings fixed) and what you did not verify. Only call something checked if you actually checked it.`,
+Call design_verify once the request's boards are drawn and previewed: it runs the checks and a separate visual review. Fix what it reports and verify again (at most twice). Then say what you made, the decisions that matter, what you checked (previews, warnings fixed) and what you did not verify. Only call something checked if you actually checked it.`,
 };
 
 export const DESIGN_GUIDE_DESCRIPTION =
-  `Read design guidance before creating or reworking boards with the design tools: treatment, board sizes, option sheets for comparing candidates, HTML structure that edits well, interactive boards (template directives, logic and props), tokens, type, color, patterns to avoid, content and review. Pass topics to read only some (${DESIGN_GUIDE_TOPICS.join(', ')}); omit them for all. Also returns the style guide the user picked for this design, if any.`;
+  `Read design guidance before creating or reworking boards with the design tools: treatment, board sizes, option sheets for comparing candidates, HTML structure that edits well, interactive boards (template directives, logic and props), decks (slides with speaker notes), tokens, type, color, patterns to avoid, content and review. Pass topics to read only some (${DESIGN_GUIDE_TOPICS.join(', ')}); omit them for all. Also returns the style guide the user picked for this design, if any.`;
 
 export function designGuideText(topics?: readonly string[], styleGuide?: { name: string; text: string } | null): string {
   const wanted = topics?.length

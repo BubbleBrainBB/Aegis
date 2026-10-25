@@ -9,6 +9,7 @@ export const DESIGN_GUIDE_TOOL = 'design_guide';
 export const DESIGN_RESOURCES_TOOL = 'design_resources';
 export const DESIGN_STARTER_TOOL = 'design_starter';
 export const DESIGN_SYSTEM_CHECK_TOOL = 'design_system_check';
+export const DESIGN_VERIFY_TOOL = 'design_verify';
 
 export const DESIGN_TOOL_NAMES = [
   DESIGN_CREATE_TOOL,
@@ -21,6 +22,7 @@ export const DESIGN_TOOL_NAMES = [
   DESIGN_RESOURCES_TOOL,
   DESIGN_STARTER_TOOL,
   DESIGN_SYSTEM_CHECK_TOOL,
+  DESIGN_VERIFY_TOOL,
 ] as const;
 export type DesignToolName = (typeof DESIGN_TOOL_NAMES)[number];
 

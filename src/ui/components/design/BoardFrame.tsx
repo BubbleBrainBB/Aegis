@@ -135,12 +135,14 @@ export const BoardFrame = memo(
       components?: Record<string, DesignComponentSource>;
       /** The design system the board loads. Keep the object stable: a new one reloads the frame. */
       system?: DesignSystemPack | null;
+      /** A deck's slide to show (0-based); changes switch it in place. */
+      slide?: number;
       /** `requested`: the frame answering selectNode rather than reporting a click. */
       onInspect?: (anchor: DesignAnchor, hover: boolean, requested?: boolean) => void;
       onLoad?: () => void;
       onRuntime?: (event: BoardRuntimeEvent) => void;
     }
-  >(function BoardFrame({ board, preview = false, mode: requestedMode, components, system, onInspect, onLoad, onRuntime }, ref) {
+  >(function BoardFrame({ board, preview = false, mode: requestedMode, components, system, slide, onInspect, onLoad, onRuntime }, ref) {
     const frame = useRef<HTMLIFrameElement>(null);
     const pending = useRef(new Map<string, (data: any) => void>());
     // A hung board falls back to its template without the runtime until its HTML changes.
@@ -152,15 +154,18 @@ export const BoardFrame = memo(
     // the bridge; changing srcDoc for every streamed chunk navigates the frame.
     // Switching runtime on or off (component ↔ static, mode) needs a new frame.
     const scripted = mode !== "static" && isDesignComponent(board.html);
+    // The slide a new frame starts on; later changes go by message (no reload).
+    const slideRef = useRef(slide ?? 0);
+    slideRef.current = slide ?? 0;
     const lifetime = useMemo(() => {
       const token = crypto.randomUUID();
-      return { token, html: board.html, source: designFrameHtml(board.html, token, !preview, { mode, components, system }) };
+      return { token, html: board.html, source: designFrameHtml(board.html, token, !preview, { mode, components, system, slide: slideRef.current }) };
     }, [board.id, preview, mode, scripted, components, system, sandboxEpoch]);
     const { token } = lifetime;
     // What the frame holds: sanitized, with the system's asset references resolved.
     const html = useMemo(() => resolveDesignAssets(sanitizeDesignHtml(board.html), system?.assets), [board.html, system]);
     const [recovery, setRecovery] = useState<{ token: string; html: string; source: string; epoch: string } | null>(null);
-    const source = preview ? designFrameHtml(html, token, false, { mode, components, system })
+    const source = preview ? designFrameHtml(html, token, false, { mode, components, system, slide: slideRef.current })
       : recovery?.token === token ? recovery.source : lifetime.source;
     const onRuntimeRef = useRef(onRuntime);
     onRuntimeRef.current = onRuntime;
@@ -401,6 +406,11 @@ export const BoardFrame = memo(
       return () => window.removeEventListener("message", receive);
     }, [token, onInspect]);
     useEffect(() => {
+      if (slide === undefined || ready.current !== token) return;
+      frame.current?.contentWindow?.postMessage({ type: "aegis-design-slide", nonce: token, index: slide }, "*");
+      onLoadRef.current?.(); // selection and pins re-measure on the new slide
+    }, [slide, token, loadEpoch]);
+    useEffect(() => {
       if (!scripted || ready.current !== token) return;
       // Watchdog: a board whose logic stops answering falls back to static.
       let missed = 0;
@@ -444,7 +454,7 @@ export const BoardFrame = memo(
         } else {
           // A broken bridge gets one full, sandboxed recovery for these bytes.
           ready.current = null;
-          setRecovery({ token, html, source: designFrameHtml(html, token, true, { mode, components, system }), epoch: crypto.randomUUID() });
+          setRecovery({ token, html, source: designFrameHtml(html, token, true, { mode, components, system, slide: slideRef.current }), epoch: crypto.randomUUID() });
         }
       });
       return () => { current = false; };

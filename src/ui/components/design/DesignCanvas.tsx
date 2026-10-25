@@ -23,6 +23,8 @@ import { ArrowsDiagonal, ChevronDown, Check, Download, Hand, Hash, MessageCircle
 import { DesignActionMenu, DesignToolButton, useDesignMenu } from "./DesignChrome";
 import { BoardFrame, type BoardInspector, type BoardRuntimeEvent, type DragState, type DropTarget } from "./BoardFrame";
 import type { DesignSystemPack } from "../../../shared/design-system-pack";
+import { designSlides, isDesignDeck } from "../../../shared/design-deck";
+import { BoardThumb } from "./BoardThumb";
 import { FRAME_SIZE, snapBoard, textTagFor } from "./design-insert";
 import { CanvasMarks } from "./CanvasMarks";
 import { useLayoutGuides } from "./design-prefs";
@@ -135,6 +137,8 @@ export type CanvasApi = {
   /** Rendered rects of layers on one board (board coordinates). */
   measure(boardId: string, ids: string[]): Promise<Record<string, { x: number; y: number; width: number; height: number } | null>>;
   focus(): void;
+  /** Show a deck board's slide (0-based) on the canvas. */
+  showSlide(boardId: string, index: number): void;
 };
 type Props = {
   /** The design system every board loads (stylesheet, components, assets). */
@@ -292,6 +296,8 @@ export function DesignCanvas(props: Props) {
   const [hover, setHover] = useState<ElementSelection>();
   const hoverBoard = useRef<string | undefined>(undefined);
   const [previewId, setPreviewId] = useState<string>();
+  // The slide each deck board shows on the canvas.
+  const [deckSlide, setDeckSlide] = useState<Record<string, number>>({});
   // What each component board's runtime last reported: logic errors, a hang.
   const [runtimeIssues, setRuntimeIssues] = useState<Record<string, { errors: string[]; hung: boolean }>>({});
   const onBoardRuntime = useCallback((boardId: string, event: BoardRuntimeEvent) => {
@@ -528,6 +534,7 @@ export function DesignCanvas(props: Props) {
       styles: async (id, nodeId) => (await inspectors.current.get(id)?.styles(nodeId)) ?? null,
       measure: async (id, ids) => (await inspectors.current.get(id)?.measure(ids))?.rects ?? {},
       focus: () => viewport.current?.focus({ preventScroll: true }),
+      showSlide: (id, index) => setDeckSlide((all) => ({ ...all, [id]: Math.max(0, index) })),
     };
 
   function changeView(next: CanvasView) {
@@ -1792,6 +1799,18 @@ export function DesignCanvas(props: Props) {
                   onClick={e => { if (e.detail === 0) onSelectionChange([b.id]); }}
                 >{b.name}</button>}
                 {writingBoard(b) ? <span>Writing…</span> : null}
+                {isDesignDeck(b.html) ? (() => {
+                  const count = designSlides(b.html).length;
+                  const at = Math.min(deckSlide[b.id] ?? 0, Math.max(0, count - 1));
+                  const go = (to: number) => setDeckSlide((all) => ({ ...all, [b.id]: Math.max(0, Math.min(count - 1, to)) }));
+                  return count ? (
+                    <span className="design-deck-nav" data-canvas-ui>
+                      <button data-canvas-ui aria-label={`Previous slide of ${b.name}`} disabled={at <= 0} onClick={() => go(at - 1)}>‹</button>
+                      <span aria-label="Slide">{at + 1} / {count}</span>
+                      <button data-canvas-ui aria-label={`Next slide of ${b.name}`} disabled={at >= count - 1} onClick={() => go(at + 1)}>›</button>
+                    </span>
+                  ) : null;
+                })() : null}
                 {runtimeIssues[b.id] ? (
                   <span
                     className="design-board-issue"
@@ -1831,6 +1850,7 @@ export function DesignCanvas(props: Props) {
                 board={patches[b.id] ? { ...b, ...p } : b}
                 mode={writingBoard(b) ? "static" : "edit"}
                 system={props.system}
+                slide={isDesignDeck(b.html) ? deckSlide[b.id] ?? 0 : undefined}
                 onRuntime={(event) => onBoardRuntime(b.id, event)}
                 onLoad={() => {
                   setLoads((n) => n + 1);
@@ -2238,6 +2258,9 @@ function MarkToolIcon({ type }: { type: DesignMarkType }) {
   </svg>;
 }
 
+/** Room the presenter column takes beside a playing deck (CSS .is-presenting). */
+const PRESENTER_WIDTH = 324;
+
 function BoardPreview({
   board,
   boards,
@@ -2256,11 +2279,29 @@ function BoardPreview({
     const next = boards[index + delta];
     if (next) onNavigate(next.id);
   };
+  // A deck plays slide by slide, then moves on to the next board.
+  const slides = useMemo(() => (isDesignDeck(board.html) ? designSlides(board.html) : []), [board.html]);
+  const [slide, setSlide] = useState(0);
+  const [presenter, setPresenter] = useState(false);
+  const [started, setStarted] = useState(() => Date.now());
+  const [, tick] = useState(0);
+  useEffect(() => setSlide(0), [board.id]);
+  useEffect(() => {
+    if (!presenter) return;
+    const t = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [presenter]);
+  const step = (delta: number) => {
+    if (!slides.length) return go(delta);
+    const next = slide + delta;
+    if (next >= 0 && next < slides.length) setSlide(next);
+    else go(delta);
+  };
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.repeat || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey || isTextInput(e.target)) return;
-      if (e.key === "ArrowLeft" || e.key === "PageUp") { e.preventDefault(); go(-1); }
-      if (e.key === "ArrowRight" || e.key === "PageDown") { e.preventDefault(); go(1); }
+      if (e.key === "ArrowLeft" || e.key === "PageUp") { e.preventDefault(); step(-1); }
+      if (e.key === "ArrowRight" || e.key === "PageDown" || (slides.length && e.key === " ")) { e.preventDefault(); step(1); }
     };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
@@ -2278,7 +2319,8 @@ function BoardPreview({
             0.01,
             Math.min(
               1,
-              (el.clientWidth - 48) / board.width,
+              // The presenter column takes its own room beside the slide.
+              (el.clientWidth - 48 - (presenter ? PRESENTER_WIDTH : 0)) / board.width,
               (el.clientHeight - 48) / board.height,
             ),
           ),
@@ -2288,7 +2330,7 @@ function BoardPreview({
     observer.observe(el);
     resize();
     return () => observer.disconnect();
-  }, [fit, board.width, board.height]);
+  }, [fit, board.width, board.height, presenter]);
   return (
     <div
       className="design-board-preview-overlay"
@@ -2319,6 +2361,18 @@ function BoardPreview({
             </button>
           </span>
         )}
+        {slides.length ? (
+          <span className="design-preview-nav">
+            <button aria-label="Previous slide" disabled={slide <= 0} onClick={() => setSlide(slide - 1)}>‹</button>
+            <span aria-label="Slide">Slide {slide + 1} / {slides.length}</span>
+            <button aria-label="Next slide" disabled={slide >= slides.length - 1} onClick={() => setSlide(slide + 1)}>›</button>
+          </span>
+        ) : null}
+        {slides.length ? (
+          <button aria-pressed={presenter} onClick={() => { setPresenter(!presenter); setStarted(Date.now()); }}>
+            Presenter view
+          </button>
+        ) : null}
         <button aria-pressed={fit} onClick={() => setFit(true)}>
           Fit page
         </button>
@@ -2335,7 +2389,7 @@ function BoardPreview({
           ×
         </button>
       </header>
-      <div ref={stage} className="design-preview-stage">
+      <div ref={stage} className={presenter && slides.length ? "design-preview-stage is-presenting" : "design-preview-stage"}>
         <div
           style={{
             width: board.width * zoom,
@@ -2355,6 +2409,7 @@ function BoardPreview({
               board={board}
               preview
               system={system}
+              slide={slides.length ? slide : undefined}
               onRuntime={(event) => {
                 if (event.type !== "goto") return;
                 // A board link names its target by name (or id).
@@ -2365,6 +2420,26 @@ function BoardPreview({
             />
           </div>
         </div>
+        {presenter && slides.length ? (
+          <aside className="design-presenter" aria-label="Presenter view">
+            <div className="design-presenter-time" aria-label="Elapsed">
+              {(() => {
+                const sec = Math.floor((Date.now() - started) / 1000);
+                return `${String(Math.floor(sec / 60)).padStart(2, "0")}:${String(sec % 60).padStart(2, "0")}`;
+              })()}
+            </div>
+            <div className="design-presenter-next">
+              <span>{slide + 1 < slides.length ? `Next · ${slides[slide + 1].title}` : "End of deck"}</span>
+              {slide + 1 < slides.length ? (
+                <BoardThumb board={board} width={260} height={Math.round((260 * board.height) / board.width)} system={system} slide={slide + 1} />
+              ) : null}
+            </div>
+            <div className="design-presenter-notes">
+              <span>Notes</span>
+              <p>{slides[slide]?.notes || "No notes for this slide."}</p>
+            </div>
+          </aside>
+        ) : null}
       </div>
     </div>
   );
