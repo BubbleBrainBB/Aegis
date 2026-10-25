@@ -102,6 +102,15 @@ function currentSessionDisplay(instance: AgentInstance, members: Map<string, Mem
   return `Workflow asked this chat for ${instance.phase ?? instance.stepId}${round}`;
 }
 
+/**
+ * The folder a member's existing session must still be in to be continued.
+ * The chat session stays in its own folder even when the run works in another
+ * worktree, so it has moved only if that folder changed.
+ */
+export function memberSessionCwd(isCurrent: boolean, run: Pick<RunRow, 'options'>, workspaceDir: string): string {
+  return isCurrent ? (run.options.parent?.cwd ?? workspaceDir) : workspaceDir;
+}
+
 function safeName(key: string) {
   return key.replace(/[^A-Za-z0-9._-]+/g, '_');
 }
@@ -188,7 +197,7 @@ export class AegisWorkflowHost implements WorkflowHost {
       const display = isCurrent ? currentSessionDisplay(instance, this.deps.members()) : undefined;
 
       const reuse =
-        instance.session === 'continue' && member.currentSessionId && this.deps.bridge.sessionCwd(member.currentSessionId) === workspaceDir
+        instance.session === 'continue' && member.currentSessionId && this.deps.bridge.sessionCwd(member.currentSessionId) === memberSessionCwd(isCurrent, run, workspaceDir)
           ? member.currentSessionId
           : null;
       let sessionId: string;

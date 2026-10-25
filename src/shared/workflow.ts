@@ -53,7 +53,11 @@ export function isStartWorkflowToolName(name: unknown): boolean {
  * `fullAccess`: that session ran with full access when it asked, so the
  * workflow's commands need no separate approval either.
  */
-export type WorkflowParent = { sessionId: string; toolUseId: string | null; provider: string; fullAccess?: boolean };
+/**
+ * The chat session that started a run. `cwd` is the session's folder at the
+ * time; the run itself may work in another worktree of the same repository.
+ */
+export type WorkflowParent = { sessionId: string; toolUseId: string | null; provider: string; fullAccess?: boolean; cwd?: string };
 
 /** Each provider's "run anything without asking" permission mode. */
 const FULL_ACCESS_MODES: Record<string, string[]> = {

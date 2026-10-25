@@ -20,7 +20,9 @@ import {
   settleTurn,
 } from '../../src/electron/libs/workflow/session-hooks';
 import type { AgentInstance } from '../../src/workflow-engine/engine/engine';
-import { findPendingStartWorkflowCall } from '../../src/electron/libs/workflow/chat-entry';
+import { findPendingStartWorkflowCall, startWorkflowSchema, workflowTargetFolder } from '../../src/electron/libs/workflow/chat-entry';
+import { memberSessionCwd } from '../../src/electron/libs/workflow/aegis-host';
+import { START_WORKFLOW_JSON_SCHEMA } from '../../src/electron/libs/session-native-tool';
 import { buildMemberConfigs, declarationForAgent } from '../../src/electron/libs/workflow/member-configs';
 import { catalogOptions, loadModelCatalogs } from '../../src/electron/libs/workflow/model-catalogs';
 import { listedModels } from '../../src/electron/libs/workflow/planner';
@@ -281,6 +283,38 @@ test('a start_workflow call renders as a board but is not a subagent', () => {
   assert.equal(classifyToolUse('mcp__aegis-sessions__start_workflow', {}), 'subagent', 'shares the task stage for its board');
   assert.deepEqual(deriveSubagentSummaries(messages), [], 'not listed among subagents');
   assert.equal(latestTurnHasPendingSubagentTasks(messages), false, 'does not keep the turn "waiting for subagents"');
+});
+
+test('a workflow can work in another worktree of the conversation\'s repository, never another repository', async () => {
+  const worktree = path.join(root, 'other-worktree');
+  git('worktree', 'add', '-q', '-b', 'side', worktree);
+  const other = path.join(root, 'other-repo');
+  await fs.mkdir(other);
+  execFileSync('git', ['init', '-q'], { cwd: other });
+
+  assert.deepEqual(await workflowTargetFolder(repo, undefined), { ok: true, cwd: repo });
+  assert.deepEqual(await workflowTargetFolder(repo, '  '), { ok: true, cwd: repo });
+  assert.deepEqual(await workflowTargetFolder(repo, repo + '/'), { ok: true, cwd: repo }, 'its own folder is the default');
+  assert.deepEqual(await workflowTargetFolder(repo, worktree), { ok: true, cwd: worktree });
+  assert.deepEqual(await workflowTargetFolder(worktree, path.join(repo, 'src')), { ok: true, cwd: path.join(repo, 'src') });
+  for (const [requested, message] of [
+    ['other-worktree', /absolute path/],
+    [path.join(root, 'missing'), /not a folder/],
+    [other, /not part of this conversation's Git repository/],
+    [root, /not part of this conversation's Git repository/],
+  ] as const) {
+    const result = await workflowTargetFolder(repo, requested);
+    assert.equal(result.ok, false, requested);
+    assert.match((result as { error: string }).error, message);
+  }
+  assert.ok('cwd' in startWorkflowSchema && 'cwd' in START_WORKFLOW_JSON_SCHEMA.properties, 'every tool surface offers cwd');
+});
+
+test('the chat member is continued while it stays in its own folder, even when the run works elsewhere', () => {
+  const run = (cwd?: string) => ({ options: { parent: { sessionId: 's', toolUseId: null, provider: 'claude', cwd } } }) as never;
+  assert.equal(memberSessionCwd(true, run('/repo'), '/repo-worktree'), '/repo');
+  assert.equal(memberSessionCwd(true, run(undefined), '/repo'), '/repo', 'runs started before cwd was recorded keep the old rule');
+  assert.equal(memberSessionCwd(false, run('/repo'), '/copy'), '/copy', 'other members must be in the step\'s folder');
 });
 
 test('full access is recognized per provider, so the workflow follows the chat\'s permission mode', () => {

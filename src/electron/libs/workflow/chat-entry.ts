@@ -4,9 +4,12 @@
 // workflow and the engine runs it. The call returns at once and the outcome
 // comes back to the session as a follow-up turn.
 
+import { promises as fs } from 'fs';
+import * as path from 'path';
 import { z } from 'zod';
 import { isStartWorkflowToolName } from '../../../shared/workflow';
 import type { StreamMessage } from '../../types';
+import { sameRepository } from './workspace-snapshot';
 
 export const START_WORKFLOW_DESCRIPTION = [
   'Hand a request that involves other coding agents to the Aegis workflow engine, for example',
@@ -16,7 +19,12 @@ export const START_WORKFLOW_DESCRIPTION = [
   'The call returns immediately. The result arrives as a follow-up message when the workflow ends,',
   'so end your turn after calling it: do not wait, poll, or do the other agents\' work yourself.',
   'Use it only when the user asks for other agents to take part.',
+  'The agents work in this conversation\'s folder. If the changes are in another folder of the same Git repository',
+  '(for example a separate worktree), pass that folder as `cwd`.',
 ].join(' ');
+
+export const START_WORKFLOW_CWD_DESCRIPTION =
+  "Absolute path of the folder the agents work in, when the changes are not in this conversation's folder, for example another worktree of the same repository. Omit it otherwise.";
 
 export const startWorkflowSchema = {
   request: z
@@ -27,9 +35,10 @@ export const startWorkflowSchema = {
     .string()
     .optional()
     .describe('What the other agents need to know from this conversation, such as a summary of the changes you made.'),
+  cwd: z.string().optional().describe(START_WORKFLOW_CWD_DESCRIPTION),
 };
 
-export type StartWorkflowArgs = { request: string; context?: string };
+export type StartWorkflowArgs = { request: string; context?: string; cwd?: string };
 
 type ToolText = { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
 
@@ -54,6 +63,25 @@ export async function startWorkflowTool(callerSessionId: string | null, args: St
   } catch (error) {
     return { content: [{ type: 'text', text: error instanceof Error ? error.message : String(error) }], isError: true };
   }
+}
+
+/**
+ * Where a chat-started workflow works: the conversation's folder, or a folder
+ * the agent named that belongs to the same repository (e.g. another worktree).
+ */
+export async function workflowTargetFolder(
+  sessionCwd: string,
+  requested: string | undefined,
+): Promise<{ ok: true; cwd: string } | { ok: false; error: string }> {
+  const cwd = requested?.trim();
+  if (!cwd || path.resolve(sessionCwd, cwd) === path.resolve(sessionCwd)) return { ok: true, cwd: sessionCwd };
+  if (!path.isAbsolute(cwd)) return { ok: false, error: `cwd must be an absolute path: ${cwd}` };
+  const stat = await fs.stat(cwd).catch(() => null);
+  if (!stat?.isDirectory()) return { ok: false, error: `cwd is not a folder: ${cwd}` };
+  if (!(await sameRepository(sessionCwd, cwd))) {
+    return { ok: false, error: `${cwd} is not part of this conversation's Git repository (${sessionCwd}).` };
+  }
+  return { ok: true, cwd };
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
