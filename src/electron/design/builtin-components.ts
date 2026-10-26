@@ -216,7 +216,25 @@ const SOURCES: DesignSystemPack["components"] = {
   },
 };
 
-/** The built-in components, their icons expanded once. */
-export const BUILTIN_COMPONENTS: DesignSystemPack["components"] = Object.fromEntries(
-  Object.entries(SOURCES).map(([name, c]) => [name, { ...c, html: expandDesignIcons(c.html) }]),
-);
+let built: DesignSystemPack["components"] | null = null;
+/**
+ * The built-in components, their icons expanded on first use. Without the
+ * icon library (a build that skipped build-design-assets) they render
+ * without icons rather than failing.
+ */
+export function builtinComponents(): { components: DesignSystemPack["components"]; complete: boolean } {
+  if (built) return { components: built, complete: true };
+  let complete = true;
+  const out = Object.fromEntries(
+    Object.entries(SOURCES).map(([name, c]) => {
+      try {
+        return [name, { ...c, html: expandDesignIcons(c.html) }];
+      } catch {
+        complete = false;
+        return [name, { ...c, html: c.html.replace(/<aegis-icon\b[^>]*>(?:<\/aegis-icon>)?/g, "") }];
+      }
+    }),
+  );
+  if (complete) built = out;
+  return { components: out, complete };
+}

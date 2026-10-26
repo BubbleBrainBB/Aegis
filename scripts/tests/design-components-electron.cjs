@@ -151,11 +151,12 @@ exports.run = async ({ w, js, repo, sessionId, documentId, screenshotDir }) => {
   const makePng = (color) => `(async()=>{const c=document.createElement('canvas');c.width=60;c.height=40;const x=c.getContext('2d');x.fillStyle='${color}';x.fillRect(0,0,60,40);const blob=await new Promise(r=>c.toBlob(r,'image/png'));return new File([blob],'${color.slice(1)}.png',{type:'image/png'})})()`;
   const checkout = () => doc().boards.find((b) => b.name === "Checkout");
   const checkoutRevision = checkout().contentRevision;
-  await js(`(async()=>{const f=await ${makePng("#ff0000")};const dt=new DataTransfer();dt.items.add(f);const b=document.querySelector('[data-board-id="${checkout().id}"]').getBoundingClientRect();const v=document.querySelector('.design-viewport');v.dispatchEvent(new DragEvent('dragover',{dataTransfer:dt,bubbles:true,cancelable:true,clientX:b.x+b.width/2,clientY:b.y+b.height/2}));v.dispatchEvent(new DragEvent('drop',{dataTransfer:dt,bubbles:true,cancelable:true,clientX:b.x+b.width/2,clientY:b.y+b.height/2}))})()`);
-  await until(() => checkout().contentRevision > checkoutRevision && /<img[^>]*src="aegis-asset:img_/.test(checkout().html), "dropped image becomes a layer");
+  await js(`(async()=>{const dt=new DataTransfer();dt.items.add(await ${makePng("#ff0000")});dt.items.add(await ${makePng("#0000ff")});const b=document.querySelector('[data-board-id="${checkout().id}"]').getBoundingClientRect();const v=document.querySelector('.design-viewport');v.dispatchEvent(new DragEvent('dragover',{dataTransfer:dt,bubbles:true,cancelable:true,clientX:b.x+b.width/2,clientY:b.y+b.height/2}));v.dispatchEvent(new DragEvent('drop',{dataTransfer:dt,bubbles:true,cancelable:true,clientX:b.x+b.width/2,clientY:b.y+b.height/2}))})()`);
+  // Two at once: both land, in one write.
+  await until(() => checkout().contentRevision === checkoutRevision + 1 && (checkout().html.match(/<img[^>]*src="aegis-asset:img_/g) ?? []).length === 2, "dropped images become layers");
   await until(async () => {
     for (const fr of frames())
-      if (await fr.executeJavaScript('(()=>{const i=document.querySelector("img[alt=ff0000]");return !!i && i.complete && i.naturalWidth===60})()').catch(() => false)) return true;
+      if (await fr.executeJavaScript('(()=>{const i=[...document.images].filter((x)=>x.alt==="ff0000"||x.alt==="0000ff");return i.length===2 && i.every((x)=>x.complete && x.naturalWidth===60)})()').catch(() => false)) return true;
     return false;
   }, "the image renders on the canvas");
   const boardsBefore = doc().boards.length;
@@ -163,8 +164,8 @@ exports.run = async ({ w, js, repo, sessionId, documentId, screenshotDir }) => {
   await until(() => doc().boards.length === boardsBefore + 1 && doc().boards.some((b) => b.name === "00ff00"), "dropped off the boards: a new board");
   const sized = doc().boards.find((b) => b.name === "00ff00");
   assert.deepEqual([sized.width, sized.height], [200, 133], "a new board takes the image's shape (at least 200 wide)");
-  await js(`(async()=>{const f=await ${makePng("#0000ff")};const dt=new DataTransfer();dt.items.add(f);document.querySelector('.design-viewport').dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true}))})()`);
-  await until(() => doc().boards.some((b) => b.name === "0000ff" || /alt="0000ff"/.test(b.html)), "a pasted image lands").catch((e) => {
+  await js(`(async()=>{const f=await ${makePng("#ffff00")};const dt=new DataTransfer();dt.items.add(f);document.querySelector('.design-viewport').dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true}))})()`);
+  await until(() => doc().boards.some((b) => b.name === "ffff00" || /alt="ffff00"/.test(b.html)), "a pasted image lands").catch((e) => {
     console.log("  paste debug", JSON.stringify(doc().boards.map((b) => [b.name, (b.html.match(/alt="[0-9a-f]+"/g) || []).join(" ")])));
     throw e;
   });

@@ -875,29 +875,50 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
   };
   /** Text and Frame tools: one write per new layer, which then becomes the selection. */
   /**
-   * Dropped or pasted images: each is added to the design, then placed where it
-   * landed in a board (an image layer at that spot) or, off any board, as a
-   * new board of its size.
+   * Dropped or pasted images: all are added to the design first, then placed
+   * in one write where they landed: in a board (image layers at that spot) or,
+   * off any board, as new boards of their size side by side.
    */
   const placeImages = async (files: File[], at: { board?: DesignBoard; target: DropTarget | null; world?: { x: number; y: number } }) => {
     if (!doc || !sessionId || !editable) return;
+    const added: { src: string; name: string; width?: number; height?: number }[] = [];
     for (const file of files.slice(0, 8)) {
       try {
         const info = await window.electron.design.addAsset({ sessionId, documentId: doc.id, bytes: new Uint8Array(await file.arrayBuffer()), mime: file.type, name: file.name || "image" });
-        const src = `aegis-asset:${info.id}`;
-        const name = (file.name || "Image").replace(/\.[a-z0-9]+$/i, "");
-        if (at.board) {
-          const fill = at.target?.direction === "row" ? "max-width:100%" : "width:100%";
-          await insertLayer(at.board.id, at.board.contentRevision, at.target?.containerId ?? null, at.target?.index ?? 1e6, { tag: "img", name, attrs: { src, alt: name }, style: `display:block;${fill};height:auto` }, `Added ${name} to ${at.board.name}`);
-        } else {
-          const width = Math.max(200, Math.min(1440, info.width ?? 800));
-          const height = Math.max(100, Math.min(4096, Math.round(info.height && info.width ? (info.height * width) / info.width : 600)));
-          await update([{ type: "add", name, pageId: activePageId, width, height, ...(at.world ? { x: Math.round(at.world.x), y: Math.round(at.world.y) } : {}), html: `<main style="margin:0"><img src="${src}" alt="${name.replace(/"/g, "&quot;")}" data-aegis-layer-name="${name.replace(/"/g, "&quot;")}" style="display:block;width:100%;height:auto"></main>` }], `Added ${name}`);
-        }
+        added.push({ src: `aegis-asset:${info.id}`, name: (file.name || "Image").replace(/\.[a-z0-9]+$/i, ""), width: info.width ?? undefined, height: info.height ?? undefined });
       } catch (e) {
         setFailure(errorText(e));
       }
     }
+    if (!added.length) return;
+    const label = added.length === 1 ? added[0].name : `${added.length} images`;
+    const board = at.board;
+    if (board) {
+      const fill = at.target?.direction === "row" ? "max-width:100%" : "width:100%";
+      let html = board.html;
+      let nodeId = "";
+      added.forEach((img, i) => {
+        ({ html, nodeId } = insertDesignLayer(html, at.target?.containerId ?? undefined, (at.target?.index ?? 1e6) + i, { tag: "img", name: img.name, attrs: { src: img.src, alt: img.name }, style: `display:block;${fill};height:auto` }));
+      });
+      await run(async () => {
+        const result = await writeDesign([{ type: "content", boardId: board.id, expectedRevision: board.contentRevision, html }], `Added ${label} to ${board.name}`);
+        await reload();
+        const next = result.boards.find((b) => b.id === board.id);
+        const node = next && findDesignLayer(readDesignLayers(next.html), nodeId);
+        if (next && node) selectLayer(board.id, node, next.contentRevision);
+      });
+      return;
+    }
+    let x = at.world?.x;
+    const operations: DesignOperation[] = added.map((img) => {
+      const width = Math.max(200, Math.min(1440, img.width ?? 800));
+      const height = Math.max(100, Math.min(4096, Math.round(img.height && img.width ? (img.height * width) / img.width : 600)));
+      const attr = img.name.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+      const op: DesignOperation = { type: "add", name: img.name, pageId: activePageId, width, height, ...(x !== undefined && at.world ? { x: Math.round(x), y: Math.round(at.world.y) } : {}), html: `<main style="margin:0"><img src="${img.src}" alt="${attr}" data-aegis-layer-name="${attr}" style="display:block;width:100%;height:auto"></main>` };
+      if (x !== undefined) x += width + 80;
+      return op;
+    });
+    await update(operations, `Added ${label}`);
   };
   // Pasting an image on the canvas: into the selected board, or as a new board.
   const placeImagesRef = useRef(placeImages);
@@ -906,7 +927,8 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
     if (hidden) return;
     const paste = (e: ClipboardEvent) => {
       const at = e.target instanceof Element ? e.target : null;
-      if (!at?.closest(".design-panel") || at.closest("input, textarea, [contenteditable='true']")) return;
+      const panel = root.current;
+      if (!at || !panel || !panel.contains(at) || at.closest("input, textarea, [contenteditable='true']")) return;
       const files = [...(e.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/"));
       if (!files.length) return;
       e.preventDefault();

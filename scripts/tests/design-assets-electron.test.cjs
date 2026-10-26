@@ -36,6 +36,23 @@ app.whenReady().then(async () => {
     assert.match(expandDesignIcons('<aegis-icon name="heart" variant="filled"/>'), /data-aegis-icon="heart:filled"[^>]*fill="currentColor" stroke="none"/);
     assert.throws(() => expandDesignIcons('<aegis-icon name="magnifying-glas"></aegis-icon>'), /Unknown icon "magnifying-glas"\./);
     assert.throws(() => expandDesignIcons('<aegis-icon name="arow-right">'), /Similar: .*arrow-right|Search the library/);
+    // Quoted values may hold ">"; logic and props text is never expanded; size and count are capped first.
+    const cond = expandDesignIcons('<span><aegis-icon data-aegis-if="n > 3" name="bell" size="16"></aegis-icon>!</span>');
+    assert.match(cond, /^<span><svg data-aegis-icon="bell" .* data-aegis-if="n > 3" aria-hidden="true"><path [^<]*\/><path [^<]*\/><\/svg>!<\/span>$/);
+    const logic = '<p><aegis-icon name="bell"></aegis-icon></p><script type="text/x-aegis-logic">const tag = \'<aegis-icon name="nope-nope">\';</script>';
+    assert.match(expandDesignIcons(logic), /<script type="text\/x-aegis-logic">const tag = '<aegis-icon name="nope-nope">';<\/script>$/);
+    let started = Date.now();
+    assert.throws(() => expandDesignIcons('<aegis-icon name="brand-signal">'.repeat(200_000)), /at most 1 MB/);
+    assert.ok(Date.now() - started < 1000, 'refused before expanding');
+    assert.throws(() => expandDesignIcons('<aegis-icon name="bell">'.repeat(2001)), /at most 2000 icons/);
+    // Without the library (a build that skipped build-design-assets): a clear error, and built-in components still load.
+    const bare = path.join(temp, 'bare');
+    fs.mkdirSync(bare);
+    for (const f of ['icons.js', 'builtin-components.js']) fs.copyFileSync(`${dist}/electron/design/${f}`, path.join(bare, f));
+    assert.throws(() => require(path.join(bare, 'icons.js')).expandDesignIcons('<aegis-icon name="bell">'), /icon library is not available/);
+    const fallback = require(path.join(bare, 'builtin-components.js')).builtinComponents();
+    assert.equal(fallback.complete, false);
+    assert.ok(Object.values(fallback.components).every((c) => !/<aegis-icon/.test(c.html)), 'icons left out, not fatal');
     assert.equal(searchDesignIcons('arrow right')[0].name, 'arrow-right');
     assert.ok(searchDesignIcons('shopping').some((h) => /cart|shopping/.test(h.name)));
     const repo = getDesignRepository();
@@ -56,14 +73,31 @@ app.whenReady().then(async () => {
     assert.deepEqual([big.width, big.height], [2400, 480], 'scaled to 2400 px');
     const svgImg = prepareDesignImage({ bytes: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 60"><rect width="120" height="60"/></svg>'), mime: 'image/svg+xml', name: 'logo' });
     assert.deepEqual([svgImg.width, svgImg.height], [120, 60]);
+    // A pixel bomb is refused from its header, before decoding.
+    const bomb = Buffer.from(png(8, 8, [0, 0, 0]));
+    bomb.writeUInt32BE(30000, 16);
+    bomb.writeUInt32BE(30000, 20);
+    started = Date.now();
+    assert.throws(() => prepareDesignImage({ bytes: bomb, mime: 'image/png' }), /30000 × 30000 pixels; images must be at most 50 megapixels/);
+    assert.ok(Date.now() - started < 500);
+    // A PNG within the size limit but too big to store is re-encoded to fit.
+    const noise = Buffer.alloc(2000 * 1500 * 4);
+    require('node:crypto').randomFillSync(noise);
+    for (let i = 3; i < noise.length; i += 4) noise[i] = 255;
+    const heavy = nativeImage.createFromBitmap(noise, { width: 2000, height: 1500 }).toPNG();
+    assert.ok(heavy.length > 8_000_000, `noise PNG is ${heavy.length} bytes`);
+    const fitted = prepareDesignImage({ bytes: heavy, mime: 'image/png', name: 'noise' });
+    assert.ok(fitted.bytes.length <= 8_000_000, `stored at ${fitted.bytes.length} bytes`);
+    assert.deepEqual([fitted.width, fitted.height], [2000, 1500]);
+    repo.addAsset('s1', d.id, fitted);
     fs.writeFileSync(path.join(temp, 'notes.png'), 'not really a png');
     assert.throws(() => prepareDesignImage({ path: path.join(temp, 'notes.png') }), /could not be read as an image/);
     fs.symlinkSync(redFile, path.join(temp, 'link.png'));
     assert.throws(() => prepareDesignImage({ path: path.join(temp, 'link.png') }), /not an image file/);
     assert.throws(() => prepareDesignImage({ path: 'relative.png' }), /absolute path/);
     assert.throws(() => repo.addAsset('intruder', d.id, prepareDesignImage({ path: redFile })), /not found/i);
-    assert.deepEqual(Object.keys(repo.assetData('s1', d.id)), [a.id]);
-    assert.match(repo.assetData('s1', d.id)[a.id], /^data:image\/png;base64,/);
+    assert.ok(Object.keys(repo.assetData('s1', d.id)).includes(a.id));
+    assert.match(repo.assetData('s1', d.id, [a.id])[a.id], /^data:image\/png;base64,/);
 
     // Boards show it as aegis-asset:<id> (previews included).
     d = repo.update('s1', { documentId: d.id, operationId: 'img', operations: [{ type: 'add', name: 'Photo', width: 200, height: 150, html: `<main style="margin:0"><img src="aegis-asset:${a.id}" alt="Red" style="display:block;width:200px;height:150px"></main>` }] });
@@ -86,7 +120,7 @@ app.whenReady().then(async () => {
     assert.match(fs.readFileSync(path.join(project, handoff.folder, 'README.md'), 'utf8'), /## Images/);
     repo.deleteDocument(d.id);
     assert.equal(repo.db.prepare('SELECT count(*) AS n FROM design_assets WHERE document_id=?').get(d.id).n, 0);
-    console.log('PASS design assets: icon expansion, filled style, unknown names, search, inline SVG on save; images from files/data URLs, dedupe, scaling, SVG size, refusals, access, rendering, handoff files, removal with the design');
+    console.log('PASS design assets: icon expansion, filled style, unknown names, quoted >, script text untouched, size and count caps, missing library, search, inline SVG on save; pixel bombs, oversize re-encoding, images from files/data URLs, dedupe, scaling, SVG size, refusals, access, rendering, handoff files, removal with the design');
   } catch (error) {
     console.error(error);
     code = 1;

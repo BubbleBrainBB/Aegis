@@ -24,13 +24,22 @@ function icons(): Record<string, IconData> {
     try {
       library = JSON.parse(readFileSync(join(__dirname, "icons.json"), "utf8")).icons as Record<string, IconData>;
     } catch {
-      library = {};
+      // Missing (a build that skipped build-design-assets): try again next time.
+      return {};
     }
   }
   return library;
 }
 
-const ICON_TAG = /<aegis-icon\b([^>]*?)\/?>(?:\s*<\/aegis-icon>)?/gi;
+/** The input cap boards have anyway (sanitizeDesignHtml), checked before expanding. */
+const MAX_HTML_BYTES = 1_000_000;
+/** Each icon grows to a few hundred bytes to a couple of KB of SVG. */
+const MAX_ICONS = 2000;
+
+/** A tag whose quoted attribute values may hold ">" (data-aegis-if="n > 3"). */
+const ICON_TAG = /<aegis-icon\b((?:[^>"']|"[^"]*"|'[^']*')*?)\/?>(?:\s*<\/aegis-icon>)?/gi;
+/** Logic and props blocks: their text is code and data, never markup to expand. */
+const SCRIPT = /(<script\b[\s\S]*?<\/script\s*>)/gi;
 const ATTR = /([a-zA-Z_:][-\w:.]*)\s*(?:=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?/g;
 const esc = (v: string) => v.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 const num = (v: string | undefined, fallback: number, min: number, max: number) => {
@@ -52,7 +61,9 @@ function similar(name: string): string[] {
 /** One icon as inline SVG; throws for a name the library doesn't have. */
 export function designIconSvg(attrs: Record<string, string>): string {
   const name = (attrs.name ?? "").trim().toLowerCase();
-  const icon = icons()[name];
+  const lib = icons();
+  if (!Object.keys(lib).length) throw new Error("The icon library is not available (icons.json was not built).");
+  const icon = lib[name];
   if (!icon) {
     const near = similar(name);
     throw new Error(`Unknown icon "${name}".${near.length ? ` Similar: ${near.join(", ")}.` : ""} Search the library with design_icons.`);
@@ -74,11 +85,22 @@ export function designIconSvg(attrs: Record<string, string>): string {
 /** Every <aegis-icon> in a board (or component) as inline SVG. */
 export function expandDesignIcons(html: string): string {
   if (!/<aegis-icon\b/i.test(html)) return html;
-  return html.replace(ICON_TAG, (_, raw: string) => {
-    const attrs: Record<string, string> = {};
-    for (const m of raw.matchAll(ATTR)) attrs[m[1].toLowerCase()] = m[2] ?? m[3] ?? m[4] ?? "";
-    return designIconSvg(attrs);
-  });
+  if (Buffer.byteLength(html, "utf8") > MAX_HTML_BYTES) throw new Error("HTML must be text of at most 1 MB.");
+  let count = 0;
+  // Split keeps the script blocks at odd indexes.
+  return html
+    .split(SCRIPT)
+    .map((part, i) =>
+      i % 2
+        ? part
+        : part.replace(ICON_TAG, (_, raw: string) => {
+            if (++count > MAX_ICONS) throw new Error(`A board can hold at most ${MAX_ICONS} icons.`);
+            const attrs: Record<string, string> = {};
+            for (const m of raw.matchAll(ATTR)) attrs[m[1].toLowerCase()] = m[2] ?? m[3] ?? m[4] ?? "";
+            return designIconSvg(attrs);
+          }),
+    )
+    .join("");
 }
 
 /** design_icons: the best matches for a query, by name, then category and tags. */

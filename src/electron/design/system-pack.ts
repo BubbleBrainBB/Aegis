@@ -6,7 +6,7 @@ import { declaredFontFamilies, type DesignSystemPack } from "../../shared/design
 import { sanitizeDesignHtml } from "./html";
 import { summaryOf } from "./design-system";
 import { builtinDesignStyles, PROJECT_DESIGN_SYSTEM, type BuiltinStyle } from "./styles";
-import { BUILTIN_COMPONENT_CSS, BUILTIN_COMPONENTS } from "./builtin-components";
+import { BUILTIN_COMPONENT_CSS, builtinComponents } from "./builtin-components";
 import { expandDesignIcons } from "./icons";
 
 /**
@@ -74,6 +74,7 @@ function builtinPack(style: BuiltinStyle): DesignSystemPack {
     })
     .filter(Boolean);
   const families = [...new Set(style.fonts.map((f) => f.family))];
+  const { components, complete } = builtinComponents();
   const tokens = `:root{--background:${p.background};--surface:${p.surface};--raised:${raised};--text:${p.text};--muted:${p.muted};--accent:${p.accent};--on-accent:${onAccent(p.accent)};--line:${p.line};--success:${semantic.success};--warning:${semantic.warning};--danger:${semantic.danger};--font-display:${style.type.display};--font-body:${style.type.body};--font-mono:${style.type.mono};--radius:${style.shape.radius};--radius-control:${style.shape.control};--shadow:${style.shape.shadow}}`;
   const css = [
     `/* ${style.name}. Fonts: ${families.join(", ")} (SIL Open Font License 1.1). */`,
@@ -82,8 +83,9 @@ function builtinPack(style: BuiltinStyle): DesignSystemPack {
     style.dark ? "html{color-scheme:dark}" : "",
     BUILTIN_COMPONENT_CSS,
   ].filter(Boolean).join("\n");
-  const pack: DesignSystemPack = { id: style.id, name: style.name, css, components: BUILTIN_COMPONENTS, assets: {}, fonts: families, signature: hash(css) };
-  builtinCache.set(style.id, pack);
+  const pack: DesignSystemPack = { id: style.id, name: style.name, css, components, assets: {}, fonts: families, signature: hash(complete ? css : `${css}\n/* no icons */`) };
+  // Kept only when whole: a build missing fonts or icons tries again next time.
+  if (complete && faces.length === style.fonts.length) builtinCache.set(style.id, pack);
   return pack;
 }
 
