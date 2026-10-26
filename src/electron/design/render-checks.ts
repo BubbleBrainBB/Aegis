@@ -13,6 +13,7 @@ export const MAX_FINDINGS_PER_KIND = 4;
 /** A self-contained script for the board's page; resolves to warning strings. */
 export function renderChecksScript(width: number, height: number): string {
   return `(async () => {
+  await Promise.all([...document.fonts].map((f) => f.load().catch(() => null)));
   await document.fonts.ready;
   await Promise.all([...document.images].map((i) => i.decode().catch(() => null)));
   await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));

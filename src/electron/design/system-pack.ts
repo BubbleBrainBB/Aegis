@@ -70,7 +70,7 @@ function builtinPack(style: BuiltinStyle): DesignSystemPack {
   const faces = style.fonts
     .map((f) => {
       const url = fontDataUrl(f.file);
-      return url ? `@font-face{font-family:"${f.family}";src:url("${url}") format("woff2");font-weight:${f.weight};font-style:${f.style ?? "normal"};font-display:block}` : "";
+      return url ? `@font-face{font-family:"${f.family}";src:url("${url}") format("woff2");font-weight:${f.weight};font-style:${f.style ?? "normal"};font-display:swap}` : "";
     })
     .filter(Boolean);
   const families = [...new Set(style.fonts.map((f) => f.family))];

@@ -1,4 +1,5 @@
 import { existsSync, lstatSync, readdirSync, readFileSync } from "fs";
+import { parse, serialize, type DefaultTreeAdapterMap } from "parse5";
 import { basename, extname, join } from "path";
 import { readBoardTokens } from "../../shared/design-tokens";
 import { designSystemTokens, type DesignSystemPack } from "../../shared/design-system-pack";
@@ -31,13 +32,47 @@ function boardCss(html: string): { styles: string; inline: string[] } {
   return { styles, inline };
 }
 
-export function adherenceWarnings(html: string, pack: DesignSystemPack): string[] {
+/**
+ * The board without design_starter's device frame and chrome (bezel, status
+ * bar, toolbars): their fixed colors and fonts are the device's, not the
+ * design's, so they never count against the system.
+ */
+function withoutStarterChrome(html: string): string {
+  if (!html.includes("data-aegis-starter=")) return html;
+  const doc = parse(html);
+  // Returns whether the subtree holds the starter's content layer: every
+  // element around it (frame, screen, window) is the device's.
+  const strip = (parent: DefaultTreeAdapterMap["parentNode"]): boolean => {
+    let holds = false;
+    parent.childNodes = parent.childNodes.filter((node) => {
+      if (!("attrs" in node)) return true;
+      const starter = node.attrs.find((a) => a.name === "data-aegis-starter")?.value;
+      if (starter === "chrome") return false;
+      if (starter === "content") {
+        holds = true;
+        node.attrs = node.attrs.filter((a) => a.name !== "style");
+        return true;
+      }
+      if (strip(node)) {
+        holds = true;
+        node.attrs = node.attrs.filter((a) => a.name !== "style");
+      }
+      return true;
+    });
+    return holds;
+  };
+  strip(doc);
+  return serialize(doc);
+}
+
+export function adherenceWarnings(source: string, pack: DesignSystemPack): string[] {
+  const html = withoutStarterChrome(source);
   const warnings: string[] = [];
   const systemTokens = designSystemTokens(pack.css);
   const boardTokens = readBoardTokens(html);
   const { styles, inline } = boardCss(html);
   // Root token declarations are the board's own vocabulary, not usage.
-  const usage = [styles.replace(/(?::root|html|body)\s*\{[^}]*\}/gi, ""), ...inline].join("\n");
+  const usage = [styles.replace(/(?::root|html|body)\s*\{[^}]*\}/gi, ""), ...inline].join(";\n");
 
   const colorTokens = systemTokens.filter((t) => IS_COLOR.test(t.value));
   if (colorTokens.length) {
@@ -56,7 +91,7 @@ export function adherenceWarnings(html: string, pack: DesignSystemPack): string[
 
   const registered = new Set(pack.fonts.map((f) => f.toLowerCase()));
   const families = new Set<string>();
-  for (const m of usage.matchAll(/font-family\s*:\s*([^;}]+)/gi))
+  for (const m of usage.matchAll(/font-family\s*:\s*([^;}\n]+)/gi))
     for (const f of m[1].split(",")) {
       const name = f.trim().replace(/^['"]|['"]$/g, "").toLowerCase();
       if (name && !name.startsWith("var(") && !GENERIC_FONTS.has(name) && !SYSTEM_FONTS.has(name) && !registered.has(name)) families.add(f.trim().replace(/^['"]|['"]$/g, ""));

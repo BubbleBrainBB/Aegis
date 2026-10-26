@@ -107,8 +107,10 @@ export function renderSystemFor(d: Pick<DesignDocument, "id" | "system" | "proje
 // Serialize captures to bound Chromium/GPU memory even when tools run in parallel.
 let captureTail: Promise<unknown> = Promise.resolve();
 /** Fonts, images and two frames: the board as it will look, nothing measured. */
+// Every registered face is loaded explicitly: fonts.ready alone can resolve
+// before layout has asked for a face, and text in a loading face is not painted yet.
 const READY_SCRIPT =
-  "(async()=>{await (window.__aegisRuntime?window.__aegisRuntime.ready:null);await document.fonts.ready;await Promise.all([...document.images].map(i=>i.decode().catch(()=>null)));await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));return []})()";
+  "(async()=>{await (window.__aegisRuntime?window.__aegisRuntime.ready:null);await Promise.all([...document.fonts].map(f=>f.load().catch(()=>null)));await document.fonts.ready;await Promise.all([...document.images].map(i=>i.decode().catch(()=>null)));await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));return []})()";
 /** Where design_preview's checks run: a world of their own, apart from board logic. */
 const CHECKS_WORLD = 1029;
 const RUNTIME_READY_MS = 5_000;
@@ -302,7 +304,7 @@ export function designPdf(
             .map((f) => f.executeJavaScript("window.__aegisRuntime?window.__aegisRuntime.ready:null").catch(() => null)),
         );
         await w.webContents.executeJavaScript(
-          "(async()=>{await document.fonts.ready;await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));return true})()",
+          "(async()=>{await Promise.all([...document.fonts].map(f=>f.load().catch(()=>null)));await document.fonts.ready;await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));return true})()",
         );
         signal?.throwIfAborted();
         return new Uint8Array(

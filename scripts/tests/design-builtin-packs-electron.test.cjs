@@ -134,6 +134,29 @@ app.whenReady().then(async () => {
     assert.match(guide, /## Voice\n[^\n]+\n\n## Imagery\n[^\n]+/);
     assert.match(guide, /--space-1 … --space-8/);
 
+    // Device frames and chrome from design_starter never count against the system.
+    const { designStarter } = require(`${dist}/electron/design/starters.js`);
+    const { adherenceWarnings } = require(`${dist}/electron/design/adherence.js`);
+    const mint = designSystemPack('mint-fresh', null);
+    for (const kind of ['ios-phone', 'android-phone', 'browser-window', 'macos-window']) {
+      const framed = designStarter(kind).html.replace(/(data-aegis-starter="content"[^>]*>)/, '$1<p style="color:var(--text);font-family:var(--font-body)">Hello</p>');
+      assert.deepEqual(adherenceWarnings(`<!doctype html><html><head></head><body>${framed}</body></html>`, mint), [], kind);
+    }
+    assert.match(adherenceWarnings('<main style="color:#123456;font-family:Comic Neue"><p style="background:#654321">x</p></main>', mint).join(' '), /2 colors[\s\S]*Comic Neue/, "the design's own colors and fonts still count");
+
+    // A built-in style's fonts are loaded before a preview is taken: the first slide is not blank.
+    const { previewDesign } = require(`${dist}/electron/design/service.js`);
+    const { nativeImage } = require('electron');
+    let deckDoc = repo.create('s1', 'Deck', '', 'c-deck', undefined, undefined, { system: 'terracotta' });
+    deckDoc = repo.update('s1', { documentId: deckDoc.id, operationId: 'deck', operations: [{ type: 'add', name: 'Deck', width: 1920, height: 1080, html: '<main data-aegis-deck style="width:100%;height:100%"><section data-aegis-slide style="width:100%;height:100%;padding:120px;background:var(--background)"><h1 style="margin:0;font:500 120px/1.1 var(--font-display);color:var(--text)">把新鲜烘焙的咖啡送回社区</h1></section><section data-aegis-slide style="width:100%;height:100%;background:var(--background)"><h2 style="font:500 80px var(--font-display)">第二页</h2></section></main>' }] });
+    const first = await previewDesign('s1', deckDoc.id, deckDoc.boards[0].id, deckDoc.revision, undefined, 1600, 1, true, 0);
+    const shot = nativeImage.createFromDataURL(first.dataUrl);
+    const { width: sw, height: sh } = shot.getSize();
+    const px = shot.toBitmap();
+    let dark = 0;
+    for (let y = Math.round(sh * 0.08); y < Math.round(sh * 0.3); y += 2) for (let x = 0; x < Math.round(sw * 0.7); x += 2) { const i = (y * sw + x) * 4; if (px[i] + px[i + 1] + px[i + 2] < 300) dark++; }
+    assert.ok(dark > 500, `the headline is painted on the first capture (${dark} dark pixels)`);
+
     // A project component with an unknown icon is reported, not fatal.
     const project = path.join(temp, 'project');
     fs.mkdirSync(path.join(project, 'design-system', 'components'), { recursive: true });
@@ -143,7 +166,7 @@ app.whenReady().then(async () => {
     assert.match(report.pack.components.Chip.html, /<svg data-aegis-icon="star"/);
     assert.equal(report.pack.components.Bad, undefined);
     assert.ok(report.warnings.some((x) => /Bad\.html: Unknown icon/.test(x)), report.warnings.join(' | '));
-    console.log(`PASS design built-in packs: ${styles.length} styles with bundled fonts and full tokens, ${names.length} components (interactive ones respond), ${BUILTIN_TEMPLATES.length} templates render in every style, design_resources templates, project component icons`);
+    console.log(`PASS design built-in packs: ${styles.length} styles with bundled fonts and full tokens, ${names.length} components (interactive ones respond), ${BUILTIN_TEMPLATES.length} templates render in every style, design_resources templates, starter chrome outside adherence, fonts loaded before previews, project component icons`);
   } catch (error) {
     console.error(error);
     code = 1;
