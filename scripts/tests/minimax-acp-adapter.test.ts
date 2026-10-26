@@ -923,13 +923,23 @@ async function main(): Promise<void> {
   console.log('minimax-acp-adapter: ok');
 }
 
+// Best effort: a fake agent may still be writing into the folder as the run
+// ends (ENOTEMPTY on CI). The system cleans its temp folder; a passed run stays passed.
+function cleanup(): void {
+  try {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  } catch {
+    // left for the OS
+  }
+}
+
 main()
   .then(() => {
-    rmSync(dir, { recursive: true, force: true });
+    cleanup();
     process.exit(0);
   })
   .catch((error) => {
     console.error(error);
-    rmSync(dir, { recursive: true, force: true });
+    cleanup();
     process.exit(1);
   });
