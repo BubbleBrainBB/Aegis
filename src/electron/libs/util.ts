@@ -106,6 +106,8 @@ export async function runClaudeOneShot(params: {
   systemPrompt?: string;
   /** Stops the call (the user cancelled). */
   signal?: AbortSignal;
+  /** Images to look at, sent with the prompt in one user message (base64, no data: prefix). */
+  images?: { mediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'; data: string }[];
 }): Promise<{ text: string; sessionId?: string; model?: string }> {
   const sdk = await loadClaudeAgentSdk();
   const abortController = new AbortController();
@@ -124,8 +126,25 @@ export async function runClaudeOneShot(params: {
   const { executable, executableArgs, env: runtimeEnv, pathToClaudeCodeExecutable } = getRequiredClaudeCodeRuntime();
   Object.assign(env, runtimeEnv);
 
+  // With images, the prompt is one streamed user message carrying them.
+  const prompt = params.images?.length
+    ? (async function* () {
+        yield {
+          type: 'user' as const,
+          session_id: '',
+          parent_tool_use_id: null,
+          message: {
+            role: 'user' as const,
+            content: [
+              ...params.images!.map((image) => ({ type: 'image' as const, source: { type: 'base64' as const, media_type: image.mediaType, data: image.data } })),
+              { type: 'text' as const, text: params.prompt },
+            ],
+          },
+        };
+      })()
+    : params.prompt;
   const result = sdk.query({
-    prompt: params.prompt,
+    prompt: prompt as Parameters<typeof sdk.query>[0]['prompt'],
     options: {
       systemPrompt: params.systemPrompt ?? {
         type: 'preset',

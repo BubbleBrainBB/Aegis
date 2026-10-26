@@ -3,6 +3,7 @@ import { BoardThumb } from "./BoardThumb";
 import { openDesign, useDesignStore } from "../../store/useDesignStore";
 import type { DesignDocument } from "../../../shared/design-types";
 import type { DesignTurnChange } from "../../utils/design-entries";
+import { useDesignSystem } from "./use-design-system";
 
 const MAX_CHIPS = 3;
 
@@ -17,6 +18,7 @@ function count(n: number, word: string) {
  */
 export function DesignChatCard({ sessionId, change }: { sessionId: string; change: DesignTurnChange }) {
   const { documentId } = change;
+  const system = useDesignSystem(sessionId, documentId);
   const [doc, setDoc] = useState<DesignDocument | null>(null);
   const [missing, setMissing] = useState(false);
   useEffect(() => {
@@ -77,6 +79,7 @@ export function DesignChatCard({ sessionId, change }: { sessionId: string; chang
                 className="flex min-w-0 max-w-[280px] items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--bg-primary)] py-[3px] pl-1 pr-2.5 text-[12px] text-[var(--text-primary)] outline-none hover:bg-[var(--sidebar-item-hover)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
               >
                 <BoardThumb
+                system={system}
                   board={board}
                   width={24}
                   height={18}

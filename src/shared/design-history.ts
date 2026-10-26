@@ -14,12 +14,19 @@ export function summarizeOperations(
       case "patch":
       case "content":
         return `Edited ${name(op.boardId)}`;
+      case "logic":
+      case "logic_patch":
+        return `Edited ${name(op.boardId)} logic`;
+      case "props":
+        return `Edited ${name(op.boardId)} props`;
       case "remove":
         return `Deleted ${name(op.boardId)}`;
       case "duplicate":
         return `Duplicated ${name(op.boardId)}`;
       case "title":
         return `Renamed design to ${op.title}`;
+      case "system":
+        return op.system ? `Switched the design system to ${op.system}` : "Removed the design system";
       case "canvas":
         return op.pages !== undefined ? "Updated canvas pages" : "Edited canvas objects";
       case "placement": {

@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { BoardThumb } from "./BoardThumb";
 import { designPageId, designPages } from "../../../shared/design-pages";
 import type { DesignDocument } from "../../../shared/design-types";
+import { useDesignSystem } from "./use-design-system";
 
 const MAX_BOARDS = 4;
 const PAD = 14;
@@ -11,6 +12,7 @@ const PAD = 14;
  * of its first page, laid out as they sit on the canvas, scaled to fit.
  */
 export function DesignCover({ sessionId, documentId, revision }: { sessionId: string; documentId: string; revision: number }) {
+  const system = useDesignSystem(sessionId, documentId, revision);
   const [doc, setDoc] = useState<DesignDocument | null>(null);
   const host = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -52,6 +54,7 @@ export function DesignCover({ sessionId, documentId, revision }: { sessionId: st
     const offsetY = (size.height - (bottom - top) * scale) / 2;
     content = boards.map((b) => (
       <BoardThumb
+        system={system}
         key={b.id}
         board={b}
         width={Math.max(1, b.width * scale)}

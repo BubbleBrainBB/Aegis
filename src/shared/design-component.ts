@@ -1,0 +1,443 @@
+import { parse, parseFragment, serialize, type DefaultTreeAdapterMap } from "parse5";
+
+/**
+ * A board is a design component: one HTML document in three parts.
+ *
+ *   template  the document markup (layers keep data-aegis-node-id)
+ *   logic     <script type="text/x-aegis-logic"> class Board extends AegisBoard {…}
+ *   props     <script type="application/x-aegis-props"> {"title":{"type":"string","default":"…"}, "$preview":{…}}
+ *
+ * Logic and props are inert data blocks in the head: the browser never runs
+ * them; the board runtime reads them (only in frames that load it). A board
+ * with neither, and no template directives, is plain static HTML.
+ */
+export const DESIGN_LOGIC_TYPE = "text/x-aegis-logic";
+export const DESIGN_PROPS_TYPE = "application/x-aegis-props";
+/** Components a board can use, injected by the host at render time (never stored on a board). */
+export const DESIGN_COMPONENTS_TYPE = "application/x-aegis-components";
+
+const MAX_LOGIC = 200_000;
+const MAX_PROPS = 100_000;
+
+type Node = DefaultTreeAdapterMap["node"];
+type Element = DefaultTreeAdapterMap["element"];
+type ParentNode = DefaultTreeAdapterMap["parentNode"];
+
+// Opt-in only: {{ }} alone is ordinary text (a board may show template syntax);
+// it is evaluated in boards that have logic, props, a directive or a component.
+const DIRECTIVE = /\sdata-aegis-(?:if|else|for|on-[a-z]+|bind-[a-z-]+|goto)\b|<aegis-use\b/i;
+
+/** Whether a board needs the runtime: logic, props, directives or components. */
+export function isDesignComponent(html: string): boolean {
+  return (
+    html.includes(DESIGN_LOGIC_TYPE) ||
+    html.includes(DESIGN_PROPS_TYPE) ||
+    DIRECTIVE.test(bodyOf(html))
+  );
+}
+
+function bodyOf(html: string): string {
+  const at = html.search(/<body[\s>]/i);
+  return at < 0 ? html : html.slice(at);
+}
+
+const isElement = (n: Node): n is Element => "tagName" in n;
+const typeOf = (e: Element) => e.attrs.find((a) => a.name === "type")?.value.trim().toLowerCase();
+const textOf = (e: Element) =>
+  e.childNodes.map((n) => ("value" in n && n.nodeName === "#text" ? n.value : "")).join("");
+
+function find(parent: ParentNode, test: (e: Element) => boolean): Element | undefined {
+  for (const node of parent.childNodes) {
+    if (!isElement(node)) continue;
+    if (test(node)) return node;
+    const hit = find(node, test);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
+function headOf(doc: DefaultTreeAdapterMap["document"]): Element {
+  const html = find(doc, (e) => e.tagName === "html")!;
+  return find(html, (e) => e.tagName === "head")!;
+}
+
+function block(doc: DefaultTreeAdapterMap["document"], type: string) {
+  return find(doc, (e) => e.tagName === "script" && typeOf(e) === type);
+}
+
+/** The board's logic source, or null. */
+export function designLogicOf(html: string): string | null {
+  const e = block(parse(html), DESIGN_LOGIC_TYPE);
+  // Stored with `<\/script` so it can't end its block; read back as written.
+  return e ? textOf(e).replace(/<\\\/(script)/gi, "</$1") : null;
+}
+
+/** The board's props definition, or null when absent or not valid JSON. */
+export function designPropsOf(html: string): DesignPropsSpec | null {
+  const e = block(parse(html), DESIGN_PROPS_TYPE);
+  if (!e) return null;
+  try {
+    return parseDesignProps(JSON.parse(textOf(e)));
+  } catch {
+    return null;
+  }
+}
+
+function setBlock(html: string, type: string, text: string | null): string {
+  const doc = parse(html);
+  const existing = block(doc, type);
+  if (text === null || !text.trim()) {
+    if (existing) {
+      const parent = existing.parentNode as ParentNode;
+      parent.childNodes = parent.childNodes.filter((n) => n !== existing);
+    }
+    return serialize(doc);
+  }
+  // `</script` would end the block early in the serialized document.
+  const safe = text.replace(/<\/(script)/gi, "<\\/$1");
+  const textNode = { nodeName: "#text", value: safe, parentNode: null } as unknown as Node;
+  if (existing) {
+    (textNode as { parentNode: unknown }).parentNode = existing;
+    existing.childNodes = [textNode as DefaultTreeAdapterMap["childNode"]];
+    return serialize(doc);
+  }
+  const head = headOf(doc);
+  const script = {
+    nodeName: "script",
+    tagName: "script",
+    attrs: [{ name: "type", value: type }],
+    namespaceURI: "http://www.w3.org/1999/xhtml",
+    childNodes: [] as DefaultTreeAdapterMap["childNode"][],
+    parentNode: head,
+  } as unknown as Element;
+  (textNode as { parentNode: unknown }).parentNode = script;
+  script.childNodes.push(textNode as DefaultTreeAdapterMap["childNode"]);
+  head.childNodes.push(script);
+  return serialize(doc);
+}
+
+/** Replace (or, with an empty string, remove) the board's logic. */
+export function setDesignLogic(html: string, js: string): string {
+  if (js.length > MAX_LOGIC) throw new Error(`Logic must be at most ${MAX_LOGIC} characters.`);
+  return setBlock(html, DESIGN_LOGIC_TYPE, js);
+}
+
+/** One exact, unique replacement inside the logic (like patch for the template). */
+export function patchDesignLogic(html: string, findText: string, replace: string): string {
+  const js = designLogicOf(html);
+  if (js === null) throw new Error("LOGIC_NOT_FOUND: this board has no logic yet; set it with a logic operation.");
+  const at = js.indexOf(findText);
+  if (at < 0) throw new Error("PATCH_NOT_FOUND: read the board and use its exact current logic.");
+  if (js.indexOf(findText, at + 1) >= 0) throw new Error("PATCH_AMBIGUOUS: include more surrounding code for a unique match.");
+  return setDesignLogic(html, js.slice(0, at) + replace + js.slice(at + findText.length));
+}
+
+/** Replace (or, with null, remove) the board's props definition. */
+export function setDesignProps(html: string, props: unknown): string {
+  if (props === null) return setBlock(html, DESIGN_PROPS_TYPE, null);
+  const spec = parseDesignProps(props);
+  const text = JSON.stringify(spec, null, 2);
+  if (text.length > MAX_PROPS) throw new Error(`Props must be at most ${MAX_PROPS} characters.`);
+  return setBlock(html, DESIGN_PROPS_TYPE, text);
+}
+
+// ── Props ────────────────────────────────────────────────────────────────
+
+export const DESIGN_PROP_TYPES = ["string", "number", "boolean", "color", "enum", "image", "list", "object"] as const;
+export type DesignPropType = (typeof DESIGN_PROP_TYPES)[number];
+export interface DesignPropDef {
+  type: DesignPropType;
+  default?: unknown;
+  label?: string;
+  description?: string;
+  /** enum only. */
+  options?: (string | number)[];
+}
+/** Prop name → definition, plus optional `$preview` values the canvas renders with. */
+export type DesignPropsSpec = Record<string, DesignPropDef | Record<string, unknown>> & {
+  $preview?: Record<string, unknown>;
+};
+
+const PROP_NAME = /^[a-zA-Z_$][\w$]{0,63}$/;
+
+/** Validates a props definition; throws a message the agent can act on. */
+export function parseDesignProps(value: unknown): DesignPropsSpec {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error('Props must be an object: {"title":{"type":"string","default":"Hello"}}.');
+  const out: DesignPropsSpec = {};
+  for (const [name, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (name === "$preview") {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("$preview must be an object of prop values.");
+      out.$preview = raw as Record<string, unknown>;
+      continue;
+    }
+    if (!PROP_NAME.test(name)) throw new Error(`"${name}" is not a valid prop name (letters, digits, _ or $).`);
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`Prop "${name}" must be an object with a type.`);
+    const def = raw as Record<string, unknown>;
+    if (!DESIGN_PROP_TYPES.includes(def.type as DesignPropType))
+      throw new Error(`Prop "${name}" needs a type: ${DESIGN_PROP_TYPES.join(", ")}.`);
+    if (def.type === "enum" && (!Array.isArray(def.options) || !def.options.length))
+      throw new Error(`Enum prop "${name}" needs options.`);
+    out[name] = {
+      type: def.type as DesignPropType,
+      ...("default" in def ? { default: def.default } : {}),
+      ...(typeof def.label === "string" ? { label: def.label.slice(0, 80) } : {}),
+      ...(typeof def.description === "string" ? { description: def.description.slice(0, 500) } : {}),
+      ...(Array.isArray(def.options) ? { options: def.options.filter((o) => typeof o === "string" || typeof o === "number").slice(0, 50) } : {}),
+    };
+  }
+  return out;
+}
+
+/** The values a board renders with: defaults, overridden by $preview. */
+export function designPropValues(spec: DesignPropsSpec | null | undefined): Record<string, unknown> {
+  if (!spec) return {};
+  const values: Record<string, unknown> = {};
+  for (const [name, def] of Object.entries(spec)) {
+    if (name === "$preview") continue;
+    if (def && typeof def === "object" && "default" in def) values[name] = (def as DesignPropDef).default;
+  }
+  return { ...values, ...(spec.$preview ?? {}) };
+}
+
+// ── Where a layer's text comes from ────────────────────────────────────────
+
+/**
+ * template: literal text in the markup. prop: one {{ path }} that resolves
+ * into a prop value (directly, or through a loop over a list prop), so an
+ * edit changes that value. logic: computed by the board's logic. mixed:
+ * literal text around template values.
+ */
+export type DesignTextSource =
+  | { kind: "template" }
+  | { kind: "prop"; prop: string; path: (string | number)[] }
+  | { kind: "logic"; expression: string }
+  | { kind: "mixed" };
+
+const PATH = /^([A-Za-z_$][\w$]*)((?:\.[A-Za-z_$][\w$]*|\[\d+\])*)$/;
+const LOOP = /^\s*(?:\(\s*([\w$]+)\s*(?:,\s*[\w$]+\s*)?\)|([\w$]+))\s+(?:in|of)\s+([A-Za-z_$][\w$]*)\s*$/;
+const attrOf = (e: Element, name: string) => e.attrs.find((a) => a.name === name)?.value;
+
+function layer(html: string, nodeId: string) {
+  const doc = parse(html);
+  const node = find(doc, (e) => attrOf(e, "data-aegis-node-id") === nodeId);
+  if (!node) throw new Error("Layer no longer exists. Select a current layer.");
+  return { doc, node };
+}
+const ownText = (e: Element) =>
+  e.childNodes.map((n) => (n.nodeName === "#text" && "value" in n ? n.value : "")).join("");
+function segments(rest: string): (string | number)[] {
+  return [...rest.matchAll(/\.([A-Za-z_$][\w$]*)|\[(\d+)\]/g)].map((m) => (m[1] !== undefined ? m[1] : Number(m[2])));
+}
+
+export function designTextSource(html: string, nodeId: string, instance?: string): DesignTextSource {
+  const { node } = layer(html, nodeId);
+  const text = ownText(node);
+  if (!text.includes("{{")) return { kind: "template" };
+  const single = /^\s*\{\{\s*([\s\S]+?)\s*\}\}\s*$/.exec(text);
+  if (!single || single[1].includes("}}")) return { kind: "mixed" };
+  const expression = single[1];
+  const m = PATH.exec(expression);
+  if (!m) return { kind: "logic", expression };
+  const spec = designPropsOf(html) ?? {};
+  const [root, rest] = [m[1], segments(m[2])];
+  if (root !== "$preview" && root in spec) return { kind: "prop", prop: root, path: rest };
+  // A loop variable over a list prop: the rendered copy says which item.
+  for (let e: Element | null = node; e && "attrs" in e; e = (e.parentNode as Element | null) ?? null) {
+    const loop = attrOf(e, "data-aegis-for");
+    if (!loop) continue;
+    const l = LOOP.exec(loop);
+    if (l && (l[1] ?? l[2]) === root && l[3] in spec && instance !== undefined && /^\d+$/.test(instance))
+      return { kind: "prop", prop: l[3], path: [Number(instance), ...rest] };
+    break;
+  }
+  return { kind: "logic", expression };
+}
+
+/** The full current text of a layer whose text comes from a prop, or null (the canvas shows a trimmed excerpt). */
+export function designTextValue(html: string, nodeId: string, instance?: string): string | null {
+  if (!isDesignComponent(html)) return null;
+  const source = designTextSource(html, nodeId, instance);
+  if (source.kind !== "prop") return null;
+  const spec = designPropsOf(html);
+  if (!spec) return null;
+  let value: unknown = propValue(spec, source.prop).value;
+  for (const key of source.path) value = value && typeof value === "object" ? (value as Record<string | number, unknown>)[key] : undefined;
+  return value === undefined || value === null ? "" : typeof value === "object" ? JSON.stringify(value) : String(value);
+}
+
+/** The value a prop renders with ($preview first) and where an edit writes it. */
+function propValue(spec: DesignPropsSpec, prop: string): { value: unknown; target: "preview" | "default" } {
+  if (spec.$preview && prop in spec.$preview) return { value: spec.$preview[prop], target: "preview" };
+  return { value: (spec[prop] as DesignPropDef | undefined)?.default, target: "default" };
+}
+
+/**
+ * A text edit on a layer, written where the text comes from: the markup,
+ * or the prop value it renders. Text computed by logic is refused.
+ */
+export function editDesignText(
+  html: string,
+  nodeId: string,
+  value: string,
+  instance: string | undefined,
+  editTemplate: (html: string) => string,
+): string {
+  // In a static board, {{ }} is just text.
+  const source = isDesignComponent(html) ? designTextSource(html, nodeId, instance) : { kind: "template" as const };
+  if (source.kind === "template") return editTemplate(html);
+  if (source.kind === "mixed")
+    throw new Error("This text mixes words and template values. Edit it in the board HTML, or ask the agent.");
+  if (source.kind === "logic")
+    throw new Error(`This text comes from the board's logic ({{ ${source.expression} }}). Change it in the logic, or ask the agent.`);
+  const spec = designPropsOf(html);
+  if (!spec) throw new Error("This board's props could not be read.");
+  const { value: current, target } = propValue(spec, source.prop);
+  const next = setAt(current, source.path, value);
+  if (target === "preview") spec.$preview = { ...spec.$preview, [source.prop]: next };
+  else spec[source.prop] = { ...(spec[source.prop] as DesignPropDef), default: next };
+  return setDesignProps(html, spec);
+}
+
+function setAt(current: unknown, path: (string | number)[], value: string): unknown {
+  if (!path.length) return typeof current === "number" && value.trim() !== "" && Number.isFinite(Number(value)) ? Number(value) : value;
+  const [key, ...rest] = path;
+  const base = Array.isArray(current) ? [...current] : current && typeof current === "object" ? { ...(current as Record<string, unknown>) } : typeof key === "number" ? [] : {};
+  (base as Record<string | number, unknown>)[key] = setAt((current as Record<string | number, unknown> | undefined)?.[key], rest, value);
+  return base;
+}
+
+// ── A component board drawn without running it ───────────────────────────
+
+const SIMPLE_PATH = /^\s*([A-Za-z_$][\w$]*)((?:\.[A-Za-z_$][\w$]*|\[\d+\])*)\s*$/;
+const MAX_STATIC_ITEMS = 24;
+
+function lookup(scope: Record<string, unknown>[], expr: string): { found: boolean; value?: unknown } {
+  const m = SIMPLE_PATH.exec(expr);
+  if (!m) return { found: false };
+  for (let i = scope.length - 1; i >= 0; i--) {
+    if (!(m[1] in scope[i])) continue;
+    let value: unknown = scope[i][m[1]];
+    for (const key of segments(m[2])) value = value && typeof value === "object" ? (value as Record<string | number, unknown>)[key] : undefined;
+    return { found: true, value };
+  }
+  return { found: false };
+}
+function cloneElement(e: Element): Element {
+  const copy = { ...e, attrs: e.attrs.map((a) => ({ ...a })), childNodes: [] as DefaultTreeAdapterMap["childNode"][] } as Element;
+  copy.childNodes = e.childNodes.map((c) => {
+    const child = isElement(c) ? cloneElement(c) : ({ ...c } as DefaultTreeAdapterMap["childNode"]);
+    (child as { parentNode: unknown }).parentNode = copy;
+    return child;
+  });
+  return copy;
+}
+const shown = (v: unknown) => (v === null || v === undefined || v === false ? "" : typeof v === "object" ? JSON.stringify(v) : String(v));
+const fill = (text: string, scope: Record<string, unknown>[]) => text.replace(/\{\{([\s\S]+?)\}\}/g, (_, e: string) => shown(lookup(scope, e).value));
+
+/**
+ * A design component as static HTML, without running any of its code: simple
+ * {{ path }} values and conditions come from its props (loops over list props
+ * repeat with their items); anything that needs its logic renders empty. For
+ * thumbnails and covers, which never run board code.
+ */
+export function staticDesignPreview(
+  html: string,
+  /** The design system's components, so <aegis-use> draws as its component. */
+  components?: Record<string, { html: string; props?: Record<string, unknown> | null }>,
+): string {
+  if (!isDesignComponent(html)) return html;
+  const doc = parse(html);
+  const values = designPropValues(designPropsOf(html));
+  const styles: string[] = [];
+  // Loop copies keep their template's layer id: fine in a script-free
+  // thumbnail, but never hand this HTML to the inspector.
+  const walk = (parent: ParentNode, scope: Record<string, unknown>[], slot?: DefaultTreeAdapterMap["childNode"][]) => {
+    const out: DefaultTreeAdapterMap["childNode"][] = [];
+    let lastIf: boolean | null = null;
+    for (const node of parent.childNodes) {
+      if (isElement(node) && node.tagName === "aegis-slot") {
+        out.push(...(slot ?? []));
+        continue;
+      }
+      if (isElement(node) && node.tagName === "aegis-use" && components) {
+        const name = attrOf(node, "component") ?? "";
+        const component = Object.entries(components).find(([n]) => n === name)?.[1];
+        if (component) {
+          const props: Record<string, unknown> = { ...designPropValues(component.props as DesignPropsSpec | null) };
+          for (const a of node.attrs) {
+            const key = a.name.startsWith("data-aegis-bind-") ? a.name.slice(16) : a.name;
+            if (["component", "data-aegis-node-id", "data-aegis-layer-name", "style", "class"].includes(a.name) || key.startsWith("data-aegis-")) continue;
+            const camel = key.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
+            props[camel] = a.name.startsWith("data-aegis-bind-") ? lookup(scope, a.value).value : fill(a.value, scope);
+          }
+          const slotted = walk(node, scope, slot);
+          const fragment = parseFragment(component.html.replace(/<style[^>]*>([\s\S]*?)<\/style>/gi, (_, css: string) => (styles.push(css), "")));
+          const rendered = walk(fragment as unknown as ParentNode, [props], slotted);
+          const root = rendered.find(isElement);
+          if (root) {
+            root.attrs = root.attrs.filter((a) => a.name !== "data-aegis-node-id" && a.name !== "data-aegis-layer-name");
+            for (const keep of ["data-aegis-node-id", "data-aegis-layer-name"]) {
+              const value = attrOf(node, keep);
+              if (value !== undefined) root.attrs.push({ name: keep, value });
+            }
+          }
+          for (const r of rendered) (r as { parentNode: unknown }).parentNode = parent;
+          out.push(...rendered);
+          lastIf = null;
+          continue;
+        }
+      }
+      if (node.nodeName === "#text" && "value" in node) {
+        node.value = fill(node.value, scope);
+        out.push(node);
+        continue;
+      }
+      if (!isElement(node) || node.tagName === "script") {
+        out.push(node);
+        continue;
+      }
+      const ifExpr = attrOf(node, "data-aegis-if");
+      const isElse = node.attrs.some((a) => a.name === "data-aegis-else");
+      if (isElse) {
+        if (lastIf !== false) {
+          lastIf = null;
+          continue;
+        }
+        lastIf = null;
+      } else if (ifExpr !== undefined) {
+        const hit = lookup(scope, ifExpr.replace(/^\s*!\s*/, ""));
+        const truthy = hit.found ? (/^\s*!/.test(ifExpr) ? !hit.value : !!hit.value) : true;
+        lastIf = truthy;
+        if (!truthy) continue;
+      } else lastIf = null;
+      const loop = attrOf(node, "data-aegis-for");
+      const l = loop ? /^\s*(?:\(\s*([\w$]+)\s*(?:,\s*([\w$]+)\s*)?\)|([\w$]+))\s+(?:in|of)\s+([\s\S]+)$/.exec(loop) : null;
+      const copies: Record<string, unknown>[] = [];
+      if (l) {
+        const list = lookup(scope, l[4]).value;
+        const items = Array.isArray(list) ? list : typeof list === "number" ? Array.from({ length: list }, (_, i) => i) : [];
+        items.slice(0, MAX_STATIC_ITEMS).forEach((item, i) => copies.push({ [l[1] ?? l[3]]: item, ...(l[2] ? { [l[2]]: i } : {}) }));
+      } else copies.push({});
+      for (const local of copies) {
+        const target = l ? cloneElement(node) : node;
+        const inner = [...scope, local];
+        target.attrs = target.attrs.map((a) => (a.value.includes("{{") ? { ...a, value: fill(a.value, inner) } : a));
+        target.childNodes = walk(target, inner, slot);
+        target.parentNode = parent as Element;
+        out.push(target);
+      }
+    }
+    return out;
+  };
+  const html_ = find(doc, (e) => e.tagName === "html");
+  const body = html_ && find(html_, (e) => e.tagName === "body");
+  if (body) body.childNodes = walk(body, [values]);
+  const head = html_ && find(html_, (e) => e.tagName === "head");
+  if (head && styles.length) {
+    const style = parseFragment(`<style>${[...new Set(styles)].join("\n")}</style>`).childNodes[0] as Element;
+    (style as { parentNode: unknown }).parentNode = head;
+    head.childNodes.push(style);
+  }
+  return serialize(doc);
+}

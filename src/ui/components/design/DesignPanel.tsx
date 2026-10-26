@@ -1,4 +1,4 @@
-import type { DesignCanvasAwareness } from "../../../shared/design-types";
+import type { DesignBoard, DesignCanvasAwareness } from "../../../shared/design-types";
 import { nextBoardName } from "../../../shared/design-names";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
@@ -37,6 +37,9 @@ import { CommentThread } from "./CommentThread";
 import { HistoryPanel } from "./HistoryPanel";
 import { DesignCompare } from "./DesignCompare";
 import { InlineTextEditor } from "./InlineTextEditor";
+import { designTextValue, editDesignText } from "../../../shared/design-component";
+import { useDesignSystem } from "./use-design-system";
+import { designSlides, isDesignDeck } from "../../../shared/design-deck";
 import { SelectionTools } from "./SelectionTools";
 import { frameStyle } from "./design-insert";
 import type { DropTarget } from "./BoardFrame";
@@ -126,6 +129,8 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
   const user = useDesignUser();
   const [list, setList] = useState<DesignSummary[]>([]);
   const [doc, setDoc] = useState<DesignDocument | null>(null);
+  // What every board of the open design loads: its design system.
+  const system = useDesignSystem(sessionId ?? undefined, doc?.id, `${doc?.system ?? ""}:${doc?.revision ?? 0}`);
   const pageKey = "aegis.design.page:" + documentId;
   const [pageChoice, setPageChoice] = useState<string>(() => rendererStateStorage.getItem(pageKey) ?? "");
   const pages = designPages(doc ?? {});
@@ -312,6 +317,8 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
     !!session && !session.readOnly && !historical && !writing;
   const canMention = canSendDesignComment(sessionId);
   const activeBoard = doc?.boards.find((b) => b.id === selected);
+  const activeBoardRef = useRef(activeBoard);
+  activeBoardRef.current = activeBoard;
   const queue = useComposerQueueStore((s) =>
     sessionId ? s.queues[sessionId] ?? EMPTY_QUEUE : EMPTY_QUEUE,
   );
@@ -867,6 +874,69 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
     }
   };
   /** Text and Frame tools: one write per new layer, which then becomes the selection. */
+  /**
+   * Dropped or pasted images: all are added to the design first, then placed
+   * in one write where they landed: in a board (image layers at that spot) or,
+   * off any board, as new boards of their size side by side.
+   */
+  const placeImages = async (files: File[], at: { board?: DesignBoard; target: DropTarget | null; world?: { x: number; y: number } }) => {
+    if (!doc || !sessionId || !editable) return;
+    const added: { src: string; name: string; width?: number; height?: number }[] = [];
+    for (const file of files.slice(0, 8)) {
+      try {
+        const info = await window.electron.design.addAsset({ sessionId, documentId: doc.id, bytes: new Uint8Array(await file.arrayBuffer()), mime: file.type, name: file.name || "image" });
+        added.push({ src: `aegis-asset:${info.id}`, name: (file.name || "Image").replace(/\.[a-z0-9]+$/i, ""), width: info.width ?? undefined, height: info.height ?? undefined });
+      } catch (e) {
+        setFailure(errorText(e));
+      }
+    }
+    if (!added.length) return;
+    const label = added.length === 1 ? added[0].name : `${added.length} images`;
+    const board = at.board;
+    if (board) {
+      const fill = at.target?.direction === "row" ? "max-width:100%" : "width:100%";
+      let html = board.html;
+      let nodeId = "";
+      added.forEach((img, i) => {
+        ({ html, nodeId } = insertDesignLayer(html, at.target?.containerId ?? undefined, (at.target?.index ?? 1e6) + i, { tag: "img", name: img.name, attrs: { src: img.src, alt: img.name }, style: `display:block;${fill};height:auto` }));
+      });
+      await run(async () => {
+        const result = await writeDesign([{ type: "content", boardId: board.id, expectedRevision: board.contentRevision, html }], `Added ${label} to ${board.name}`);
+        await reload();
+        const next = result.boards.find((b) => b.id === board.id);
+        const node = next && findDesignLayer(readDesignLayers(next.html), nodeId);
+        if (next && node) selectLayer(board.id, node, next.contentRevision);
+      });
+      return;
+    }
+    let x = at.world?.x;
+    const operations: DesignOperation[] = added.map((img) => {
+      const width = Math.max(200, Math.min(1440, img.width ?? 800));
+      const height = Math.max(100, Math.min(4096, Math.round(img.height && img.width ? (img.height * width) / img.width : 600)));
+      const attr = img.name.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+      const op: DesignOperation = { type: "add", name: img.name, pageId: activePageId, width, height, ...(x !== undefined && at.world ? { x: Math.round(x), y: Math.round(at.world.y) } : {}), html: `<main style="margin:0"><img src="${img.src}" alt="${attr}" data-aegis-layer-name="${attr}" style="display:block;width:100%;height:auto"></main>` };
+      if (x !== undefined) x += width + 80;
+      return op;
+    });
+    await update(operations, `Added ${label}`);
+  };
+  // Pasting an image on the canvas: into the selected board, or as a new board.
+  const placeImagesRef = useRef(placeImages);
+  placeImagesRef.current = placeImages;
+  useEffect(() => {
+    if (hidden) return;
+    const paste = (e: ClipboardEvent) => {
+      const at = e.target instanceof Element ? e.target : null;
+      const panel = root.current;
+      if (!at || !panel || !panel.contains(at) || at.closest("input, textarea, [contenteditable='true']")) return;
+      const files = [...(e.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/"));
+      if (!files.length) return;
+      e.preventDefault();
+      void placeImagesRef.current(files, { board: activeBoardRef.current, target: null });
+    };
+    window.addEventListener("paste", paste);
+    return () => window.removeEventListener("paste", paste);
+  }, [hidden]);
   const insertLayer = (
     boardId: string,
     revision: number,
@@ -1088,12 +1158,12 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
    * file ready is not a file saved until the user picked where.
    */
   const exportAs = (
-    format: "pdf" | "html" | "png",
+    format: "pdf" | "html" | "png" | "pptx",
     boardId?: string,
     only?: { boardIds?: string[]; scale?: 1 | 2 },
   ) =>
     run(async () => {
-      const what = format === "pdf" ? "PDF" : format === "html" ? "HTML bundle" : "PNG";
+      const what = format === "pdf" ? "PDF" : format === "html" ? "HTML bundle" : format === "pptx" ? "PowerPoint" : "PNG";
       setExporting(true);
       try {
       const r = await window.electron.design.export({
@@ -1341,6 +1411,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
         <DesignCanvas
           key={documentId + ":" + activePageId}
           apiRef={canvas}
+          system={system}
           toolbarLeading={pagePicker}
           commentControlInHeader
           history={{
@@ -1421,6 +1492,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
                 ? { boardId: textEdit.boardId, nodeId: textEdit.anchor.nodeId }
                 : undefined
           }
+          onDropImages={(files, at) => void placeImages(files, at)}
           onInsertText={(board, target, tag, preview) => {
             setSelection(undefined);
             setLayerTarget(undefined);
@@ -1603,18 +1675,30 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
                     rect={r}
                     zoom={ctx.view.zoom}
                     styles={textEdit.anchor.computedStyles ?? {}}
-                    text={target.node.text}
+                    // A design component's {{ value }} shows what it renders, not its template.
+                    text={target.node.text.includes("{{") ? designTextValue(target.board.html, target.node.id, textEdit.anchor.instance) ?? textEdit.anchor.text ?? "" : target.node.text}
                     caret={textEdit.caret}
                     onCancel={() => {
                       setTextEdit(undefined);
                       canvas.current?.focus();
                     }}
                     onCommit={(value) => {
+                      const instance = textEdit.anchor.instance;
                       setTextEdit(undefined);
                       canvas.current?.focus();
+                      let html: string;
+                      try {
+                        // Written where the text comes from: the markup, or the prop it renders.
+                        html = editDesignText(target.board.html, target.node.id, value, instance, (h) =>
+                          editDesignLayer(h, target.node.id, { type: "text", value }),
+                        );
+                      } catch (e) {
+                        setFailure(errorText(e));
+                        return;
+                      }
                       void changeLayer(
                         target.board,
-                        editDesignLayer(target.board.html, target.node.id, { type: "text", value }),
+                        html,
                         `Edited text of ${target.node.name.split(" · ")[0]} on ${target.board.name}`,
                       ).catch((e) => setFailure(errorText(e)));
                     }}
@@ -2000,6 +2084,7 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
                       ]);
                   }}
                   onExport={() => void exportBoard(activeBoard.id)}
+                  onShowSlide={(index) => canvas.current?.showSlide(activeBoard.id, index)}
                 />
               ) : (
                 <div className="design-inspector-empty"><strong>Nothing selected</strong><span>Click any element in the design to edit it here.</span></div>
@@ -2081,6 +2166,9 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
             <button role="menuitem" onClick={() => (setExportMenu(undefined), void exportAs("html"))}>
               HTML bundle <span>{exportAllPages ? "all pages" : "current page"}, zipped</span>
             </button>
+            <button role="menuitem" onClick={() => (setExportMenu(undefined), void exportAs("pptx"))}>
+              PowerPoint <span>a slide per board or deck slide, with notes</span>
+            </button>
             <button
               role="menuitem"
               disabled={!activeBoard}
@@ -2110,6 +2198,11 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
           <button role="menuitem" onClick={() => (close(), void exportAs("html", board.id))}>
             HTML (.zip) <span>This board as a web page</span>
           </button>
+          {isDesignDeck(board.html) ? (
+            <button role="menuitem" onClick={() => (close(), void exportAs("pptx", board.id))}>
+              PowerPoint (.pptx) <span>{designSlides(board.html).length} slides, with notes</span>
+            </button>
+          ) : null}
           <div className="design-menu-divider" role="separator" />
           <button role="menuitem" disabled={!canvasBoards.length} onClick={() => (close(), void exportAs("pdf", undefined, { boardIds: canvasBoards.map((b) => b.id) }))}>
             All boards (.pdf) <span>{canvasBoards.length} on this page, in canvas order</span>
@@ -2141,6 +2234,9 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
             styleId: style?.id,
             styleName: style?.name,
           });
+          // The open design loads the picked system on every board.
+          if (doc && editable && (doc.system ?? null) !== (style?.id ?? null))
+            void update([{ type: "system", system: style?.id ?? null, expectedRevision: doc.revision }], style ? `Switched the design system to ${style.name}` : "Removed the design system");
           setStylesOpen(false);
         }}
       />

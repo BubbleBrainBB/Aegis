@@ -2,20 +2,50 @@ import { designTextStyles } from "./design-text";
 import { sanitizeDesignHtml } from "./design-html";
 import { designFramePatchScript } from "./design-frame-patch";
 import { editableLayerStyles } from "./design-layers";
+import { DESIGN_COMPONENTS_TYPE, isDesignComponent } from "./design-component";
+import { DESIGN_RUNTIME_SCRIPT } from "./design-runtime-bundle";
+import { resolveFrameAssets } from "./design-system-pack";
+import { deckSlideCss, isDesignDeck } from "./design-deck";
 
-// No generated script can execute. Only this trusted, nonce-bound inspector
-// runs in the opaque-origin iframe; it has no preload or host capabilities.
+/** A component another board can use: its template, logic and props. */
+export interface DesignComponentSource {
+  html: string;
+  logic?: string | null;
+  props?: Record<string, unknown> | null;
+}
+export interface DesignFrameOptions {
+  /**
+   * edit: the canvas owns input, the board's logic runs without events.
+   * play: events and board links work. static: no runtime at all (drafts,
+   * a board whose script stopped responding).
+   */
+  mode?: "edit" | "play" | "static";
+  /** Components the board may use, by name (besides its design system's). */
+  components?: Record<string, DesignComponentSource>;
+  /** The design system the board loads: its stylesheet, components and assets. */
+  system?: { css: string; components: Record<string, DesignComponentSource>; assets: Record<string, string> } | null;
+  /** A deck's slide to show (0-based); the canvas switches it later by message. */
+  slide?: number;
+}
+
+// Only nonce-bound scripts run, in an opaque-origin, network-less iframe with
+// no preload or host capabilities: the inspector, and for design components
+// the board runtime, which evaluates the board's own logic and expressions.
 export function designFrameHtml(
   html: string,
   nonce: string,
   inspect = true,
+  options: DesignFrameOptions = {},
 ): string {
   if (!/^[a-zA-Z0-9-]+$/.test(nonce)) throw new Error("Invalid frame nonce");
-  const policy = `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'`;
+  const mode = options.mode ?? (inspect ? "edit" : "play");
+  const runtime = mode !== "static" && isDesignComponent(html);
+  const available = { ...(options.system?.components ?? {}), ...(options.components ?? {}) };
+  const policy = `default-src 'none'; script-src 'nonce-${nonce}'${runtime ? " 'unsafe-eval'" : ""}; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'`;
   const inspector = inspect
     ? `<script data-aegis-frame nonce="${nonce}">
       ${designFramePatchScript}
-      const send=(t,hover=false,requested=false)=>{if(!(t instanceof Element))return;const r=t.getBoundingClientRect();const css=getComputedStyle(t);const computedStyles=Object.fromEntries(${JSON.stringify([...editableLayerStyles, ...designTextStyles])}.map(k=>[k,css.getPropertyValue(k)]));computedStyles['element-tag']=t.tagName.toLowerCase();if(t.parentElement){const pc=getComputedStyle(t.parentElement);computedStyles['parent-layout']=pc.display.includes('grid')?'grid':pc.display.includes('flex')?(pc.flexDirection.startsWith('column')?'column':'row'):'block'}parent.postMessage({type:'aegis-design-select',nonce:${JSON.stringify(nonce)},hover,requested,anchor:{computedStyles,nodeId:t.getAttribute('data-aegis-node-id')||undefined,text:(t.textContent||'').trim().slice(0,180),rect:{x:r.x,y:r.y,width:r.width,height:r.height}}},'*')};
+      const send=(t,hover=false,requested=false)=>{if(!(t instanceof Element))return;const r=t.getBoundingClientRect();const css=getComputedStyle(t);const computedStyles=Object.fromEntries(${JSON.stringify([...editableLayerStyles, ...designTextStyles])}.map(k=>[k,css.getPropertyValue(k)]));computedStyles['element-tag']=t.tagName.toLowerCase();if(t.parentElement){const pc=getComputedStyle(t.parentElement);computedStyles['parent-layout']=pc.display.includes('grid')?'grid':pc.display.includes('flex')?(pc.flexDirection.startsWith('column')?'column':'row'):'block'}const inst=t.closest('[data-aegis-instance]')?.getAttribute('data-aegis-instance');parent.postMessage({type:'aegis-design-select',nonce:${JSON.stringify(nonce)},hover,requested,anchor:{computedStyles,nodeId:t.getAttribute('data-aegis-node-id')||undefined,text:(t.textContent||'').trim().slice(0,180),rect:{x:r.x,y:r.y,width:r.width,height:r.height},...(inst?{instance:inst}:{})}},'*')};
       document.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();send(e.target)},true);
       document.addEventListener('submit',e=>e.preventDefault(),true);
       const nodes=()=>[...document.querySelectorAll('[data-aegis-node-id]')];
@@ -31,7 +61,7 @@ export function designFrameHtml(
       const parts=s=>{const r=[];let d=0,cur='';for(const ch of s){if(ch==='('||ch==='[')d++;if(ch===')'||ch===']')d--;if(ch===','&&!d){r.push(cur);cur=''}else cur+=ch}r.push(cur);return r.map(x=>x.trim()).filter(Boolean)};
       const spec=s=>{s=s.replace(/::[\\w-]+/g,'').replace(/:where\\([^)]*\\)/g,'');const a=(s.match(/#[\\w-]+/g)||[]).length,b=(s.match(/\\.[\\w-]+|\\[[^\\]]*\\]|:[\\w-]+/g)||[]).length,c=(s.replace(/\\[[^\\]]*\\]|\\([^)]*\\)|[.#:][\\w-]+/g,'').match(/[a-zA-Z][\\w-]*/g)||[]).length;return a*1e6+b*1e3+c};
       let ruleList=null;
-      const rules=()=>{if(ruleList)return ruleList;const out=[];const walk=l=>{for(const r of l){if(r instanceof CSSStyleRule)out.push(r);else if(r instanceof CSSMediaRule){if(matchMedia(r.media.mediaText).matches)walk(r.cssRules)}else if(r instanceof CSSSupportsRule){if(CSS.supports(r.conditionText))walk(r.cssRules)}else if(typeof CSSLayerBlockRule!=='undefined'&&r instanceof CSSLayerBlockRule)walk(r.cssRules)}};for(const s of document.styleSheets){if(s.ownerNode?.hasAttribute?.('data-aegis-frame'))continue;try{walk(s.cssRules)}catch{}}return ruleList=out};
+      const rules=()=>{if(ruleList)return ruleList;const out=[];const walk=l=>{for(const r of l){if(r instanceof CSSStyleRule)out.push(r);else if(r instanceof CSSMediaRule){if(matchMedia(r.media.mediaText).matches)walk(r.cssRules)}else if(r instanceof CSSSupportsRule){if(CSS.supports(r.conditionText))walk(r.cssRules)}else if(typeof CSSLayerBlockRule!=='undefined'&&r instanceof CSSLayerBlockRule)walk(r.cssRules)}};for(const s of document.styleSheets){if(s.ownerNode?.hasAttribute?.('data-aegis-frame')&&!s.ownerNode.hasAttribute('data-aegis-system'))continue;try{walk(s.cssRules)}catch{}}return ruleList=out};
       const authored=t=>{const hits=[];rules().forEach((r,i)=>{let best=-1;for(const p of parts(r.selectorText)){try{if(t.matches(p))best=Math.max(best,spec(p))}catch{}}if(best>=0)hits.push([best,i,r])});hits.sort((a,b)=>a[0]-b[0]||a[1]-b[1]);const m=new Map();const put=(k,v)=>{const imp=/!\\s*important$/i.test(v);if(m.get(k)?.imp&&!imp)return;m.set(k,{v,imp})};for(const h of hits)for(const [k,v] of decls(h[2].style.cssText))put(k,v);const saved=t.getAttribute('data-aegis-orig-style');const inline=saved===null?t.getAttribute('style'):saved==='aegis:none'?'':saved;for(const [k,v] of decls(inline||''))put(k,v);return [...m].map(([k,o])=>[k,o.v])};
       const labelOf=e=>e===document.body?'body':e===document.documentElement?'html':e.classList[0]?'.'+e.classList[0]:(e.getAttribute('data-aegis-layer-name')||e.tagName.toLowerCase());
       const cssOf=t=>{const own=authored(t);const seen=new Set(own.map(d=>d[0]));const inherited=[];for(let e=t.parentElement;e&&inherited.length<8;e=e.parentElement){const ds=authored(e).filter(([k])=>INH.has(k)&&!seen.has(k));ds.forEach(([k])=>seen.add(k));if(ds.length)inherited.push({id:e.getAttribute('data-aegis-node-id')||undefined,label:labelOf(e),decls:ds.slice(0,40)})}return {tag:t.tagName.toLowerCase(),text:(t.textContent||'').replace(/\\s+/g,' ').trim().slice(0,80),own:own.slice(0,80),inherited}};
@@ -52,7 +82,7 @@ export function designFrameHtml(
         const domIndex=index<vis.length?all.indexOf(vis[index]):vis.length?all.indexOf(vis[vis.length-1])+1:all.length;const near=ref||vis[index-1]||vis[index];
         return {containerId:c===document.body?null:c.getAttribute('data-aegis-node-id'),index:domIndex,position:index+1,count:vis.length+1,direction:dir,name:nameOf(c),line,containerTag:c.tagName.toLowerCase(),nearTag:near?near.tagName.toLowerCase():null}};
       window.addEventListener('message',e=>{const d=e.data;if(e.source!==parent||d?.nonce!==${JSON.stringify(nonce)})return;
-        if(d.type==='aegis-design-patch'&&typeof d.html==='string'){try{patchDocument(d.html);drag=null;ruleList=null;reply('aegis-design-patched',d.request,{ok:true})}catch{reply('aegis-design-patched',d.request,{ok:false})}return}
+        if(d.type==='aegis-design-patch'&&typeof d.html==='string'){if(window.__aegisRuntime){try{window.__aegisRuntime.update(d.html);drag=null;ruleList=null;reply('aegis-design-patched',d.request,{ok:true})}catch{reply('aegis-design-patched',d.request,{ok:false})}return}try{patchDocument(d.html);drag=null;ruleList=null;reply('aegis-design-patched',d.request,{ok:true})}catch{reply('aegis-design-patched',d.request,{ok:false})}return}
         if(d.type==='aegis-design-drag-start'){const t=byId(d.nodeId);if(!t||t.closest('[data-aegis-locked="true"]')||!t.parentElement||getComputedStyle(t).position==='absolute'||getComputedStyle(t).position==='fixed'){reply('aegis-design-drag-state',d.request,{ok:false});return}drag={node:t,parent:t.parentElement,next:t.nextSibling,style:t.getAttribute('style'),at:null,origin:[...t.parentElement.children].filter(k=>k!==t&&k.hasAttribute('data-aegis-node-id')).indexOf(t.nextElementSibling)};if(drag.origin<0)drag.origin=[...t.parentElement.children].filter(k=>k!==t&&k.hasAttribute('data-aegis-node-id')).length;t.style.setProperty('pointer-events','none','important');t.style.setProperty('opacity','.35','important');t.style.setProperty('outline','2px dashed rgba(13,153,255,.7)','important');t.style.setProperty('outline-offset','-2px','important');reply('aegis-design-drag-state',d.request,{ok:true});return}
         if(d.type==='aegis-design-drag-over'&&drag&&Number.isFinite(d.x)&&Number.isFinite(d.y)){const n=drag.node;let c=null;for(let e=document.elementFromPoint(d.x,d.y);e&&e!==document.documentElement;e=e.parentElement){if(e===n||n.contains(e)||!e.hasAttribute('data-aegis-node-id'))continue;if(e.closest('[data-aegis-locked="true"]'))continue;if(e===drag.parent){c=e;break}if(!/flex|grid/.test(getComputedStyle(e).display))continue;if(e.parentElement===drag.parent){const r=e.getBoundingClientRect(),m=Math.min(r.width,r.height)*.25;if(d.x<r.left+m||d.x>r.right-m||d.y<r.top+m||d.y>r.bottom-m)continue}c=e;break}
           if(!c)c=drag.parent;const kids=[...c.children].filter(k=>k!==n&&k.hasAttribute('data-aegis-node-id'));const vis=kids.filter(k=>getComputedStyle(k).display!=='none');const dir=flow(c);let index=0;if(vis.length){let best=0,bd=Infinity;vis.forEach((k,i)=>{const r=k.getBoundingClientRect();const dx=Math.max(r.left-d.x,0,d.x-r.right),dy=Math.max(r.top-d.y,0,d.y-r.bottom);const dist=Math.hypot(dx,dy);if(dist<bd){bd=dist;best=i}});const r=vis[best].getBoundingClientRect();const before=dir==='row'?d.x<r.left+r.width/2:dir==='column'||dir==='stack'?d.y<r.top+r.height/2:(d.y<r.top?true:d.y>r.bottom?false:d.x<r.left+r.width/2);index=kids.indexOf(vis[best])+(before?0:1)}
@@ -73,9 +103,27 @@ export function designFrameHtml(
         if(d.type==='aegis-design-select-node'&&typeof d.nodeId==='string'){send([...document.querySelectorAll('[data-aegis-node-id]')].find(t=>t.getAttribute('data-aegis-node-id')===d.nodeId),false,true);return}if(d.type!=='aegis-design-hit-test'||!Number.isFinite(d.x)||!Number.isFinite(d.y))return;let t=document.elementFromPoint(d.x,d.y);if(t?.closest('[data-aegis-locked="true"]'))return;send(t,d.hover===true)});
       </script>`
     : "";
-  // parse5 serializes a single document; insert CSP before all user styles.
-  return sanitizeDesignHtml(html).replace(
-    "<head>",
-    `<head><meta data-aegis-frame http-equiv="Content-Security-Policy" content="${policy}"><meta data-aegis-frame name="referrer" content="no-referrer"><style data-aegis-frame>html{color-scheme:light}body{margin:0}*{box-sizing:border-box}[data-aegis-hidden="true"]{display:none!important}[data-aegis-masked]{-webkit-text-fill-color:transparent!important;-webkit-text-stroke-color:transparent!important;text-shadow:none!important;text-decoration-color:transparent!important}</style>${inspector}`,
-  );
+  const components = runtime && Object.keys(available).length
+    ? `<script type="${DESIGN_COMPONENTS_TYPE}" data-aegis-frame>${JSON.stringify(available).replace(/</g, "\\u003c")}</script>`
+    : "";
+  // A deck shows one slide; the host picks which (a frame-owned stylesheet, never the board).
+  const deck = isDesignDeck(html)
+    ? `<style data-aegis-frame data-aegis-slide-style>${deckSlideCss(options.slide ?? 0)}</style><script data-aegis-frame nonce="${nonce}">addEventListener('message',e=>{const d=e.data;if(e.source!==parent||d?.nonce!==${JSON.stringify(nonce)}||d.type!=='aegis-design-slide'||!Number.isInteger(d.index))return;const n=Math.max(0,d.index)+1;document.querySelector('style[data-aegis-slide-style]').textContent='[data-aegis-deck]>[data-aegis-slide]:not(:nth-child('+n+' of [data-aegis-slide])){display:none!important}';parent.postMessage({type:'aegis-design-slide-shown',nonce:${JSON.stringify(nonce)},index:d.index},'*')})</script>`
+    : "";
+  // The system's stylesheet comes first, so the board's own styles win.
+  const system = options.system?.css ? `<style data-aegis-frame data-aegis-system>${options.system.css.replace(/<\/(style)/gi, "<\\/$1")}</style>` : "";
+  const board = runtime
+    ? `${components}<script data-aegis-frame data-aegis-runtime data-mode="${mode === "play" ? "play" : "edit"}" nonce="${nonce}">${DESIGN_RUNTIME_SCRIPT}</script>`
+    : "";
+  // parse5 serializes one document, and the sanitizer leaves <html> and <head>
+  // bare, so it starts with exactly [<!DOCTYPE html>]<html><head>. The frame's
+  // policy goes right there, before everything the board wrote; anything else
+  // means the policy could land in the wrong place, so nothing is rendered.
+  const doc = resolveFrameAssets(sanitizeDesignHtml(html), options.system?.assets);
+  const start = /^(?:<!DOCTYPE html>)?<html><head>/.exec(doc);
+  if (!start) throw new Error("Board HTML did not sanitize to a plain document head.");
+  return doc.slice(0, start[0].length) + framePrelude() + doc.slice(start[0].length);
+  function framePrelude() {
+    return `<meta data-aegis-frame http-equiv="Content-Security-Policy" content="${policy}"><meta data-aegis-frame name="referrer" content="no-referrer">${system}<style data-aegis-frame>html{color-scheme:light}body{margin:0}*{box-sizing:border-box}[data-aegis-hidden="true"]{display:none!important}[data-aegis-masked]{-webkit-text-fill-color:transparent!important;-webkit-text-stroke-color:transparent!important;text-shadow:none!important;text-decoration-color:transparent!important}</style>${deck}${inspector}${board}`;
+  }
 }

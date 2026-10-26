@@ -1,7 +1,8 @@
 /**
  * Checks run on a rendered board before it is captured, so design_preview can
  * tell the agent what the screenshot alone might not: text drawn over other
- * text, content cut off by a clipping container, a page that renders empty,
+ * text, content cut off by a clipping container, text spilling out of the
+ * card or cover it sits in, a page that renders empty,
  * content wider or taller than the board, images that failed to load.
  *
  * Geometry finds only these kinds of defect; the agent still judges the
@@ -13,6 +14,7 @@ export const MAX_FINDINGS_PER_KIND = 4;
 /** A self-contained script for the board's page; resolves to warning strings. */
 export function renderChecksScript(width: number, height: number): string {
   return `(async () => {
+  await Promise.all([...document.fonts].map((f) => f.load().catch(() => null)));
   await document.fonts.ready;
   await Promise.all([...document.images].map((i) => i.decode().catch(() => null)));
   await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
@@ -31,6 +33,12 @@ export function renderChecksScript(width: number, height: number): string {
   };
   const root = document.body;
   const doc = document.documentElement;
+
+  // A deck's slide: text below 24px is hard to read projected.
+  if (document.querySelector("[data-aegis-deck]")) {
+    const small = [...root.querySelectorAll("*")].filter((el) => visible(el) && [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim()) && parseFloat(getComputedStyle(el).fontSize) < 24);
+    if (small.length) out.push("Slide text under 24px (" + small.slice(0, MAX).map((el) => label(el) + " " + Math.round(parseFloat(getComputedStyle(el).fontSize)) + "px").join(", ") + "): too small to read projected.");
+  }
 
   // Empty: nothing visible with text or size.
   const any = [...root.querySelectorAll("*")].some((el) => visible(el) && (el.textContent.trim() || ["IMG", "SVG", "svg"].includes(el.tagName)));
@@ -88,6 +96,28 @@ export function renderChecksScript(width: number, height: number): string {
     if (!lost) continue;
     clipped++;
     out.push("Text is cut off inside " + label(el) + " (overflow is hidden).");
+  }
+
+  // Spilled: text running past the filled or outlined box it sits in (a card,
+  // a cover, a button) where nothing clips it, so it reads as broken.
+  const boxed = (el) => {
+    const s = getComputedStyle(el);
+    const paint = (c) => c && c !== "transparent" && !/rgba\\([^)]*,\\s*0\\)$/.test(c);
+    return paint(s.backgroundColor) || s.backgroundImage !== "none" || ["Top", "Right", "Bottom", "Left"].some((side) => parseFloat(s["border" + side + "Width"]) > 0 && paint(s["border" + side + "Color"]));
+  };
+  let spilled = 0;
+  for (const t of texts) {
+    if (spilled >= MAX) break;
+    let box = t.el;
+    while (box && box !== root && box !== doc && !boxed(box)) box = box.parentElement;
+    if (!box || box === root || box === doc) continue;
+    const s = getComputedStyle(box);
+    if (s.overflowX !== "visible" || s.overflowY !== "visible") continue; // clipping is checked above
+    const b = box.getBoundingClientRect();
+    const past = Math.max(t.r.right - b.right, b.left - t.r.left, t.r.bottom - b.bottom, b.top - t.r.top);
+    if (past <= 2) continue;
+    spilled++;
+    out.push("Text spills out of its box: " + label(t.el) + " runs " + Math.round(past) + "px past " + label(box).replace(/ ".*$/, "") + ". Make the box grow with its text, or shorten or shrink the text.");
   }
   return out;
 })()`;

@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "fs";
 import { basename, extname, join } from "path";
 
 /**
@@ -41,7 +41,8 @@ const MAX_TEMPLATES = 24;
 
 function readSmall(path: string): string | null {
   try {
-    if (!existsSync(path) || !statSync(path).isFile() || statSync(path).size > MAX_FILE) return null;
+    // No symlinks: a cloned repo's design-system/README.md -> ~/.ssh/... must not reach the agent.
+    if (!existsSync(path) || lstatSync(path).isSymbolicLink() || !statSync(path).isFile() || statSync(path).size > MAX_FILE) return null;
     return readFileSync(path, "utf8");
   } catch {
     return null;

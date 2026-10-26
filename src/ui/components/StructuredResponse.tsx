@@ -1,3 +1,4 @@
+import { useSandboxEpoch } from '../utils/sandbox-frames';
 import { stripLeakedContextTags } from '../utils/leaked-context-tags';
 import { splitContentReferences } from '../utils/content-references';
 import { InlineWidget } from './widget/InlineWidget';
@@ -101,6 +102,8 @@ function WidgetCard({
 }) {
   const widgetId = useId();
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  // A recovered sandbox process (see sandbox-frames) remounts this frame.
+  const sandboxEpoch = useSandboxEpoch();
   const [loaded, setLoaded] = useState(false);
   const [ready, setReady] = useState(false);
   const [height, setHeight] = useState(220);
@@ -204,6 +207,7 @@ function WidgetCard({
         </span>
       </div>
       <iframe
+        key={sandboxEpoch}
         ref={iframeRef}
         title={title}
         sandbox="allow-scripts"

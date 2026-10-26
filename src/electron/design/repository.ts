@@ -20,6 +20,8 @@ import type {
 import { summarizeOperations } from "../../shared/design-history";
 import { validateDesignMarks, MAX_DESIGN_MARKS } from "../../shared/design-marks";
 import { sanitizeDesignHtml } from "./html";
+import { patchDesignLogic, setDesignLogic, setDesignProps } from "../../shared/design-component";
+import { expandDesignIcons } from "./icons";
 
 const boardName = z.string().transform(normalizeBoardName);
 const name = z.string().trim().min(1).max(160);
@@ -30,6 +32,30 @@ const point = z.number().finite().min(-100000).max(100000);
 const pagesSchema = z.array(z.object({ id, name: z.string().trim().min(1).max(120) }).strict())
   .max(40).refine((pages) => new Set(pages.map((page) => page.id)).size === pages.length, "Page IDs must be unique.");
 const marksSchema = z.array(z.unknown()).max(MAX_DESIGN_MARKS).transform(validateDesignMarks);
+/**
+ * A board's HTML from a whole-board write: the template, with logic and
+ * props set when given (they replace any blocks the template carried).
+ */
+function componentHtml(html: string, js?: string, props?: Record<string, unknown>): string {
+  let out = sanitizeDesignHtml(expandDesignIcons(html));
+  if (js !== undefined) out = setDesignLogic(out, js);
+  if (props !== undefined) out = setDesignProps(out, props);
+  return js !== undefined || props !== undefined ? sanitizeDesignHtml(out) : out;
+}
+
+const ASSET_MIME = new Set(["image/png", "image/jpeg", "image/webp", "image/gif", "image/svg+xml"]);
+const MAX_ASSET_BYTES = 8_000_000;
+const MAX_ASSETS = 200;
+const MAX_ASSETS_TOTAL = 80_000_000;
+export interface DesignAssetInfo {
+  id: string;
+  name: string;
+  mime: string;
+  width: number | null;
+  height: number | null;
+  size: number;
+}
+
 const operations = z
   .array(
     z.discriminatedUnion("type", [
@@ -38,6 +64,8 @@ const operations = z
           type: z.literal("add"),
           name: boardName.optional(),
           html: z.string().optional(),
+          js: z.string().max(200_000).optional(),
+          props: z.record(z.string(), z.unknown()).optional(),
           x: point.optional(),
           y: point.optional(),
           width: size.optional(),
@@ -51,8 +79,29 @@ const operations = z
           boardId: id,
           expectedRevision: revision,
           html: z.string(),
+          js: z.string().max(200_000).optional(),
+          props: z.record(z.string(), z.unknown()).optional(),
         })
         .strict(),
+      z.object({
+        type: z.literal("logic"),
+        boardId: id,
+        expectedRevision: revision,
+        js: z.string().max(200_000),
+      }).strict(),
+      z.object({
+        type: z.literal("logic_patch"),
+        boardId: id,
+        expectedRevision: revision,
+        find: z.string().min(1).max(200_000),
+        replace: z.string().max(200_000),
+      }).strict(),
+      z.object({
+        type: z.literal("props"),
+        boardId: id,
+        expectedRevision: revision,
+        props: z.record(z.string(), z.unknown()).nullable(),
+      }).strict(),
       z.object({
         type: z.literal("patch"),
         boardId: id,
@@ -100,6 +149,11 @@ const operations = z
           expectedRevision: revision,
         })
         .strict(),
+      z.object({
+        type: z.literal("system"),
+        system: z.string().regex(/^[a-z0-9][a-z0-9-]{0,40}$/).nullable(),
+        expectedRevision: revision,
+      }).strict(),
     ]),
   )
   .min(1)
@@ -242,7 +296,8 @@ export class DesignRepository {
       CREATE TABLE IF NOT EXISTS design_content(hash TEXT PRIMARY KEY, html TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS design_revisions(document_id TEXT NOT NULL, revision INTEGER NOT NULL, snapshot TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(document_id,revision));
       CREATE TABLE IF NOT EXISTS design_receipts(session_id TEXT NOT NULL, operation_id TEXT NOT NULL, digest TEXT NOT NULL, document_id TEXT NOT NULL, revision INTEGER NOT NULL, PRIMARY KEY(session_id,operation_id));
-      CREATE INDEX IF NOT EXISTS design_by_session ON design_documents(session_id);`);
+      CREATE INDEX IF NOT EXISTS design_by_session ON design_documents(session_id);
+      CREATE TABLE IF NOT EXISTS design_assets(document_id TEXT NOT NULL, id TEXT NOT NULL, mime TEXT NOT NULL, bytes BLOB NOT NULL, name TEXT NOT NULL, width INTEGER, height INTEGER, created_at INTEGER NOT NULL, PRIMARY KEY(document_id, id));`);
     this.migrate();
     this.migratePrompts();
     this.migrateCanvas();
@@ -730,7 +785,7 @@ export class DesignRepository {
     operationId: string,
     signal?: AbortSignal,
     author: DesignAuthor = DEFAULT_AGENT_AUTHOR,
-    options: { exclusive?: boolean; request?: DesignRequest } = {},
+    options: { exclusive?: boolean; request?: DesignRequest; system?: string | null } = {},
   ) {
     return this.mutate(
       sessionId,
@@ -758,6 +813,7 @@ export class DesignRepository {
         comments: [],
         createdAt: Date.now(),
         updatedAt: Date.now(),
+        ...(options.system ? { system: options.system } : {}),
         };
       },
       signal,
@@ -808,6 +864,11 @@ export class DesignRepository {
             d.title = op.title;
             continue;
           }
+          if (op.type === "system") {
+            if (d.revision !== op.expectedRevision) conflict();
+            d.system = op.system;
+            continue;
+          }
           if (op.type === "add") {
             const firstPage = d.pages?.[0]?.id ?? "page-1";
             const pageOf = (pageId?: string) => d.pages?.some((page) => page.id === pageId) ? pageId : firstPage;
@@ -823,9 +884,11 @@ export class DesignRepository {
               height: op.height ?? 640,
               contentRevision: 1,
               placementRevision: 1,
-              html: sanitizeDesignHtml(
+              html: componentHtml(
                 op.html ??
                   '<main style="padding:48px;color:#999;font:16px system-ui">Waiting for design…</main>',
+                op.js,
+                op.props,
               ),
             });
             continue;
@@ -839,7 +902,19 @@ export class DesignRepository {
           )
             conflict();
           if (op.type === "content") {
-            b.html = sanitizeDesignHtml(op.html);
+            b.html = componentHtml(op.html, op.js, op.props);
+            b.contentRevision++;
+          }
+          if (op.type === "logic") {
+            b.html = sanitizeDesignHtml(setDesignLogic(b.html, op.js));
+            b.contentRevision++;
+          }
+          if (op.type === "logic_patch") {
+            b.html = sanitizeDesignHtml(patchDesignLogic(b.html, op.find, op.replace));
+            b.contentRevision++;
+          }
+          if (op.type === "props") {
+            b.html = sanitizeDesignHtml(setDesignProps(b.html, op.props));
             b.contentRevision++;
           }
           if (op.type === "patch") {
@@ -847,7 +922,7 @@ export class DesignRepository {
             if (at < 0) throw new Error("PATCH_NOT_FOUND: read the board and use its exact current HTML.");
             if (b.html.indexOf(op.find, at + 1) >= 0)
               throw new Error("PATCH_AMBIGUOUS: include more surrounding HTML for a unique match.");
-            b.html = sanitizeDesignHtml(b.html.slice(0, at) + op.replace + b.html.slice(at + op.find.length));
+            b.html = sanitizeDesignHtml(expandDesignIcons(b.html.slice(0, at) + op.replace + b.html.slice(at + op.find.length)));
             b.contentRevision++;
           }
           if (op.type === "placement") {
@@ -1305,6 +1380,50 @@ export class DesignRepository {
    * Deleting a design: its versions, comments and chat links, and board HTML
    * no remaining version points at. The chats themselves stay.
    */
+  /**
+   * An image for a design's boards, which refer to it as aegis-asset:<id>.
+   * Content-addressed, so the same image is stored once per design.
+   */
+  addAsset(
+    sessionId: string,
+    documentId: string,
+    image: { bytes: Buffer; mime: string; name: string; width?: number; height?: number },
+  ): DesignAssetInfo {
+    this.access(sessionId, documentId);
+    if (!ASSET_MIME.has(image.mime)) throw new Error("Images must be PNG, JPEG, WebP, GIF or SVG.");
+    if (image.bytes.length > MAX_ASSET_BYTES) throw new Error(`An image must be at most ${MAX_ASSET_BYTES / 1_000_000} MB.`);
+    const id = `img_${hash(image.bytes.toString("base64")).slice(0, 16)}`;
+    const name = image.name.replace(/[\u0000-\u001f]/g, "").slice(0, 120) || "image";
+    return this.db.transaction(() => {
+      const existing = this.db.prepare("SELECT id, name, mime, width, height, length(bytes) AS size FROM design_assets WHERE document_id=? AND id=?").get(documentId, id) as DesignAssetInfo | undefined;
+      if (existing) return existing;
+      const totals = this.db.prepare("SELECT count(*) AS n, coalesce(sum(length(bytes)), 0) AS bytes FROM design_assets WHERE document_id=?").get(documentId) as { n: number; bytes: number };
+      if (totals.n >= MAX_ASSETS) throw new Error(`A design holds at most ${MAX_ASSETS} images.`);
+      if (totals.bytes + image.bytes.length > MAX_ASSETS_TOTAL) throw new Error(`A design's images must total at most ${MAX_ASSETS_TOTAL / 1_000_000} MB.`);
+      this.db
+        .prepare("INSERT INTO design_assets VALUES(?,?,?,?,?,?,?,?)")
+        .run(documentId, id, image.mime, image.bytes, name, image.width ?? null, image.height ?? null, Date.now());
+      return { id, name, mime: image.mime, width: image.width ?? null, height: image.height ?? null, size: image.bytes.length };
+    })();
+  }
+  /** A design's images: what they are (no bytes). */
+  assetList(sessionId: string, documentId: string): DesignAssetInfo[] {
+    this.access(sessionId, documentId);
+    return this.db
+      .prepare("SELECT id, name, mime, width, height, length(bytes) AS size FROM design_assets WHERE document_id=? ORDER BY created_at")
+      .all(documentId) as DesignAssetInfo[];
+  }
+  /** A design's images as data URLs, by id, for rendering its boards. */
+  assetData(sessionId: string, documentId: string, ids?: string[]): Record<string, string> {
+    this.access(sessionId, documentId);
+    return this.renderAssets(documentId, ids);
+  }
+  /** assetData for the main process's own rendering (previews, exports): no access check. */
+  renderAssets(documentId: string, ids?: string[]): Record<string, string> {
+    const rows = this.db.prepare("SELECT id, mime, bytes FROM design_assets WHERE document_id=?").all(documentId) as { id: string; mime: string; bytes: Buffer }[];
+    const wanted = ids ? new Set(ids) : null;
+    return Object.fromEntries(rows.filter((r) => !wanted || wanted.has(r.id)).map((r) => [r.id, `data:${r.mime};base64,${r.bytes.toString("base64")}`]));
+  }
   deleteDocument(documentId: string) {
     const head = this.head(documentId);
     if (!head) return false;
@@ -1316,6 +1435,7 @@ export class DesignRepository {
       this.db.prepare("DELETE FROM design_revisions WHERE document_id=?").run(documentId);
       this.db.prepare("DELETE FROM design_receipts WHERE document_id=?").run(documentId);
       this.db.prepare("DELETE FROM design_chats WHERE document_id=?").run(documentId);
+      this.db.prepare("DELETE FROM design_assets WHERE document_id=?").run(documentId);
       this.db.prepare("DELETE FROM design_documents WHERE id=?").run(documentId);
       this.db
         .prepare(

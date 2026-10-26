@@ -44,7 +44,7 @@ return <Tooltip.Provider><div style={{height:'100vh',display:'flex',background:'
 </RightUtilityWorkspace></div></Tooltip.Provider>}
 store.getState().openRightUtilityTab('design');createRoot(document.getElementById('root')).render(<App/>);window.qa={store,design:useDesignStore,a,b,queue:useComposerQueueStore,addPrompt:(sessionId,payload)=>store.setState(st=>({sessions:{...st.sessions,[sessionId]:{...st.sessions[sessionId],messages:[...st.sessions[sessionId].messages,{type:'user_prompt',prompt:payload.prompt,attachments:payload.attachments,design:payload.design,createdAt:payload.createdAt}]}}}))};
 `;
-const preload = `const {contextBridge,ipcRenderer}=require('electron');const design={};for(const m of ['list','listAll','create','read','update','history','restore','comment','reply','comments','resolve','focus','composer','preview','export','handoff'])design[m]=x=>ipcRenderer.invoke('design:'+m,x);design.onChanged=cb=>{const f=(_,e)=>cb(e);ipcRenderer.on('design:changed',f);return()=>ipcRenderer.removeListener('design:changed',f)};contextBridge.exposeInMainWorld('electron',{design,createInlineImageAttachment:(mime,bytes)=>ipcRenderer.invoke('qa-image',mime,bytes),sendClientEvent:event=>ipcRenderer.invoke('qa-send',event),getUserProfile:()=>Promise.resolve({displayName:'Chengsheng',handle:'chengsheng',customized:true}),selectAttachments:()=>Promise.resolve([])});`;
+const preload = `const {contextBridge,ipcRenderer}=require('electron');const design={};for(const m of ['list','listAll','create','read','update','history','restore','comment','reply','comments','resolve','focus','composer','preview','export','handoff','recoverFrame','system','addAsset','assets'])design[m]=x=>ipcRenderer.invoke('design:'+m,x);design.onChanged=cb=>{const f=(_,e)=>cb(e);ipcRenderer.on('design:changed',f);return()=>ipcRenderer.removeListener('design:changed',f)};contextBridge.exposeInMainWorld('electron',{design,createInlineImageAttachment:(mime,bytes)=>ipcRenderer.invoke('qa-image',mime,bytes),sendClientEvent:event=>ipcRenderer.invoke('qa-send',event),getUserProfile:()=>Promise.resolve({displayName:'Chengsheng',handle:'chengsheng',customized:true}),selectAttachments:()=>Promise.resolve([])});`;
 const main = String.raw`
 const {app,BrowserWindow,ipcMain,dialog}=require('electron');const fs=require('node:fs');const path=require('node:path');const assert=require('node:assert/strict');
 app.setPath('userData',path.join(process.env.QA_DATA,'profile'));app.setPath('sessionData',path.join(process.env.QA_DATA,'chromium'));
@@ -245,12 +245,15 @@ await until('!!document.querySelector(\'[data-comment-id="qa-lost"]\')','lost-la
 await until('document.querySelector(".design-thread [data-anchor-lost]")?.textContent.includes("gone from Home")','thread says the layer is gone');
 await click('[aria-label="Resolve comment"]');await until('!document.querySelector(\'[data-comment-id="qa-lost"]\')','lost comment resolved');assert.match(fs.readFileSync(path.join(handoffDir,'README.md'),'utf8'),/- Home \(390 × \d+\): home\.html/);
 const preview=await tools.find(t=>t.name==='design_preview').execute({documentId:d.id,boardId:first.id,revision:repo.read(a,d.id).revision},{});assert(preview.images?.[0]?.data.length>100);assert(!preview.isError,preview.content);fs.writeFileSync(path.join(process.env.QA_CAPTURE,'model-preview.png'),Buffer.from(preview.images[0].data,'base64'));
-await require(path.join(process.env.QA_ROOT,'scripts/tests/design-canvas-interactions.cjs')).run({w,js,repo,sessionId:a,documentId:d.id,screenshotDir:process.env.QA_CAPTURE});
-await require(path.join(process.env.QA_ROOT,'scripts/tests/design-direct-electron.cjs')).run({w,js,repo,sessionId:a,documentId:d.id,screenshotDir:process.env.QA_CAPTURE});
-await require(path.join(process.env.QA_ROOT,'scripts/tests/design-comment-mode-electron.cjs')).run({w,js,repo,sessionId:a,documentId:d.id,screenshotDir:process.env.QA_CAPTURE,sent});
-await require(path.join(process.env.QA_ROOT,'scripts/tests/design-spacing-electron.cjs')).run({w,js,repo,sessionId:a,documentId:d.id,screenshotDir:process.env.QA_CAPTURE});
-await require(path.join(process.env.QA_ROOT,'scripts/tests/design-layers-electron.cjs')).run({w,js,repo,sessionId:a,documentId:d.id,screenshotDir:process.env.QA_CAPTURE});
-await require(path.join(process.env.QA_ROOT,'scripts/tests/design-insert-electron.cjs')).run({w,js,repo,sessionId:a,documentId:d.id,screenshotDir:process.env.QA_CAPTURE});
+// QA_ONLY=a,b runs only those sub-scenarios while iterating (all by default).
+const qaWant=n=>!process.env.QA_ONLY||process.env.QA_ONLY.split(',').includes(n);
+if(qaWant('design-canvas-interactions'))await require(path.join(process.env.QA_ROOT,'scripts/tests/design-canvas-interactions.cjs')).run({w,js,repo,sessionId:a,documentId:d.id,screenshotDir:process.env.QA_CAPTURE});
+if(qaWant('design-direct-electron'))await require(path.join(process.env.QA_ROOT,'scripts/tests/design-direct-electron.cjs')).run({w,js,repo,sessionId:a,documentId:d.id,screenshotDir:process.env.QA_CAPTURE});
+if(qaWant('design-comment-mode-electron'))await require(path.join(process.env.QA_ROOT,'scripts/tests/design-comment-mode-electron.cjs')).run({w,js,repo,sessionId:a,documentId:d.id,screenshotDir:process.env.QA_CAPTURE,sent});
+if(qaWant('design-spacing-electron'))await require(path.join(process.env.QA_ROOT,'scripts/tests/design-spacing-electron.cjs')).run({w,js,repo,sessionId:a,documentId:d.id,screenshotDir:process.env.QA_CAPTURE});
+if(qaWant('design-layers-electron'))await require(path.join(process.env.QA_ROOT,'scripts/tests/design-layers-electron.cjs')).run({w,js,repo,sessionId:a,documentId:d.id,screenshotDir:process.env.QA_CAPTURE});
+if(qaWant('design-insert-electron'))await require(path.join(process.env.QA_ROOT,'scripts/tests/design-insert-electron.cjs')).run({w,js,repo,sessionId:a,documentId:d.id,screenshotDir:process.env.QA_CAPTURE});
+if(qaWant('design-components-electron'))await require(path.join(process.env.QA_ROOT,'scripts/tests/design-components-electron.cjs')).run({w,js,repo,sessionId:a,documentId:d.id,screenshotDir:process.env.QA_CAPTURE});
 // The agent sees which design is open and what the message was sent about (the composer chip); it continues there unless asked for a separate one.
 const {designContextText}=require(path.join(process.env.QA_ROOT,'dist-electron/electron/design/focus.js'));
 const {sanitizeDesignSelectionRef}=require(path.join(process.env.QA_ROOT,'dist-electron/shared/design-selection.js'));
@@ -335,7 +338,7 @@ try {
     const timeout = setTimeout(() => {
       child.kill("SIGTERM");
       reject(Error("Design QA timed out"));
-    }, 90000);
+    }, 150000);
     child.on("exit", (code) => {
       clearTimeout(timeout);
       resolve(code);

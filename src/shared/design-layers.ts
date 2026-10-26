@@ -130,6 +130,7 @@ export function readDesignLayers(html: string): DesignLayer[] {
       name:
         attr(e, "data-aegis-layer-name") ||
         attr(e, "aria-label") ||
+        (e.tagName === "aegis-use" && attr(e, "component")) ||
         e.tagName + (text ? " · " + text.slice(0, 42) : ""),
       named: !!attr(e, "data-aegis-layer-name"),
       text,
@@ -337,7 +338,7 @@ export function insertDesignLayer(
   html: string,
   parentId: string | undefined,
   index: number,
-  layer: { tag: string; text?: string; style?: string; name?: string },
+  layer: { tag: string; text?: string; style?: string; name?: string; attrs?: Record<string, string> },
 ): { html: string; nodeId: string } {
   if (!/^[a-z][a-z0-9]*$/.test(layer.tag) || omitted.has(layer.tag))
     throw new Error("This kind of layer cannot be inserted.");
@@ -355,6 +356,10 @@ export function insertDesignLayer(
     { name: layerIdAttribute, value: nodeId },
     ...(layer.name ? [{ name: "data-aegis-layer-name", value: layer.name }] : []),
     ...(layer.style ? [{ name: "style", value: layer.style }] : []),
+    // A few plain attributes (an image's src and alt); the sanitizer still decides what stays.
+    ...Object.entries(layer.attrs ?? {})
+      .filter(([name]) => ["src", "alt", "title"].includes(name))
+      .map(([name, value]) => ({ name, value })),
   ]);
   const siblings = parent.childNodes.filter(
     (c): c is Element => "tagName" in c && !omitted.has(c.tagName),
