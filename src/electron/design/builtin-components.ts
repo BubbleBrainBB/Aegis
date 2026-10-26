@@ -7,7 +7,10 @@ import { expandDesignIcons } from "./icons";
  *
  *   --background --surface --raised --text --muted --line --accent --on-accent
  *   --success --warning --danger --font-display --font-body --font-mono
- *   --radius --radius-control --shadow
+ *   --radius --radius-control --shadow --space-1…8 --duration-fast/base/slow
+ *   --ease --focus-ring
+ *
+ * Every interactive one has hover, focus-visible, pressed and disabled.
  *
  * Props given as attributes arrive as text: lists are comma-separated
  * ("Overview, Activity"), booleans "true"/"false". No prop starts with "on":
@@ -41,6 +44,7 @@ body{background:var(--background);color:var(--text);font-family:var(--font-body)
 .ds-tag--danger{background:color-mix(in oklch, var(--danger) 16%, transparent);color:var(--danger)}
 .ds-field{display:flex;flex-direction:column;gap:6px;font:500 13px/1.3 var(--font-body);color:var(--text)}
 .ds-field__hint{font-weight:400;color:var(--muted)}
+.ds-field__error{font-weight:400;color:var(--danger)}
 .ds-input{height:40px;padding:0 12px;border:1px solid var(--line);border-radius:var(--radius-control);background:var(--surface);color:var(--text);font:15px var(--font-body);width:100%}
 textarea.ds-input{height:auto;min-height:96px;padding:10px 12px;line-height:1.5;resize:vertical;border-radius:min(var(--radius-control), 12px)}
 .ds-select{position:relative;display:block}
@@ -99,6 +103,27 @@ textarea.ds-input{height:auto;min-height:96px;padding:10px 12px;line-height:1.5;
 .ds-progress__track{height:8px;border-radius:999px;background:color-mix(in oklch, var(--text) 9%, transparent);overflow:hidden}
 .ds-progress__bar{height:100%;border-radius:inherit;background:var(--accent)}
 .ds-divider{height:1px;border:0;margin:0;background:var(--line)}
+.ds-button,.ds-icon-button,.ds-input,.ds-tabs__tab,.ds-segmented__item,.ds-navbar__link,.ds-toggle__track,.ds-check__box{transition:background-color var(--duration-fast) var(--ease),border-color var(--duration-fast) var(--ease),color var(--duration-fast) var(--ease),box-shadow var(--duration-fast) var(--ease),transform var(--duration-fast) var(--ease)}
+.ds-button--primary:hover{background:color-mix(in oklch, var(--accent) 88%, var(--text))}
+.ds-button--secondary:hover,.ds-button--ghost:hover,.ds-icon-button--ghost:hover,.ds-icon-button--secondary:hover{background:color-mix(in oklch, var(--text) 7%, transparent)}
+.ds-button--danger:hover{background:color-mix(in oklch, var(--danger) 88%, var(--text))}
+.ds-icon-button--primary:hover{background:color-mix(in oklch, var(--accent) 88%, var(--text))}
+.ds-button:active,.ds-icon-button:active{transform:scale(.98)}
+.ds-button:focus-visible,.ds-icon-button:focus-visible,.ds-tabs__tab:focus-visible,.ds-segmented__item:focus-visible,.ds-navbar__link:focus-visible{outline:none;box-shadow:var(--focus-ring)}
+.ds-button:disabled,.ds-icon-button:disabled,.ds-button.is-disabled{opacity:.45;cursor:not-allowed;transform:none}
+.ds-input:hover{border-color:color-mix(in oklch, var(--text) 30%, var(--line))}
+.ds-input:focus,.ds-input:focus-visible{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in oklch, var(--accent) 22%, transparent)}
+.ds-input:disabled{opacity:.55;cursor:not-allowed}
+.ds-input.is-invalid,.ds-input[aria-invalid="true"]{border-color:var(--danger);box-shadow:0 0 0 3px color-mix(in oklch, var(--danger) 18%, transparent)}
+.ds-tabs__tab:hover,.ds-navbar__link:hover,.ds-segmented__item:hover{color:var(--text)}
+.ds-toggle:hover .ds-toggle__track{background:color-mix(in oklch, var(--text) 26%, transparent)}
+.ds-toggle.is-on:hover .ds-toggle__track{background:color-mix(in oklch, var(--accent) 88%, var(--text))}
+.ds-check:hover .ds-check__box{border-color:color-mix(in oklch, var(--text) 40%, var(--line))}
+.ds-toggle:focus-visible,.ds-check:focus-visible{outline:none}
+.ds-toggle:focus-visible .ds-toggle__track,.ds-check:focus-visible .ds-check__box{box-shadow:var(--focus-ring)}
+.ds-list-item--interactive{cursor:pointer}
+.ds-list-item--interactive:hover{background:color-mix(in oklch, var(--text) 5%, transparent)}
+@media (prefers-reduced-motion: reduce){.ds-button,.ds-icon-button,.ds-input,.ds-tabs__tab,.ds-segmented__item,.ds-navbar__link,.ds-toggle__track,.ds-toggle__track::after,.ds-check__box{transition:none}}
 `.trim();
 
 const LIST = "const list = (v) => Array.isArray(v) ? v.map(String) : String(v ?? '').split(',').map((s) => s.trim()).filter(Boolean);";
@@ -106,10 +131,12 @@ const BOOL = "const truthy = (v) => v === true || v === 'true' || v === '';";
 
 const SOURCES: DesignSystemPack["components"] = {
   Button: {
-    summary: "An action: primary for the main one, secondary or ghost for the rest, danger to destroy. Children (an <aegis-icon>) lead the label.",
-    html: '<button class="ds-button ds-button--{{ variant }} ds-button--{{ size }}"><aegis-slot></aegis-slot>{{ label }}</button>',
+    summary: "An action: primary for the main one, secondary or ghost for the rest, danger to destroy; disabled=\"true\" when it can't run yet. Children (an <aegis-icon>) lead the label.",
+    html: '<button class="ds-button ds-button--{{ variant }} ds-button--{{ size }}" data-aegis-bind-disabled="off"><aegis-slot></aegis-slot>{{ label }}</button>',
+    logic: `${BOOL}\nclass Component extends AegisBoard { values() { return { off: truthy(this.props.disabled) }; } }`,
     props: {
       label: { type: "string", default: "" },
+      disabled: { type: "boolean", default: false },
       variant: { type: "enum", options: ["primary", "secondary", "ghost", "danger"], default: "primary" },
       size: { type: "enum", options: ["sm", "md", "lg"], default: "md" },
     },
@@ -134,8 +161,8 @@ const SOURCES: DesignSystemPack["components"] = {
     props: { label: { type: "string", default: "" }, tone: { type: "enum", options: ["neutral", "accent", "success", "warning", "danger"], default: "neutral" } },
   },
   Field: {
-    summary: "A labelled text input, or a textarea with multiline=\"true\"; hint shows under the label.",
-    html: '<label class="ds-field"><span>{{ label }}</span><span class="ds-field__hint" data-aegis-if="hint">{{ hint }}</span><textarea class="ds-input" data-aegis-if="multiline" placeholder="{{ placeholder }}">{{ value }}</textarea><input class="ds-input" data-aegis-else type="{{ type }}" placeholder="{{ placeholder }}" value="{{ value }}"></label>',
+    summary: "A labelled text input, or a textarea with multiline=\"true\"; hint shows under the label, error marks it invalid with the message below.",
+    html: '<label class="ds-field"><span>{{ label }}</span><span class="ds-field__hint" data-aegis-if="hint">{{ hint }}</span><textarea class="ds-input" data-aegis-if="multiline" aria-invalid="{{ error ? \'true\' : \'false\' }}" placeholder="{{ placeholder }}">{{ value }}</textarea><input class="ds-input" data-aegis-else aria-invalid="{{ error ? \'true\' : \'false\' }}" type="{{ type }}" placeholder="{{ placeholder }}" value="{{ value }}"><span class="ds-field__error" data-aegis-if="error">{{ error }}</span></label>',
     logic: `${BOOL}\nclass Component extends AegisBoard { values() { return { multiline: truthy(this.props.multiline) }; } }`,
     props: {
       label: { type: "string", default: "Label" },
@@ -144,6 +171,7 @@ const SOURCES: DesignSystemPack["components"] = {
       hint: { type: "string", default: "" },
       type: { type: "enum", options: ["text", "email", "password", "search", "number"], default: "text" },
       multiline: { type: "boolean", default: false },
+      error: { type: "string", default: "" },
     },
   },
   Select: {
@@ -154,25 +182,25 @@ const SOURCES: DesignSystemPack["components"] = {
   },
   Toggle: {
     summary: "An on/off switch with a label; it flips in Play.",
-    html: '<label class="ds-toggle {{ checked ? \'is-on\' : \'\' }}" role="switch" aria-checked="{{ checked }}" data-aegis-on-click="flip()"><span class="ds-toggle__track"></span><span>{{ label }}</span></label>',
-    logic: `${BOOL}\nclass Component extends AegisBoard { state = { checked: truthy(this.props.checked) }; flip() { this.setState({ checked: !this.state.checked }); } }`,
+    html: '<label class="ds-toggle {{ checked ? \'is-on\' : \'\' }}" role="switch" tabindex="0" aria-checked="{{ checked ? \'true\' : \'false\' }}" data-aegis-on-click="flip()" data-aegis-on-keydown="key($event)"><span class="ds-toggle__track"></span><span>{{ label }}</span></label>',
+    logic: `${BOOL}\nclass Component extends AegisBoard { state = { checked: truthy(this.props.checked) }; flip() { this.setState({ checked: !this.state.checked }); } key(e) { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); this.flip(); } } }`,
     props: { label: { type: "string", default: "Notifications" }, checked: { type: "boolean", default: true } },
   },
   Checkbox: {
     summary: "A checkbox with a label; it checks in Play.",
-    html: '<label class="ds-check {{ checked ? \'is-on\' : \'\' }}" role="checkbox" aria-checked="{{ checked }}" data-aegis-on-click="flip()"><span class="ds-check__box"><aegis-icon name="check" size="14" stroke-width="2.5"></aegis-icon></span><span>{{ label }}</span></label>',
-    logic: `${BOOL}\nclass Component extends AegisBoard { state = { checked: truthy(this.props.checked) }; flip() { this.setState({ checked: !this.state.checked }); } }`,
+    html: '<label class="ds-check {{ checked ? \'is-on\' : \'\' }}" role="checkbox" tabindex="0" aria-checked="{{ checked ? \'true\' : \'false\' }}" data-aegis-on-click="flip()" data-aegis-on-keydown="key($event)"><span class="ds-check__box"><aegis-icon name="check" size="14" stroke-width="2.5"></aegis-icon></span><span>{{ label }}</span></label>',
+    logic: `${BOOL}\nclass Component extends AegisBoard { state = { checked: truthy(this.props.checked) }; flip() { this.setState({ checked: !this.state.checked }); } key(e) { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); this.flip(); } } }`,
     props: { label: { type: "string", default: "Remember me" }, checked: { type: "boolean", default: false } },
   },
   Tabs: {
     summary: "Tabs over a panel; tabs are comma-separated, active is the selected index. Children are the panel; show per-tab content in the board with its own data-aegis-if on a board state when needed.",
-    html: '<div class="ds-tabs"><div class="ds-tabs__list" role="tablist"><button data-aegis-for="(t, i) in tabs" role="tab" class="ds-tabs__tab {{ i === current ? \'is-active\' : \'\' }}" aria-selected="{{ i === current }}" data-aegis-on-click="select(i)">{{ t }}</button></div><aegis-slot></aegis-slot></div>',
+    html: '<div class="ds-tabs"><div class="ds-tabs__list" role="tablist"><button data-aegis-for="(t, i) in tabs" role="tab" class="ds-tabs__tab {{ i === current ? \'is-active\' : \'\' }}" aria-selected="{{ i === current ? \'true\' : \'false\' }}" data-aegis-on-click="select(i)">{{ t }}</button></div><aegis-slot></aegis-slot></div>',
     logic: `${LIST}\nclass Component extends AegisBoard { state = { current: Number(this.props.active) || 0 }; select(i) { this.setState({ current: i }); } values() { return { tabs: list(this.props.tabs) }; } }`,
     props: { tabs: { type: "string", default: "Overview, Activity, Settings" }, active: { type: "number", default: 0 } },
   },
   Segmented: {
     summary: "A compact choice between a few options (Day / Week / Month); it switches in Play.",
-    html: '<div class="ds-segmented" role="radiogroup"><button data-aegis-for="(o, i) in choices" role="radio" class="ds-segmented__item {{ i === current ? \'is-active\' : \'\' }}" aria-checked="{{ i === current }}" data-aegis-on-click="select(i)">{{ o }}</button></div>',
+    html: '<div class="ds-segmented" role="radiogroup"><button data-aegis-for="(o, i) in choices" role="radio" class="ds-segmented__item {{ i === current ? \'is-active\' : \'\' }}" aria-checked="{{ i === current ? \'true\' : \'false\' }}" data-aegis-on-click="select(i)">{{ o }}</button></div>',
     logic: `${LIST}\nclass Component extends AegisBoard { state = { current: Number(this.props.active) || 0 }; select(i) { this.setState({ current: i }); } values() { return { choices: list(this.props.options) }; } }`,
     props: { options: { type: "string", default: "Day, Week, Month" }, active: { type: "number", default: 0 } },
   },
@@ -193,9 +221,10 @@ const SOURCES: DesignSystemPack["components"] = {
     },
   },
   ListItem: {
-    summary: "A row in a list: leading children (an Avatar or icon), title, subtitle and trailing meta.",
-    html: '<div class="ds-list-item"><aegis-slot></aegis-slot><div class="ds-list-item__body"><span class="ds-list-item__title">{{ title }}</span><span class="ds-list-item__subtitle" data-aegis-if="subtitle">{{ subtitle }}</span></div><span class="ds-list-item__meta" data-aegis-if="meta">{{ meta }}</span></div>',
-    props: { title: { type: "string", default: "Title" }, subtitle: { type: "string", default: "" }, meta: { type: "string", default: "" } },
+    summary: "A row in a list: leading children (an Avatar or icon), title, subtitle and trailing meta; interactive=\"true\" for rows that open something.",
+    html: '<div class="ds-list-item {{ clickable ? \'ds-list-item--interactive\' : \'\' }}"><aegis-slot></aegis-slot><div class="ds-list-item__body"><span class="ds-list-item__title">{{ title }}</span><span class="ds-list-item__subtitle" data-aegis-if="subtitle">{{ subtitle }}</span></div><span class="ds-list-item__meta" data-aegis-if="meta">{{ meta }}</span></div>',
+    logic: `${BOOL}\nclass Component extends AegisBoard { values() { return { clickable: truthy(this.props.interactive) }; } }`,
+    props: { title: { type: "string", default: "Title" }, subtitle: { type: "string", default: "" }, meta: { type: "string", default: "" }, interactive: { type: "boolean", default: false } },
   },
   Navbar: {
     summary: "A top bar: brand, comma-separated links (active is the current one's index) and children as actions on the right.",

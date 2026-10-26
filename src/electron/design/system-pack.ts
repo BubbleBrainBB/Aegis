@@ -75,7 +75,7 @@ function builtinPack(style: BuiltinStyle): DesignSystemPack {
     .filter(Boolean);
   const families = [...new Set(style.fonts.map((f) => f.family))];
   const { components, complete } = builtinComponents();
-  const tokens = `:root{--background:${p.background};--surface:${p.surface};--raised:${raised};--text:${p.text};--muted:${p.muted};--accent:${p.accent};--on-accent:${onAccent(p.accent)};--line:${p.line};--success:${semantic.success};--warning:${semantic.warning};--danger:${semantic.danger};--font-display:${style.type.display};--font-body:${style.type.body};--font-mono:${style.type.mono};--radius:${style.shape.radius};--radius-control:${style.shape.control};--shadow:${style.shape.shadow}}`;
+  const tokens = `:root{--background:${p.background};--surface:${p.surface};--raised:${raised};--text:${p.text};--muted:${p.muted};--accent:${p.accent};--on-accent:${onAccent(p.accent)};--line:${p.line};--success:${semantic.success};--warning:${semantic.warning};--danger:${semantic.danger};--font-display:${style.type.display};--font-body:${style.type.body};--font-mono:${style.type.mono};--radius:${style.shape.radius};--radius-control:${style.shape.control};--shadow:${style.shape.shadow};--space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-5:24px;--space-6:32px;--space-7:48px;--space-8:64px;--duration-fast:120ms;--duration-base:200ms;--duration-slow:320ms;--ease:cubic-bezier(.2,.7,.2,1);--focus-ring:0 0 0 2px var(--background),0 0 0 4px color-mix(in oklch, var(--accent) 70%, transparent)}`;
   const css = [
     `/* ${style.name}. Fonts: ${families.join(", ")} (SIL Open Font License 1.1). */`,
     ...faces,

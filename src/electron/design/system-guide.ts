@@ -53,7 +53,7 @@ function example(name: string, props: Record<string, unknown> | null | undefined
 function builtinTemplateIndex(): string {
   return [
     "Templates (reference pages written against these tokens and components; when one fits, read it with design_resources kind=\"template\" and build from its structure, sizes and components with the task's real content):",
-    ...BUILTIN_TEMPLATES.map((t) => `- ${t.id}: ${t.summary} (${t.width} × ${t.height})`),
+    ...BUILTIN_TEMPLATES.map((t) => `- ${t.id}: ${t.summary} (${t.width} × ${t.height}) Use: ${t.use}`),
   ].join("\n");
 }
 
@@ -113,7 +113,7 @@ export function designResources(sessionId: string, documentId: string | undefine
   if (pack && pack.id !== PROJECT_DESIGN_SYSTEM && kind === "template") {
     const t = BUILTIN_TEMPLATES.find((x) => x.id.toLowerCase() === (name ?? "").toLowerCase());
     if (!t) return `No template named ${JSON.stringify(name ?? "")}. ${builtinTemplateIndex()}`;
-    return `# Template: ${t.name}\n${t.summary}\nBoard size: ${t.width} × ${t.height}.\n\nBuild from its structure, sizes and components; replace its sample copy with the task's content. It already uses ${pack.name}'s tokens and components, so keep them rather than hard-coding colors or fonts.\n\n${t.html.trim()}`;
+    return `# Template: ${t.name}\n${t.summary}\nBoard size: ${t.width} × ${t.height}.\nUse it for: ${t.use}\nCapacity: ${t.capacity}\n\nBuild from its structure, sizes and components; replace its sample copy with the task's content. It already uses ${pack.name}'s tokens and components, so keep them rather than hard-coding colors or fonts.\n\n${t.html.trim()}`;
   }
   const project = readDesignResource(sessionId, kind, name);
   if (!pack || kind) return project;

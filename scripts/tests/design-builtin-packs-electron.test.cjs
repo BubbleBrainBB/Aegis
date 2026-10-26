@@ -34,7 +34,7 @@ app.whenReady().then(async () => {
       assert.ok(families.length >= 1, style.id);
       assert.deepEqual(pack.fonts, families);
       assert.equal((pack.css.match(/@font-face\{font-family:"[^"]+";src:url\("data:font\/woff2;base64,/g) ?? []).length, style.fonts.length, `${style.id}: every face is inlined`);
-      for (const token of ['--background', '--surface', '--raised', '--text', '--muted', '--accent', '--on-accent', '--line', '--success', '--warning', '--danger', '--font-display', '--font-body', '--font-mono', '--radius', '--radius-control', '--shadow'])
+      for (const token of ['--background', '--surface', '--raised', '--text', '--muted', '--accent', '--on-accent', '--line', '--success', '--warning', '--danger', '--font-display', '--font-body', '--font-mono', '--radius', '--radius-control', '--shadow', '--space-1', '--space-8', '--duration-fast', '--ease', '--focus-ring'])
         assert.match(pack.css, new RegExp(`${token}:`), `${style.id} ${token}`);
       assert.match(style.type.body, /PingFang SC/, 'CJK falls back to the system face');
       assert.deepEqual(Object.keys(pack.components), names);
@@ -63,6 +63,8 @@ app.whenReady().then(async () => {
 <aegis-use data-aegis-node-id="al" component="Alert" tone="success" title="Saved">Done.</aegis-use>
 <aegis-use data-aegis-node-id="fd" component="Field" label="Bio" multiline="true"></aegis-use>
 <aegis-use data-aegis-node-id="bt" component="Button" label="Find"><svg data-aegis-icon="search" width="16" height="16"></svg></aegis-use>
+<aegis-use data-aegis-node-id="bd" component="Button" label="Later" disabled="true"></aegis-use>
+<aegis-use data-aegis-node-id="fe" component="Field" label="Workspace" value="acme" error="Taken."></aegis-use>
 </main></body></html>`, warm);
     await js('document.fonts.ready');
     assert.equal(await js('document.fonts.check(\'400 32px "Newsreader"\') && document.fonts.check(\'400 15px "Source Sans 3"\')'), true, 'bundled fonts load');
@@ -74,6 +76,13 @@ app.whenReady().then(async () => {
     assert.equal(await js(`${q('tg')}.classList.contains("is-on")`), true, 'a toggle flips in Play');
     await js(`${q('cb')}.click()`);
     assert.equal(await js(`${q('cb')}.getAttribute("aria-checked")`), 'true');
+    await js(`${q('cb')}.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }))`);
+    assert.equal(await js(`${q('cb')}.getAttribute("aria-checked")`), 'false', 'space toggles a focused checkbox');
+    assert.equal(await js(`${q('cb')}.tabIndex`), 0, 'reachable by keyboard');
+    assert.equal(await js(`${q('bd')}.disabled`), true, 'disabled buttons are disabled');
+    assert.equal(await js(`${q('fe')}.querySelector("input").getAttribute("aria-invalid")`), 'true');
+    assert.equal(await js(`${q('fe')}.querySelector(".ds-field__error").textContent`), 'Taken.');
+    assert.equal(await js(`getComputedStyle(${q('fe')}.querySelector("input")).borderColor`), await js('(() => { const d = document.createElement("i"); d.style.color = "var(--danger)"; document.body.append(d); const c = getComputedStyle(d).color; d.remove(); return c; })()'), 'invalid fields take the danger color');
     assert.deepEqual(await js(`[...${q('tb')}.querySelectorAll(".ds-tabs__tab")].map((t) => t.textContent)`), ['One', 'Two', 'Three']);
     await js(`${q('tb')}.querySelectorAll(".ds-tabs__tab")[2].click()`);
     assert.equal(await js(`${q('tb')}.querySelector(".is-active").textContent`), 'Three', 'tabs switch');
@@ -96,7 +105,7 @@ app.whenReady().then(async () => {
         const errors = await js('window.__aegisRuntime ? window.__aegisRuntime.errors : []');
         assert.deepEqual(errors, [], `${style.id}/${t.id}`);
         assert.equal(await js('document.body.textContent.includes("Missing component")'), false, `${style.id}/${t.id}`);
-        if (t.id !== "deck") assert.ok(await js(`document.querySelectorAll("svg[data-aegis-icon]").length`) > 0, `${style.id}/${t.id} icons`);
+        if (!["deck", "examples"].includes(t.id)) assert.ok(await js(`document.querySelectorAll("svg[data-aegis-icon]").length`) > 0, `${style.id}/${t.id} icons`);
       }
     }
     w.destroy();
@@ -113,6 +122,17 @@ app.whenReady().then(async () => {
     assert.match(dash, /^# Template: Dashboard[\s\S]*1440 × 900[\s\S]*<aegis-use component="Stat"/);
     assert.match(designResources('s1', d.id, 'template', 'nope'), /No template named "nope"[\s\S]*- landing:/);
     assert.match(designResources('s1', d.id, 'component', 'Toggle'), /# Toggle[\s\S]*## Logic/);
+    assert.match(dash, /Use it for: Admin and analytics[\s\S]*Capacity: /);
+    for (const id of ['components', 'examples', 'deck']) assert.match(index, new RegExp(`- ${id}: `));
+    const { BUILTIN_TEMPLATES: all } = require(`${dist}/electron/design/builtin-templates.js`);
+    assert.equal((all.find((t) => t.id === 'deck').html.match(/<section data-aegis-slide/g) ?? []).length, 8, 'eight slide layouts');
+    const { designStyleGuideFor, setDesignProjectRoot } = require(`${dist}/electron/design/styles.js`);
+    const { setDesignComposerPrefs } = require(`${dist}/electron/design/focus.js`);
+    setDesignProjectRoot(() => null);
+    setDesignComposerPrefs('s1', { styleId: 'terracotta', variants: 1 });
+    const guide = designStyleGuideFor('s1').text;
+    assert.match(guide, /## Voice\n[^\n]+\n\n## Imagery\n[^\n]+/);
+    assert.match(guide, /--space-1 … --space-8/);
 
     // A project component with an unknown icon is reported, not fatal.
     const project = path.join(temp, 'project');
