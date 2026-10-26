@@ -159,7 +159,7 @@ app.whenReady().then(async () => {
     // Render checks: what the screenshot alone might not show.
     const broken = json(await call(info.url, a, 'design_update', {
       documentId: created.id, operationId: 'op-checks', operations: [
-        { type: 'add', name: 'Broken', width: 400, height: 300, html: '<main style="position:relative;height:600px;font:16px system-ui"><h2 style="position:absolute;top:20px;left:20px;margin:0">Overlapping title</h2><p style="position:absolute;top:24px;left:30px;margin:0">Body text on top</p><div style="position:absolute;top:120px;left:20px;width:80px;height:20px;overflow:hidden;white-space:nowrap">A caption that is far too long for its box</div><div style="position:absolute;top:160px;left:20px;width:80px;height:20px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">Ellipsis is intended here</div><img alt="" src="data:image/png;base64,AAAA"></main>' },
+        { type: 'add', name: 'Broken', width: 400, height: 300, html: '<main style="position:relative;height:600px;font:16px system-ui"><h2 style="position:absolute;top:20px;left:20px;margin:0">Overlapping title</h2><p style="position:absolute;top:24px;left:30px;margin:0">Body text on top</p><div style="position:absolute;top:120px;left:20px;width:80px;height:20px;overflow:hidden;white-space:nowrap">A caption that is far too long for its box</div><div style="position:absolute;top:160px;left:20px;width:80px;height:20px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">Ellipsis is intended here</div><div style="position:absolute;top:200px;left:20px;width:60px;height:80px;padding:8px;background:#173f35;color:#d5f08b"><strong style="font:600 22px Georgia">考研 CORE</strong></div><div style="position:absolute;top:200px;left:200px;width:120px;padding:8px;background:#eee"><span>Fits inside</span></div><img alt="" src="data:image/png;base64,AAAA"></main>' },
         { type: 'add', name: 'Empty', width: 400, height: 300, html: '<main></main>' },
       ],
     }));
@@ -168,6 +168,8 @@ app.whenReady().then(async () => {
     assert.ok(checks.some((w) => /Text overlaps: h2 "Overlapping title" and p "Body text on top"/.test(w)), JSON.stringify(checks));
     assert.ok(checks.some((w) => /cut off inside div "A caption/.test(w)), JSON.stringify(checks));
     assert.ok(!checks.some((w) => /Ellipsis is intended/.test(w)), 'an ellipsis is intended overflow');
+    assert.ok(checks.some((w) => /Text spills out of its box: strong "考研 CORE" runs \d+px past div/.test(w)), JSON.stringify(checks));
+    assert.ok(!checks.some((w) => /Fits inside/.test(w)), 'text inside its box is fine');
     assert.ok(checks.some((w) => /taller than the board \(600 > 300px\)/.test(w)), JSON.stringify(checks));
     assert.ok(checks.some((w) => /1 image could not be loaded/.test(w)), JSON.stringify(checks));
     const empty = json(await call(info.url, a, 'design_preview', { documentId: created.id, boardId: boardId('Empty'), revision: broken.revision })).warnings;

@@ -32,6 +32,8 @@ export interface DesignAnchor {
   /** An area comment: `rect` is the region, `nodeIds` the layers inside it. */
   area?: boolean;
   nodeIds?: string[];
+  /** A design component's repeated layer: which rendered copy (its loop index). */
+  instance?: string;
 }
 export type DesignAuthor =
   | { kind: "user"; name?: string }
@@ -99,6 +101,12 @@ export interface DesignDocument {
   project?: string | null;
   /** The chats working on this design, most recently active first. */
   chats?: string[];
+  /**
+   * The design system its boards load: "project" (the project's
+   * design-system/ folder) or a built-in style id. Unset: none, unless the
+   * project has a design system.
+   */
+  system?: string | null;
 }
 export type DesignSummary = Pick<
   DesignDocument,
@@ -115,6 +123,10 @@ export type DesignOperation =
       type: "add";
       name?: string;
       html?: string;
+      /** The board's logic (class Board extends AegisBoard …), when it is a design component. */
+      js?: string;
+      /** The board's props definition. */
+      props?: Record<string, unknown>;
       /** Canvas position; defaults to the right of the existing boards. */
       x?: number;
       y?: number;
@@ -123,7 +135,10 @@ export type DesignOperation =
       pageId?: string;
     }
   | { type: "patch"; boardId: string; expectedRevision: number; find: string; replace: string }
-  | { type: "content"; boardId: string; expectedRevision: number; html: string }
+  | { type: "content"; boardId: string; expectedRevision: number; html: string; js?: string; props?: Record<string, unknown> }
+  | { type: "logic"; boardId: string; expectedRevision: number; js: string }
+  | { type: "logic_patch"; boardId: string; expectedRevision: number; find: string; replace: string }
+  | { type: "props"; boardId: string; expectedRevision: number; props: Record<string, unknown> | null }
   | {
       type: "placement";
       boardId: string;
@@ -137,6 +152,7 @@ export type DesignOperation =
     }
   | { type: "remove" | "duplicate"; boardId: string; expectedRevision: number }
   | { type: "title"; title: string; expectedRevision: number }
+  | { type: "system"; system: string | null; expectedRevision: number }
   | { type: "canvas"; expectedRevision: number; pages?: DesignPage[]; marks?: DesignMark[] };
 export interface DesignUpdate {
   documentId: string;
@@ -265,7 +281,7 @@ export interface DesignAPI {
     sessionId: string;
     documentId: string;
     revision: number;
-    format: "html" | "png" | "pdf";
+    format: "html" | "png" | "pdf" | "pptx";
     pageId?: string;
     /** PNG: the board to render. PDF and HTML: only this board. */
     boardId?: string;
@@ -284,6 +300,18 @@ export interface DesignAPI {
     { ok: true; html: string; contentRevision: number } | { ok: false; handoff: string } | { ok: false; error: string }
   >;
   quickEditCancel(input: { requestId: string }): Promise<void>;
+  /**
+   * A sandboxed frame (by its name) stopped answering: end the sandbox
+   * process it runs in. Every sandboxed frame of the window shares it, so
+   * the renderer remounts them all afterwards.
+   */
+  recoverFrame(input: { frameName: string }): Promise<{ recovered: boolean }>;
+  /** Adds an image (dropped or pasted) to a design; boards use it as aegis-asset:<id>. */
+  addAsset(input: { sessionId: string; documentId: string; bytes: Uint8Array; mime: string; name: string }): Promise<{ id: string; name: string; mime: string; width: number | null; height: number | null; size: number }>;
+  /** A design's images as data URLs, by id; `have` skips ids the caller already holds. */
+  assets(input: { sessionId: string; documentId: string; have?: string[] }): Promise<Record<string, string>>;
+  /** The design system the design's boards load, or null. */
+  system(input: { sessionId: string; documentId: string; signature?: string }): Promise<import("./design-system-pack").DesignSystemPack | { unchanged: true; signature: string } | null>;
   /** A chat joins a design (a new chat started on it). */
   join(input: { sessionId: string; documentId: string }): Promise<void>;
   /** Deletes a design for good; its chats stay. */

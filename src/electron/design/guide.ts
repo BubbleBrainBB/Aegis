@@ -1,9 +1,11 @@
+import { FONT_LIBRARY } from './font-library';
+
 /**
  * Design guidance the agent reads on demand through design_guide. The tool
  * descriptions say what the canvas allows; this is about making the work good.
  * Adapted from the Bubble desktop app's design skill.
  */
-export const DESIGN_GUIDE_TOPICS = ['treatment', 'options', 'structure', 'tokens', 'type', 'color', 'avoid', 'content', 'review'] as const;
+export const DESIGN_GUIDE_TOPICS = ['treatment', 'options', 'structure', 'components', 'decks', 'tokens', 'type', 'color', 'avoid', 'content', 'review'] as const;
 export type DesignGuideTopic = (typeof DESIGN_GUIDE_TOPICS)[number];
 
 const sections: Record<DesignGuideTopic, string> = {
@@ -14,7 +16,14 @@ Decide the treatment before drawing anything. When the user names a direction, t
 - Consumer and brand products (fitness, music, food, travel, kids, lifestyle): commit to an aesthetic direction that fits the subject, light or dark. A dominant color with sharp accents beats a timid, evenly spread palette.
 - Unsure: a well-composed, restrained page is always acceptable; an over-designed one often isn't. Restrained means few colors and calm type, not a grey page.
 - Don't converge: when nothing sets the direction, vary light and dark, palette and type between designs instead of reaching for the same safe neutral every time.
-Settle three things in one line each before the first board: the subject, who it is for, and the single job of the page.
+Write a short brief before the first board, a line each:
+- Purpose and audience: who uses the page and the one job it does for them.
+- Output and frame: app screen, marketing page, document or deck; viewport or device; light or dark; touch, pointer or keyboard.
+- Direction: type pairing, palette, density, and the one thing that makes this design distinct.
+- Fixed already: brand, style guide, design system, components, content or layout to keep.
+Take whatever the user, style guide or project already decides; assume the rest in one line and keep going.
+- When a style guide or design system applies, don't ask the user to choose colors, fonts or a look. If you need to ask, ask about audience, purpose, content, structure, scope or interaction.
+- Match the effort to the direction. A minimal design lives on spacing, type and small details done precisely; only a maximal one earns layered effects, illustration and motion. Don't add effects to make a quiet page look designed.
 
 ## Start from what already exists
 Precedence: the user's words, then the style guide in <design_context>, then the project's own design system (design_resources lists its components and templates), then your choices.
@@ -26,6 +35,7 @@ Precedence: the user's words, then the style guide in <design_context>, then the
 ## Boards
 - One board per page or screen. Name boards by what people call them: "Home", "Pricing", "Checkout · Mobile".
 - Default sizes: desktop 1440 wide, laptop 1280, tablet 768, phone 390 (844 tall for one screen). Let height follow the content for scrolling pages.
+- Phones and tablets are touch: targets at least 44px (never under 40px), body text 16px or more, primary actions within thumb reach at the bottom. Don't carry compact desktop controls onto a phone, and don't apply slide rules to app screens.
 - Responsive variants are separate boards with the same content, not a squeezed copy.
 - When a screen should read as a real device or app (a flow, a concept, a presentation), frame it with design_starter (ios-phone, android-phone, browser-window, macos-window) and design only what goes in its content layer. Never hand-draw bezels, status bars, browser toolbars or title bars; a half-right frame cheapens the whole board. A bare board at the device size is fine when the user just wants the screen.
 - When <design_context> asks for several variations, make that many boards side by side, each a distinct direction, named "Home · A", "Home · B". That is for whole-page directions; a question about one part of a screen gets an option sheet (see Option sheets).
@@ -62,14 +72,52 @@ Pages group boards and annotations; screens remain individual boards. Preserve e
 - A change to one element is not a change to the system: edit a shared token or class only when the request is meant to apply everywhere.
 - Turning absolutely positioned layers into auto layout is a re-layout, not a conversion: decide direction, gap, padding, sizing and wrapping on purpose, then check reading order and the result.
 - Prefer text that grows with its content; give a fixed height only to regions that are meant to clip, scroll or keep a ratio. Never hide an accidental overflow with overflow: hidden.`,
+  components: `## Interactive boards (design components)
+A board can respond in Play: switch tabs, open a menu, step through a flow, go to another board. Keep a board template-only unless that behaviour is what the user is judging; layout and visual work never needs logic.
+A board has up to three parts, set with design_update (add/content take html, js and props together):
+- Template: the board HTML, as for any board. Directives make it dynamic:
+  - {{ expr }} in text or attribute values, e.g. <h1>{{ title }}</h1>, class="tab {{ tab === 'week' ? 'is-active' : '' }}". It is evaluated only in a board with logic, props or another directive; elsewhere it is plain text.
+  - data-aegis-if on an element with data-aegis-for is checked once, outside the loop; to filter items, put the condition on a child.
+  - data-aegis-if="expr", and data-aegis-else on the element right after it.
+  - data-aegis-for="item in items" or "(item, i) in items" repeats the element (a number repeats it that many times); data-aegis-key="item.id" keeps items stable.
+  - data-aegis-on-click="select('month')" (also input, change, submit, keydown, mouseenter, mouseleave…) runs a method or assigns state: data-aegis-on-click="open = !open".
+  - data-aegis-bind-ATTR="expr" sets an attribute to a value (checked, disabled, style or class objects).
+  - data-aegis-goto="Board name" makes the element go to that board in Play.
+- Logic (js): one class, class Board extends AegisBoard { state = {…}; methods; values() { return {…} } }. this.props, this.state and this.setState({…}) work as in React; mounted(), updated() and unmounted() are lifecycle hooks; values() adds computed names for the template. Methods and state keys are names in the template.
+- Props (props): {"items":{"type":"list","default":[…]},"title":{"type":"string","default":"…"}}; types string, number, boolean, color, enum (with options), image, list, object. "$preview" overrides values for the canvas. Props make sample data editable without touching markup.
+  No prop name starts with "on": attributes like that are dropped as event handlers.
+Rules:
+- Logic runs in a sandbox with no network, storage or host access: no fetch, timers only for animation or demo state. Put sample data in props, not in logic.
+- Keep data-aegis-node-id on template elements as usual; repeated items share their template layer, so a hand edit applies to every item.
+- On the canvas, logic runs but input goes to the editor; Play (and exported HTML) is where it responds. design_preview reports logic errors as warnings; fix them before you finish.
+- Change logic with logic_patch for small edits, props with props, and the template with patch, as you would any board.`,
+  decks: `## Decks (slides)
+A deck is one board, sized as a slide (1920 × 1080 unless asked otherwise), whose deck element holds the slides:
+<main data-aegis-deck style="width:100%;height:100%">
+  <section data-aegis-slide data-aegis-notes="What to say on this slide">…</section>
+  <section data-aegis-slide>…</section>
+</main>
+- Slides are the deck element's direct children; nothing else goes there (no loops or components as slides), so the canvas, thumbnails, notes and the presenter view line up with the source.
+- Each slide fills the board (width and height 100%, its own padding); the canvas shows one at a time with ‹ › in the board's label, Play steps through them, and the presenter view shows the next slide and the notes.
+- Projected text: 24px at the very least, body 28–36px, titles 56–96px. design_preview flags slide text under 24px.
+- One idea per slide; put what the speaker says in data-aegis-notes rather than on the slide.
+- design_preview takes a slide index to render any slide; design_verify looks at every slide. PDF and PowerPoint exports have a page or slide per deck slide, notes included.
+- With a built-in style, the "deck" template is a palette of slide layouts (cover, section, big number, comparison, quote, image and text, timeline, closing). Start an empty deck and copy in only the layouts the content needs, in the content's order, each filled with the real content; never ship the palette's sample slides.`,
   tokens: `## Tokens first
 Before the first board, write a compact token set as CSS variables on :root and derive every color and type decision from it:
 - Color: a handful of named tokens: background (a subtly toned white or black), text, muted text, line, and 0–2 accents; add a surface only where the page really layers, not as a darker page under white cards.
 - Type: font tokens for each role (display, body, and a utility face for numbers or captions if useful) and a type scale you keep to.
+- Spacing: one scale (4, 8, 12, 16, 24, 32, 48, 64, 96) used by role: inside a control, between related controls, between components, between sections. Sections sit clearly further apart than the items inside them.
+- Density: tool areas (tables, sidebars, inspectors, toolbars) are compact, with 32–36px controls and 13–14px text; reading areas are comfortable, with 15–17px text and wider gaps. Change control height, padding and type size together, never one alone.
+- States: every interactive element has hover, a visible keyboard focus ring, pressed and disabled, plus selected or current where it applies. Draw the states the user is judging (a form with an error, a selected row), not every state everywhere.
+- Motion: short and purposeful, about 120ms for feedback, 200ms for small transitions, 300ms for panels and sheets, easing out when things enter; turn it off under prefers-reduced-motion.
 - A one-line comment above them naming the layout idea.
-Reuse the same tokens on every board in the design.`,
+Reuse the same tokens on every board in the design. A built-in style already defines them (--space-1 … --space-8, --duration-fast/base/slow, --ease and its colors and fonts): use those instead of writing new ones.`,
   type: `## Typography
-- Remote fonts don't load on the canvas. Use system stacks, or inline a font as a data-URL @font-face only when the brand truly needs it.
+- Remote fonts don't load on the canvas. Use the font library, system stacks, or the fonts the design's system registers (a built-in style's: var(--font-display), var(--font-body), var(--font-mono)).
+- The font library: name a family in font-family on any board and it loads, with or without a style. Always follow it with a system stack, which also covers Chinese (the library is Latin only):
+${FONT_LIBRARY.map((f) => `  - "${f.family}": ${f.note}`).join("\n")}
+  Pair one display face with one text face (and a mono for figures if useful), chosen for the subject; don't reach for the same pairing on every design.
   - Sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif
   - Serif: "New York", Georgia, "Songti SC", "Noto Serif SC", serif
   - Mono: "SF Mono", ui-monospace, Menlo, Consolas, monospace
@@ -83,21 +131,23 @@ Reuse the same tokens on every board in the design.`,
 - Use borders, fills, radius and shadow by role, to set off the one element that needs it. The same radius and shadow on every block flattens the page.
 - Check contrast: body text at least 4.5:1 against its background.`,
   avoid: `## Avoid the generated look
-Don't use these unless the user asks:
+These are defaults for a design with no style guide. When the user picked a style or the project has a design system, follow it even where it resembles something below (a built-in style may be warm paper with a serif on purpose). Otherwise, don't use these unless the user asks:
 - Purple-to-blue gradient heroes, gradient text on headlines, glowing blurred blobs or floating spheres as filler.
 - Warm cream with a serif display and a terracotta accent; near-black with a single neon accent; a light grey page under white cards as the default look.
 - Everything centered; a giant hero filling the first screen with little content.
 - Rounded cards with soft shadows everywhere; colored accent bars on the side of cards.
 - Emoji as icons or section markers; three identical feature cards with an icon, a title and two lines.
 - Numbered markers (01 / 02 / 03) on things that aren't a real sequence.
+- Small uppercase English eyebrow labels ("TODAY", "OVERVIEW", "WORD MEANING") above headings as decoration, above all on a page in another language: they add noise and read as generated. Use a label only when it carries information, in the page's language.
 - Inter or Space Grotesk as the default face.
 These are about pages and products; on an option sheet, matching cards and letter ids are its structure, not decoration.
-Instead, ground the design in the subject: its real content, units, terms and conventions. Include at least one detail only this subject would have.`,
+Instead, ground the design in the subject: its real content, units, terms and conventions. Include at least one detail only this subject would have.
+With a built-in style, design_resources has an "examples" template: side-by-side weak and strong versions of the same block, each with the reason. Read it once when you are unsure what "better" looks like.`,
   content: `## Content and images
 - Real content only, never lorem ipsum. Use plausible names, numbers and copy from the subject's world.
 - Try realistic lengths: a long name, mixed Chinese and English, a big number, a long link. Show the states the page needs (an empty list, a loading area, an error in a form), not every state of everything.
-- Images: inline SVG illustrations or icons, CSS shapes, or small data-URL images. No remote images.
-- Draw icons as simple inline SVG with one stroke width, sized to the text they sit beside.
+- Images: real ones where the subject wants them (product shots, people, places, food): make or find the image as a file (your own image tool, a file in the project), add it with design_add_image and use its aegis-asset:img_… reference in <img> or CSS. Remote URLs never load on the canvas. Without a real image, prefer a composed block of color, type or an SVG illustration over a grey placeholder box.
+- Icons come from the icon library: find them with design_icons and place them with <aegis-icon name="…" size="20">, one size and stroke width per context, sized to the text they sit beside. Hand-draw an SVG only for a mark the library doesn't have (a logo, an illustration).
 
 ## Writing the copy
 - Write from the user's side of the screen: name things by what people recognize.
@@ -108,11 +158,11 @@ Instead, ground the design in the subject: its real content, units, terms and co
 After each board, preview it once. The preview lists what it measured (text over other text, text cut off by a clipping box, an empty page, content wider or taller than the board, images that failed): treat these as leads, then look at the screenshot yourself for what geometry can't see: misaligned edges in repeated items, low contrast, an empty or stretched area, weak hierarchy, and anything from "Avoid the generated look". Fix the cause in one pass (not by shrinking text or hiding content), then move on. Don't loop on previews; the user reviews and comments on the canvas.
 
 ## When you finish
-Say what you made, the decisions that matter, what you checked (previews, warnings fixed) and what you did not verify. Only call something checked if you actually checked it.`,
+Call design_verify once the request's boards are drawn and previewed: it runs the checks and a separate visual review. Fix what it reports and verify again (at most twice). Then say what you made, the decisions that matter, what you checked (previews, warnings fixed) and what you did not verify. Only call something checked if you actually checked it.`,
 };
 
 export const DESIGN_GUIDE_DESCRIPTION =
-  `Read design guidance before creating or reworking boards with the design tools: treatment, board sizes, option sheets for comparing candidates, HTML structure that edits well, tokens, type, color, patterns to avoid, content and review. Pass topics to read only some (${DESIGN_GUIDE_TOPICS.join(', ')}); omit them for all. Also returns the style guide the user picked for this design, if any.`;
+  `Read design guidance before creating or reworking boards with the design tools: treatment, board sizes, option sheets for comparing candidates, HTML structure that edits well, interactive boards (template directives, logic and props), decks (slides with speaker notes), tokens, type, color, patterns to avoid, content and review. Pass topics to read only some (${DESIGN_GUIDE_TOPICS.join(', ')}); omit them for all. Also returns the style guide the user picked for this design, if any.`;
 
 export function designGuideText(topics?: readonly string[], styleGuide?: { name: string; text: string } | null): string {
   const wanted = topics?.length

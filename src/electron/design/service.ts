@@ -6,7 +6,11 @@ import { designFrameHtml } from "./html";
 import { renderChecksScript } from "./render-checks";
 import { moveDesignFocus } from "./focus";
 import { designProjectRoot } from "./styles";
-import type { DesignPreview } from "../../shared/design-types";
+import type { DesignDocument, DesignPreview } from "../../shared/design-types";
+import { designSystemPack, withLibraryFonts } from "./system-pack";
+import { adherenceWarnings } from "./adherence";
+import { designSlides, isDesignDeck } from "../../shared/design-deck";
+import type { DesignSystemPack } from "../../shared/design-system-pack";
 
 let repository: DesignRepository | undefined;
 export function getDesignRepository() {
@@ -67,12 +71,52 @@ export function settleDesignTurn(sessionId: string, agentName?: string) {
   );
 }
 
+/** The design system a design's boards load: its recorded one, else its project's. */
+export function packForDesign(d: Pick<DesignDocument, "system" | "project" | "sessionId"> & { boards?: readonly { html: string }[] }): DesignSystemPack | null {
+  try {
+    return withLibraryFonts(designSystemPack(d.system, d.project || designProjectRoot(d.sessionId)), d.boards);
+  } catch (error) {
+    console.warn("Failed to read the design system:", error);
+    return null;
+  }
+}
+
+/**
+ * What a design's boards load when the main process renders them: its
+ * design system, plus the design's own images (aegis-asset:img_…).
+ */
+export function renderSystemFor(d: Pick<DesignDocument, "id" | "system" | "project" | "sessionId"> & { boards?: readonly { html: string }[] }): DesignSystemPack | null {
+  const pack = packForDesign(d);
+  let images: Record<string, string> = {};
+  try {
+    images = getDesignRepository().renderAssets(d.id);
+  } catch {}
+  if (!pack && !Object.keys(images).length) return null;
+  return {
+    id: pack?.id ?? "none",
+    name: pack?.name ?? "",
+    css: pack?.css ?? "",
+    components: pack?.components ?? {},
+    assets: { ...(pack?.assets ?? {}), ...images },
+    fonts: pack?.fonts ?? [],
+    signature: `${pack?.signature ?? ""}:${Object.keys(images).join(",")}`,
+  };
+}
+
 // Each capture owns a fresh, nonpersistent Chromium session, with no preload.
 // Serialize captures to bound Chromium/GPU memory even when tools run in parallel.
 let captureTail: Promise<unknown> = Promise.resolve();
 /** Fonts, images and two frames: the board as it will look, nothing measured. */
+// Every registered face is loaded explicitly: fonts.ready alone can resolve
+// before layout has asked for a face, and text in a loading face is not painted yet.
 const READY_SCRIPT =
-  "(async()=>{await document.fonts.ready;await Promise.all([...document.images].map(i=>i.decode().catch(()=>null)));await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));return []})()";
+  "(async()=>{await (window.__aegisRuntime?window.__aegisRuntime.ready:null);await Promise.all([...document.fonts].map(f=>f.load().catch(()=>null)));await document.fonts.ready;await Promise.all([...document.images].map(i=>i.decode().catch(()=>null)));await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));return []})()";
+/** Where design_preview's checks run: a world of their own, apart from board logic. */
+const CHECKS_WORLD = 1029;
+const RUNTIME_READY_MS = 5_000;
+/** A design component's logic errors, for the agent: they don't show in a screenshot. */
+const RUNTIME_ERRORS =
+  "(window.__aegisRuntime?[...window.__aegisRuntime.errors]:[])";
 export function previewDesign(
   sessionId: string,
   documentId: string,
@@ -83,6 +127,8 @@ export function previewDesign(
   scale: 1 | 2 = 1,
   /** Measure the board for the agent (exports skip this). */
   checks = true,
+  /** A deck's slide to capture (0-based). */
+  slide?: number,
 ): Promise<DesignPreview> {
   const job = captureTail
     .catch(() => {})
@@ -121,14 +167,39 @@ export function previewDesign(
       const timeout = setTimeout(stop, 15000);
       signal?.addEventListener("abort", stop, { once: true });
       try {
-        await w.loadURL(
-          `data:text/html;charset=utf-8,${encodeURIComponent(designFrameHtml(b.html, randomUUID(), false))}`,
-        );
+        // Logic that loops while the page starts never lets it finish loading.
+        const hung = new Error("The board's logic did not finish rendering within 5 s; it may loop forever. Fix the logic (or remove it with a logic operation) and preview again.");
+        const loaded = await Promise.race([
+          // After a timeout the window is destroyed and this rejects; the race is already decided.
+          w.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(designFrameHtml(b.html, randomUUID(), false, { system: renderSystemFor(d), slide }))}`).then(() => true, (error) => {
+            if (w.isDestroyed()) return false;
+            throw error;
+          }),
+          new Promise<false>((resolve) => setTimeout(() => resolve(false), RUNTIME_READY_MS + 3_000)),
+        ]);
+        if (!loaded) throw hung;
         if (scale !== 1) w.webContents.setZoomFactor(scale);
+        // A design component renders after its runtime boots; logic that never
+        // finishes (an endless loop) fails here, with a reason, not at the window timeout.
+        const rendered = await Promise.race([
+          w.webContents.executeJavaScript("window.__aegisRuntime?window.__aegisRuntime.ready.then(()=>true):true").catch(() => true),
+          new Promise<false>((resolve) => setTimeout(() => resolve(false), RUNTIME_READY_MS)),
+        ]);
+        if (!rendered) throw hung;
         // What the screenshot alone might not show: overlaps, clipping, emptiness, size.
-        const warnings = (await w.webContents.executeJavaScript(
-          checks ? renderChecksScript(b.width, b.height) : READY_SCRIPT,
-        ).catch(() => (checks ? ["Checks could not run on this board; judge the screenshot alone."] : []))) as string[];
+        // An isolated world: the board's logic can't patch the DOM APIs the checks use.
+        const warnings = (await w.webContents.executeJavaScriptInIsolatedWorld(CHECKS_WORLD, [
+          { code: checks ? renderChecksScript(b.width, b.height) : READY_SCRIPT },
+        ]).catch(() => (checks ? ["Checks could not run on this board; judge the screenshot alone."] : []))) as string[];
+        if (checks) {
+          // Reported from inside the board, so it is the board's text: quoted, one line, short.
+          const errors = (await w.webContents.executeJavaScript(RUNTIME_ERRORS).catch(() => [])) as unknown[];
+          for (const error of errors.filter((e): e is string => typeof e === "string").slice(0, 8))
+            warnings.push(`Logic error (reported by the board): ${JSON.stringify(error.replace(/[\u0000-\u001f\u2028\u2029]+/g, " ").slice(0, 200))}`);
+          // How far the board strays from the design system it loads.
+          const pack = packForDesign(d);
+          if (pack) warnings.push(...adherenceWarnings(b.html, pack));
+        }
         signal?.throwIfAborted();
         let image = await w.webContents.capturePage();
         // HiDPI displays capture at the device pixel ratio; export exact pixels.
@@ -187,20 +258,24 @@ export function previewDesign(
 export function designPdf(
   boards: { id: string; html: string; width: number; height: number }[],
   signal?: AbortSignal,
+  system?: DesignSystemPack | null,
 ): Promise<Uint8Array> {
   const job = captureTail
     .catch(() => {})
     .then(async () => {
       if (!boards.length) throw new Error("This design has no boards to export.");
       const escape = (html: string) => html.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
-      const pages = boards
+      // A deck is one page per slide.
+      const sheets = boards.flatMap((b) => (isDesignDeck(b.html) ? designSlides(b.html).map((_, slide) => ({ ...b, slide })) : [{ ...b, slide: undefined as number | undefined }]));
+      const pages = sheets
         .map(
           (b, i) =>
-            `<section class="page p${i}"><iframe sandbox="" srcdoc="${escape(designFrameHtml(b.html, randomUUID(), false))}" style="width:${b.width}px;height:${b.height}px"></iframe></section>`,
+            `<section class="page p${i}"><iframe sandbox="allow-scripts" srcdoc="${escape(designFrameHtml(b.html, randomUUID(), false, { mode: "edit", system, slide: b.slide }))}" style="width:${b.width}px;height:${b.height}px"></iframe></section>`,
         )
         .join("");
-      const sizes = boards.map((b, i) => `@page s${i}{size:${b.width}px ${b.height}px;margin:0}.p${i}{page:s${i}}`).join("");
-      const doc = `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; frame-src about: data:"><style>${sizes}html,body{margin:0;padding:0}.page{display:block;break-after:page}.page:last-child{break-after:auto}iframe{display:block;border:0}</style></head><body>${pages}</body></html>`;
+      const sizes = sheets.map((b, i) => `@page s${i}{size:${b.width}px ${b.height}px;margin:0}.p${i}{page:s${i}}`).join("");
+      // srcdoc frames inherit this policy: allow what each board's own nonce policy allows.
+      const doc = `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data:; font-src data:; frame-src about: data:"><style>${sizes}html,body{margin:0;padding:0}.page{display:block;break-after:page}.page:last-child{break-after:auto}iframe{display:block;border:0}</style></head><body>${pages}</body></html>`;
       const partition = `design-pdf-${randomUUID()}`;
       const isolated = electronSession.fromPartition(partition);
       isolated.setPermissionRequestHandler((_wc, _permission, cb) => cb(false));
@@ -222,8 +297,14 @@ export function designPdf(
       signal?.addEventListener("abort", stop, { once: true });
       try {
         await w.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(doc)}`);
+        // Design components render in their own (sandboxed, out-of-process) frames.
+        await Promise.all(
+          w.webContents.mainFrame.framesInSubtree
+            .filter((f) => f !== w.webContents.mainFrame)
+            .map((f) => f.executeJavaScript("window.__aegisRuntime?window.__aegisRuntime.ready:null").catch(() => null)),
+        );
         await w.webContents.executeJavaScript(
-          "(async()=>{await document.fonts.ready;await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));return true})()",
+          "(async()=>{await Promise.all([...document.fonts].map(f=>f.load().catch(()=>null)));await document.fonts.ready;await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));return true})()",
         );
         signal?.throwIfAborted();
         return new Uint8Array(

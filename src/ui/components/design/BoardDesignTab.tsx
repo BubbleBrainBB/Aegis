@@ -3,6 +3,8 @@ import { useMemo } from "react";
 import type { DesignBoard, DesignOperation } from "../../../shared/design-types";
 import { readBoardBackground, setBoardBackground } from "../../../shared/design-layers";
 import { isImeComposing } from "../../utils/ime";
+import { BoardComponentSection } from "./BoardComponentSection";
+import { BoardSlidesSection } from "./BoardSlidesSection";
 
 export const DEVICES = [
   { name: "Desktop", width: 1440 },
@@ -11,7 +13,7 @@ export const DEVICES = [
   { name: "Phone", width: 390 },
 ] as const;
 
-/** Board-level properties: size, devices, background and export. */
+/** Board-level properties: size, devices, background, component props and export. */
 export function BoardDesignTab({
   board,
   revision,
@@ -20,6 +22,7 @@ export function BoardDesignTab({
   onUpdate,
   onFitHeight,
   onExport,
+  onShowSlide,
 }: {
   board: DesignBoard;
   revision: number;
@@ -28,6 +31,8 @@ export function BoardDesignTab({
   onUpdate(ops: DesignOperation[]): Promise<unknown>;
   onFitHeight(): void;
   onExport(): void;
+  /** Show a deck's slide on the canvas. */
+  onShowSlide?(index: number): void;
 }) {
   const background = useMemo(() => readBoardBackground(board.html) ?? "", [board.html]);
   const place = (patch: Partial<Pick<DesignBoard, "name" | "width" | "height">>) =>
@@ -128,6 +133,8 @@ export function BoardDesignTab({
           />
         </div>
       </section>
+      <BoardSlidesSection board={board} can={can} onUpdate={onUpdate} onShowSlide={(i) => onShowSlide?.(i)} />
+      <BoardComponentSection board={board} can={can} onUpdate={onUpdate} />
       <section className="design-section">
         <h4>Export</h4>
         <button className="design-secondary" disabled={busy} onClick={onExport}>

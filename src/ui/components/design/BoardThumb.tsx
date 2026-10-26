@@ -1,10 +1,15 @@
 import { memo, useMemo, type CSSProperties } from "react";
 import { designFrameHtml } from "../../../shared/design-frame";
+import { staticDesignPreview } from "../../../shared/design-component";
+import { useSandboxEpoch } from "../../utils/sandbox-frames";
+import type { DesignSystemPack } from "../../../shared/design-system-pack";
 import type { DesignBoard } from "../../../shared/design-types";
 
 /**
- * A board drawn small and inert: its HTML in a script-free sandboxed frame,
- * scaled to fit. For library rows and chat cards, never for editing.
+ * A board drawn small and inert, scaled to fit, in a script-free frame: a
+ * design component is drawn from its props without running any of its code
+ * (thumbnails are everywhere; board logic runs only on the canvas and in Play).
+ * For library rows and chat cards, never editing.
  */
 export const BoardThumb = memo(function BoardThumb({
   board,
@@ -12,6 +17,8 @@ export const BoardThumb = memo(function BoardThumb({
   height,
   className,
   style,
+  system,
+  slide,
 }: {
   board: Pick<DesignBoard, "id" | "html" | "width" | "height" | "contentRevision">;
   width: number;
@@ -19,12 +26,17 @@ export const BoardThumb = memo(function BoardThumb({
   className?: string;
   /** Extra placement, e.g. a position inside a design's cover. */
   style?: CSSProperties;
+  /** The design system the board loads. */
+  system?: DesignSystemPack | null;
+  /** A deck's slide to draw. */
+  slide?: number;
 }) {
   const scale = Math.min(width / board.width, height / board.height);
+  const sandboxEpoch = useSandboxEpoch();
   // Keyed by revision so a rewritten board repaints; no inspector script.
   const srcDoc = useMemo(
-    () => designFrameHtml(board.html, `thumb-${board.id.replace(/[^a-zA-Z0-9-]/g, "")}-${board.contentRevision}`, false),
-    [board.html, board.id, board.contentRevision],
+    () => designFrameHtml(staticDesignPreview(board.html, system?.components), `thumb-${board.id.replace(/[^a-zA-Z0-9-]/g, "")}-${board.contentRevision}`, false, { mode: "static", system, slide }),
+    [board.html, board.id, board.contentRevision, system, slide],
   );
   return (
     <div
@@ -33,6 +45,7 @@ export const BoardThumb = memo(function BoardThumb({
       style={{ width, height, overflow: "hidden", position: "relative", pointerEvents: "none", ...style }}
     >
       <iframe
+        key={sandboxEpoch}
         title=""
         tabIndex={-1}
         sandbox=""

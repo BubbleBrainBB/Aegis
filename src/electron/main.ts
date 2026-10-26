@@ -34,11 +34,17 @@ import { preloadClaudeAgentSdk } from './libs/runner';
 import { listRunningSessions } from './libs/session-store';
 import type { AppUpdateStatus } from '../shared/types';
 import { guardWidgetFrameNavigation, installWidgetProtocol, registerWidgetIpc, registerWidgetSchemePrivileged } from './widget-protocol';
+import { guardSandboxFrameNavigation, guardSandboxFrameRequests } from './libs/frame-navigation-guard';
+import { BROWSER_SESSION_PARTITION } from '../shared/browser-types';
 
 // Generative-UI widgets load from aegis-widget:// (see widget-protocol.ts);
 // a privileged scheme has to be declared before the app is ready.
 registerWidgetSchemePrivileged();
-app.on('web-contents-created', (_event, contents) => guardWidgetFrameNavigation(contents));
+app.on('web-contents-created', (_event, contents) => {
+  guardWidgetFrameNavigation(contents);
+  // App windows only: the browser pane shows real sites, whose own frames navigate.
+  if (contents.session !== session.fromPartition(BROWSER_SESSION_PARTITION)) guardSandboxFrameNavigation(contents);
+});
 
 // close 确认用：数据库未初始化等异常一律按 0 处理，绝不阻塞关窗
 function countRunningSessionsSafe(): number {
@@ -1066,6 +1072,7 @@ app.whenReady().then(() => {
   // 生产环境设置 CSP；开发环境不限制（Vite HMR 需要 WebSocket 和 eval）
   installWidgetProtocol();
   registerWidgetIpc();
+  guardSandboxFrameRequests(session.defaultSession);
   if (!isDev()) {
     session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
       // The widget shell carries its own, stricter policy.
