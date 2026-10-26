@@ -138,6 +138,7 @@ These are defaults for a design with no style guide. When the user picked a styl
 - Rounded cards with soft shadows everywhere; colored accent bars on the side of cards.
 - Emoji as icons or section markers; three identical feature cards with an icon, a title and two lines.
 - Numbered markers (01 / 02 / 03) on things that aren't a real sequence.
+- Small uppercase English eyebrow labels ("TODAY", "OVERVIEW", "WORD MEANING") above headings as decoration, above all on a page in another language: they add noise and read as generated. Use a label only when it carries information, in the page's language.
 - Inter or Space Grotesk as the default face.
 These are about pages and products; on an option sheet, matching cards and letter ids are its structure, not decoration.
 Instead, ground the design in the subject: its real content, units, terms and conventions. Include at least one detail only this subject would have.
