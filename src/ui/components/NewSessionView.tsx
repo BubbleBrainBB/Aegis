@@ -24,7 +24,6 @@ import { AttachmentChips } from './AttachmentChips';
 import { ClaudeSkillMenu } from './ClaudeSkillMenu';
 import { ProjectFileMentionMenu } from './ProjectFileMentionMenu';
 import { ComposerPromptEditor, type ComposerPromptEditorHandle } from './ComposerPromptEditor';
-import { ComposerMarkdownPreview, ComposerMarkdownPreviewToggle, useComposerMarkdownPreview } from './ComposerMarkdownPreview';
 import { ComposerAgentModelPicker } from './ComposerAgentControls';
 import {
   PermissionModePicker,
@@ -138,7 +137,6 @@ export function NewSessionView() {
       return true;
     },
   });
-  const markdownPreview = useComposerMarkdownPreview(capabilityMenu.displayPrompt, editorRef);
   const projectFileMentions = useProjectFileMentions({
     cwd,
     prompt,
@@ -589,10 +587,9 @@ export function NewSessionView() {
                   onKeyDown={handleKeyDown}
                   placeholder={sessionGoal.drafting ? 'Describe a goal to keep pursuing' : 'message to agent'}
                   placeholderClassName="inset-x-4 top-3 text-[14px] leading-[21px]"
-                  className={`w-full bg-transparent px-4 pt-3 pb-1 text-[14px] outline-none resize-none no-drag min-h-[56px] max-h-[200px]${markdownPreview.active ? ' hidden' : ''}`}
+                  className="w-full bg-transparent px-4 pt-3 pb-1 text-[14px] outline-none resize-none no-drag min-h-[56px] max-h-[200px]"
                   autoFocus
                 />
-                <ComposerMarkdownPreview value={capabilityMenu.displayPrompt} preview={markdownPreview} />
 
                 {/* Control order mirrors PromptInput: attach and permissions on
                     the left; model and send on the right. */}
@@ -610,7 +607,6 @@ export function NewSessionView() {
                     >
                       <PlusIcon />
                     </button>
-                    <ComposerMarkdownPreviewToggle preview={markdownPreview} />
                     {sessionGoal.drafting && <GoalModePill onExit={() => sessionGoal.setDraft(false)} disabled={pendingStart} />}
                     {agentSelection.provider === 'codex' && (
                       <PermissionModePicker

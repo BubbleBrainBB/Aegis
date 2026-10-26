@@ -52,6 +52,19 @@ export async function repoInfo(cwd: string): Promise<RepoInfo> {
   return { root: realRoot, relative: path.relative(realRoot, realCwd) };
 }
 
+/** Whether two folders belong to the same repository (any of its worktrees). */
+export async function sameRepository(a: string, b: string): Promise<boolean> {
+  const commonDir = async (cwd: string) => {
+    const dir = (await execFileAsync('git', ['rev-parse', '--git-common-dir'], { cwd, timeout: 5000 })).stdout.trim();
+    return fs.realpath(path.resolve(cwd, dir));
+  };
+  try {
+    return (await commonDir(a)) === (await commonDir(b));
+  } catch {
+    return false;
+  }
+}
+
 let counter = 0;
 
 /**

@@ -19,6 +19,8 @@ const MAX_FIELD_CHARS = 4_000;
 export type BriefContext = {
   runTitle: string;
   workspaceDir: string;
+  /** The workspace is not the session's own working directory (the chat working in another worktree). */
+  outsideSessionFolder?: boolean;
   /** Full diff from the run's baseline to the version under review. */
   baselineDiffPath?: string;
   /** Diff from the version this reviewer saw last round. */
@@ -118,6 +120,11 @@ export function renderBrief(instance: AgentInstance, context: BriefContext): str
   lines.push('\n## Workspace');
   if (instance.workspace === 'write') {
     lines.push(`Work directly in ${context.workspaceDir}. Keep your changes focused on the task.`);
+    if (context.outsideSessionFolder) {
+      lines.push(
+        `This folder is not your working directory. Use absolute paths under it for every file, and start shell commands with \`cd ${JSON.stringify(context.workspaceDir)} && \`.`,
+      );
+    }
   } else {
     lines.push(
       `You are given a read-only copy of the project at ${context.workspaceDir}. It is the exact version under review (${instance.version.slice(0, 12)}).`,

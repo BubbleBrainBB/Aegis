@@ -17,7 +17,7 @@ import { getAppPreferences, setAppPreferences, getTerminalShellOptions, trackTas
 import { setupSessionGoalIPC, getCachedSessionGoal, publishSessionGoal, rejectSessionGoalStart } from './ipc/session-goal';
 import { setupWorkflowIPC } from './ipc/workflows';
 import { WorkflowService } from './libs/workflow/workflow-service';
-import { findPendingStartWorkflowCall, setWorkflowChatEntry } from './libs/workflow/chat-entry';
+import { findPendingStartWorkflowCall, setWorkflowChatEntry, workflowTargetFolder } from './libs/workflow/chat-entry';
 import { isFullAccessMode } from '../shared/workflow';
 import type { GoalAction } from '../shared/session-goal';
 import { kimiGoalStartPrompt, parseGoalInput } from '../shared/session-goal';
@@ -4774,6 +4774,7 @@ function setupWorkflows(mainWindow: BrowserWindow): void {
       stop: (sessionId) => handleSessionStop(mainWindow, sessionId),
       sessionCwd: (sessionId) => sessions.getSession(sessionId)?.cwd ?? null,
       isBusy: (sessionId) => sessions.getSession(sessionId)?.status === 'running',
+      grantFolder: (sessionId, folder) => sessions.grantSessionFolder(sessionId, folder),
     },
     reportToParent: async (sessionId, display, prompt) => {
       // The chat session finishes whatever it is doing first.
@@ -4811,7 +4812,7 @@ function setupWorkflows(mainWindow: BrowserWindow): void {
   service.recoverOnStartup();
 
   const claimed = new Set<string>();
-  setWorkflowChatEntry(async ({ callerSessionId, request, context }) => {
+  setWorkflowChatEntry(async ({ callerSessionId, request, context, cwd }) => {
     // HTTP MCP calls do not say who is calling: find the session whose
     // history holds this pending call (the tool_use may land a moment later).
     let parentSessionId: string | null = null;
@@ -4838,6 +4839,8 @@ function setupWorkflows(mainWindow: BrowserWindow): void {
     }
     const session = sessions.getSession(parentSessionId);
     if (!session?.cwd) return { ok: false, error: 'This conversation has no project folder.' };
+    const target = await workflowTargetFolder(session.cwd, cwd);
+    if (!target.ok) return target;
     let available: string[] = [];
     try {
       available = (await getAgentRuntimeDirectory(false)).entries.filter((e) => e.state === 'ready').map((e) => e.provider);
@@ -4856,8 +4859,8 @@ function setupWorkflows(mainWindow: BrowserWindow): void {
             ? session.opencode_permission_mode
             : service.defaultPermissionMode(provider);
     const result = await service.startFromChat({
-      parent: { sessionId: parentSessionId, toolUseId, provider, fullAccess: isFullAccessMode(provider, mode) },
-      cwd: session.cwd,
+      parent: { sessionId: parentSessionId, toolUseId, provider, fullAccess: isFullAccessMode(provider, mode), cwd: session.cwd },
+      cwd: target.cwd,
       request,
       context,
       availableAgents: available,
@@ -4869,6 +4872,7 @@ function setupWorkflows(mainWindow: BrowserWindow): void {
       text: JSON.stringify({
         workflowId: result.run.id,
         status: result.run.status,
+        cwd: target.cwd,
         note:
           'The workflow is running in the background and its progress is shown in this conversation. ' +
           'End your turn now. Fix requests and the final result will arrive as follow-up messages.',

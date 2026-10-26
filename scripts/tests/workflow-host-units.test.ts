@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, promises as fs, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, promises as fs, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -20,7 +20,10 @@ import {
   settleTurn,
 } from '../../src/electron/libs/workflow/session-hooks';
 import type { AgentInstance } from '../../src/workflow-engine/engine/engine';
-import { findPendingStartWorkflowCall } from '../../src/electron/libs/workflow/chat-entry';
+import { findPendingStartWorkflowCall, startWorkflowSchema, workflowTargetFolder } from '../../src/electron/libs/workflow/chat-entry';
+import { AegisWorkflowHost, memberSessionCwd } from '../../src/electron/libs/workflow/aegis-host';
+import { getSessionProjectSources, grantSessionFolder } from '../../src/electron/libs/session-store';
+import { START_WORKFLOW_JSON_SCHEMA } from '../../src/electron/libs/session-native-tool';
 import { buildMemberConfigs, declarationForAgent } from '../../src/electron/libs/workflow/member-configs';
 import { catalogOptions, loadModelCatalogs } from '../../src/electron/libs/workflow/model-catalogs';
 import { listedModels } from '../../src/electron/libs/workflow/planner';
@@ -281,6 +284,143 @@ test('a start_workflow call renders as a board but is not a subagent', () => {
   assert.equal(classifyToolUse('mcp__aegis-sessions__start_workflow', {}), 'subagent', 'shares the task stage for its board');
   assert.deepEqual(deriveSubagentSummaries(messages), [], 'not listed among subagents');
   assert.equal(latestTurnHasPendingSubagentTasks(messages), false, 'does not keep the turn "waiting for subagents"');
+});
+
+test('a workflow can work in another worktree of the conversation\'s repository, never another repository', async () => {
+  const worktree = path.join(root, 'other-worktree');
+  git('worktree', 'add', '-q', '-b', 'side', worktree);
+  const other = path.join(root, 'other-repo');
+  await fs.mkdir(other);
+  execFileSync('git', ['init', '-q'], { cwd: other });
+
+  assert.deepEqual(await workflowTargetFolder(repo, undefined), { ok: true, cwd: repo });
+  assert.deepEqual(await workflowTargetFolder(repo, '  '), { ok: true, cwd: repo });
+  assert.deepEqual(await workflowTargetFolder(repo, repo + '/'), { ok: true, cwd: repo }, 'its own folder is the default');
+  assert.deepEqual(await workflowTargetFolder(repo, worktree), { ok: true, cwd: worktree });
+  assert.deepEqual(await workflowTargetFolder(worktree, path.join(repo, 'src')), { ok: true, cwd: path.join(repo, 'src') });
+  for (const [requested, message] of [
+    ['other-worktree', /absolute path/],
+    [path.join(root, 'missing'), /not a folder/],
+    [other, /not part of this conversation's Git repository/],
+    [root, /not inside a Git working tree/],
+    [path.join(repo, '.git'), /not inside a Git working tree/],
+  ] as const) {
+    const result = await workflowTargetFolder(repo, requested);
+    assert.equal(result.ok, false, requested);
+    assert.match((result as { error: string }).error, message);
+  }
+  assert.deepEqual(await workflowTargetFolder(repo, `${worktree}/../other-worktree/./`), { ok: true, cwd: worktree }, 'the folder is normalized');
+  const link = path.join(root, 'worktree-link');
+  await fs.symlink(worktree, link);
+  assert.deepEqual(await workflowTargetFolder(repo, link), { ok: true, cwd: link }, 'a symlink to a worktree is the same repository');
+
+  // A submodule is a repository of its own.
+  const host = path.join(root, 'with-submodule');
+  await fs.mkdir(host);
+  const hostGit = (...args: string[]) => execFileSync('git', args, { cwd: host, encoding: 'utf8' });
+  execFileSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=T', 'commit', '-q', '--allow-empty', '-m', 'init'], { cwd: other });
+  hostGit('init', '-q');
+  hostGit('-c', 'protocol.file.allow=always', 'submodule', '--quiet', 'add', other, 'sub');
+  const submodule = await workflowTargetFolder(host, path.join(host, 'sub'));
+  assert.equal(submodule.ok, false);
+  assert.match((submodule as { error: string }).error, /not part of this conversation's Git repository/);
+
+  assert.ok('cwd' in startWorkflowSchema && 'cwd' in START_WORKFLOW_JSON_SCHEMA.properties, 'every tool surface offers cwd');
+});
+
+test('a folder granted to a session counts as one of its project folders until released', () => {
+  const folder = path.join(realpathSync(root), 'granted');
+  const base = getSessionProjectSources('granted-session', repo);
+  const first = grantSessionFolder('granted-session', folder);
+  const second = grantSessionFolder('granted-session', folder);
+  assert.deepEqual(getSessionProjectSources('granted-session', repo), [...base, folder]);
+  assert.deepEqual(getSessionProjectSources('other-session', repo), base, 'only that session');
+  first();
+  first();
+  assert.deepEqual(getSessionProjectSources('granted-session', repo), [...base, folder], 'each grant is released once');
+  second();
+  assert.deepEqual(getSessionProjectSources('granted-session', repo), base);
+});
+
+test('the chat fixes in the run\'s worktree: it is continued, told where to work, and granted that folder for the turn only', async () => {
+  const main = path.join(root, 'host-main');
+  const side = path.join(root, 'host-side');
+  await fs.mkdir(main);
+  const run = (...args: string[]) => execFileSync('git', args, { cwd: main, encoding: 'utf8' });
+  run('init', '-q');
+  writeFileSync(path.join(main, 'a.ts'), 'export const a = 1;\n');
+  run('add', '-A');
+  run('-c', 'user.email=t@example.com', '-c', 'user.name=T', 'commit', '-qm', 'init');
+  run('worktree', 'add', '-q', '-b', 'host-side', side);
+  const version = await captureTree(side);
+
+  const runAgent = async (parentCwd: string | undefined) => {
+    const continued: Array<{ effectivePrompt?: string; grantedDuringTurn: string[] }> = [];
+    const grants: string[] = [];
+    const host = new AegisWorkflowHost({
+      getRun: () => ({
+        id: 'run-host', cwd: side, projectCwd: side, title: 'Fix', goal: 'Fix it', location: 'current',
+        options: { adoptions: {}, permissionModes: {}, parent: { sessionId: 'chat', toolUseId: null, provider: 'claude', cwd: parentCwd } },
+      }) as never,
+      members: () => new Map([['current', {
+        runId: 'run-host', key: 'current', role: 'implementer', agent: 'current', provider: 'claude', model: null, focus: null,
+        source: 'inferred', permissionMode: null, permissionDefault: true, readOnlyMechanism: null, degraded: [], unverified: false,
+        currentSessionId: 'chat',
+      }]]) as never,
+      store: { attachSession: async () => {} } as never,
+      bridge: {
+        start: async () => { throw new Error('the chat must be continued, not replaced'); },
+        continue: async (payload) => {
+          continued.push({ effectivePrompt: payload.effectivePrompt, grantedDuringTurn: [...grants] });
+          setImmediate(() => {
+            const result = { schemaVersion: 1, status: 'completed', summary: 'done', changes: [], findingResponses: [], blockers: [] };
+            observeTurnMessage('chat', { type: 'assistant', uuid: 'r1', message: { content: [{ type: 'text', text: '```json\n' + JSON.stringify(result) + '\n```' }] } } as never);
+            settleTurn('chat', 'completed');
+          });
+          return true;
+        },
+        stop: () => {},
+        sessionCwd: (id) => (id === 'chat' ? main : null),
+        isBusy: () => false,
+        grantFolder: (_id, folder) => {
+          grants.push(folder);
+          return () => grants.splice(grants.indexOf(folder), 1);
+        },
+      },
+      artifactsDir: path.join(root, 'host-artifacts'),
+      control: { cancelled: false },
+      appGeneration: 'test',
+      onEvent: () => {},
+    });
+    const outcome = await host.runAgent({
+      key: 'fix', stepId: 'fix', iterations: [0],
+      member: { key: 'current', role: 'implementer', agent: 'current', source: 'inferred' },
+      workspace: 'write', session: 'continue', outputKind: 'implementation',
+      blocks: [{ kind: 'text', text: 'Fix it.' }] as never,
+      version, previousBlockingFindingIds: [], fingerprint: '{}',
+    });
+    return { outcome, continued, grants };
+  };
+
+  const fixed = await runAgent(main);
+  assert.equal(fixed.outcome.status, 'succeeded');
+  assert.equal(fixed.continued.length, 1);
+  assert.match(fixed.continued[0].effectivePrompt ?? '', new RegExp(`Work directly in ${side}\\.`));
+  assert.match(fixed.continued[0].effectivePrompt ?? '', /This folder is not your working directory/);
+  assert.deepEqual(fixed.continued[0].grantedDuringTurn, [side]);
+  assert.deepEqual(fixed.grants, [], 'released after the turn');
+
+  const old = await runAgent(undefined);
+  assert.equal(old.outcome.status, 'needs_input', 'a run that did not record the chat\'s folder keeps the old rule');
+  assert.equal((old.outcome as { reason?: string }).reason, 'parent-moved');
+  assert.equal(old.continued.length, 0);
+});
+
+test('the chat member is continued while it stays in its own folder, even when the run works elsewhere', () => {
+  const run = (cwd?: string) => ({ options: { parent: { sessionId: 's', toolUseId: null, provider: 'claude', cwd } } }) as never;
+  assert.equal(memberSessionCwd(true, run('/repo'), '/repo-worktree'), '/repo');
+  assert.equal(memberSessionCwd(true, run(undefined), '/repo'), '/repo', 'runs started before cwd was recorded keep the old rule');
+  assert.equal(memberSessionCwd(false, run('/repo'), '/copy'), '/copy', 'other members must be in the step\'s folder');
 });
 
 test('full access is recognized per provider, so the workflow follows the chat\'s permission mode', () => {

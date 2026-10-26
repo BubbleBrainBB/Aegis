@@ -1,5 +1,5 @@
 import { READ_SESSION_DESCRIPTION, readSessionTool } from './session-reference';
-import { START_WORKFLOW_DESCRIPTION, startWorkflowTool, type StartWorkflowArgs } from './workflow/chat-entry';
+import { START_WORKFLOW_CWD_DESCRIPTION, START_WORKFLOW_DESCRIPTION, startWorkflowTool, type StartWorkflowArgs } from './workflow/chat-entry';
 import { START_WORKFLOW_TOOL } from '../../shared/workflow';
 import {
   SHOW_WIDGET_DESCRIPTION, SHOW_WIDGET_JSON_SCHEMA, SHOW_WIDGET_TOOL, showWidgetTool,
@@ -46,6 +46,7 @@ export const START_WORKFLOW_JSON_SCHEMA = {
   properties: {
     request: { type: 'string', description: "The user's request, self-contained and in the user's words (which agents, what they should do)." },
     context: { type: 'string', description: 'What the other agents need to know from this conversation, such as a summary of the changes you made.' },
+    cwd: { type: 'string', description: START_WORKFLOW_CWD_DESCRIPTION },
   },
 };
 
