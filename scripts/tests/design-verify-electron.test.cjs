@@ -49,8 +49,12 @@ app.whenReady().then(async () => {
     };
     const p0 = await previewDesign('s1', d.id, deck.id, d.revision);
     const p1 = await previewDesign('s1', d.id, deck.id, d.revision, undefined, undefined, undefined, true, 1);
-    // Display color management can move a channel by a step or two.
-    const near = (a, b, label) => assert.ok(a.every((v, i) => Math.abs(v - b[i]) <= 6), `${label}: ${a} vs ${b}`);
+    // Display color management (profiles, Night Shift) shifts captured colors (pure green reads 87,255,0),
+    // so check which primary the pixel is: its channel clearly leads the other two.
+    const near = (a, b, label) => {
+      const want = b.indexOf(255);
+      assert.ok(a[want] >= 200 && a.every((v, i) => i === want || a[want] - v >= 120), `${label}: ${a} vs ${b}`);
+    };
     near(pixel(p0), [255, 0, 0], 'slide 1 by default');
     near(pixel(p1), [0, 255, 0], 'slide 2 when asked');
     assert.ok(p1.warnings.some((x) => /Slide text under 24px/.test(x)), p1.warnings.join('\n'));

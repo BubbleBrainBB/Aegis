@@ -2,6 +2,7 @@ import { getDesignComposerPrefs, setDesignStyleResolver, setDesignTemplateNamer 
 import { designSystemIndex, readProjectDesignSystem, summaryOf, type ProjectDesignSystem } from "./design-system";
 import { sanitizeDesignHtml } from "./html";
 import type { DesignStyleSummary } from "../../shared/design-types";
+import { libraryFaces, type FontFace } from "./font-library";
 
 /**
  * Style guides the user can pick for a design: a few built in, and the
@@ -30,36 +31,9 @@ interface BuiltinStyle {
   imagery: string;
 }
 
-interface FontFace {
-  family: string;
-  file: string;
-  weight: string;
-  style?: "italic";
-}
-
 const SANS = '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", system-ui, sans-serif';
 const SERIF = '"New York", Georgia, "Songti SC", "Noto Serif SC", serif';
 const MONO = '"SF Mono", ui-monospace, Menlo, Consolas, monospace';
-
-/** The bundled faces, by family (variable weights where the family has them). */
-const FACES: Record<string, FontFace[]> = {
-  Newsreader: [
-    { family: "Newsreader", file: "newsreader-latin-wght-normal.woff2", weight: "200 800" },
-    { family: "Newsreader", file: "newsreader-latin-wght-italic.woff2", weight: "200 800", style: "italic" },
-  ],
-  "Source Sans 3": [{ family: "Source Sans 3", file: "source-sans-3-latin-wght-normal.woff2", weight: "200 900" }],
-  Geist: [{ family: "Geist", file: "geist-latin-wght-normal.woff2", weight: "100 900" }],
-  "Geist Mono": [{ family: "Geist Mono", file: "geist-mono-latin-wght-normal.woff2", weight: "100 900" }],
-  Fraunces: [{ family: "Fraunces", file: "fraunces-latin-wght-normal.woff2", weight: "100 900" }],
-  Figtree: [{ family: "Figtree", file: "figtree-latin-wght-normal.woff2", weight: "300 900" }],
-  "Bricolage Grotesque": [{ family: "Bricolage Grotesque", file: "bricolage-grotesque-latin-wght-normal.woff2", weight: "200 800" }],
-  "Instrument Serif": [
-    { family: "Instrument Serif", file: "instrument-serif-latin-400-normal.woff2", weight: "400" },
-    { family: "Instrument Serif", file: "instrument-serif-latin-400-italic.woff2", weight: "400", style: "italic" },
-  ],
-  "JetBrains Mono": [{ family: "JetBrains Mono", file: "jetbrains-mono-latin-wght-normal.woff2", weight: "100 800" }],
-  Manrope: [{ family: "Manrope", file: "manrope-latin-wght-normal.woff2", weight: "200 800" }],
-};
 
 /** A style's type: bundled families first, each falling back to a system stack. */
 function typeOf(display: string, body: string, mono = "Geist Mono"): Pick<BuiltinStyle, "type" | "fonts" | "serif"> {
@@ -68,7 +42,7 @@ function typeOf(display: string, body: string, mono = "Geist Mono"): Pick<Builti
   const families = [...new Set([display, body, mono])];
   return {
     type: { display: stack(display, serif ? SERIF : SANS), body: stack(body, SANS), mono: stack(mono, MONO) },
-    fonts: families.flatMap((f) => FACES[f] ?? []),
+    fonts: families.flatMap(libraryFaces),
     serif,
   };
 }

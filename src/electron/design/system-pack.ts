@@ -8,6 +8,7 @@ import { summaryOf } from "./design-system";
 import { builtinDesignStyles, PROJECT_DESIGN_SYSTEM, type BuiltinStyle } from "./styles";
 import { BUILTIN_COMPONENT_CSS, builtinComponents } from "./builtin-components";
 import { expandDesignIcons } from "./icons";
+import { fontFaceRule, libraryFaces, libraryFamiliesIn } from "./font-library";
 
 /**
  * Design system packs: what a design's boards load. A project's pack is its
@@ -51,15 +52,6 @@ const SEMANTIC = {
   dark: { success: "#5cc48d", warning: "#e3a948", danger: "#ef7a6d" },
 };
 
-/** A bundled font as a data URL (fonts/ sits next to the compiled main process). */
-function fontDataUrl(file: string): string | null {
-  try {
-    return `data:font/woff2;base64,${readFileSync(join(__dirname, "fonts", file)).toString("base64")}`;
-  } catch {
-    return null;
-  }
-}
-
 const builtinCache = new Map<string, DesignSystemPack>();
 function builtinPack(style: BuiltinStyle): DesignSystemPack {
   const hit = builtinCache.get(style.id);
@@ -67,12 +59,7 @@ function builtinPack(style: BuiltinStyle): DesignSystemPack {
   const p = style.palette;
   const semantic = style.dark ? SEMANTIC.dark : SEMANTIC.light;
   const raised = `color-mix(in oklch, ${p.surface} 92%, ${style.dark ? "#ffffff" : p.text})`;
-  const faces = style.fonts
-    .map((f) => {
-      const url = fontDataUrl(f.file);
-      return url ? `@font-face{font-family:"${f.family}";src:url("${url}") format("woff2");font-weight:${f.weight};font-style:${f.style ?? "normal"};font-display:swap}` : "";
-    })
-    .filter(Boolean);
+  const faces = style.fonts.map(fontFaceRule).filter(Boolean);
   const families = [...new Set(style.fonts.map((f) => f.family))];
   const { components, complete } = builtinComponents();
   const tokens = `:root{--background:${p.background};--surface:${p.surface};--raised:${raised};--text:${p.text};--muted:${p.muted};--accent:${p.accent};--on-accent:${onAccent(p.accent)};--line:${p.line};--success:${semantic.success};--warning:${semantic.warning};--danger:${semantic.danger};--font-display:${style.type.display};--font-body:${style.type.body};--font-mono:${style.type.mono};--radius:${style.shape.radius};--radius-control:${style.shape.control};--shadow:${style.shape.shadow};--space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-5:24px;--space-6:32px;--space-7:48px;--space-8:64px;--duration-fast:120ms;--duration-base:200ms;--duration-slow:320ms;--ease:cubic-bezier(.2,.7,.2,1);--focus-ring:0 0 0 2px var(--background),0 0 0 4px color-mix(in oklch, var(--accent) 70%, transparent)}`;
@@ -251,6 +238,26 @@ export function projectDesignPack(root: string | null | undefined): ProjectPackR
   projectCache.set(root, { signature, report });
   if (projectCache.size > 20) projectCache.delete(projectCache.keys().next().value as string);
   return report;
+}
+
+/**
+ * A design's pack with the font library's faces its boards name added, so
+ * any board can use a bundled font whatever system it loads (or none).
+ */
+export function withLibraryFonts(pack: DesignSystemPack | null, boards: readonly { html: string }[] | undefined): DesignSystemPack | null {
+  const have = new Set((pack?.fonts ?? []).map((f) => f.toLowerCase()));
+  const used = libraryFamiliesIn((boards ?? []).map((b) => b.html)).filter((f) => !have.has(f.toLowerCase()));
+  if (!used.length) return pack;
+  const faces = used.flatMap(libraryFaces).map(fontFaceRule).filter(Boolean).join("\n");
+  return {
+    id: pack?.id ?? NO_DESIGN_SYSTEM,
+    name: pack?.name ?? "",
+    css: pack?.css ? `${faces}\n${pack.css}` : faces,
+    components: pack?.components ?? {},
+    assets: pack?.assets ?? {},
+    fonts: [...(pack?.fonts ?? []), ...used],
+    signature: `${pack?.signature ?? ""}+${used.join(",")}`,
+  };
 }
 
 /**

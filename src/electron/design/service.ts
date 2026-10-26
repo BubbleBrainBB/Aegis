@@ -7,7 +7,7 @@ import { renderChecksScript } from "./render-checks";
 import { moveDesignFocus } from "./focus";
 import { designProjectRoot } from "./styles";
 import type { DesignDocument, DesignPreview } from "../../shared/design-types";
-import { designSystemPack } from "./system-pack";
+import { designSystemPack, withLibraryFonts } from "./system-pack";
 import { adherenceWarnings } from "./adherence";
 import { designSlides, isDesignDeck } from "../../shared/design-deck";
 import type { DesignSystemPack } from "../../shared/design-system-pack";
@@ -72,9 +72,9 @@ export function settleDesignTurn(sessionId: string, agentName?: string) {
 }
 
 /** The design system a design's boards load: its recorded one, else its project's. */
-export function packForDesign(d: Pick<DesignDocument, "system" | "project" | "sessionId">): DesignSystemPack | null {
+export function packForDesign(d: Pick<DesignDocument, "system" | "project" | "sessionId"> & { boards?: readonly { html: string }[] }): DesignSystemPack | null {
   try {
-    return designSystemPack(d.system, d.project || designProjectRoot(d.sessionId));
+    return withLibraryFonts(designSystemPack(d.system, d.project || designProjectRoot(d.sessionId)), d.boards);
   } catch (error) {
     console.warn("Failed to read the design system:", error);
     return null;
@@ -85,7 +85,7 @@ export function packForDesign(d: Pick<DesignDocument, "system" | "project" | "se
  * What a design's boards load when the main process renders them: its
  * design system, plus the design's own images (aegis-asset:img_…).
  */
-export function renderSystemFor(d: Pick<DesignDocument, "id" | "system" | "project" | "sessionId">): DesignSystemPack | null {
+export function renderSystemFor(d: Pick<DesignDocument, "id" | "system" | "project" | "sessionId"> & { boards?: readonly { html: string }[] }): DesignSystemPack | null {
   const pack = packForDesign(d);
   let images: Record<string, string> = {};
   try {

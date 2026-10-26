@@ -108,7 +108,6 @@ app.whenReady().then(async () => {
         if (!["deck", "examples"].includes(t.id)) assert.ok(await js(`document.querySelectorAll("svg[data-aegis-icon]").length`) > 0, `${style.id}/${t.id} icons`);
       }
     }
-    w.destroy();
 
     // design_resources lists and hands out templates for a design on a built-in style.
     const repo = getDesignRepository();
@@ -157,6 +156,27 @@ app.whenReady().then(async () => {
     for (let y = Math.round(sh * 0.08); y < Math.round(sh * 0.3); y += 2) for (let x = 0; x < Math.round(sw * 0.7); x += 2) { const i = (y * sw + x) * 4; if (px[i] + px[i + 1] + px[i + 2] < 300) dark++; }
     assert.ok(dark > 500, `the headline is painted on the first capture (${dark} dark pixels)`);
 
+    // The font library: any board names a bundled family and it loads, with no style at all.
+    const { libraryFamiliesIn, FONT_LIBRARY } = require(`${dist}/electron/design/font-library.js`);
+    const { packForDesign, renderSystemFor } = require(`${dist}/electron/design/service.js`);
+    assert.deepEqual(libraryFamiliesIn(['<style>.n{font-family:"Geist Mono",monospace}</style>']), ['Geist Mono'], 'Geist Mono is not Geist');
+    assert.deepEqual(libraryFamiliesIn(['<p style="font:600 20px/1 Fraunces, serif">x</p><style>:root{--d:\'Instrument Serif\'}</style>']), ['Fraunces', 'Instrument Serif']);
+    let plain = repo.create('s1', 'Plain', '', 'c-plain', undefined, undefined, { system: 'none' });
+    assert.equal(packForDesign(repo.read('s1', plain.id)), null, 'nothing named, nothing loaded');
+    plain = repo.update('s1', { documentId: plain.id, operationId: 'lib', operations: [{ type: 'add', name: 'Lib', width: 600, height: 300, html: '<main style="padding:40px"><h1 style="margin:0;font:600 64px/1.1 \'Fraunces\', Georgia, serif">Dawn Roast</h1></main>' }] });
+    const libPack = renderSystemFor(plain);
+    assert.deepEqual(libPack.fonts, ['Fraunces']);
+    assert.match(libPack.css, /@font-face\{font-family:"Fraunces";src:url\("data:font\/woff2;base64,/);
+    await load(plain.boards[0].html, libPack);
+    await js('Promise.all([...document.fonts].map((f) => f.load()))');
+    assert.equal(await js(`document.fonts.check('600 64px "Fraunces"')`), true, 'the library face loads on a board with no style');
+    assert.deepEqual(adherenceWarnings(plain.boards[0].html, { ...mint, fonts: mint.fonts }), [], 'library fonts are never "unknown fonts"');
+    const typeGuide = require(`${dist}/electron/design/guide.js`).designGuideText(['type']);
+    for (const f of FONT_LIBRARY) assert.ok(typeGuide.includes(`"${f.family}"`), f.family);
+    const warmWithLib = withLib('warm-paper', '<p style="font-family:Newsreader,serif;">x</p><p style="font-family:Geist">y</p>');
+    assert.deepEqual(warmWithLib.fonts, ['Newsreader', 'Source Sans 3', 'Geist Mono', 'Geist'], 'a style keeps its faces and adds only the new ones');
+    function withLib(style, html) { return require(`${dist}/electron/design/system-pack.js`).withLibraryFonts(designSystemPack(style, null), [{ html }]); }
+
     // A project component with an unknown icon is reported, not fatal.
     const project = path.join(temp, 'project');
     fs.mkdirSync(path.join(project, 'design-system', 'components'), { recursive: true });
@@ -166,7 +186,8 @@ app.whenReady().then(async () => {
     assert.match(report.pack.components.Chip.html, /<svg data-aegis-icon="star"/);
     assert.equal(report.pack.components.Bad, undefined);
     assert.ok(report.warnings.some((x) => /Bad\.html: Unknown icon/.test(x)), report.warnings.join(' | '));
-    console.log(`PASS design built-in packs: ${styles.length} styles with bundled fonts and full tokens, ${names.length} components (interactive ones respond), ${BUILTIN_TEMPLATES.length} templates render in every style, design_resources templates, starter chrome outside adherence, fonts loaded before previews, project component icons`);
+    w.destroy();
+    console.log(`PASS design built-in packs: ${styles.length} styles with bundled fonts and full tokens, ${names.length} components (interactive ones respond), ${BUILTIN_TEMPLATES.length} templates render in every style, design_resources templates, starter chrome outside adherence, fonts loaded before previews, the font library on any board, project component icons`);
   } catch (error) {
     console.error(error);
     code = 1;

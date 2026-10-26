@@ -5,6 +5,7 @@ import { readBoardTokens } from "../../shared/design-tokens";
 import { designSystemTokens, type DesignSystemPack } from "../../shared/design-system-pack";
 import { designLogicOf, designPropsOf, parseDesignProps, DESIGN_PROPS_TYPE } from "../../shared/design-component";
 import { projectDesignPack } from "./system-pack";
+import { FONT_LIBRARY } from "./font-library";
 
 /**
  * How far a board strays from the design system it loads: colors written
@@ -89,7 +90,7 @@ export function adherenceWarnings(source: string, pack: DesignSystemPack): strin
   const missing = [...new Set([...usage.matchAll(/var\(\s*(--[\w-]+)\s*\)/g)].map((m) => m[1]))].filter((n) => !declared.has(n));
   if (missing.length) warnings.push(`Tokens the design system doesn't have: ${missing.slice(0, 6).join(", ")}. They render as nothing; use the system's tokens.`);
 
-  const registered = new Set(pack.fonts.map((f) => f.toLowerCase()));
+  const registered = new Set([...pack.fonts, ...FONT_LIBRARY.map((f) => f.family)].map((f) => f.toLowerCase()));
   const families = new Set<string>();
   for (const m of usage.matchAll(/font-family\s*:\s*([^;}\n]+)/gi))
     for (const f of m[1].split(",")) {
@@ -97,7 +98,7 @@ export function adherenceWarnings(source: string, pack: DesignSystemPack): strin
       if (name && !name.startsWith("var(") && !GENERIC_FONTS.has(name) && !SYSTEM_FONTS.has(name) && !registered.has(name)) families.add(f.trim().replace(/^['"]|['"]$/g, ""));
     }
   if (families.size)
-    warnings.push(`Fonts that are neither the design system's nor system fonts: ${[...families].slice(0, 4).join(", ")}. They won't load on the canvas${pack.fonts.length ? `; the system has ${pack.fonts.join(", ")}` : ""}.`);
+    warnings.push(`Fonts that are neither the design system's nor system fonts: ${[...families].slice(0, 4).join(", ")}. They won't load on the canvas${pack.fonts.length ? `; the system has ${pack.fonts.join(", ")}` : ""}; the font library (design_guide topic type) has more.`);
 
   const names = new Set(Object.keys(pack.components).map((n) => n.toLowerCase()));
   const body = html.replace(/<aegis-use\b[\s\S]*?<\/aegis-use>/gi, "");

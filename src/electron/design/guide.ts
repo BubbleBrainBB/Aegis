@@ -1,3 +1,5 @@
+import { FONT_LIBRARY } from './font-library';
+
 /**
  * Design guidance the agent reads on demand through design_guide. The tool
  * descriptions say what the canvas allows; this is about making the work good.
@@ -112,7 +114,10 @@ Before the first board, write a compact token set as CSS variables on :root and 
 - A one-line comment above them naming the layout idea.
 Reuse the same tokens on every board in the design. A built-in style already defines them (--space-1 … --space-8, --duration-fast/base/slow, --ease and its colors and fonts): use those instead of writing new ones.`,
   type: `## Typography
-- Remote fonts don't load on the canvas. A design on a built-in style already has that style's fonts (bundled, with CJK fallbacks): use var(--font-display), var(--font-body) and var(--font-mono). Otherwise use system stacks, or inline a font as a data-URL @font-face only when the brand truly needs it.
+- Remote fonts don't load on the canvas. Use the font library, system stacks, or the fonts the design's system registers (a built-in style's: var(--font-display), var(--font-body), var(--font-mono)).
+- The font library: name a family in font-family on any board and it loads, with or without a style. Always follow it with a system stack, which also covers Chinese (the library is Latin only):
+${FONT_LIBRARY.map((f) => `  - "${f.family}": ${f.note}`).join("\n")}
+  Pair one display face with one text face (and a mono for figures if useful), chosen for the subject; don't reach for the same pairing on every design.
   - Sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif
   - Serif: "New York", Georgia, "Songti SC", "Noto Serif SC", serif
   - Mono: "SF Mono", ui-monospace, Menlo, Consolas, monospace

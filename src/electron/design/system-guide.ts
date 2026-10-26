@@ -1,6 +1,7 @@
 import { getDesignRepository, packForDesign } from "./service";
 import { designStyleGuideFor, PROJECT_DESIGN_SYSTEM, readDesignResource } from "./styles";
 import { BUILTIN_TEMPLATES } from "./builtin-templates";
+import { NO_DESIGN_SYSTEM } from "./system-pack";
 import { designSystemTokens, type DesignSystemPack } from "../../shared/design-system-pack";
 import type { DesignDocument } from "../../shared/design-types";
 
@@ -84,7 +85,8 @@ export function designGuideStyle(sessionId: string, documentId?: string): { name
   const guide = designStyleGuideFor(sessionId, documentId);
   const d = designOf(sessionId, documentId);
   const pack = d ? packForDesign(d) : null;
-  if (!pack) return guide;
+  // Library fonts alone are not a system to describe (design_guide's type topic lists them).
+  if (!pack || pack.id === NO_DESIGN_SYSTEM) return guide;
   const text = [guide?.text, describePack(pack)].filter(Boolean).join("\n\n");
   return { name: guide?.name ?? pack.name, text };
 }
@@ -92,7 +94,8 @@ export function designGuideStyle(sessionId: string, documentId?: string): { name
 /** design_resources: the design's system components (any system), and the project's templates. */
 export function designResources(sessionId: string, documentId: string | undefined, kind?: string, name?: string): string {
   const d = designOf(sessionId, documentId);
-  const pack = d ? packForDesign(d) : null;
+  const found = d ? packForDesign(d) : null;
+  const pack = found?.id === NO_DESIGN_SYSTEM ? null : found;
   if (pack && kind === "component" && name) {
     const hit = Object.entries(pack.components).find(([n]) => n.toLowerCase() === name.toLowerCase());
     if (hit) {
