@@ -16,6 +16,7 @@ import {
 } from '../../shared/design-tools';
 import type { DesignAuthor, DesignUpdate } from '../../shared/design-types';
 import { looksEscapedMarkup } from '../../shared/design-html';
+import { projectToolSpecs } from './project/tools';
 
 /**
  * Design tools, defined once and served to every provider: Claude and Qoder
@@ -98,7 +99,7 @@ const object = (properties: Record<string, unknown>, required: string[]) => ({
 const specs: DesignToolSpec[] = [
   {
     name: DESIGN_CREATE_TOOL,
-    description: `Create a new design on the Aegis design canvas (画布 / 设计稿): HTML boards the user sees in Aegis's Design view. These are the design tools for any canvas, mockup or design the user mentions; other canvas or design-file tools are not Aegis's. If the user names an existing design (call design_read to list this project's designs), work in it with design_update instead. Create one only when there is no fitting design, or the user explicitly asks for a separate design or an unrelated subject; otherwise continue in the open design with design_update (add a board for a new page or screen, edit a board for changes). When this conversation already works on designs this fails unless separate is true. ${rules}`,
+    description: `Create a new design on the Aegis design canvas (画布 / 设计稿): HTML boards the user sees in Aegis's Design view and edits by hand. These are the design tools for any design, mockup, screen or 设计稿 the user asks for. Only when the user explicitly asks for an interactive or clickable prototype, a working app, or HTML files, use design_project_create (a live project of files) instead. This chat is interactive, even when permissions are bypassed: questions you ask with your question tool (such as AskUserQuestion) reach the user as a card they answer. Ask first: for a new or open-ended request, ask one focused round of clarifying questions (purpose and audience, visual direction, fidelity, how many variations) with your question tool when you have one, end your turn, and build from the answers; skip only when the request already settles them or it is a small change. Other canvas or design-file tools are not Aegis's. If the user names an existing design (call design_read to list this project's designs), work in it with design_update instead. Create one only when there is no fitting design, or the user explicitly asks for a separate design or an unrelated subject; otherwise continue in the open design with design_update (add a board for a new page or screen, edit a board for changes). When this conversation already works on designs this fails unless separate is true. ${rules}`,
     readOnly: false,
     shape: {
       title: z.string().describe('Short name of the design, e.g. "Atlas website".'),
@@ -357,6 +358,7 @@ const specs: DesignToolSpec[] = [
       return { guide: `Added ${JSON.stringify(info.name)} (${info.mime}, ${size}) as aegis-asset:${info.id}. Use <img src="aegis-asset:${info.id}" alt="…" style="width:100%;height:auto;object-fit:cover"> or url(aegis-asset:${info.id}) in CSS.` };
     },
   },
+  ...projectToolSpecs({ author: agentAuthor, request: (sessionId) => promptSource(sessionId) }),
 ];
 
 export const DESIGN_TOOL_SPECS: readonly Pick<DesignToolSpec, 'name' | 'description' | 'readOnly' | 'shape' | 'jsonSchema'>[] = specs;
@@ -382,6 +384,8 @@ export async function runDesignTool(
       };
     }
     if (name === DESIGN_GUIDE_TOOL || name === DESIGN_RESOURCES_TOOL || name === DESIGN_STARTER_TOOL || name === DESIGN_SYSTEM_CHECK_TOOL || name === DESIGN_VERIFY_TOOL || name === DESIGN_ICONS_TOOL || name === DESIGN_ADD_IMAGE_TOOL) return { text: (result as { guide: string }).guide };
+    // Project tools answer in prose too.
+    if (result && typeof (result as { guide?: unknown }).guide === 'string') return { text: (result as { guide: string }).guide };
     return { text: JSON.stringify(result) };
   } catch (e) {
     return { text: e instanceof Error ? e.message : String(e), isError: true };

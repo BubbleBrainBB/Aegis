@@ -117,7 +117,7 @@ function DesignStartCanvas() {
       <div className="max-w-[360px] -translate-y-10 text-center">
         <h2 className="text-[19px] font-medium text-[var(--text-primary)]">What should we design?</h2>
         <p className="mt-2 text-[13.5px] leading-relaxed text-[var(--text-muted)]">
-          Describe a page, a screen or a flow. The agent draws the boards here, and you can edit them by hand or comment on them.
+          Describe a page, a screen or a flow. The agent draws the boards here, and you can edit them by hand or comment on them. Ask for a clickable prototype to get a live HTML design instead.
         </p>
       </div>
       </div>

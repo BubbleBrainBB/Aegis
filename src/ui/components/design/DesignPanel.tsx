@@ -19,6 +19,7 @@ import {
 } from "../../../shared/design-layers";
 import { buildDesignCommentPrompt } from "../../../shared/design-comment";
 import { DesignCanvas, type CanvasApi, type CanvasPin } from "./DesignCanvas";
+import { DesignProjectView } from "./DesignProjectView";
 import { LayersPopover } from "./LayersPopover";
 import { ElementDesignTab } from "./ElementDesignTab";
 import { BoardDesignTab } from "./BoardDesignTab";
@@ -113,11 +114,52 @@ type DesignPanelProps = {
 export function DesignPanel(props: DesignPanelProps) {
   const provider = useAppStore((s) => (props.sessionId ? s.sessions[props.sessionId]?.provider : undefined));
   const agent = PROVIDERS.find((p) => p.id === provider)?.label ?? "Agent";
+  const kind = useDesignKind(props.sessionId, props.documentId);
+  // A design project is a live page, not a canvas of boards.
+  if (kind === "project" && props.sessionId && props.documentId)
+    return (
+      <DesignProjectView
+        sessionId={props.sessionId}
+        documentId={props.documentId}
+        chrome={props.chrome}
+        toolbarHost={props.toolbarHost}
+        canvasOverlay={props.canvasOverlay}
+      />
+    );
+  if (props.documentId && kind === undefined) return null;
   return (
     <DesignAgentName.Provider value={agent}>
       <DesignPanelBody {...props} />
     </DesignAgentName.Provider>
   );
+}
+
+/**
+ * A design's kind never changes once it exists, so it is remembered per
+ * design: a library refresh that briefly lacks the design must not unmount
+ * the open canvas (and everything over it, like a dock being dragged).
+ */
+const designKinds = new Map<string, "canvas" | "project">();
+/** Whether a design is a canvas or a project: the library knows; a design not in it yet is read once. */
+function useDesignKind(sessionId: string | null, documentId: string | undefined): "canvas" | "project" | undefined {
+  const known = useDesignStore((s) => (documentId ? s.library?.find((d) => d.id === documentId)?.kind ?? (s.library?.some((d) => d.id === documentId) ? "canvas" : undefined) : undefined));
+  const [, setRead] = useState(0);
+  if (documentId && known) designKinds.set(documentId, known === "project" ? "project" : "canvas");
+  const remembered = documentId ? designKinds.get(documentId) : undefined;
+  useEffect(() => {
+    if (!documentId || !sessionId || designKinds.has(documentId)) return;
+    let live = true;
+    window.electron.design
+      .read({ sessionId, documentId })
+      .then((d) => designKinds.set(documentId, d.kind === "project" ? "project" : "canvas"))
+      .catch(() => designKinds.set(documentId, "canvas"))
+      .finally(() => live && setRead((n) => n + 1));
+    return () => {
+      live = false;
+    };
+  }, [sessionId, documentId, remembered]);
+  if (!documentId) return "canvas";
+  return remembered;
 }
 
 function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolbarHost, canvasOverlay }: DesignPanelProps) {

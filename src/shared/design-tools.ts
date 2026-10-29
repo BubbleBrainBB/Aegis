@@ -12,6 +12,14 @@ export const DESIGN_SYSTEM_CHECK_TOOL = 'design_system_check';
 export const DESIGN_VERIFY_TOOL = 'design_verify';
 export const DESIGN_ICONS_TOOL = 'design_icons';
 export const DESIGN_ADD_IMAGE_TOOL = 'design_add_image';
+/** Design projects: folders of files the agent writes with its own tools (src/electron/design/project). */
+export const DESIGN_PROJECT_CREATE_TOOL = 'design_project_create';
+export const DESIGN_SHOW_TOOL = 'design_show';
+export const DESIGN_READY_TOOL = 'design_ready';
+export const DESIGN_SKILL_TOOL = 'design_skill';
+export const DESIGN_STARTER_COPY_TOOL = 'design_starter_copy';
+export const DESIGN_VERSIONS_TOOL = 'design_versions';
+export const DESIGN_VERSION_TOOL = 'design_version';
 
 export const DESIGN_TOOL_NAMES = [
   DESIGN_CREATE_TOOL,
@@ -27,6 +35,13 @@ export const DESIGN_TOOL_NAMES = [
   DESIGN_VERIFY_TOOL,
   DESIGN_ICONS_TOOL,
   DESIGN_ADD_IMAGE_TOOL,
+  DESIGN_PROJECT_CREATE_TOOL,
+  DESIGN_SHOW_TOOL,
+  DESIGN_READY_TOOL,
+  DESIGN_SKILL_TOOL,
+  DESIGN_STARTER_COPY_TOOL,
+  DESIGN_VERSIONS_TOOL,
+  DESIGN_VERSION_TOOL,
 ] as const;
 export type DesignToolName = (typeof DESIGN_TOOL_NAMES)[number];
 

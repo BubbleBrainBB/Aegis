@@ -4,9 +4,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
 
-// The question card keeps picks per question as label arrays: labels that
-// contain commas toggle and show as selected, and submit carries them
-// unsplit in questionAnswers next to the comma-joined `answers`.
+// The question card asks one question at a time: a single-choice pick moves
+// on by itself, number keys pick and Enter sends, "Something else…" opens a
+// free answer, and selection uses the theme accent. Picks stay label arrays:
+// labels that contain commas toggle and show as selected, and submit carries
+// them unsplit in questionAnswers next to the comma-joined `answers`.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const qaRoot = path.join(root, '.aegis-design-qa');
 await mkdir(qaRoot, { recursive: true });
@@ -18,12 +20,13 @@ import { DecisionPanel } from '/src/ui/components/DecisionPanel';
 import '/src/ui/index.css';
 const input = {
   questions: [
+    { question: 'Size', header: 'Size', options: [{ label: 'S', description: 'Small' }, { label: 'M', description: 'Medium' }] },
     { question: 'Pick cities', multiSelect: true, options: [{ label: 'Paris, France' }, { label: 'Austin, Texas' }, { label: 'Lima' }] },
     { question: 'One city', options: [{ label: 'Paris, France' }, { label: 'Lima' }] },
   ],
 };
 window.qa = { submitted: null };
-createRoot(document.getElementById('root')).render(<DecisionPanel input={input} onSubmit={(result) => { window.qa.submitted = result; }} />);
+createRoot(document.getElementById('root')).render(<DecisionPanel input={input} agentName="Claude Code" onSubmit={(result) => { window.qa.submitted = result; }} />);
 `;
 const main = String.raw`
 const { app, BrowserWindow } = require('electron');
@@ -38,40 +41,60 @@ app.whenReady().then(async () => {
   const js = code => win.webContents.executeJavaScript(code, true);
   try {
     await win.loadURL(process.env.QA_URL);
-    for (let i = 0; i < 100 && !(await js('!!document.querySelector("input[type=text]")')); i++) await delay(100);
-    // Option buttons in order: question 1 (3), then question 2 (2).
-    const option = (q, i) => '(() => { const sections = document.querySelector("#root > div").children; return sections[' + q + '].querySelectorAll("button")[' + i + ']; })()';
-    const click = async (q, i) => { await js(option(q, i) + '.click()'); await delay(60); };
-    const selected = async (q, i) => js(option(q, i) + '.className.includes("bg-[var(--accent)]/10")');
-    const setOther = async (q, value) => {
-      await js('(() => { const el = document.querySelectorAll("input[type=text]")[' + q + ']; const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set; set.call(el, ' + JSON.stringify(value) + '); el.dispatchEvent(new Event("input", { bubbles: true })); })()');
-      await delay(60);
-    };
+    for (let i = 0; i < 100 && !(await js('!!document.querySelector("[data-decision-panel]")')); i++) await delay(100);
+    const option = (i) => 'document.querySelectorAll("[data-decision-option]")[' + i + ']';
+    const click = async (i) => { await js(option(i) + '.click()'); await delay(60); };
+    const selected = async (i) => js(option(i) + '.getAttribute("aria-checked") === "true"');
+    const question = () => js('document.querySelector("[data-decision-question]").textContent');
+    const step = () => js('document.querySelector("[data-decision-step]").textContent');
+    const key = async (k) => { await js('document.querySelector("[data-decision-panel]").dispatchEvent(new KeyboardEvent("keydown", { key: ' + JSON.stringify(k) + ', bubbles: true }))'); await delay(80); };
 
-    await click(0, 0);
-    await click(0, 1);
-    assert.deepEqual([await selected(0, 0), await selected(0, 1), await selected(0, 2)], [true, true, false], 'comma labels show as selected');
-    await click(0, 0);
-    assert.deepEqual([await selected(0, 0), await selected(0, 1)], [false, true], 'a comma label deselects on its own');
-    await click(0, 0);
-    await click(1, 0);
-    assert.equal(await selected(1, 0), true, 'single choice with a comma label');
+    assert.match(await js('document.querySelector("[data-decision-panel]").textContent'), /Claude Code is asking/);
+    assert.equal(await step(), '1 of 3');
+    assert.equal(await js('document.querySelector("[data-decision-next]").disabled'), true, 'Next waits for an answer');
+    // A single-choice pick moves on by itself; the pick uses the theme accent.
+    await click(1);
+    assert.match(await js(option(1) + '.getAttribute("style") || ""'), /var\(--accent\)/, 'selection follows the theme accent');
+    await delay(250);
+    assert.equal(await question(), 'Pick cities', 'a single-choice pick advances');
+    assert.equal(await step(), '2 of 3');
 
-    await setOther(0, 'Rome, Italy, Europe');
-    await js('Array.from(document.querySelectorAll("button")).find(b => b.textContent === "Submit").click()');
+    // Multi-select: comma labels toggle on their own; nothing advances.
+    await click(0);
+    await click(1);
+    assert.deepEqual([await selected(0), await selected(1), await selected(2)], [true, true, false], 'comma labels show as selected');
+    await click(0);
+    assert.deepEqual([await selected(0), await selected(1)], [false, true], 'a comma label deselects on its own');
+    await click(0);
+    await js('document.querySelector("[data-decision-other-toggle]").click()');
+    await delay(80);
+    await js('(() => { const el = document.querySelector("[data-decision-other]"); const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set; set.call(el, "Rome, Italy, Europe"); el.dispatchEvent(new Event("input", { bubbles: true })); })()');
+    await delay(60);
+    assert.equal(await question(), 'Pick cities', 'multi-select waits for Next');
+    await js('document.querySelector("[data-decision-next]").click()');
+    await delay(80);
+
+    // Last question: a number key picks, Enter sends.
+    assert.equal(await step(), '3 of 3');
+    assert.equal(await js('document.querySelector("[data-decision-next]").textContent.trim().startsWith("Send")'), true);
+    await key('1');
+    assert.equal(await selected(0), true, 'number keys pick');
+    await key('Enter');
     await delay(60);
     const result = await js('window.qa.submitted');
     assert.equal(result.behavior, 'allow');
     assert.deepEqual(result.updatedInput.answers, {
+      Size: 'M',
       'Pick cities': 'Austin, Texas,Paris, France,Rome, Italy, Europe',
       'One city': 'Paris, France',
     }, 'answers keep the AskUserQuestion comma-joined shape');
     assert.deepEqual(result.questionAnswers, {
+      Size: { selected: ['M'] },
       'Pick cities': { selected: ['Austin, Texas', 'Paris, France'], other: 'Rome, Italy, Europe' },
       'One city': { selected: ['Paris, France'] },
     }, 'questionAnswers keeps labels and Other text apart');
     assert.deepEqual(errors, []);
-    console.log('Decision panel: comma labels toggle, show selected and submit structured answers');
+    console.log('Decision panel: one question at a time, auto-advance, keys, accent, comma labels and structured answers');
     app.exit(0);
   } catch (e) {
     console.error(e);

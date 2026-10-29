@@ -1,6 +1,7 @@
 import {
   DESIGN_COMMENTS_TOOL, DESIGN_CREATE_TOOL, DESIGN_GUIDE_TOOL, DESIGN_PREVIEW_TOOL, DESIGN_READ_TOOL,
-  DESIGN_REPLY_TOOL, DESIGN_RESOURCES_TOOL, DESIGN_STARTER_TOOL, DESIGN_SYSTEM_CHECK_TOOL, DESIGN_ADD_IMAGE_TOOL, DESIGN_ICONS_TOOL, DESIGN_UPDATE_TOOL, DESIGN_VERIFY_TOOL, designToolNameOf,
+  DESIGN_REPLY_TOOL, DESIGN_RESOURCES_TOOL, DESIGN_STARTER_TOOL, DESIGN_SYSTEM_CHECK_TOOL, DESIGN_ADD_IMAGE_TOOL, DESIGN_ICONS_TOOL, DESIGN_UPDATE_TOOL, DESIGN_VERIFY_TOOL,
+  DESIGN_PROJECT_CREATE_TOOL, DESIGN_SHOW_TOOL, DESIGN_READY_TOOL, DESIGN_SKILL_TOOL, DESIGN_STARTER_COPY_TOOL, DESIGN_VERSIONS_TOOL, DESIGN_VERSION_TOOL, designToolNameOf,
 } from '../../shared/design-tools';
 import type { ToolStatus } from '../types';
 
@@ -65,5 +66,19 @@ export function designToolDisplay(name: string, input: unknown, status: ToolStat
       return { verb: pending ? 'Adding' : 'Added', target: text(args.name) || 'an image' };
     case DESIGN_ICONS_TOOL:
       return { verb: pending ? 'Searching' : 'Searched', target: text(args.query) ? `icons for ${text(args.query)}` : 'icons' };
+    case DESIGN_PROJECT_CREATE_TOOL:
+      return { verb: pending ? 'Creating design' : 'Created design', target: text(args.title) || 'a design' };
+    case DESIGN_SHOW_TOOL:
+      return { verb: pending ? 'Showing' : 'Showed', target: text(args.path) || 'the page' };
+    case DESIGN_READY_TOOL:
+      return { verb: pending ? 'Checking' : 'Checked', target: text(args.path) || 'the page' };
+    case DESIGN_SKILL_TOOL:
+      return { verb: pending ? 'Reading' : 'Read', target: text(args.name) ? `the ${text(args.name)} skill` : 'a design skill' };
+    case DESIGN_STARTER_COPY_TOOL:
+      return { verb: pending ? 'Adding' : 'Added', target: text(args.kind) || 'a starter component' };
+    case DESIGN_VERSIONS_TOOL:
+      return { verb: pending ? 'Reading' : 'Read', target: 'the version history' };
+    case DESIGN_VERSION_TOOL:
+      return { verb: pending ? 'Reading' : 'Read', target: typeof args.version === 'number' ? `version ${args.version}` : 'a version' };
   }
 }

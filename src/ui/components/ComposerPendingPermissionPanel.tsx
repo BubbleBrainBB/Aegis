@@ -1,6 +1,8 @@
 import { memo, useMemo } from 'react';
 import { Loader2, ShieldAlert } from './icons';
 import { DecisionPanel } from './DecisionPanel';
+import { useAppStore } from '../store/useAppStore';
+import { PROVIDERS } from '../utils/provider';
 import type {
   AcpPermissionInput,
   AskUserQuestionInput,
@@ -41,6 +43,20 @@ export const ComposerPendingPermissionPanel = memo(function ComposerPendingPermi
   onSubmit,
 }: ComposerPendingPermissionPanelProps) {
   const parsed = useMemo(() => parsePermissionRequest(request), [request]);
+  const provider = useAppStore((s) => s.sessions[request.sessionId]?.provider);
+
+  // A question is its own card: who asks, one question at a time.
+  if (parsed.mode === 'question' && isAskUserQuestionInput(request.input)) {
+    return (
+      <DecisionPanel
+        key={request.toolUseId}
+        input={request.input}
+        agentName={PROVIDERS.find((p) => p.id === provider)?.label ?? 'The agent'}
+        pendingCount={pendingCount}
+        onSubmit={(result) => onSubmit(request.toolUseId, result)}
+      />
+    );
+  }
 
   return (
     <div className="overflow-hidden rounded-xl border border-[color-mix(in_srgb,var(--border)_82%,transparent)] bg-[var(--bg-primary)] shadow-[0_14px_36px_rgba(15,23,42,0.10)]">
@@ -78,15 +94,7 @@ export const ComposerPendingPermissionPanel = memo(function ComposerPendingPermi
 
       <div className="mx-4 border-t border-[var(--border)] sm:mx-5" />
 
-      {parsed.mode === 'question' && isAskUserQuestionInput(request.input) ? (
-        <div className="px-4 py-3 sm:px-5">
-          <DecisionPanel
-            chrome="bare"
-            input={request.input}
-            onSubmit={(result) => onSubmit(request.toolUseId, result)}
-          />
-        </div>
-      ) : isAcpPermissionInput(request.input) && request.input.provider === 'bubble' && request.input.toolName === 'ProjectTrust' ? (
+      {isAcpPermissionInput(request.input) && request.input.provider === 'bubble' && request.input.toolName === 'ProjectTrust' ? (
         <div className="flex flex-col gap-3 px-4 py-3 sm:px-5">
           <p data-bubble-project-trust className="max-h-48 overflow-auto whitespace-pre-wrap break-words text-sm text-[var(--text-secondary)]">
             {request.input.question}

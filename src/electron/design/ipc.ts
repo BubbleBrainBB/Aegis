@@ -1,4 +1,4 @@
-import { BrowserWindow, dialog, type SaveDialogOptions } from "electron";
+import { BrowserWindow, dialog, shell, type SaveDialogOptions } from "electron";
 import { writeFile } from "fs/promises";
 import { isAbsolute } from "path";
 import { randomUUID } from "crypto";
@@ -16,6 +16,9 @@ import { handOffDesign } from "./handoff";
 import { designFrameHtml } from "./html";
 import { getUserProfile } from "../libs/user-profile";
 import type { DesignAPI, DesignAuthor } from "../../shared/design-types";
+import { pageUrl, projectFor, checkedPath } from "./project/service";
+import { listProjectFiles } from "./project/files";
+import { projectCover } from "./project/cover";
 
 // The renderer never supplies authorship; profile lookups may spawn git.
 let profile: { at: number; name: Promise<string | undefined> } | undefined;
@@ -54,7 +57,16 @@ function recoverSandboxFrame(owner: BrowserWindow | undefined, frameName: unknow
 }
 
 export function registerDesignIpc() {
-  const handlers: Omit<DesignAPI, "onChanged"> = {
+  const handlers: Omit<DesignAPI, "onChanged" | "onShow"> = {
+    projectPage: async (x) => {
+      const doc = projectFor(x.sessionId, x.documentId);
+      return { url: await pageUrl(doc, checkedPath(doc, x.path)) };
+    },
+    projectFiles: (x) => listProjectFiles(projectFor(x.sessionId, x.documentId).folder!),
+    projectCover: (x) => projectCover(x.sessionId, x.documentId),
+    revealProject: async (x) => {
+      shell.showItemInFolder(projectFor(x.sessionId, x.documentId).folder!);
+    },
     list: (sessionId) => Promise.resolve(getDesignRepository().list(sessionId)),
     listAll: () => Promise.resolve(getDesignRepository().listAll()),
     join: (x) => Promise.resolve(getDesignRepository().join(x.sessionId, x.documentId)),

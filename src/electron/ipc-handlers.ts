@@ -39,6 +39,7 @@ import { sanitizeDesignSelectionRef } from '../shared/design-selection';
 import { designContextText } from './design/focus';
 import { setDesignProjectRoot } from './design/styles';
 import { setDesignAgentNamer, setDesignPromptSource } from './design/tools';
+import { setDesignFollowUp } from './design/project/tools';
 import { initializeToolCallerAttribution } from './libs/tool-caller-attribution';
 import { PROVIDER_LABELS } from './feishu/agent-settings';
 import { disposeSessionHttpServer, primeSessionToken, releaseKimiWidgetEntrySync, writeKimiWidgetEntry } from './libs/session-http-server';
@@ -5277,6 +5278,24 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
       }
     }
     return undefined;
+  });
+  // A design project's background review reports problems back to the chat
+  // that delivered the page, once that chat is idle.
+  setDesignFollowUp(async (sessionId, display, prompt) => {
+    const deadline = Date.now() + 30 * 60_000;
+    while (sessions.getSession(sessionId)?.status === 'running') {
+      if (Date.now() > deadline) return false;
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
+    const session = sessions.getSession(sessionId);
+    if (!session) return false;
+    return handleSessionContinue(mainWindow, {
+      sessionId,
+      prompt: display,
+      effectivePrompt: prompt,
+      workflowPrompt: 'event',
+      provider: (session.provider || 'claude') as AgentProvider,
+    });
   });
   // Design history names the agent that made a version.
   setDesignAgentNamer((sessionId) => {

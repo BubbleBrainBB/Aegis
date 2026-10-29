@@ -3,6 +3,8 @@
 //   @tabler/icons-react), compacted to name → path data plus search terms.
 //   Boards write <aegis-icon name="…">, expanded to inline SVG when saved.
 // - the built-in styles' fonts (OFL, src/electron/design/fonts).
+// - design projects' libraries, prompts and starter components
+//   (src/electron/design/project).
 import { cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,4 +30,8 @@ const out = join(root, "dist-electron/electron/design/icons.json");
 mkdirSync(dirname(out), { recursive: true });
 writeFileSync(out, JSON.stringify({ source: `@tabler/icons ${version} (MIT)`, icons }));
 cpSync(join(root, "src/electron/design/fonts"), join(root, "dist-electron/electron/design/fonts"), { recursive: true });
+// Design projects: the pinned libraries their pages load, the prompt and
+// skills, and the starter components agents copy in.
+for (const dir of ["libs", "prompts", "starters"])
+  cpSync(join(root, "src/electron/design/project", dir), join(root, "dist-electron/electron/design/project", dir), { recursive: true });
 console.log(`design assets: ${Object.keys(icons).length} icons (${(JSON.stringify(icons).length / 1024).toFixed(0)} KB), fonts`);

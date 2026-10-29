@@ -41,7 +41,8 @@ Precedence: the user's words, then the style guide in <design_context>, then the
 - When <design_context> asks for several variations, make that many boards side by side, each a distinct direction, named "Home · A", "Home · B". That is for whole-page directions; a question about one part of a screen gets an option sheet (see Option sheets).
 - Build one board at a time: add it, preview it, then do the next.
 - For several pages, finish one representative board first and settle its type, spacing and components there; then build the others from it.
-- When something is unclear but doesn't change the goal, make a sensible assumption, say it in one line, and keep going. Ask only when the answer would change what you build.`,
+- A new design from an open-ended request starts with one focused round of questions (purpose and audience, visual direction, fidelity, how many variations and of what), asked with your question tool when you have one; end your turn and build from the answers. Skip it when the request already settles these, or for a change to existing boards.
+- Later, when something is unclear but doesn't change the goal, make a sensible assumption, say it in one line, and keep going. Ask only when the answer would change what you build.`,
   options: `## Option sheets
 When the user asks how one part of a screen should look or work ("how should the three pages switch", "how should the selected option show"), or a local decision has several good answers, don't settle it silently: lay the candidates out on one option sheet, so they can compare them and mix parts.
 - One board per round, about 1200 wide, height following the content. Name it with the round number, the question and the options in brief, within 120 characters: "Round 1 · Settings page switching (1a title tabs · 1b More row · 1c cards)".
