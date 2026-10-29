@@ -3,6 +3,7 @@ import { getDesignRepository } from "./service";
 import { findDesignLayer, readDesignLayers } from "../../shared/design-layers";
 import type { DesignDocument, DesignSummary } from "../../shared/design-types";
 import type { DesignSelectionRef } from "../../shared/types";
+import { moveDesignInstructions, takeDesignInstructions } from "./project/prompts";
 
 /**
  * The design a conversation has open and what is in view, as the renderer
@@ -14,6 +15,8 @@ export interface DesignFocus {
   pageId?: string;
   visibleBoardIds?: string[];
   focusedBoardId?: string;
+  /** A design project: the page on screen, relative to its folder. */
+  path?: string;
 }
 /** What the user asked for in the design composer: a style guide and how many directions. */
 export interface DesignComposerPrefs {
@@ -40,6 +43,7 @@ export function getDesignComposerPrefs(sessionId: string): DesignComposerPrefs {
 }
 /** A draft chat became a real session: what it had open and picked moves along. */
 export function moveDesignFocus(from: string, to: string) {
+  moveDesignInstructions(from, to);
   const f = focus.get(from);
   if (f) focus.set(to, f);
   focus.delete(from);
@@ -88,6 +92,7 @@ export function setDesignFocus(
   focus.set(sessionId, {
     documentId, pageId: id(value?.pageId), visibleBoardIds: boardIds(value?.visibleBoardIds),
     focusedBoardId: id(value?.focusedBoardId),
+    path: typeof value?.path === "string" && value.path.length <= 500 ? value.path : undefined,
   });
 }
 
@@ -145,8 +150,11 @@ export function designContextText(sessionId: string, selection?: DesignSelection
   const open = f && all.find((d) => d.id === f.documentId);
   // Only a design this conversation can use; the list is its access.
   const picked = selection && all.find((d) => d.id === selection.documentId);
+  // The project prompt, once, for a chat that works on a design project.
+  const instructions = takeDesignInstructions(sessionId, open?.kind === "project" || designs.some((d) => d.kind === "project"));
+  if (open?.kind === "project") return instructions + projectContext(open, f!, designs, asks);
   if (!designs.length && !open && !picked)
-    return asks.length ? `\n\n<design_context>\n${asks.join("\n")}\n</design_context>` : "";
+    return instructions + (asks.length ? `\n\n<design_context>\n${asks.join("\n")}\n</design_context>` : "");
   const lines: string[] = [];
   let selected: string[] = [];
   if (picked && selection) {
@@ -176,5 +184,17 @@ export function designContextText(sessionId: string, selection?: DesignSelection
     lines.push(
       `${open ? "Other designs" : "Designs"} in this conversation: ${others.map((d) => `${label(d.title)} (documentId ${d.id})`).join(", ")}.`,
     );
+  return instructions + `\n\n<design_context>\n${[...lines, ...asks].join("\n")}\n</design_context>`;
+}
+
+/** The context for an open design project: its folder, its pages and the one on screen. */
+function projectContext(open: DesignSummary, f: DesignFocus, designs: DesignSummary[], asks: string[]): string {
+  const lines = [
+    `Open: design project ${label(open.title)} (documentId ${open.id}) in the folder ${JSON.stringify(open.folder ?? "")}. Write its files there with your file tools.`,
+    `Pages: ${open.pages?.length ? open.pages.map((p) => JSON.stringify(p)).join(", ") : "none yet"}.`,
+  ];
+  if (f.path) lines.push(`On screen: ${JSON.stringify(f.path)}.`);
+  const others = designs.filter((d) => d.id !== open.id).slice(0, 8);
+  if (others.length) lines.push(`Other designs in this conversation: ${others.map((d) => `${label(d.title)} (${d.kind === "project" ? "project" : "canvas"}, documentId ${d.id})`).join(", ")}.`);
   return `\n\n<design_context>\n${[...lines, ...asks].join("\n")}\n</design_context>`;
 }

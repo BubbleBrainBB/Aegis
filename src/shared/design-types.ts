@@ -107,12 +107,33 @@ export interface DesignDocument {
    * project has a design system.
    */
   system?: string | null;
+  /**
+   * "project": a folder of HTML/JSX files the agent writes with its own file
+   * tools and the app serves and previews (boards stay empty). Unset: a
+   * canvas of boards.
+   */
+  kind?: DesignKind;
+  /** A project's folder, absolute. */
+  folder?: string;
+  /** A project's files at this version, by content hash. */
+  files?: DesignProjectFile[];
+}
+export type DesignKind = "canvas" | "project";
+export interface DesignProjectFile {
+  /** Relative to the project folder, with forward slashes. */
+  path: string;
+  hash: string;
+  size: number;
 }
 export type DesignSummary = Pick<
   DesignDocument,
   "id" | "sessionId" | "title" | "revision" | "updatedAt"
 > & {
   boardCount: number;
+  kind?: DesignKind;
+  folder?: string;
+  /** A project's deliverables: its top-level .html files. */
+  pages?: string[];
   project: string | null;
   chats: string[];
   /** In list(): whether the asking chat is one of the design's chats. */
@@ -169,8 +190,13 @@ export interface DesignEvent {
   title: string;
   revision: number;
   created: boolean;
-  /** "comments" and "chats" changes never mint a document version. */
-  scope?: "document" | "comments" | "chats";
+  /**
+   * "comments" and "chats" changes never mint a document version; "files" is
+   * a project's folder changing on disk, before it is saved as a version.
+   */
+  scope?: "document" | "comments" | "chats" | "files";
+  /** For "files": the changed paths, relative to the project folder. */
+  paths?: string[];
   /** The design was deleted. */
   deleted?: boolean;
 }
@@ -195,6 +221,16 @@ export interface DesignStyleSummary {
 }
 
 export interface DesignAPI {
+  /** A design project page's URL on its local server (starts the server). */
+  projectPage(input: { sessionId: string; documentId: string; path: string }): Promise<{ url: string }>;
+  /** A design project's files on disk now (not a saved version). */
+  projectFiles(input: { sessionId: string; documentId: string }): Promise<{ path: string; size: number }[]>;
+  /** A small screenshot of a design project's first page, for its card (cached per version). */
+  projectCover(input: { sessionId: string; documentId: string }): Promise<{ dataUrl: string } | null>;
+  /** Shows a design project's folder in Finder / Explorer. */
+  revealProject(input: { sessionId: string; documentId: string }): Promise<void>;
+  /** The agent asked to show a project page (design_show / design_ready). */
+  onShow(callback: (event: { sessionId: string; documentId: string; path: string }) => void): () => void;
   list(sessionId: string): Promise<DesignSummary[]>;
   /** Designs across every conversation, newest first. */
   listAll(): Promise<DesignSummary[]>;
@@ -268,6 +304,8 @@ export interface DesignAPI {
     pageId?: string;
     visibleBoardIds?: string[];
     focusedBoardId?: string;
+    /** A design project: the page on screen, relative to its folder. */
+    path?: string;
     /** false: this panel closed; clears the focus only if it is still this design. */
     open?: boolean;
   }): Promise<void>;

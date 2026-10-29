@@ -2783,3 +2783,131 @@ details.design-section > .design-grid {
 .design-slide-go > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .design-slides textarea { width: 100%; font: 12px/1.45 inherit; resize: vertical; }
 .design-board-preview-overlay .design-preview-stage.is-presenting { padding-right: 324px; }
+
+/* Design projects: a folder of pages, the page itself live beside its file list. */
+.design-project-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.design-project-files {
+  flex: 0 0 208px;
+  min-width: 0;
+  overflow: auto;
+  padding: 12px 8px;
+  border-right: 1px solid var(--d-line);
+}
+.design-project-files h3 {
+  margin: 12px 8px 6px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.design-project-files h3:first-child {
+  margin-top: 0;
+}
+.design-project-files ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.design-project-files li > button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  text-align: left;
+  padding: 5px 8px;
+}
+.design-project-files li > button > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.design-project-files li > button.is-active {
+  background: var(--sidebar-item-active);
+}
+.design-project-file-list li {
+  padding: 3px 8px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.design-project-empty-note {
+  margin: 0 8px;
+  color: var(--text-muted);
+}
+.design-project-current {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+.design-project-stage {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  background: var(--bg-secondary);
+}
+.design-project-frame {
+  flex: 1;
+  border: 0;
+  background: #fff;
+}
+.design-project-placeholder {
+  margin: auto;
+  max-width: 360px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.design-project-placeholder h2 {
+  margin: 0 0 8px;
+  font-size: 17px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+.design-panel .design-project-errors-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--error);
+}
+.design-project-errors {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  max-width: min(520px, calc(100% - 20px));
+  max-height: 50%;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  color: var(--error);
+}
+.design-project-errors ul {
+  margin: 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.design-cover--project img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top center;
+}

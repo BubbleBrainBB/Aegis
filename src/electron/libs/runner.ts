@@ -273,6 +273,14 @@ async function loadClaudeAgentSdk(): Promise<ClaudeAgentSdkModule> {
 }
 
 /**
+ * Claude Code tells SDK sessions "This session is non-interactive" when an MCP
+ * server still needs OAuth (it means the browser sign-in can't run here), and
+ * agents then stop asking the user anything. An Aegis chat is interactive.
+ */
+const AEGIS_INTERACTIVE_NOTE =
+  'This is an Aegis chat, and it is interactive: the user reads your replies, and questions you ask with AskUserQuestion reach them as a card they answer. Only an MCP server\'s OAuth sign-in cannot run here; that never means you cannot ask the user.';
+
+/**
  * Warm the Claude Agent SDK module at app startup so the first session does
  * not pay the dynamic-import cost on its first message. Fire-and-forget; a
  * failure here is non-fatal (runClaude will retry the import and surface the
@@ -789,6 +797,11 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
       });
       const { executable, executableArgs, env: runtimeEnv, pathToClaudeCodeExecutable } = getRequiredClaudeCodeRuntime();
       Object.assign(env, runtimeEnv);
+      // claude.ai connectors stay off in Aegis's Claude sessions (the user's own
+      // settings are untouched): unauthenticated ones make Claude Code tell the
+      // model the session is non-interactive, and it stops asking the user.
+      // An explicit ENABLE_CLAUDEAI_MCP_SERVERS still wins.
+      env.ENABLE_CLAUDEAI_MCP_SERVERS ??= 'false';
 
       // 调试日志
       console.log('[Runner Debug]', {
@@ -818,9 +831,10 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
       // touched. Resolves to null outside a git repo (turn diffs then fall
       // back to tool-change records).
       const initialTurnTreePromise = captureGitTreeSnapshot(sessionCwd);
-      const memoryAppend = ENABLE_AEGIS_MEMORY_FOR_NATIVE_PROVIDERS
-        ? [await buildMemoryContext(session.cwd ?? undefined), MEMORY_SYSTEM_PROMPT].filter(Boolean).join('\n\n')
-        : '';
+      const memoryAppend = [
+        AEGIS_INTERACTIVE_NOTE,
+        ...(ENABLE_AEGIS_MEMORY_FOR_NATIVE_PROVIDERS ? [await buildMemoryContext(session.cwd ?? undefined), MEMORY_SYSTEM_PROMPT] : []),
+      ].filter(Boolean).join('\n\n');
       const providerMcpServers = getMcpServers(session.cwd ?? undefined);
       const mcpServers = ENABLE_AEGIS_MEMORY_FOR_NATIVE_PROVIDERS
         ? {

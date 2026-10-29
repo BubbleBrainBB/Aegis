@@ -12,6 +12,7 @@ import type {
   DesignCommentStatus,
   DesignDocument,
   DesignEvent,
+  DesignProjectFile,
   DesignRevisionInfo,
   DesignSummary,
   DesignThreadMessage,
@@ -262,6 +263,20 @@ function canvasState(document?: DesignDocument) {
 }
 type Head = { id: string; session_id: string; project: string | null; revision: number };
 const cleanProject = (path: string | null | undefined) => (path ? path.replace(/[\\/]+$/, "") || null : null);
+/** A project's deliverables: its top-level HTML pages. */
+const projectPages = (files: DesignProjectFile[]) =>
+  files.filter((f) => !f.path.includes("/") && /\.html?$/i.test(f.path)).map((f) => f.path);
+/** One line for a project version: which files it added, changed and removed. */
+function projectChangeSummary(before: DesignProjectFile[], after: DesignProjectFile[]): string {
+  const old = new Map(before.map((f) => [f.path, f.hash]));
+  const added = after.filter((f) => !old.has(f.path)).map((f) => f.path);
+  const changed = after.filter((f) => old.has(f.path) && old.get(f.path) !== f.hash).map((f) => f.path);
+  const kept = new Set(after.map((f) => f.path));
+  const removed = before.filter((f) => !kept.has(f.path)).map((f) => f.path);
+  const part = (verb: string, paths: string[]) =>
+    paths.length ? `${verb} ${paths.slice(0, 3).join(", ")}${paths.length > 3 ? ` and ${paths.length - 3} more` : ""}` : "";
+  return [part("Added", added), part("Changed", changed), part("Removed", removed)].filter(Boolean).join("; ") || "Saved files";
+}
 const conflict = () => {
   throw new Error(
     "REVISION_CONFLICT: read the latest design, merge your change, and retry. Nothing was saved.",
@@ -302,6 +317,23 @@ export class DesignRepository {
     this.migratePrompts();
     this.migrateCanvas();
     this.migrateChats();
+    this.migrateProjects();
+  }
+  /**
+   * v6: designs can be projects, folders of files on disk. A document row
+   * keeps its folder (to find a project by folder), and each version's files
+   * are kept by content hash so history can show and restore them.
+   */
+  private migrateProjects() {
+    if ((this.db.pragma("user_version", { simple: true }) as number) >= 6) return;
+    this.db.transaction(() => {
+      const columns = this.db.prepare("PRAGMA table_info(design_documents)").all() as { name: string }[];
+      if (!columns.some((c) => c.name === "folder"))
+        this.db.exec("ALTER TABLE design_documents ADD COLUMN folder TEXT");
+      this.db.exec(`CREATE TABLE IF NOT EXISTS design_files(hash TEXT PRIMARY KEY, bytes BLOB NOT NULL);
+        CREATE INDEX IF NOT EXISTS design_by_folder ON design_documents(folder);`);
+      this.db.pragma("user_version = 6");
+    })();
   }
   /**
    * v5: a design is no longer one chat's. It keeps the project it was made in,
@@ -544,6 +576,9 @@ export class DesignRepository {
       revision: d.revision,
       updatedAt: d.updatedAt,
       boardCount: d.boards.length,
+      ...(d.kind === "project"
+        ? { kind: "project" as const, folder: d.folder, pages: projectPages(d.files ?? []) }
+        : {}),
       project: d.project ?? null,
       chats: d.chats ?? [],
     };
@@ -818,6 +853,111 @@ export class DesignRepository {
       },
       signal,
     );
+  }
+  /**
+   * Creates a project design: a folder the agent writes files into. A folder
+   * is one project; creating it again returns the project already there.
+   */
+  createProject(
+    sessionId: string,
+    title: string,
+    folder: string,
+    operationId: string,
+    signal?: AbortSignal,
+    author: DesignAuthor = DEFAULT_AGENT_AUTHOR,
+    options: { request?: DesignRequest; system?: string | null } = {},
+  ): DesignDocument {
+    const existing = this.projectForFolder(folder);
+    if (existing) {
+      this.join(sessionId, existing);
+      return this.read(sessionId, existing);
+    }
+    const d = this.mutate(
+      sessionId,
+      operationId,
+      { title, folder },
+      { author, summary: `Created ${title.trim()}`, prompt: options.request?.prompt, requestId: options.request?.id },
+      () => ({
+        id: `des_${randomUUID()}`,
+        sessionId,
+        title: name.parse(title),
+        brief: "",
+        revision: 0,
+        boards: [],
+        marks: [],
+        comments: [],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        kind: "project",
+        folder,
+        files: [],
+        ...(options.system ? { system: options.system } : {}),
+      }),
+      signal,
+    );
+    this.db.prepare("UPDATE design_documents SET folder=? WHERE id=?").run(folder, d.id);
+    return d;
+  }
+  /** The project design kept in this folder, if any. */
+  projectForFolder(folder: string): string | undefined {
+    return (this.db.prepare("SELECT id FROM design_documents WHERE folder=?").get(folder) as { id: string } | undefined)?.id;
+  }
+  /**
+   * Saves a project's files as a new version when they differ from the
+   * current one; returns the document either way (and whether it changed).
+   */
+  saveProjectFiles(
+    sessionId: string,
+    documentId: string,
+    files: { path: string; bytes: Buffer }[],
+    meta: { author?: DesignAuthor; summary?: string; request?: DesignRequest } = {},
+  ): { document: DesignDocument; changed: boolean } {
+    const current = this.read(sessionId, documentId);
+    if (current.kind !== "project") throw new Error("Not a project design.");
+    const next: DesignProjectFile[] = files
+      .map(({ path, bytes }) => ({ path, hash: createHash("sha256").update(bytes).digest("hex"), size: bytes.length }))
+      .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    const same =
+      next.length === (current.files ?? []).length &&
+      next.every((f, i) => f.path === current.files![i].path && f.hash === current.files![i].hash);
+    if (same) return { document: current, changed: false };
+    const insert = this.db.prepare("INSERT OR IGNORE INTO design_files VALUES(?,?)");
+    const byPath = new Map(files.map((f) => [f.path, f.bytes]));
+    this.db.transaction(() => {
+      for (const f of next) insert.run(f.hash, byPath.get(f.path)!);
+    })();
+    const document = this.mutate(
+      sessionId,
+      `files_${randomUUID()}`,
+      { documentId, files: next.map((f) => f.hash) },
+      {
+        author: meta.author ?? DEFAULT_AGENT_AUTHOR,
+        summary: meta.summary ?? projectChangeSummary(current.files ?? [], next),
+        prompt: meta.request?.prompt,
+        requestId: meta.request?.id,
+      },
+      () => ({ ...this.read(sessionId, documentId), files: next }),
+    );
+    return { document, changed: true };
+  }
+  /** One file of a project, at a version (default: the latest saved). */
+  projectFile(sessionId: string, documentId: string, path: string, rev?: number): Buffer {
+    const d = this.read(sessionId, documentId, rev);
+    const file = d.files?.find((f) => f.path === path);
+    if (!file) throw new Error(`No file ${JSON.stringify(path)} in version ${d.revision}.`);
+    const row = this.db.prepare("SELECT bytes FROM design_files WHERE hash=?").get(file.hash) as { bytes: Buffer } | undefined;
+    if (!row) throw new Error("Design file content missing.");
+    return row.bytes;
+  }
+  /** The project's folder changed on disk (not saved as a version yet). */
+  filesChanged(documentId: string, paths: string[]) {
+    const row = this.db.prepare("SELECT session_id, title, revision FROM design_documents WHERE id=?").get(documentId) as
+      | { session_id: string; title: string; revision: number }
+      | undefined;
+    if (!row) return;
+    try {
+      this.notify({ sessionId: row.session_id, documentId, title: row.title, revision: row.revision, created: false, scope: "files", paths });
+    } catch {}
   }
   /** Whether this conversation can use a design, without reading its boards. */
   owns(sessionId: string, documentId: string): boolean {

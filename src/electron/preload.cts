@@ -1095,6 +1095,15 @@ contextBridge.exposeInMainWorld('electron', {
       ipcRenderer.on('design:changed', handler);
       return () => ipcRenderer.removeListener('design:changed', handler);
     },
+    projectPage: (input?: unknown) => ipcRenderer.invoke('design:projectPage', input),
+    projectFiles: (input?: unknown) => ipcRenderer.invoke('design:projectFiles', input),
+    revealProject: (input?: unknown) => ipcRenderer.invoke('design:revealProject', input),
+    projectCover: (input?: unknown) => ipcRenderer.invoke('design:projectCover', input),
+    onShow: (callback: (event: unknown) => void) => {
+      const handler = (_: unknown, event: unknown) => callback(event);
+      ipcRenderer.on('design:show', handler);
+      return () => ipcRenderer.removeListener('design:show', handler);
+    },
   },
   copyWidgetText: (text: string): Promise<boolean> => ipcRenderer.invoke('widget:copy-text', text),
   prepareCodexVisualization: (input: {

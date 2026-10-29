@@ -36,6 +36,7 @@ export function DesignCover({ sessionId, documentId, revision }: { sessionId: st
     return () => observer.disconnect();
   }, []);
 
+  if (doc?.kind === "project") return <ProjectCover sessionId={sessionId} documentId={documentId} revision={revision} />;
   const page = doc ? designPages(doc)[0].id : undefined;
   const boards = doc
     ? doc.boards
@@ -68,6 +69,26 @@ export function DesignCover({ sessionId, documentId, revision }: { sessionId: st
     <div ref={host} className="design-cover" data-design-cover={documentId} aria-hidden="true">
       {content}
       {doc && !boards.length ? <span className="design-cover-empty">No boards yet</span> : null}
+    </div>
+  );
+}
+
+/** A design project's cover: a screenshot of its first page, taken by the app. */
+function ProjectCover({ sessionId, documentId, revision }: { sessionId: string; documentId: string; revision: number }) {
+  const [cover, setCover] = useState<string | null | undefined>(undefined);
+  useEffect(() => {
+    let alive = true;
+    void window.electron.design
+      ?.projectCover({ sessionId, documentId })
+      .then((c) => alive && setCover(c?.dataUrl ?? null))
+      .catch(() => alive && setCover(null));
+    return () => {
+      alive = false;
+    };
+  }, [sessionId, documentId, revision]);
+  return (
+    <div className="design-cover design-cover--project" data-design-cover={documentId} aria-hidden="true">
+      {cover ? <img src={cover} alt="" /> : cover === null ? <span className="design-cover-empty">No pages yet</span> : null}
     </div>
   );
 }

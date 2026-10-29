@@ -281,8 +281,9 @@ const CONFIG_READ_TIMEOUT_MS = envTimeout('AEGIS_CODEX_CONFIG_READ_TIMEOUT_MS', 
  * mockup" went to imagegen instead of the Aegis design canvas.
  */
 const CODEX_DESIGN_CANVAS_INSTRUCTIONS =
-  'Aegis provides a design canvas through its aegis-sessions tools (design_guide, design_create, design_update, design_preview and the other design_* tools). ' +
-  'When the user asks for a design, mockup, wireframe, UI screen, prototype or 设计稿, draw it on that canvas, starting with design_guide. ' +
+  'Aegis provides a design canvas and design projects through its aegis-sessions tools (design_guide, design_create, design_update, design_project_create and the other design_* tools). ' +
+  'When the user asks for a design, mockup, wireframe, UI screen or 设计稿, first ask your clarifying questions when the request is new or open-ended, then draw it on the Aegis canvas, starting with design_guide (design_create, design_update). ' +
+  'Only when the user explicitly asks for an interactive or clickable prototype, a working app or HTML files, make a design project with design_project_create and follow the instructions it returns. ' +
   'These tools may be left out of the tool description; they are still on the `tools` object, so find them by filtering ALL_TOOLS for names containing "design_". ' +
   'Use imagegen / image_gen only when the user explicitly wants a generated bitmap image such as a photo, illustration or texture, not for UI design.';
 

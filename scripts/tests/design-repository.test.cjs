@@ -373,7 +373,10 @@ try {
     assert.throws(() => pr.boardPrompts("other", d1.id), /not found/i);
     pr.close();
     const raw = new (require("better-sqlite3"))(join(root, "prompts.db"));
-    assert.equal(raw.pragma("user_version", { simple: true }), 5);
+    assert.equal(raw.pragma("user_version", { simple: true }), 6);
+    // v6: projects keep their folder, and their files by content hash.
+    assert.ok(raw.prepare("PRAGMA table_info(design_documents)").all().some((c) => c.name === "folder"));
+    assert.ok(raw.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='design_files'").get());
     raw.close();
   }
 
