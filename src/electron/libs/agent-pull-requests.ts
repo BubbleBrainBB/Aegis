@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { StreamMessage } from '../../shared/types';
 import * as sessions from './session-store';
-import { parseGitHubRepoFromRemote, pullRequestExtras } from './git-pull-requests';
+import { parseGitHubRepoFromRemote, parseGitHubPullRequestUrl, pullRequestExtras, sameGitHubRepo, samePullRequest } from './git-pull-requests';
 
 const exec = promisify(execFile);
 
@@ -57,14 +57,15 @@ export async function attachAgentPullRequest(sessionId: string, url: string): Pr
   const session = sessions.getSession(sessionId);
   if (!session || session.hidden_from_threads || session.conversation_scope === 'dm') return false;
   const cwd = session.worktree_path || session.cwd || session.project_cwd;
-  const match = url.match(/^https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/([1-9]\d*)$/i);
-  if (!cwd || !match) return false;
+  const prRepo = parseGitHubPullRequestUrl(url);
+  if (!cwd || !prRepo) return false;
 
   const [repoRoot, remotes] = await Promise.all([git(cwd, ['rev-parse', '--show-toplevel']), git(cwd, ['remote', '-v'])]);
-  const ownsRepo = remotes.split('\n').some(line => {
-    const repo = parseGitHubRepoFromRemote(line.split(/\s+/)[1] ?? '');
-    return repo?.owner.toLowerCase() === match[1].toLowerCase() && repo.repo.toLowerCase() === match[2].toLowerCase();
-  });
+  const remoteRepos = remotes.split('\n').flatMap(line => parseGitHubRepoFromRemote(line.split(/\s+/)[1] ?? '') ?? []);
+  const literal = (repo: { owner: string; repo: string }) =>
+    `${repo.owner}/${repo.repo}`.toLowerCase() === `${prRepo.owner}/${prRepo.repo}`.toLowerCase();
+  const ownsRepo = remoteRepos.some(literal) ||
+    (await Promise.all(remoteRepos.map(repo => sameGitHubRepo(repo, prRepo)))).some(Boolean);
   if (!ownsRepo) return false;
 
   const { stdout } = await exec('gh', ['pr', 'view', url, '--json', 'number,title,state,url,headRefName,isDraft,additions,deletions'], {
@@ -76,7 +77,7 @@ export async function attachAgentPullRequest(sessionId: string, url: string): Pr
   };
   const state = pr.state === 'OPEN' ? 'open' : pr.state === 'MERGED' ? 'merged' : pr.state === 'CLOSED' ? 'closed' : null;
   if (typeof pr.number !== 'number' || typeof pr.title !== 'string' || typeof pr.url !== 'string' ||
-      pr.url.toLowerCase() !== url.toLowerCase() || !state) return false;
+      !state || !(await samePullRequest(pr.url, url))) return false;
 
   return sessions.attachSessionPullRequest(sessionId, {
     number: pr.number,

@@ -98,3 +98,52 @@ export async function getGitPullRequestInfo(input: {
 
   return { status: 'unknown', pr: null };
 }
+
+type GitHubRepo = { owner: string; repo: string };
+
+const REPO_NAME_TTL_MS = 10 * 60_000;
+const repoNames = new Map<string, { name: Promise<string | null>; at: number }>();
+
+function repoKey(repo: GitHubRepo) {
+  return `${repo.owner}/${repo.repo}`.toLowerCase();
+}
+
+/**
+ * owner/repo, lowercased, as GitHub names the repository now. A renamed owner,
+ * a transferred or a renamed repository keeps answering at its old name
+ * (GitHub redirects), so remotes and stored PR URLs can go on using it while
+ * gh reports the new one. Null when GitHub cannot be asked.
+ */
+function currentGitHubRepoName(repo: GitHubRepo): Promise<string | null> {
+  const key = repoKey(repo);
+  const cached = repoNames.get(key);
+  if (cached && Date.now() - cached.at < REPO_NAME_TTL_MS) return cached.name;
+  // A full URL pins github.com; a bare owner/repo goes to GH_HOST or gh's default host.
+  const name = execFileAsync('gh', ['repo', 'view', `https://github.com/${key}`, '--json', 'nameWithOwner', '--jq', '.nameWithOwner'], {
+    timeout: 10000,
+  }).then(({ stdout }) => stdout.trim().toLowerCase() || null, () => null);
+  repoNames.set(key, { name, at: Date.now() });
+  // Offline or signed out: ask again next time rather than for the whole TTL.
+  void name.then(found => { if (!found && repoNames.get(key)?.name === name) repoNames.delete(key); });
+  return name;
+}
+
+/** Whether two github.com owner/repo names are the same repository today. */
+export async function sameGitHubRepo(a: GitHubRepo, b: GitHubRepo): Promise<boolean> {
+  if (repoKey(a) === repoKey(b)) return true;
+  const [nameA, nameB] = await Promise.all([currentGitHubRepoName(a), currentGitHubRepoName(b)]);
+  return (nameA ?? repoKey(a)) === (nameB ?? repoKey(b));
+}
+
+export function parseGitHubPullRequestUrl(url: string): (GitHubRepo & { number: number }) | null {
+  const match = url.match(/^https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/([1-9]\d*)$/i);
+  return match ? { owner: match[1], repo: match[2], number: Number(match[3]) } : null;
+}
+
+/** Whether two PR URLs name the same PR, across owner and repository renames. */
+export async function samePullRequest(a: string, b: string): Promise<boolean> {
+  if (a.toLowerCase() === b.toLowerCase()) return true;
+  const prA = parseGitHubPullRequestUrl(a);
+  const prB = parseGitHubPullRequestUrl(b);
+  return !!prA && !!prB && prA.number === prB.number && sameGitHubRepo(prA, prB);
+}
