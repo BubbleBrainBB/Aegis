@@ -5,7 +5,6 @@ import { pptxToHtml } from '@jvmr/pptx-to-html';
 import { toast } from 'sonner';
 import { useAppStore } from '../store/useAppStore';
 import { MDContent } from '../render/markdown';
-import { HighlightedCode } from './HighlightedCode';
 import TextFileReader from './TextFileReader';
 import { FileTypeIcon } from './FileTypeIcon';
 import { CsvPreview, XlsxPreview } from './SpreadsheetPreview';
@@ -3544,11 +3543,13 @@ export function ProjectTreePanel({
                 )}
 
                 {!previewLoading && selectedPreview?.kind === 'html' && (
-                  <HighlightedCode
-                    code={selectedPreview.text}
-                    language="html"
-                    revealTarget={activeFileRevealTarget}
-                    className="file-preview-code min-h-full rounded-none"
+                  <ProjectTextEditor
+                    ref={registerTextEditorBridge}
+                    value={selectedPreview.text}
+                    fileName={selectedPreview.name}
+                    scrollTarget={activeFileRevealTarget}
+                    readOnly
+                    plainTextFallback
                   />
                 )}
 
@@ -3633,11 +3634,15 @@ export function ProjectTreePanel({
                         fileName={selectedPreview.name}
                       />
                     ) : (
-                      <HighlightedCode
-                        code={selectedPreview.text}
+                      // CodeMirror renders only the visible lines and parses
+                      // incrementally, so large previews stay responsive.
+                      <ProjectTextEditor
+                        ref={registerTextEditorBridge}
+                        value={selectedPreview.text}
                         fileName={selectedPreview.name}
-                        revealTarget={activeFileRevealTarget}
-                        className="file-preview-code min-h-full rounded-none"
+                        scrollTarget={activeFileRevealTarget}
+                        readOnly
+                        plainTextFallback
                       />
                     )}
                     {saveState === 'error' && saveError && (

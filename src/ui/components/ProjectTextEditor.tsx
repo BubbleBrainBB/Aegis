@@ -40,6 +40,13 @@ interface ProjectTextEditorProps {
   fileName?: string;
   /** Apply the Codex-like source treatment used only by Markdown files. */
   markdownSourceStyle?: boolean;
+  /** View-only: no edits, no caret; selection and copy still work. */
+  readOnly?: boolean;
+  /**
+   * Show files whose language isn't recognised as plain text instead of the
+   * Markdown default (for previews of arbitrary text like LICENSE).
+   */
+  plainTextFallback?: boolean;
 }
 
 export interface ProjectTextEditorHandle {
@@ -69,6 +76,12 @@ function resolveLanguageDescription(fileName: string | undefined): LanguageDescr
   const name = fileName?.trim();
   if (!name) return null;
   return LanguageDescription.matchFilename(languages, name);
+}
+
+function readOnlyExtensions(readOnly: boolean) {
+  // editable=false also keeps the custom Tab/Shift-Tab keymap from firing,
+  // which dispatches changes directly and would bypass state.readOnly.
+  return readOnly ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : [];
 }
 
 const markdownSourceDecorator = new MatchDecorator({
@@ -103,6 +116,8 @@ export const ProjectTextEditor = forwardRef<ProjectTextEditorHandle, ProjectText
   scrollTarget,
   fileName,
   markdownSourceStyle = false,
+  readOnly = false,
+  plainTextFallback = false,
 }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -144,6 +159,8 @@ export const ProjectTextEditor = forwardRef<ProjectTextEditorHandle, ProjectText
   // undo stack (reconfiguring the compartment recreates the history field).
   const historyCompartmentRef = useRef(new Compartment());
   const languageCompartmentRef = useRef(new Compartment());
+  // The same instance can move between an editable and a read-only file.
+  const readOnlyCompartmentRef = useRef(new Compartment());
 
   useEffect(() => {
     onChangeRef.current = onChange;
@@ -242,6 +259,7 @@ export const ProjectTextEditor = forwardRef<ProjectTextEditorHandle, ProjectText
       // Language is applied by the fileName effect below (the editor instance
       // is reused across file switches, so it can't be fixed at mount).
       languageCompartmentRef.current.of([]),
+      readOnlyCompartmentRef.current.of(readOnlyExtensions(readOnly)),
       EditorView.theme({
         '&': {
           height: '100%',
@@ -297,6 +315,10 @@ export const ProjectTextEditor = forwardRef<ProjectTextEditorHandle, ProjectText
     if (!view) return;
     let cancelled = false;
     const description = resolveLanguageDescription(fileName);
+    if (!description && plainTextFallback) {
+      view.dispatch({ effects: languageCompartmentRef.current.reconfigure([]) });
+      return;
+    }
     if (!description) {
       view.dispatch({
         effects: languageCompartmentRef.current.reconfigure(
@@ -318,7 +340,13 @@ export const ProjectTextEditor = forwardRef<ProjectTextEditorHandle, ProjectText
     return () => {
       cancelled = true;
     };
-  }, [fileName]);
+  }, [fileName, plainTextFallback]);
+
+  useEffect(() => {
+    viewRef.current?.dispatch({
+      effects: readOnlyCompartmentRef.current.reconfigure(readOnlyExtensions(readOnly)),
+    });
+  }, [readOnly]);
 
   // Sync external value changes (e.g., file reload from disk)
   useEffect(() => {

@@ -361,6 +361,26 @@ import {
 } from './libs/git-service';
 
 const MAX_FILE_PREVIEW_BYTES = 5 * 1024 * 1024; // 5MB
+
+/** Read at most maxBytes of a file, however large it is on disk. */
+async function readFileUpTo(filePath: string, maxBytes: number): Promise<Buffer> {
+  const handle = await fsPromises.open(filePath, 'r');
+  try {
+    // Read in chunks so small files don't pay for a maxBytes allocation.
+    const chunks: Buffer[] = [];
+    let length = 0;
+    while (length < maxBytes) {
+      const chunk = Buffer.allocUnsafe(Math.min(256 * 1024, maxBytes - length));
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, length);
+      if (bytesRead === 0) break;
+      chunks.push(chunk.subarray(0, bytesRead));
+      length += bytesRead;
+    }
+    return Buffer.concat(chunks, length);
+  } finally {
+    await handle.close();
+  }
+}
 const MAX_STREAMING_PDF_PREVIEW_BYTES = 200 * 1024 * 1024; // 200MB
 const DIRECT_EDIT_BOOTSTRAP_MAX_TRANSCRIPT_CHARS = 20_000;
 
@@ -7724,6 +7744,38 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
       // cannot parse; route it to the system viewer instead of 'unsupported'.
       if (ext === '.docx' || ext === '.xls') {
         return { kind: 'binary', path: validation.targetReal, name, ext, size: stat.size };
+      }
+
+      // Anything else that reads as UTF-8 text (.mjs, .cjs, .c, Dockerfile,
+      // LICENSE, dotfiles…) previews as plain text instead of 'unsupported'.
+      try {
+        const buffer = await readFileUpTo(validation.targetReal, MAX_FILE_PREVIEW_BYTES + 1);
+        if (buffer.length > MAX_FILE_PREVIEW_BYTES) {
+          // Grew past the cap after the stat check above.
+          return {
+            kind: 'too_large',
+            path: validation.targetReal,
+            name,
+            ext,
+            size: buffer.length,
+            maxBytes: MAX_FILE_PREVIEW_BYTES,
+          };
+        }
+        if (!buffer.includes(0)) {
+          const text = new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+          return {
+            kind: 'text',
+            path: validation.targetReal,
+            name,
+            ext,
+            size: stat.size,
+            mtimeMs: stat.mtimeMs,
+            text,
+            editable: false,
+          };
+        }
+      } catch {
+        // Not valid UTF-8 (or unreadable): fall through to 'unsupported'.
       }
 
       return { kind: 'unsupported', path: validation.targetReal, name, ext, size: stat.size };
