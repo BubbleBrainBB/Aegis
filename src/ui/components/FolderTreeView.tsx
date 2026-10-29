@@ -519,12 +519,8 @@ export function FolderTreeView({
     });
   };
 
-  const runtimeBadgeFor = (session: SessionView, isSessionActive: boolean) =>
-    session.runtimeNotice
-      ? session.runtimeNotice
-      : !isSessionActive && session.status === 'running'
-        ? 'running'
-        : null;
+  const runtimeBadgeFor = (session: SessionView) =>
+    session.runtimeNotice ?? (session.status === 'running' ? 'running' : null);
   // 平铺列表只放会话本身；所属项目在悬停卡片里。按日期分组时（Codex 式）
   // 项目放在标题下的第二行，因为分组本身不再说明项目。
   /**
@@ -577,7 +573,7 @@ export function FolderTreeView({
         <SessionItem
           session={row}
           isActive={isSessionActive}
-          runtimeBadge={runtimeBadgeFor(row, isSessionActive)}
+          runtimeBadge={runtimeBadgeFor(row)}
           depth={rowDepth}
           nest={nest}
           pullRequests={view.showPullRequests ? prsBySession[row.id] : null}
@@ -771,7 +767,7 @@ export function FolderTreeView({
                           <SessionItem
                             session={row}
                             isActive={isSessionActive}
-                            runtimeBadge={runtimeBadgeFor(row, isSessionActive)}
+                            runtimeBadge={runtimeBadgeFor(row)}
                             depth={rowDepth}
                             nest={nest}
                             pullRequests={view.showPullRequests ? prsBySession[row.id] : null}
