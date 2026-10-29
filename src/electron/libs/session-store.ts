@@ -1368,10 +1368,21 @@ export function listAllSessionPullRequests(): { sessionId: string; pr: SessionPu
   return rows.map(row => ({ sessionId: row.session_id, pr: JSON.parse(row.data_json) as SessionPullRequest }));
 }
 
-/** Store a refreshed PR state without touching the association itself. */
-export function updateSessionPullRequestState(sessionId: string, pr: SessionPullRequest): void {
-  getDb().prepare("UPDATE session_pull_requests SET data_json = ? WHERE session_id = ? AND url = ? AND json_extract(data_json, '$.attachedAt') = ?")
-    .run(JSON.stringify(pr), sessionId, pr.url, pr.attachedAt);
+/**
+ * Store a refreshed PR state without touching the association itself. A PR
+ * GitHub now reports under a new URL (owner or repository renamed) moves to
+ * it, folding into an association that already has that URL.
+ */
+export function updateSessionPullRequestState(sessionId: string, pr: SessionPullRequest, previousUrl = pr.url): void {
+  const db = getDb();
+  db.transaction(() => {
+    const moved = db.prepare("UPDATE OR IGNORE session_pull_requests SET url = ?, data_json = ? WHERE session_id = ? AND url = ? AND json_extract(data_json, '$.attachedAt') = ?")
+      .run(pr.url, JSON.stringify(pr), sessionId, previousUrl, pr.attachedAt).changes > 0;
+    if (!moved && previousUrl !== pr.url) {
+      db.prepare("DELETE FROM session_pull_requests WHERE session_id = ? AND url = ? AND json_extract(data_json, '$.attachedAt') = ?")
+        .run(sessionId, previousUrl, pr.attachedAt);
+    }
+  })();
 }
 
 export function detachSessionPullRequest(sessionId: string, url: string, attachedAt: number): void {

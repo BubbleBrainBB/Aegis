@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { AttachSessionPullRequestInput, GitPullRequestSummary, SessionPullRequestView } from '../../shared/types';
 import * as sessions from './session-store';
-import { getGitPullRequestInfo, parseGitHubRepoFromRemote } from './git-pull-requests';
+import { getGitPullRequestInfo, parseGitHubRepoFromRemote, sameGitHubRepo, samePullRequest } from './git-pull-requests';
 
 const exec = promisify(execFile);
 
@@ -26,10 +26,12 @@ export async function listTaskPullRequests(sessionId: string, refresh = false): 
   const results = await Promise.all(items.map(async pr => {
     const result = await getGitPullRequestInfo({ cwd: undefined, branch: pr.url, originRepo: pullRequestUrl(pr.url) });
     // A removed worktree must not prevent refreshing an associated PR by URL.
-    const samePr = result.pr?.url.toLowerCase() === pr.url.toLowerCase();
+    const samePr = !!result.pr && await samePullRequest(result.pr.url, pr.url);
+    if (samePr && result.pr!.url !== pr.url) sessions.updateSessionPullRequestState(sessionId, { ...pr, ...result.pr! }, pr.url);
     return { ...pr, ...(samePr ? result.pr : null), lookupStatus: result.status === 'found' && !samePr ? 'unknown' as const : result.status };
   }));
-  // Do not resurrect attachments removed while the network request was running.
+  // Do not resurrect attachments removed while the network request was running
+  // (nor ones folded into an association under the PR's new URL).
   const current = sessions.listSessionPullRequests(sessionId);
   return results.filter(pr => current.some(item => item.url === pr.url && item.attachedAt === pr.attachedAt));
 }
@@ -58,7 +60,7 @@ export async function attachTaskPullRequest(input: AttachSessionPullRequestInput
     if (sessionCwd() !== input.cwd) throw new Error('Task workspace changed. Refresh and try again.');
     const env = await readEnvironment(input.cwd);
     if (env.repoRoot !== input.repoRoot || env.headBranch !== input.headBranch || env.headBranch === 'HEAD' ||
-        env.originRepo?.owner.toLowerCase() !== expected.owner.toLowerCase() || env.originRepo.repo.toLowerCase() !== expected.repo.toLowerCase()) {
+        !env.originRepo || !(await sameGitHubRepo(env.originRepo, expected))) {
       throw new Error('Repository or branch changed. Refresh and try again.');
     }
     return env;
@@ -66,7 +68,7 @@ export async function attachTaskPullRequest(input: AttachSessionPullRequestInput
   const env = await verify();
   // Resolve from the branch, never trust the renderer's PR title, state or URL.
   const found = await getGitPullRequestInfo({ cwd: input.cwd, branch: env.headBranch, originRepo: env.originRepo });
-  if (!found.pr || found.pr.url.toLowerCase() !== input.url.toLowerCase()) {
+  if (!found.pr || !(await samePullRequest(found.pr.url, input.url))) {
     throw new Error('Could not verify this branch pull request. Refresh and try again.');
   }
   await verify();
@@ -119,8 +121,8 @@ async function refreshSidebarPullRequests() {
   // line counts are known (associations made before they were recorded).
   await eachLimited(associations.filter(({ pr }) => pr.state === 'open' || pr.additions === undefined), async ({ sessionId, pr }) => {
     const result = await getGitPullRequestInfo({ cwd: undefined, branch: pr.url, originRepo: pullRequestUrl(pr.url) });
-    if (result.pr && result.pr.url.toLowerCase() === pr.url.toLowerCase() && changed(pr, result.pr)) {
-      sessions.updateSessionPullRequestState(sessionId, { ...pr, ...result.pr });
+    if (result.pr && (changed(pr, result.pr) || result.pr.url !== pr.url) && await samePullRequest(result.pr.url, pr.url)) {
+      sessions.updateSessionPullRequestState(sessionId, { ...pr, ...result.pr }, pr.url);
     }
   });
   const associated = new Set(associations.map(({ sessionId }) => sessionId));

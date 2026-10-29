@@ -78,7 +78,31 @@ app.whenReady().then(async()=>{
   assert.equal((await js('window.electron.listSessionPullRequests('+JSON.stringify(a.id)+')')).length,0);
   await service.attachTaskPullRequest({...input,headBranch:'other',url:url.replace('/42','/43')});
   sessions.deleteSession(a.id);assert.equal(sessions.listSessionPullRequests(a.id).length,0,'task deletion cascades');
-  sessions.close();win.destroy();console.log('session-pull-requests: command execution, error classification, validation, SQLite persistence, multiple PRs, race guards, preload/IPC/broadcast, deletion passed');app.exit(0);
+
+  // A renamed owner: the remote and older associations keep the old name, GitHub reports the new one.
+  const moved=path.join(__dirname,'moved');fs.mkdirSync(moved);
+  const movedGit=(...args)=>execFileSync('git',args,{cwd:moved,encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
+  movedGit('init','-b','feature/pr');movedGit('-c','user.name=QA','-c','user.email=qa@example.invalid','commit','--allow-empty','-m','test');
+  movedGit('remote','add','origin','https://github.com/old-owner/project.git');
+  const movedRoot=fs.realpathSync(moved);
+  const oldPr=n=>'https://github.com/old-owner/project/pull/'+n,newPr=n=>'https://github.com/new-owner/project/pull/'+n;
+  const c=sessions.createSession({title:'Moved',cwd:moved,provider:'claude'});
+  const movedInput={sessionId:c.id,cwd:moved,repoRoot:movedRoot,headBranch:'feature/pr',url:newPr(42)};
+  setMode('found',{owner:'new-owner'});
+  await assert.rejects(service.attachTaskPullRequest({...movedInput,url:'https://github.com/other/project/pull/42'}),/branch changed/,'still guards a renamed repository');
+  assert.equal((await service.attachTaskPullRequest(movedInput)).created,true,'attach under the new owner from the old remote');
+  const old=(n,attachedAt)=>({number:n,title:'Before rename',state:'open',url:oldPr(n),repoRoot:movedRoot,headBranch:'feature/pr',attachedAt});
+  sessions.attachSessionPullRequest(c.id,old(42,1));sessions.attachSessionPullRequest(c.id,old(7,2));
+  setMode('merged',{owner:'new-owner'});
+  const refreshed=await service.listTaskPullRequests(c.id,true);
+  assert.deepEqual(refreshed.map(pr=>[pr.url,pr.state]),[[newPr(42),'merged'],[newPr(7),'merged']],'refresh follows the rename');
+  assert.deepEqual(sessions.listSessionPullRequests(c.id).map(pr=>pr.url),[newPr(42),newPr(7)],'old URLs move; a duplicate folds into the new one');
+  const d=sessions.createSession({title:'Moved sidebar',cwd:moved,provider:'claude'});
+  sessions.attachSessionPullRequest(d.id,old(8,3));
+  const sidebarPrs=await service.listSidebarPullRequests(true);
+  assert.deepEqual(sidebarPrs[d.id].map(pr=>[pr.url,pr.state]),[[newPr(8),'merged']],'sidebar refresh follows the rename');
+  assert.equal(sessions.listSessionPullRequests(d.id)[0].url,newPr(8));
+  sessions.close();win.destroy();console.log('session-pull-requests: command execution, error classification, validation, SQLite persistence, multiple PRs, race guards, preload/IPC/broadcast, deletion, renamed owner passed');app.exit(0);
  }catch(error){console.error(error);app.exit(1)}
 });
 `;
@@ -87,16 +111,21 @@ import os, sys, json, time
 args = sys.argv[1:]
 if '--head' in args:
     print('unknown flag: --head', file=sys.stderr); sys.exit(1)
-assert args[:2] == ['pr', 'view'] and args[2] and args[3:] == ['--repo', 'test/project', '--json', 'number,title,state,url,isDraft,additions,deletions'], args
 f = json.load(open(os.environ['QA_GH_FIXTURE']))
+if args[:2] == ['repo', 'view']:
+    assert args[3:] == ['--json', 'nameWithOwner', '--jq', '.nameWithOwner'] and args[2].startswith('https://github.com/'), args
+    name = args[2][len('https://github.com/'):]
+    print({'old-owner/project': 'new-owner/project'}.get(name, name)); sys.exit(0)
+assert args[:2] == ['pr', 'view'] and args[2] and args[3] == '--repo' and args[5:] == ['--json', 'number,title,state,url,isDraft,additions,deletions'], args
 time.sleep(f.get('delay', 0))
 mode = f['mode']
 if mode in ['none', 'auth']:
     print('no pull requests found for branch' if mode == 'none' else 'authentication required', file=sys.stderr); sys.exit(1)
 if mode == 'malformed':
     print('{broken json'); sys.exit(0)
-number = f.get('number', 42)
-print(json.dumps(dict(number=number, title='Verified PR', state='MERGED' if mode == 'merged' else 'OPEN', url='https://github.com/test/project/pull/' + str(number), isDraft=False, additions=12, deletions=3)))
+number = int(args[2].rsplit('/', 1)[1]) if args[2].startswith('https://') else f.get('number', 42)
+url = 'https://github.com/' + f.get('owner', 'test') + '/project/pull/' + str(number)
+print(json.dumps(dict(number=number, title='Verified PR', state='MERGED' if mode == 'merged' else 'OPEN', url=url, isDraft=False, additions=12, deletions=3)))
 `;
 try {
   await mkdir(path.join(tmp,'bin'));await mkdir(path.join(tmp,'dist-react'));await mkdir(path.join(tmp,'profile'));

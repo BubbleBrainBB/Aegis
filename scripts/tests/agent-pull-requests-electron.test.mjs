@@ -54,17 +54,44 @@ app.whenReady().then(async()=>{
   assert.equal(pr.additions,21);assert.equal(pr.deletions,1);
   assert.deepEqual((await sidebar.listSidebarPullRequests(false))[a.id].map(p=>p.number),[42],'sidebar lists the PR');
   assert.equal(sessions.listSessionPullRequests(b.id).length,0);
-  sessions.close();console.log('agent-pull-requests: gh pr create detection, repository guard, verification, sidebar association passed');app.exit(0);
+
+  // A transferred repository: the remote keeps the old owner, gh prints the new one.
+  const repoViews=path.join(__dirname,'repo-views.log');
+  const views=()=>fs.existsSync(repoViews)?fs.readFileSync(repoViews,'utf8').trim().split('\n'):[];
+  fs.rmSync(repoViews,{force:true});
+  assert.equal(await agent.attachAgentPullRequest(a.id,url),false);
+  assert.deepEqual(views(),[],'a remote naming the PR repository asks gh nothing');
+  const moved=path.join(__dirname,'moved');fs.mkdirSync(moved);
+  const movedGit=(...args)=>execFileSync('git',args,{cwd:moved});
+  movedGit('init','-b','master');
+  movedGit('remote','add','origin','https://github.com/old-owner/project.git');
+  movedGit('remote','add','backup','git@github.com:gone/project.git');
+  const c=sessions.createSession({title:'Moved',cwd:moved,provider:'claude'});
+  process.env.GH_HOST='ghe.example.invalid';
+  assert.equal(await agent.attachAgentPullRequest(c.id,'https://github.com/other/repo/pull/42'),false,'still guards a moved repository');
+  assert.equal(await agent.attachAgentPullRequest(c.id,'https://github.com/Test/Project/pull/42'),true,'remote under the old owner, case-insensitive, past a failing remote');
+  delete process.env.GH_HOST;
+  assert.equal(sessions.listSessionPullRequests(c.id).length,1);
+  assert.ok(views().length>0&&views().every(v=>v.startsWith('https://github.com/')),'lookups pin github.com: '+views());
+  sessions.close();console.log('agent-pull-requests: gh pr create detection, repository guard, verification, sidebar association, transferred repository passed');app.exit(0);
  }catch(error){console.error(error);app.exit(1)}
 });
 `;
 const gh = `#!/usr/bin/python3
-import sys, json
+import sys, json, os
 args = sys.argv[1:]
+if args[:2] == ['repo', 'view']:
+    assert args[3:] == ['--json', 'nameWithOwner', '--jq', '.nameWithOwner'], args
+    with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'repo-views.log'), 'a') as log:
+        log.write(args[2] + '\\n')
+    names = {'https://github.com/old-owner/project': 'test/project'}
+    if args[2] not in names:
+        print('Could not resolve to a Repository', file=sys.stderr); sys.exit(1)
+    print(names[args[2]]); sys.exit(0)
 assert args[:2] == ['pr', 'view'] and args[3:] == ['--json', 'number,title,state,url,headRefName,isDraft,additions,deletions'], args
 if not args[2].endswith('/pull/42'):
     print('no pull requests found', file=sys.stderr); sys.exit(1)
-print(json.dumps(dict(number=42, title='Agent PR', state='OPEN', url=args[2], headRefName='fix', isDraft=False, additions=21, deletions=1)))
+print(json.dumps(dict(number=42, title='Agent PR', state='OPEN', url=args[2].replace('Test/Project', 'test/project'), headRefName='fix', isDraft=False, additions=21, deletions=1)))
 `;
 try {
   await mkdir(path.join(tmp,'bin'));await mkdir(path.join(tmp,'profile'));
