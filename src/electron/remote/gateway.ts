@@ -1096,7 +1096,8 @@ export class RemoteGateway {
     const p = event.payload as any;
     const id = p.sessionId as string | undefined;
     let textDelta = false;
-    if (event.type === "stream.user_prompt" && id) {
+    // A steer joins the live turn: its run, live text and approvals carry on.
+    if (event.type === "stream.user_prompt" && id && !p.steer) {
       this.runIds.set(id, randomUUID());
       this.live.delete(id);
       for (const [key, value] of this.permissions)

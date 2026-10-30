@@ -117,13 +117,13 @@ export const nativeRuntime: AgentRuntime = {
         logRuntimeStage('stage:abort', { sessionId: options.session.id });
         handle.abort();
       },
-      send: (prompt, attachments, model) => {
+      send: (prompt, attachments, model, codexSkills, codexMentions, options) => {
         if (tracker) {
           logRuntimeStage('stage:memory-retrieval:start');
           tracker.beginTurn(prompt);
           logRuntimeStage('stage:memory-retrieval:end');
         }
-        handle.send(prompt, attachments, model);
+        handle.send(prompt, attachments, model, codexSkills, codexMentions, options);
       },
       // Capability passthrough: soft stop (interrupt + pending-prompt
       // cancellation) and /rewind probe the handle for these optional

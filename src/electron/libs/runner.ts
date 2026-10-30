@@ -32,6 +32,7 @@ import {
 import { getRequiredClaudeCodeRuntime } from './claude-runtime';
 import { createPromptCancellation } from './claude-prompt-cancellation';
 import { ClaudeTurnOriginTracker } from './claude-turn-origin';
+import { ClaudePromptQueue } from './claude-prompt-queue';
 import { captureGitTreeSnapshot, diffGitTreeSnapshots } from './git-turn-snapshot';
 import { createAegisMemoryMcpServer, buildMemoryContext, MEMORY_SYSTEM_PROMPT } from './memory-mcp';
 import { isDelegateExecutionSession } from './delegate-service';
@@ -559,6 +560,7 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
     claudeReasoningEffort,
     onMessage,
     onSelfStartedTurn,
+    onPromptsWithdrawn,
     onPermissionRequest,
     onClaudeExecutionModeChange,
     onError,
@@ -573,9 +575,10 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
   let currentModel = typeof model === 'string' && model.trim().length > 0 ? model.trim() : undefined;
   let currentRuntimeModel = toClaudeCodeRuntimeModel(currentModel, betas);
   let activeQuery: ClaudeQuery | null = null;
-  // Uuids of the prompts this runner sent for the host, until a result names
-  // them in user_message_uuids (hidden goal sends are not among them).
-  const pendingPromptUuids = new Set<string>();
+  // The prompts this runner sent for the host, until a result names them in
+  // user_message_uuids (hidden goal sends are not among them): which a turn
+  // took, which still wait queued (claude-prompt-queue).
+  const promptQueue = new ClaudePromptQueue();
   const backgroundTasks = new ClaudeBackgroundTasks();
   const emitBackgroundTaskEvent = (event: BackgroundTaskEvent) => {
     onMessage(
@@ -670,7 +673,12 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
     return modelSwitch;
   };
 
-  const enqueuePrompt = (text: string, promptAttachments?: Attachment[], requestedModel?: string) => {
+  const enqueuePrompt = (
+    text: string,
+    promptAttachments?: Attachment[],
+    requestedModel?: string,
+    promptId?: string
+  ) => {
     const trimmed = text.trim();
     const hasAttachments = (promptAttachments?.filter((a) => a && a.path).length || 0) > 0;
     if (!trimmed && !hasAttachments) {
@@ -744,8 +752,9 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
         const prepared = await promptCancellation.race(goalController.prepare(trimmed));
         if (prepared === null || abortController.signal.aborted || promptCancellation.isCancelled(seq)) return;
         if (/^\s*\/goal(?:\s|$)/i.test(trimmed)) message.message.content = [{ type: 'text', text: prepared }];
+        if (promptId) message.uuid = promptId as SDKUserMessage['uuid'];
         goalController.submitted(prepared);
-        if (message.uuid) pendingPromptUuids.add(message.uuid as string);
+        if (message.uuid) promptQueue.sent(message.uuid as string);
         inputQueue.push(message);
 
         // The SDK does not echo streaming-input user prompts back on the
@@ -782,6 +791,25 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
         // no longer "pending" for cancelPendingPrompts accounting.
         promptCancellation.settle(seq);
       });
+  };
+
+  // Withdraw the host prompts still queued behind the live turn (cancel by
+  // uuid). Only while a turn runs: between turns a queued prompt may already
+  // be parked as the next turn's batch, where cancelling it is unreliable —
+  // that one is stopped by the interrupt like the turn it opens. A prompt
+  // being folded in right now refuses the cancel and rides the turn.
+  const withdrawQueuedPrompts = async (): Promise<void> => {
+    const query = activeQuery as (ClaudeQuery & { cancelAsyncMessage?: (uuid: string) => Promise<boolean> }) | null;
+    if (!query || typeof query.cancelAsyncMessage !== 'function') return;
+    const queued = promptQueue.withdrawable();
+    if (queued.length === 0) return;
+    const outcomes = await Promise.all(
+      queued.map((uuid) => query.cancelAsyncMessage!(uuid).then((cancelled) => cancelled === true, () => false))
+    );
+    const withdrawn = promptQueue.withdrawn(queued.filter((_, index) => outcomes[index]));
+    if (withdrawn.length === 0) return;
+    goalController.withdrawn(withdrawn.length);
+    onPromptsWithdrawn?.(withdrawn);
   };
 
   // The runtime won't emit init until it has an initial prompt to process.
@@ -1279,7 +1307,14 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
         // control command runs.
         const taskFrame = backgroundTasks.observe(message as Parameters<typeof backgroundTasks.observe>[0]);
         for (const event of taskFrame.events) emitBackgroundTaskEvent(event);
-        if (await goalController.receive(message as unknown as Parameters<typeof goalController.receive>[0])) continue;
+        // Which host prompts a turn took and which still wait queued. Seen
+        // before the /goal controller, which swallows its control turns'
+        // frames. A turn that picked up prompts queued while it ran answers
+        // all of them with this one result: the count of the host's own it
+        // names lets the host (and the /goal controller) settle each send.
+        // CLIs without the field leave it unset; a woken turn may name none.
+        const answeredPrompts = promptQueue.observe(message as Parameters<typeof promptQueue.observe>[0]);
+        if (await goalController.receive(message as unknown as Parameters<typeof goalController.receive>[0], answeredPrompts)) continue;
         if (taskFrame.consumed) continue;
 
         trackClaudeWidgetDraft(message as SDKMessage, widgetDrafts, widgetDraftBlocks);
@@ -1290,17 +1325,8 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
         if (selfStartedTurn && streamMessage?.type === 'system' && streamMessage.subtype === 'init') {
           streamMessage.selfStarted = true;
         }
-        if (streamMessage?.type === 'result') {
-          // A turn that picked up prompts queued while it ran answers all of
-          // them with this one result; count the host's own prompts it names
-          // so the host settles each send. CLIs without the field leave it
-          // unset. A turn the CLI started on its own may name none.
-          const answeredUuids = (message as { user_message_uuids?: unknown }).user_message_uuids;
-          if (Array.isArray(answeredUuids)) {
-            streamMessage.answeredPrompts = answeredUuids.filter(
-              (uuid) => typeof uuid === 'string' && pendingPromptUuids.delete(uuid)
-            ).length;
-          }
+        if (streamMessage?.type === 'result' && answeredPrompts !== undefined) {
+          streamMessage.answeredPrompts = answeredPrompts;
         }
         if (streamMessage) {
           // Subagent (Task) activity streams interleaved with the top-level
@@ -1513,12 +1539,18 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
       releaseClaudeGoalController(session.id, goalController);
       inputQueue.close();
     },
-    send: (text, promptAttachments, requestedModel) =>
-      enqueuePrompt(text, promptAttachments, requestedModel),
+    send: (text, promptAttachments, requestedModel, _codexSkills, _codexMentions, sendOptions) =>
+      enqueuePrompt(text, promptAttachments, requestedModel, sendOptions?.claudePromptId),
     interrupt: async () => {
       if (!activeQuery) {
         throw new Error('Session is not active.');
       }
+      // Stop also takes back the steers still queued behind the live turn —
+      // before the interrupt, so the drain loop can't start them as the next
+      // turn. Only the host's own prompts are withdrawn, never the /goal
+      // controller's commands or background-task notifications (which a
+      // blanket cancel_queued interrupt would drop).
+      await withdrawQueuedPrompts();
       if (goalController.snapshot.goal && goalController.snapshot.goal?.status !== 'complete')
         await goalController.interrupt();
       else await activeQuery.interrupt();

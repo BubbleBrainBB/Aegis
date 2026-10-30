@@ -376,6 +376,8 @@ export class FeishuBridge {
       case "stream.user_prompt": {
         const bound = this.scopeOf(sessionId);
         if (!bound) return;
+        // A steer joins the live turn: it keeps that turn's card.
+        if (payload.steer && this.turns.has(sessionId)) return;
         const previous = this.turns.get(sessionId);
         if (previous) this.finish(previous, previous.stopped ? "stopped" : "done");
         const pending = this.pendingTurn.get(sessionId);

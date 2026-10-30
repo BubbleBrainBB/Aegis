@@ -257,7 +257,7 @@ import { captureFeishuEvent, closeFeishu, setupFeishu } from './feishu/integrati
 import { getMemoryWorkspace, saveMemoryDocument } from './libs/memory-store';
 import { formatClaudeRuntimeBlockingMessage, getClaudeRuntimeStatus, getClaudeRuntimeStatusCached } from './libs/claude-runtime-status';
 import { noteClaudeBackgroundTasks, selectClaudeRunnersToReap, type ClaudeRunnerSnapshot } from './libs/claude-runner-pool';
-import { openSelfStartedTurn, settleClaudeResult } from './libs/claude-turn-accounting';
+import { openSelfStartedTurn, settleClaudeResult, withdrawClaudePrompts } from './libs/claude-turn-accounting';
 import {
   markClaudePromptDispatched,
   markClaudeInit,
@@ -274,6 +274,7 @@ import {
   type StopStateSnapshot,
 } from './libs/claude-stop-reconcile';
 import { planClaudeSend } from './libs/claude-steer';
+import { opensTurn } from '../shared/turn-boundary';
 import {
   getSkillMarketDetail,
   getSkillMarketHot,
@@ -334,6 +335,7 @@ import type {
   ClaudeRewindInput,
   ClaudeRewindFilesOutcome,
   ClaudeRewindResult,
+  WithdrawnPrompt,
 } from '../shared/types';
 import { buildSessionUserPromptSummaries } from '../shared/outline-summary';
 import { collectSessionSources, type SessionSourcePreview } from '../shared/session-sources';
@@ -2802,9 +2804,11 @@ async function handleEditLatestPrompt(
     previousClaudeAccessMode
   );
   const previousClaudeReasoningEffort = normalizeClaudeReasoningEffort(session.claude_reasoning_effort);
+  // The prompt that opened the latest turn: prompts steered into that turn
+  // are dropped with it.
   let latestUserPromptIndex = -1;
   for (let index = history.length - 1; index >= 0; index -= 1) {
-    if (history[index]?.type === 'user_prompt') {
+    if (opensTurn(history[index])) {
       latestUserPromptIndex = index;
       break;
     }
@@ -3015,9 +3019,11 @@ async function handleEditLatestOpenCodePrompt(
   const previousOpenCodeSessionId = session.opencode_session_id || null;
   const previousModel = session.model || null;
   const previousOpenCodePermissionMode = normalizeOpenCodePermissionMode(session.opencode_permission_mode);
+  // The prompt that opened the latest turn: prompts steered into that turn
+  // are dropped with it.
   let latestUserPromptIndex = -1;
   for (let index = history.length - 1; index >= 0; index -= 1) {
-    if (history[index]?.type === 'user_prompt') {
+    if (opensTurn(history[index])) {
       latestUserPromptIndex = index;
       break;
     }
@@ -3223,9 +3229,11 @@ async function handleEditLatestCodexPrompt(
   const previousCodexPermissionMode = normalizeCodexPermissionMode(session.codex_permission_mode);
   const previousCodexReasoningEffort = normalizeCodexReasoningEffort(session.codex_reasoning_effort);
   const previousCodexFastMode = normalizeCodexFastMode(session.codex_fast_mode);
+  // The prompt that opened the latest turn: prompts steered into that turn
+  // are dropped with it.
   let latestUserPromptIndex = -1;
   for (let index = history.length - 1; index >= 0; index -= 1) {
-    if (history[index]?.type === 'user_prompt') {
+    if (opensTurn(history[index])) {
       latestUserPromptIndex = index;
       break;
     }
@@ -3635,7 +3643,13 @@ const runnerHandles = new Map<
      * prompts cancelled before dispatch
      * are trimmed from the tail alongside their in-flight count.
      */
-    pendingTurnPrompts?: string[];
+    pendingTurnPrompts?: Array<{ prompt: string; promptId?: string }>;
+    /**
+     * What each visible Claude prompt dispatched into this runner looked like
+     * in the composer, by promptId — so a steer withdrawn on Stop can go back
+     * to the composer queue as it was sent. Cleared when the runner drains.
+     */
+    promptDrafts?: Map<string, WithdrawnPrompt>;
     /**
      * User-stopped (interrupted) turns whose `result` has not landed yet.
      * Their results must report 'idle' (not error), must not trigger failure
@@ -3795,6 +3809,70 @@ function flushClaudeRunners(sessionId?: string): void {
       entry.handle.abort();
       runnerHandles.delete(id);
     }
+  }
+}
+
+/**
+ * A kept-alive Claude runner has no turn left in flight (its last result
+ * landed, or Stop withdrew the prompts still queued). A doomed, staleConfig
+ * or automation runner retires now; any other stays warm for the next send.
+ */
+function finishDrainedClaudeRunner(sessionId: string, entry: RunnerEntry): void {
+  entry.promptDrafts?.clear();
+  if (entry.doomed || entry.staleConfig || entry.autoApprove) {
+    clearStopFallbackTimer(entry);
+    entry.handle.abort();
+    runnerHandles.delete(sessionId);
+  } else {
+    entry.lastTurnEndedAt = Date.now();
+    sweepIdleClaudeRunners();
+  }
+  // Close the latency window only when the live runner has drained its LAST
+  // turn — clearing on every result would delete a fast follow-up's fresh
+  // window (dispatched after this turn's first output, before its result)
+  // before it can log. A no-output stop/interrupt still lands a result and
+  // drains, so a wedged window is released here too.
+  clearClaudeTurnMetrics(sessionId);
+}
+
+/** The stored row id of a Claude prompt's user_prompt (its host echo is stored under the bare id). */
+function claudePromptRowId(promptId: string): string {
+  return `user_prompt:${promptId}`;
+}
+
+/**
+ * Stop withdrew Claude prompts still queued behind the live turn: they never
+ * reached a turn and will get no result. Settle them in the turn ledger (they
+ * were counted, and stopped, at dispatch), take them out of the transcript
+ * and hand the visible ones back to the composer queue.
+ */
+function settleWithdrawnClaudePrompts(
+  mainWindow: BrowserWindow,
+  sessionId: string,
+  handle: RunnerHandle,
+  promptIds: string[]
+): void {
+  const entry = runnerHandles.get(sessionId);
+  if (!entry || entry.handle !== handle) return;
+  const withdrawn = new Set(promptIds);
+  const ledger = withdrawClaudePrompts(
+    { inFlightTurns: entry.inFlightTurns ?? 0, stoppedTurns: entry.stoppedTurns ?? 0 },
+    promptIds.length
+  );
+  entry.inFlightTurns = ledger.inFlightTurns;
+  entry.stoppedTurns = ledger.stoppedTurns || undefined;
+  entry.pendingTurnPrompts = entry.pendingTurnPrompts?.filter((item) => !item.promptId || !withdrawn.has(item.promptId));
+  const prompts = promptIds.flatMap((id) => {
+    const draft = entry.promptDrafts?.get(id);
+    entry.promptDrafts?.delete(id);
+    return draft ? [draft] : [];
+  });
+  sessions.deleteMessagesById(sessionId, promptIds.flatMap((id) => [claudePromptRowId(id), id]));
+  broadcast(mainWindow, { type: 'stream.prompts_withdrawn', payload: { sessionId, promptIds, prompts } });
+  if (entry.inFlightTurns === 0) {
+    clearStopFallbackTimer(entry);
+    entry.stopFallbackAttempts = undefined;
+    finishDrainedClaudeRunner(sessionId, entry);
   }
 }
 
@@ -5912,6 +5990,14 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
         filesAvailable,
         files: filesAvailable ? await runFilesRewind(true) : null,
       };
+    }
+
+    // A steered prompt joined a turn already running: its echo is no
+    // checkpoint to rewind to (the UI offers none; refuse a stale request).
+    if (sessions.getSessionHistory(sessionId).some((message) =>
+      message.type === 'user_prompt' && message.steer && message.promptId === anchorMessageId
+    )) {
+      return { ok: false, message: 'A message sent into a running turn is not a rewind point.', filesAvailable };
     }
 
     let filesOutcome: ClaudeRewindFilesOutcome | null = null;
@@ -10421,6 +10507,10 @@ async function handleSessionContinueImpl(
   sessions.updateSessionStatus(sessionId, 'running');
   const hideGoalPrompt = internal?.hideGoalPrompt && nextProvider === 'claude' && parseGoalInput(prompt, false).isGoal;
   if (!hideGoalPrompt) sessions.updateLastPrompt(sessionId, outgoingPrompt);
+  // Claude: the prompt's id on the SDK wire (its uuid, echoed by the runner).
+  // Every dispatch carries one so its turn-ledger entry can be matched; a
+  // steer withdrawn on Stop is removed from the transcript by it.
+  const nextClaudePromptId = nextProvider === 'claude' ? uuidv4() : undefined;
 
   // 广播状态
   broadcast(mainWindow, {
@@ -10472,6 +10562,7 @@ async function handleSessionContinueImpl(
         ...(design ? { design } : {}),
         ...(designSelection ? { designSelection } : {}),
         ...(claudeSteer ? { steer: true } : {}),
+        ...(nextClaudePromptId ? { promptId: nextClaudePromptId } : {}),
       },
     });
 
@@ -10485,7 +10576,8 @@ async function handleSessionContinueImpl(
       ...(design ? { design } : {}),
       ...(designSelection ? { designSelection } : {}),
       ...(claudeSteer ? { steer: true } : {}),
-    });
+      ...(nextClaudePromptId ? { promptId: nextClaudePromptId } : {}),
+    }, nextClaudePromptId ? claudePromptRowId(nextClaudePromptId) : undefined);
     // The thread is now in progress from the design's current version.
     if (design) markDesignCommentSent(sessionId, design, createdAt);
   }
@@ -10662,7 +10754,18 @@ async function handleSessionContinueImpl(
         // Count the dispatched turn BEFORE send so the reaper can never see
         // this entry as idle between dispatch and the first stream message.
         existingEntry.inFlightTurns = (existingEntry.inFlightTurns ?? 0) + 1;
-        (existingEntry.pendingTurnPrompts ??= []).push(runnerPrompt);
+        (existingEntry.pendingTurnPrompts ??= []).push({ prompt: runnerPrompt, promptId: nextClaudePromptId });
+        if (nextClaudePromptId && !hideGoalPrompt) {
+          const design = sanitizeDesignPromptRef(payload.design);
+          (existingEntry.promptDrafts ??= new Map()).set(nextClaudePromptId, {
+            promptId: nextClaudePromptId,
+            prompt: outgoingPrompt,
+            effectivePrompt: (effectivePrompt ?? outgoingPrompt).trim(),
+            attachments: outgoingAttachments,
+            ...(design ? { design } : {}),
+            ...(designSelection ? { designSelection } : {}),
+          });
+        }
         if (wasIdle) {
           markClaudePromptDispatched(
             sessionId,
@@ -10697,6 +10800,7 @@ async function handleSessionContinueImpl(
         bubblePermissionMode: nextBubblePermissionMode,
         bubbleThinkingLevel: nextBubbleThinkingLevel,
         bubblePlanExitMode: nextBubblePlanExitMode,
+        claudePromptId: nextClaudePromptId,
       });
       // A steer keeps the live turn on the model it started with.
       const sendModel = claudePlan ? claudePlan.sendModel : nextModel;
@@ -11443,7 +11547,7 @@ function startRunner(
         // included — or the FIFO skews against inFlightTurns. A stale
         // handle's result must NOT shift the replacement entry's queue.
         const queuedTurnPrompt =
-          ownsEntry && settlement.hostPrompts > 0 ? entryForPrompt.pendingTurnPrompts?.shift() : undefined;
+          ownsEntry && settlement.hostPrompts > 0 ? entryForPrompt.pendingTurnPrompts?.shift()?.prompt : undefined;
         if (ownsEntry) {
           for (let extra = 1; extra < settlement.hostPrompts; extra += 1) entryForPrompt.pendingTurnPrompts?.shift();
         }
@@ -11610,32 +11714,12 @@ function startRunner(
             // running here, and aborting then would kill that follow-up. The
             // reuse guard already refuses to dispatch new turns into a
             // doomed entry, so deferring loses nothing.
-            const drained = (currentEntry.inFlightTurns ?? 0) === 0;
-            if (drained && (currentEntry.doomed || currentEntry.staleConfig || currentEntry.autoApprove)) {
-              // Retire only once every queued turn has produced its result:
-              // aborting earlier would drop a queued prompt that is already
-              // persisted and counted, leaving the session without an ending
-              // — or kill a live follow-up whose status update a stopped
-              // result just suppressed.
-              clearStopFallbackTimer(currentEntry);
-              currentEntry.handle.abort();
-              runnerHandles.delete(session.id);
-              // Close the latency window only when the live runner has drained
-              // its LAST turn — clearing on every result would delete a fast
-              // follow-up's fresh window (dispatched after this turn's first
-              // output, before its result) before it can log. A no-output
-              // stop/interrupt still lands a result and drains, so a wedged
-              // window is released here too.
-              if (provider === 'claude') {
-                clearClaudeTurnMetrics(session.id);
-              }
-            } else if (drained) {
-              currentEntry.lastTurnEndedAt = Date.now();
-              sweepIdleClaudeRunners();
-              if (provider === 'claude') {
-                clearClaudeTurnMetrics(session.id);
-              }
-            }
+            // Retire only once every queued turn has produced its result:
+            // aborting earlier would drop a queued prompt that is already
+            // persisted and counted, leaving the session without an ending
+            // — or kill a live follow-up whose status update a stopped
+            // result just suppressed.
+            if ((currentEntry.inFlightTurns ?? 0) === 0) finishDrainedClaudeRunner(session.id, currentEntry);
           } else if (provider === 'deepseek' && currentEntry.doomed) {
             // MCP configuration is captured by the Cordis process at spawn.
             // A save during an active DeepSeek turn lets that activity finish,
@@ -11652,6 +11736,7 @@ function startRunner(
         sawTurnOutput = false;
       }
     },
+    onPromptsWithdrawn: (promptIds) => settleWithdrawnClaudePrompts(mainWindow, session.id, handle, promptIds),
     onSelfStartedTurn: () => {
       // A finished background task woke the agent: count the turn as an
       // obligation so the session shows running, Stop interrupts it and the
@@ -12011,7 +12096,7 @@ function startRunner(
     // anchor is stamped now so the reaper's prewarm TTL applies — without it
     // the entry would never be a reap candidate and would leak.
     inFlightTurns: prewarmRunner ? 0 : 1,
-    pendingTurnPrompts: prewarmRunner ? [] : [prompt],
+    pendingTurnPrompts: prewarmRunner ? [] : [{ prompt }],
     lastTurnEndedAt: prewarmRunner ? Date.now() : undefined,
     prewarmed: prewarmRunner || undefined,
     autoApprove: autoApprovePermissions || undefined,

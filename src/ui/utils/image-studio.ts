@@ -1,3 +1,4 @@
+import { opensTurn } from '../../shared/turn-boundary';
 import type { AgentProvider, StreamMessage } from '../types';
 import { extractGeneratedMediaFromMessages, extractMarkdownImageSourcesFromMessages, resolveGeneratedMediaPath } from './generated-media';
 
@@ -39,7 +40,7 @@ export function collectStudioImages(messages: StreamMessage[], cwd?: string): St
   const turns: { id: string; createdAt?: number; messages: StreamMessage[] }[] = [];
   for (const message of messages) {
     if (message.parentToolUseId) continue;
-    if (message.type === 'user_prompt' || !turns.length) turns.push({ id: ('uuid' in message && message.uuid) || `turn:${turns.length}`, createdAt: message.createdAt, messages: [] });
+    if (opensTurn(message) || !turns.length) turns.push({ id: ('uuid' in message && message.uuid) || `turn:${turns.length}`, createdAt: message.createdAt, messages: [] });
     turns.at(-1)!.messages.push(message);
   }
   const seen = new Set<string>();

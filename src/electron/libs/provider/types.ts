@@ -122,6 +122,11 @@ export interface ProviderSendTurnInput {
   prompt: string;
   attachments?: Attachment[];
   model?: string;
+  /**
+   * Claude: the host's id for this prompt, used as its SDK message uuid so a
+   * queued steer the user stops can be withdrawn by it.
+   */
+  claudePromptId?: string;
   codexExecutionMode?: CodexExecutionMode;
   codexPermissionMode?: CodexPermissionMode;
   codexReasoningEffort?: CodexReasoningEffort;

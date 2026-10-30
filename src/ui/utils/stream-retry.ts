@@ -1,3 +1,4 @@
+import { opensTurn } from '../../shared/turn-boundary';
 import type { SessionView, SessionStreamingState, StreamMessage } from '../types';
 import type { RetryOutputSnapshot } from '../../shared/types';
 import {
@@ -14,7 +15,7 @@ export function archiveRetryStream(session: SessionView, incoming?: StreamMessag
   let previous: Extract<StreamMessage, { type: 'assistant' }> | undefined;
   for (let i = session.messages.length - 1; i >= 0; i--) {
     const message = session.messages[i];
-    if (message.type === 'user_prompt') break;
+    if (opensTurn(message)) break;
     if (message.type === 'assistant' && !message.parentToolUseId && !message.interrupted) {
       previous = message;
       break;

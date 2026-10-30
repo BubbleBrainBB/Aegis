@@ -1,3 +1,4 @@
+import { opensTurn } from '../../shared/turn-boundary';
 import type { StreamMessage } from '../types';
 
 /**
@@ -45,8 +46,8 @@ export function workDisclosureScope(
   let start: string | null = null;
   for (let cursor = first; cursor >= 0; cursor -= 1) {
     const message = messages[cursor];
-    if (message?.type === 'user_prompt') {
-      start = messageIdentity(message);
+    if (opensTurn(message)) {
+      start = messageIdentity(message!);
       break;
     }
     if (message?.type === 'result' && cursor < first) {
@@ -59,7 +60,7 @@ export function workDisclosureScope(
   let end: string | null = null;
   for (let cursor = last + 1; cursor < messages.length; cursor += 1) {
     const message = messages[cursor];
-    if (message?.type === 'user_prompt') break;
+    if (opensTurn(message)) break;
     if (message?.type === 'result') {
       end = messageIdentity(message);
       break;

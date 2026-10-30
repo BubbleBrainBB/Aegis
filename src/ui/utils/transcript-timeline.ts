@@ -1,5 +1,6 @@
 import { isCompactionMessage, type WorkstreamMessage } from './compaction';
 import { isBackgroundTaskEndedMessage } from './background-task-ended';
+import { isSteerPromptMessage } from './steer-entry';
 import { getAssistantPhase } from '../../shared/assistant-phase';
 import type { ContentBlock, StreamMessage } from '../types';
 import type { ThreadGoal } from '../../shared/session-goal';
@@ -119,7 +120,11 @@ function getWorkGroupRunBoundaryKey(group: TimelineWorkGroup): string | null {
 
 function getTimelineItemRunBoundaryKey(item: TranscriptTimelineItem): string | undefined {
   if (item.type === 'work') {
-    if (item.group.messages.every(message => isCompactionMessage(message) && !message.agentId && !message.agentRunId)) return undefined;
+    // Passive rows (compaction, a steered prompt) carry no agent run of their
+    // own: they sit inside whichever run is going and never split it.
+    if (item.group.messages.every(message =>
+      (isCompactionMessage(message) || isSteerPromptMessage(message)) && !message.agentId && !message.agentRunId
+    )) return undefined;
     return getWorkGroupRunBoundaryKey(item.group) || 'assistant:mixed';
   }
 
@@ -674,6 +679,14 @@ export function deriveTranscriptTimelineItems(
         continue;
       }
     } else if (message.parentToolUseId) {
+      continue;
+    }
+
+    // A prompt steered into the running turn is part of that turn's work: a
+    // row in its trace, not a bubble that would split it into two turns.
+    if (isSteerPromptMessage(message)) {
+      pendingWorkMessages.push(message);
+      pendingWorkOriginalIndices.push(originalIndex);
       continue;
     }
 

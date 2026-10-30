@@ -34,6 +34,8 @@ export interface QueuedComposerMessage {
 interface ComposerQueueStore {
   queues: Record<string, QueuedComposerMessage[]>;
   enqueue: (sessionId: string, item: QueuedComposerMessage) => void;
+  /** Put items back at the head of the queue (sent earlier than anything queued since). */
+  prepend: (sessionId: string, items: QueuedComposerMessage[]) => void;
   remove: (sessionId: string, itemId: string) => void;
   /** Atomically remove and return one item (empty result if already gone). */
   takeOne: (sessionId: string, itemId: string) => QueuedComposerMessage | null;
@@ -73,6 +75,14 @@ export const useComposerQueueStore = create<ComposerQueueStore>()((set, get) => 
       queues: {
         ...state.queues,
         [sessionId]: [...(state.queues[sessionId] ?? []), item],
+      },
+    })),
+
+  prepend: (sessionId, items) =>
+    set((state) => ({
+      queues: {
+        ...state.queues,
+        [sessionId]: [...items, ...(state.queues[sessionId] ?? [])],
       },
     })),
 

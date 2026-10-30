@@ -1006,8 +1006,11 @@ export type ServerEvent =
   | { type: 'session.renamed'; payload: { sessionId: string; title: string; updatedAt: number } }
   | {
       type: 'stream.user_prompt';
-      payload: { sessionId: string; prompt: string; attachments?: Attachment[]; createdAt?: number; workflowPrompt?: WorkflowPromptKind; design?: DesignPromptRef; designSelection?: DesignSelectionRef; steer?: boolean };
+      payload: { sessionId: string; prompt: string; attachments?: Attachment[]; createdAt?: number; workflowPrompt?: WorkflowPromptKind; design?: DesignPromptRef; designSelection?: DesignSelectionRef; steer?: boolean; promptId?: string };
     }
+  // Queued steers the user stopped before Claude read them: removed from the
+  // transcript and handed back to the composer queue.
+  | { type: 'stream.prompts_withdrawn'; payload: { sessionId: string; promptIds: string[]; prompts: WithdrawnPrompt[] } }
   | { type: 'stream.message'; payload: { sessionId: string; message: StreamMessage } }
   // Incremental stdout/stderr from a tool that is still running (codex
   // commandExecution). Transient display data — never persisted.
@@ -1821,6 +1824,16 @@ export interface RetryOutputSnapshot {
 }
 
 // StreamMessage 类型（SDK 消息或内部消息）
+/** A sent prompt taken back before the agent read it (see stream.prompts_withdrawn). */
+export interface WithdrawnPrompt {
+  promptId: string;
+  prompt: string;
+  effectivePrompt: string;
+  attachments: Attachment[];
+  design?: DesignPromptRef;
+  designSelection?: DesignSelectionRef;
+}
+
 export type StreamMessageBase = {
   createdAt?: number;
   agentId?: string | null;
@@ -1875,6 +1888,8 @@ export type StreamMessage =
       type: 'user_prompt'; prompt: string; attachments?: Attachment[]; workflowPrompt?: WorkflowPromptKind; design?: DesignPromptRef; designSelection?: DesignSelectionRef;
       /** Steered into the live turn: not a turn boundary (streaming and retry state carry on). */
       steer?: boolean;
+      /** Claude: the prompt's SDK uuid (its host echo carries it), so a withdrawn steer can be removed. */
+      promptId?: string;
     })
   | (StreamMessageBase & {
       /** Durable, native completion metadata; never sent to the model as a prompt. */

@@ -158,6 +158,11 @@ export interface RunnerOptions {
    * woke the agent). Called before that turn's first message.
    */
   onSelfStartedTurn?: () => void;
+  /**
+   * Claude: prompts the CLI dropped from its queue on Stop before any turn
+   * read them (their ids, see claudePromptId). They will never get a result.
+   */
+  onPromptsWithdrawn?: (promptIds: string[]) => void;
   onError?: (error: Error) => void;
   onPermissionRequest: (
     toolUseId: string,

@@ -1,4 +1,5 @@
 import { StreamRetryStatus } from './StreamRetryStatus';
+import { opensTurn } from '../../shared/turn-boundary';
 import { EnvironmentChatSurface } from './environment/EnvironmentPanelLayout';
 import { WorkstreamDisclosureRegistry } from './WorkstreamDisclosureState';
 import { ImageStudioComposerHome } from './ImageStudioComposerDock';
@@ -1149,21 +1150,32 @@ export function ChatPane({
     return deriveTurnPhase(session.messages, isRunning, hasRunningTool, isStreaming);
   }, [session?.messages, session?.status, hasRunningTool, showPartialMessage, streamingAssistantText]);
 
+  // The prompt that opened the latest turn (a steered prompt joins that turn).
   const lastUserPromptIndex = useMemo(() => {
     if (!session) return -1;
     for (let i = session.messages.length - 1; i >= 0; i -= 1) {
-      if (session.messages[i]?.type === 'user_prompt') {
+      if (opensTurn(session.messages[i])) {
         return i;
       }
     }
     return -1;
   }, [session?.messages]);
 
-  const hasStartedFinalAnswer = useMemo(() =>
-    session?.messages.slice(lastUserPromptIndex + 1).some((message) =>
+  // A final answer counts only after the latest user prompt, steered or not: a
+  // steer sent after the agent began answering sends it back to work.
+  const hasStartedFinalAnswer = useMemo(() => {
+    const messages = session?.messages ?? [];
+    let lastPromptIndex = -1;
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i]?.type === 'user_prompt') {
+        lastPromptIndex = i;
+        break;
+      }
+    }
+    return messages.slice(lastPromptIndex + 1).some((message) =>
       message.type === 'assistant' && !message.parentToolUseId && getAssistantPhase(message) === 'final_answer'
-    ) ?? false,
-  [session?.messages, lastUserPromptIndex]);
+    );
+  }, [session?.messages]);
 
   // Fallback for providers whose manual command precedes the start hook.
   // Once a compaction activity arrives, the timeline owns its live status.
@@ -1179,6 +1191,7 @@ export function ChatPane({
         return false;
       }
       if (message.type === 'user_prompt') {
+        if (message.steer) continue;
         return /^\/compact\b/.test((message.prompt || '').trim());
       }
     }
@@ -1201,7 +1214,8 @@ export function ChatPane({
     (userPromptIndex: number): RewindTarget | null => {
       if (!sessionId || !session) return null;
       const promptMessage = session.messages[userPromptIndex];
-      if (promptMessage?.type !== 'user_prompt') return null;
+      // A steered prompt joined a running turn: no checkpoint opens there.
+      if (promptMessage?.type !== 'user_prompt' || promptMessage.steer) return null;
 
       if (session.provider === 'bubble') {
         let ordinal = 0;
@@ -1246,7 +1260,7 @@ export function ChatPane({
       if (!detail || detail.sessionId !== sessionId) return;
       if (!session || session.status === 'running') return;
       for (let index = session.messages.length - 1; index >= 0; index -= 1) {
-        if (session.messages[index]?.type !== 'user_prompt') continue;
+        if (!opensTurn(session.messages[index])) continue;
         const target = resolveRewindTarget(index);
         if (target) {
           setRewindTarget(target);
@@ -1331,7 +1345,7 @@ export function ChatPane({
     const messages = session?.messages ?? [];
     let start = 0;
     messages.forEach((message, index) => {
-      if (message.type === 'user_prompt' && index > start) {
+      if (opensTurn(message) && index > start) {
         ranges.push({ firstMessageIndex: start, lastMessageIndex: index - 1 });
         start = index;
       }
@@ -2107,7 +2121,7 @@ export function ChatPane({
                     : item.originalIndex;
                   let turnStartIndex = 0;
                   for (let cursor = turnEndIndex; cursor >= 0; cursor -= 1) {
-                    if (session.messages[cursor]?.type === 'user_prompt') {
+                    if (opensTurn(session.messages[cursor])) {
                       turnStartIndex = cursor;
                       break;
                     }

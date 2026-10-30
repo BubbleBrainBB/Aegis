@@ -5,6 +5,7 @@
 // the conversation that started it, once that conversation is idle and none
 // of the other sessions it started is still working.
 
+import { opensTurn } from '../../../shared/turn-boundary';
 import { randomUUID } from 'node:crypto';
 import type { SessionContinuePayload, SessionStartPayload } from '../../../shared/types';
 import type {
@@ -379,7 +380,7 @@ export class FollowUpService {
     const history = this.host.history(sessionId);
     let lastPrompt = -1;
     history.forEach((message, index) => {
-      if (message.type === 'user_prompt') lastPrompt = index;
+      if (opensTurn(message)) lastPrompt = index;
     });
     const promptAt = lastPrompt >= 0 ? history[lastPrompt].createdAt : undefined;
     const text = history
@@ -542,7 +543,8 @@ export class FollowUpService {
     const history = this.host.history(sessionId);
     for (let index = history.length - 1; index >= 0; index -= 1) {
       const message = history[index];
-      if (message.type === 'user_prompt') return !message.workflowPrompt;
+      // The prompt that opened the turn, not one steered into it later.
+      if (message.type === 'user_prompt' && opensTurn(message)) return !message.workflowPrompt;
     }
     return false;
   }

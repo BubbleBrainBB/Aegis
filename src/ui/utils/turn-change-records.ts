@@ -1,3 +1,4 @@
+import { opensTurn } from '../../shared/turn-boundary';
 import type { StreamMessage } from '../types';
 import {
   extractGitPatchChangeRecords,
@@ -154,7 +155,7 @@ export function buildTurnChangeContext(
 
   for (let i = 0; i < messages.length; i += 1) {
     const msg = messages[i];
-    if (msg.type === 'user_prompt' && i > turnStart) {
+    if (opensTurn(msg) && i > turnStart) {
       flush(i);
     }
   }

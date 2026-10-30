@@ -932,13 +932,14 @@ function buildUnavailableStoredMessage(createdAt: number, reason: string): Strea
 function buildMessagePersistenceRecord(
   sessionId: string,
   sourceOrigin: SessionSource,
-  message: StreamMessage
+  message: StreamMessage,
+  rowId?: string
 ): MessagePersistenceRecord {
   const createdAt =
     typeof (message as StreamMessage & { createdAt?: number }).createdAt === 'number'
       ? ((message as StreamMessage & { createdAt?: number }).createdAt as number)
       : Date.now();
-  const id = (message as { uuid?: string }).uuid || uuidv4();
+  const id = rowId || (message as { uuid?: string }).uuid || uuidv4();
   const rawData = JSON.stringify(message);
   const externalized = shouldExternalizeMessagePayload(message, rawData)
     ? externalizeMessagePayload(sessionId, id, rawData)
@@ -2399,9 +2400,10 @@ export function findGoalCompletionAnswer(sessionId: string, startedAt: number, c
 }
 
 // 添加消息
-export function addMessage(sessionId: string, message: StreamMessage): void {
+/** `rowId` pins the stored row's id (default: the message uuid) so it can be deleted by it. */
+export function addMessage(sessionId: string, message: StreamMessage, rowId?: string): void {
   const sourceOrigin = getSessionSourceOrigin(sessionId);
-  const record = buildMessagePersistenceRecord(sessionId, sourceOrigin, message);
+  const record = buildMessagePersistenceRecord(sessionId, sourceOrigin, message, rowId);
 
   const stmt = getDb().prepare(`
     INSERT INTO messages (id, session_id, message_type, source_origin, search_text, sort_key, parent_turn_id, data, created_at)
@@ -2455,6 +2457,20 @@ export function addMessage(sessionId: string, message: StreamMessage): void {
   ) {
     invalidateClaudeUsageReportCache();
   }
+}
+
+/** Removes individual stored messages (and their search rows and payload artifacts) by row id. */
+export function deleteMessagesById(sessionId: string, ids: string[]): void {
+  if (ids.length === 0) return;
+  const deleteMessage = getDb().prepare('DELETE FROM messages WHERE session_id = ? AND id = ?');
+  const deleteSearch = getDb().prepare('DELETE FROM search_index WHERE session_id = ? AND message_id = ?');
+  getDb().transaction(() => {
+    for (const id of ids) {
+      deleteMessagePayloadArtifactForMessage(sessionId, id);
+      deleteMessage.run(sessionId, id);
+      deleteSearch.run(sessionId, id);
+    }
+  })();
 }
 
 export function replaceSessionHistory(sessionId: string, messages: StreamMessage[]): void {

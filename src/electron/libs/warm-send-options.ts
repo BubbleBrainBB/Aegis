@@ -39,6 +39,7 @@ export type WarmSendOptions = Pick<
   | 'bubblePermissionMode'
   | 'bubblePlanExitMode'
   | 'bubbleThinkingLevel'
+  | 'claudePromptId'
 >;
 
 export function buildWarmSendOptions(next: WarmSendOptions): WarmSendOptions {
@@ -64,6 +65,7 @@ export function buildWarmSendOptions(next: WarmSendOptions): WarmSendOptions {
     bubblePermissionMode: next.bubblePermissionMode,
     bubblePlanExitMode: next.bubblePlanExitMode,
     bubbleThinkingLevel: next.bubbleThinkingLevel,
+    claudePromptId: next.claudePromptId,
   };
   return envelope;
 }

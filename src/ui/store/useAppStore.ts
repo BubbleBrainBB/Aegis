@@ -81,6 +81,7 @@ import {
 import { StreamDeltaCoalescer } from '../utils/stream-delta-coalescer';
 import { archiveRetryStream, restoreRetryHistory } from '../utils/stream-retry';
 import { resolvesStreamRetry } from '../../shared/stream-retry';
+import { useComposerQueueStore } from './useComposerQueueStore';
 import { applySessionAgentSelection } from '../utils/session-model';
 import { useBrowserStateStore } from './useBrowserStateStore';
 import { useWidgetDraftStore } from './useWidgetDraftStore';
@@ -1141,6 +1142,10 @@ export const useAppStore = create<Store>()(
           streamDeltaCoalescer.discardSession(event.payload.sessionId);
         }
         handleUserPrompt(event.payload, set);
+        break;
+
+      case 'stream.prompts_withdrawn':
+        handlePromptsWithdrawn(event.payload, set);
         break;
 
       case 'stream.message':
@@ -3612,10 +3617,10 @@ function handleSessionDeleted(
 
 // 处理用户 prompt
 function handleUserPrompt(
-  payload: { sessionId: string; prompt: string; attachments?: Attachment[]; createdAt?: number; workflowPrompt?: WorkflowPromptKind; design?: import('../../shared/types').DesignPromptRef; designSelection?: import('../../shared/types').DesignSelectionRef; steer?: boolean },
+  payload: { sessionId: string; prompt: string; attachments?: Attachment[]; createdAt?: number; workflowPrompt?: WorkflowPromptKind; design?: import('../../shared/types').DesignPromptRef; designSelection?: import('../../shared/types').DesignSelectionRef; steer?: boolean; promptId?: string },
   set: SetState
 ) {
-  const { sessionId, prompt, attachments, createdAt, workflowPrompt, design, designSelection, steer } = payload;
+  const { sessionId, prompt, attachments, createdAt, workflowPrompt, design, designSelection, steer, promptId } = payload;
 
   set((state) => {
     const session = state.sessions[sessionId];
@@ -3630,6 +3635,7 @@ function handleUserPrompt(
       ...(design ? { design } : {}),
       ...(designSelection ? { designSelection } : {}),
       ...(steer ? { steer: true } : {}),
+      ...(promptId ? { promptId } : {}),
     };
 
     return {
@@ -3648,6 +3654,37 @@ function handleUserPrompt(
       },
     };
   });
+}
+
+// Stop withdrew queued steers Claude never read: drop their bubbles (and the
+// host echoes carrying the same ids) and hand them back to the composer queue,
+// ahead of anything queued since — they were sent first.
+function handlePromptsWithdrawn(
+  payload: { sessionId: string; promptIds: string[]; prompts: import('../../shared/types').WithdrawnPrompt[] },
+  set: SetState
+) {
+  const { sessionId, promptIds, prompts } = payload;
+  const withdrawn = new Set(promptIds);
+  set((state) => {
+    const session = state.sessions[sessionId];
+    if (!session) return state;
+    const messages = session.messages.filter((message) =>
+      !(message.type === 'user_prompt' && message.promptId && withdrawn.has(message.promptId)) &&
+      !(message.type === 'user' && withdrawn.has(message.uuid))
+    );
+    if (messages.length === session.messages.length) return state;
+    return { ...state, sessions: { ...state.sessions, [sessionId]: { ...session, messages } } };
+  });
+  if (prompts.length === 0) return;
+  useComposerQueueStore.getState().prepend(sessionId, prompts.map((item) => ({
+    id: crypto.randomUUID(),
+    displayPrompt: item.prompt,
+    effectivePrompt: item.effectivePrompt,
+    attachments: item.attachments,
+    references: {},
+    ...(item.design ? { design: item.design } : {}),
+    ...(item.designSelection ? { designSelection: item.designSelection } : {}),
+  })));
 }
 
 // 处理流式消息
