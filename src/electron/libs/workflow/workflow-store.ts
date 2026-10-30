@@ -90,6 +90,10 @@ function db(): Database.Database {
       CREATE INDEX IF NOT EXISTS idx_workflow_instances_session ON workflow_instances(session_id);
       CREATE INDEX IF NOT EXISTS idx_workflow_members_session ON workflow_members(current_session_id);
     `);
+    const memberColumns = database.prepare('PRAGMA table_info(workflow_members)').all() as Array<{ name: string }>;
+    if (!memberColumns.some((c) => c.name === 'effort')) {
+      database.exec('ALTER TABLE workflow_members ADD COLUMN effort TEXT');
+    }
     initialized = true;
   }
   return database;
@@ -158,6 +162,8 @@ export type MemberRow = {
   agent: string;
   provider: string;
   model: string | null;
+  /** Reasoning effort the member's sessions run at; null for the model's default. */
+  effort: string | null;
   focus: string | null;
   source: 'user' | 'template' | 'inferred';
   permissionMode: string | null;
@@ -336,9 +342,9 @@ export function updateRun(id: string, patch: RunPatch): RunRow {
 export function replaceMembers(runId: string, members: Omit<MemberRow, 'runId'>[]): void {
   const database = db();
   const insert = database.prepare(
-    `INSERT INTO workflow_members (run_id, key, role, agent, provider, model, focus, source, permission_mode,
+    `INSERT INTO workflow_members (run_id, key, role, agent, provider, model, effort, focus, source, permission_mode,
       permission_default, read_only_mechanism, degraded_json, unverified, current_session_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   database.transaction(() => {
     database.prepare('DELETE FROM workflow_members WHERE run_id = ?').run(runId);
@@ -350,6 +356,7 @@ export function replaceMembers(runId: string, members: Omit<MemberRow, 'runId'>[
         m.agent,
         m.provider,
         m.model,
+        m.effort,
         m.focus,
         m.source,
         m.permissionMode,
@@ -374,6 +381,7 @@ export function listMembers(runId: string): MemberRow[] {
     agent: row.agent as string,
     provider: row.provider as string,
     model: (row.model as string) ?? null,
+    effort: (row.effort as string) ?? null,
     focus: (row.focus as string) ?? null,
     source: row.source as MemberRow['source'],
     permissionMode: (row.permission_mode as string) ?? null,

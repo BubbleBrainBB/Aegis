@@ -22,6 +22,13 @@ export type MemberConfig = {
   models: string[];
   /** Display names for some of those ids, so the Planner can match the names users say. */
   modelLabels?: Record<string, string>;
+  /** The agent takes a reasoning effort / thinking level per session. */
+  supportsEffort?: boolean;
+  /**
+   * Effort levels per model id, "" for the agent's default model. A model
+   * without an entry is not checked; an empty list means it has no levels.
+   */
+  efforts?: Record<string, string[]>;
   /** Degradable capabilities this provider lacks, shown on the plan card. */
   degraded: string[];
 };
@@ -93,6 +100,18 @@ export function validateSpec(spec: WorkflowSpec, context: ValidationContext): Va
     }
     if (member.model !== undefined && !config.models.includes(member.model)) {
       error(`${path}.model`, `Model "${member.model}" is not in ${member.agent}'s catalog.`);
+    }
+    if (member.effort !== undefined) {
+      const levels = config.efforts?.[member.model ?? ''];
+      const model = member.model ? `Model "${member.model}"` : `${member.agent}'s default model`;
+      const fallback = 'leave "effort" null and put the requested effort into "unsupported"';
+      if (!config.supportsEffort) {
+        error(`${path}.effort`, `${member.agent} cannot be given a reasoning effort here; ${fallback}.`);
+      } else if (levels && levels.length === 0) {
+        error(`${path}.effort`, `${model} has no reasoning effort levels; ${fallback}.`);
+      } else if (levels && !levels.includes(member.effort)) {
+        error(`${path}.effort`, `${model} offers no effort "${member.effort}" (it offers: ${levels.join(', ')}); pick one of those or ${fallback}.`);
+      }
     }
     if (member.source === 'inferred') confirmReasons.push({ kind: 'member', message: `member "${member.key}" was not requested` });
   });

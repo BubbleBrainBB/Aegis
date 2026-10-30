@@ -388,7 +388,7 @@ class Engine {
         : [];
     const fingerprint = canonicalJson({
       step: step.id,
-      member: [member.key, member.agent, member.model ?? null],
+      member: [member.key, member.agent, member.model ?? null, ...(member.effort ? [member.effort] : [])],
       workspace,
       session,
       outputKind,

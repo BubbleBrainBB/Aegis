@@ -70,3 +70,60 @@ export async function loadModelCatalogs(
   );
   return Object.fromEntries(entries);
 }
+
+type EffortEntry = {
+  id?: unknown;
+  name?: unknown;
+  isDefault?: unknown;
+  capabilities?: unknown;
+  supportedReasoningLevels?: unknown;
+  supportEfforts?: unknown;
+  reasoningEfforts?: unknown;
+  reasoningLevels?: unknown;
+};
+
+const strings = (value: unknown): string[] | null =>
+  Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string' && v.trim() !== '') : null;
+
+/**
+ * Effort levels a model offers, read from its provider's model config the
+ * way that provider's composer picker reads them. `model` null means the
+ * config's default model. Null means unknown: not in this config's shape, or
+ * the model is not listed. An empty list means the model has no levels.
+ */
+export function catalogEffortLevels(provider: string, config: unknown, model: string | null): string[] | null {
+  if (!config || typeof config !== 'object') return null;
+  const record = config as { defaultModel?: unknown; availableModels?: unknown };
+  const entries = (Array.isArray(record.availableModels) ? record.availableModels : []) as EffortEntry[];
+  const wanted = model ?? (typeof record.defaultModel === 'string' && record.defaultModel ? record.defaultModel : null);
+  const entry = wanted
+    ? entries.find((e) => e?.id === wanted || e?.name === wanted)
+    : entries.find((e) => e?.isDefault === true);
+  if (!entry) return null;
+  switch (provider) {
+    case 'codex': {
+      const levels = Array.isArray(entry.supportedReasoningLevels)
+        ? strings(entry.supportedReasoningLevels.map((l: { effort?: unknown }) => l?.effort))
+        : null;
+      return levels;
+    }
+    case 'kimi': {
+      // k3-class models list tiers (plus off); k2.x thinking models are on/off.
+      const tiers = strings(entry.supportEfforts) ?? [];
+      if (tiers.length > 0) return ['off', ...tiers.filter((t) => t !== 'off')];
+      return Array.isArray(entry.capabilities) && entry.capabilities.includes('thinking') ? ['on', 'off'] : [];
+    }
+    case 'grok': {
+      // Without the cache field the picker offers every level: unknown here.
+      const levels = strings(entry.reasoningEfforts);
+      return levels && levels.length > 0 ? levels : null;
+    }
+    case 'deepseek':
+    case 'mimo':
+      return strings(entry.reasoningEfforts);
+    case 'bubble':
+      return strings(entry.reasoningLevels) ?? [];
+    default:
+      return null;
+  }
+}

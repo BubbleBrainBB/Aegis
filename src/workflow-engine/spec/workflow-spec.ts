@@ -12,6 +12,8 @@ export type Member = {
   agent: string;
   /** Must belong to that provider's live model catalog. */
   model?: string;
+  /** Reasoning effort / thinking level; must be one the model offers when its levels are known. */
+  effort?: string;
   focus?: string;
   source: Source;
 };

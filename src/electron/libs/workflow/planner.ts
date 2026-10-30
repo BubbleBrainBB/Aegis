@@ -10,10 +10,12 @@ import type { WorkflowSpec } from '../../../workflow-engine/spec/workflow-spec';
 import { validateSpec, type MemberConfig, type ValidationContext, type ValidationReport } from '../../../workflow-engine/validate/spec-validator';
 import type { SessionStartPayload } from '../../../shared/types';
 import { cancelTurnExpectation, expectTurn, setWorkflowSessionPolicy, type TurnOutcome } from './session-hooks';
-import { declarationFor, memberSessionPayload } from './member-configs';
+import { declarationFor, memberSessionPayload, withEffortLevels } from './member-configs';
 import { CURRENT_SESSION_AGENT } from '../../../shared/workflow';
 import { extractJson } from './task-brief';
 import type { SessionBridge } from './aegis-host';
+
+export type EffortLevelLoader = (provider: string, model: string | null) => Promise<string[] | null>;
 
 export type PlannerResult =
   | { ok: true; spec: WorkflowSpec; report: ValidationReport; raw: string; warnings: string[]; sessionId: string }
@@ -31,20 +33,21 @@ export function listedModels(config: MemberConfig, goal: string): string[] {
 }
 
 function modelList(config: MemberConfig, goal: string): string {
+  const effort = config.supportsEffort ? '' : ' It has no reasoning effort setting, so its "effort" must be null.';
   const models = listedModels(config, goal);
-  if (models.length === 0) return '. Its models are not listed, so its "model" must be null.';
+  if (models.length === 0) return `. Its models are not listed, so its "model" must be null.${effort}`;
   const names = models.map((id) => {
     const label = config.modelLabels?.[id];
     return label ? `"${id}" (${label})` : `"${id}"`;
   });
-  return `. Models: ${names.join(', ')}`;
+  return `. Models: ${names.join(', ')}.${effort}`;
 }
 
 function plannerPrompt(goal: string, configs: MemberConfig[], schema: unknown): string {
   const roster = configs
     .map((c) =>
       c.name === CURRENT_SESSION_AGENT
-        ? `- "${c.name}": the chat session that asked for this workflow (a ${c.provider} agent). It can only be the implementer and keeps its own model, so its "model" is null.`
+        ? `- "${c.name}": the chat session that asked for this workflow (a ${c.provider} agent). It can only be the implementer and keeps its own model and effort, so its "model" and "effort" are null.`
         : `- "${c.name}": can be ${c.roles.join(', ')}${c.degraded.length ? ` (limitations: ${c.degraded.join(', ')})` : ''}${modelList(c, goal)}`,
     )
     .join('\n');
@@ -71,6 +74,7 @@ How to build the workflow:
 - Task blocks: {"kind":"text","text":...,"ref":null} for instructions; {"kind":"goal","text":null,"ref":null} to insert the user's request; {"kind":"from","text":null,"ref":{"step":<step id>,"field":null,"iteration":null}} to pass another step's result.
 - "acceptance" lists what must hold at the end: verifyKind "check" with verifyRef = the check step id, "review" with verifyRef = a reviewer member key, or "manual" with verifyRef null.
 - A member's "model" is null to use that agent's default model. When the user names a model for an agent, set "model" to the matching id from that agent's own model list; the same agent may appear as several members with different models. If the agent's list has no such model, keep "model" null and put the requested model into "unsupported".
+- A member's "effort" is null to use the model's default reasoning effort. When the user asks for a reasoning effort or thinking level for an agent (for example "high", "xhigh" or "max"), set that member's "effort" to it in lower case; it is checked against the levels the chosen model offers. A level-like ending in a model id (such as "-medium") is part of the id and does not set the effort, so still set "effort". If the agent has no effort setting, keep "effort" null and put the requested effort into "unsupported".
 - Mark members and acceptance items the user did not ask for as source "inferred"; what the user asked for is "user".
 - Put any part of the request the workflow cannot express (for example committing, opening a pull request, several implementers writing at once, or an agent not in the list) into "unsupported". Put every assumption you made into "assumptions". Never silently drop a requirement.
 
@@ -85,10 +89,11 @@ ${goal}
 Reply with the workflow as a single \`\`\`json fenced block.`;
 }
 
-function attemptPlan(
+async function attemptPlan(
   raw: string,
-  context: ValidationContext,
-): { spec: WorkflowSpec; report: ValidationReport; warnings: string[] } | { errors: string[] } {
+  baseContext: ValidationContext,
+  effortLevels: EffortLevelLoader | undefined,
+): Promise<{ spec: WorkflowSpec; report: ValidationReport; warnings: string[] } | { errors: string[] }> {
   const extracted = extractJson(raw);
   if ('error' in extracted) return { errors: [extracted.error] };
   let converted;
@@ -98,6 +103,7 @@ function attemptPlan(
     return { errors: [`The workflow does not have the required shape: ${error instanceof Error ? error.message : String(error)}`] };
   }
   if (!converted.ok) return { errors: converted.errors.map((e) => `${e.path}: ${e.message}`) };
+  const context = await withEffortLevels(converted.spec, baseContext, effortLevels);
   const report = validateSpec(converted.spec, context);
   if (report.errors.length > 0) return { errors: report.errors.map((e) => `${e.path}: ${e.message}`) };
   return { spec: converted.spec, report, warnings: converted.warnings.map((w) => `${w.path}: ${w.message}`) };
@@ -110,6 +116,8 @@ export async function planWorkflow(input: {
   projectCwd: string;
   workDir: string;
   context: ValidationContext;
+  /** Effort levels of one model ("null" model = the agent's default), or null when unknown. */
+  effortLevels?: EffortLevelLoader;
   bridge: SessionBridge;
   isCancelled: () => boolean;
   onSession: (sessionId: string) => void;
@@ -156,7 +164,7 @@ export async function planWorkflow(input: {
   if (turn.status !== 'completed') {
     return { ok: false, error: turn.error ?? `The planner turn ended: ${turn.status}.`, raw: turn.text, sessionId: id };
   }
-  let attempt = attemptPlan(turn.text, input.context);
+  let attempt = await attemptPlan(turn.text, input.context, input.effortLevels);
   if ('errors' in attempt) {
     const repair = expectTurn(id);
     const ok = await input.bridge.continue({
@@ -176,7 +184,7 @@ export async function planWorkflow(input: {
     }
     turn = await repair;
     if (turn.status !== 'completed') return { ok: false, error: turn.error ?? 'The planner did not finish.', raw: turn.text, sessionId: id };
-    attempt = attemptPlan(turn.text, input.context);
+    attempt = await attemptPlan(turn.text, input.context, input.effortLevels);
     if ('errors' in attempt) return { ok: false, error: attempt.errors.join('\n'), raw: turn.text, sessionId: id };
   }
   return { ok: true, spec: attempt.spec, report: attempt.report, raw: turn.text, warnings: attempt.warnings, sessionId: id };

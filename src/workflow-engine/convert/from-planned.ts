@@ -84,6 +84,7 @@ export function convertPlannedWorkflow(
     role: m.role,
     agent: m.agent,
     ...(m.model !== null ? { model: m.model } : {}),
+    ...(typeof m.effort === 'string' && m.effort.trim() !== '' ? { effort: m.effort.trim() } : {}),
     ...(m.focus !== null ? { focus: m.focus } : {}),
     source: m.source,
   }));
