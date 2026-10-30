@@ -24,9 +24,10 @@ import { findPendingStartWorkflowCall, startWorkflowSchema, workflowTargetFolder
 import { AegisWorkflowHost, memberSessionCwd } from '../../src/electron/libs/workflow/aegis-host';
 import { getSessionProjectSources, grantSessionFolder } from '../../src/electron/libs/session-store';
 import { START_WORKFLOW_JSON_SCHEMA } from '../../src/electron/libs/session-native-tool';
-import { buildMemberConfigs, declarationForAgent } from '../../src/electron/libs/workflow/member-configs';
-import { catalogOptions, loadModelCatalogs } from '../../src/electron/libs/workflow/model-catalogs';
-import { listedModels } from '../../src/electron/libs/workflow/planner';
+import { buildMemberConfigs, declarationFor, declarationForAgent, memberEffortPayload, PROVIDER_WORKFLOW_DECLARATIONS, withEffortLevels } from '../../src/electron/libs/workflow/member-configs';
+import { catalogEffortLevels, catalogOptions, loadModelCatalogs } from '../../src/electron/libs/workflow/model-catalogs';
+import { listedModels, planWorkflow } from '../../src/electron/libs/workflow/planner';
+import type { SessionContinuePayload } from '../../src/shared/types';
 import { validateSpec } from '../../src/workflow-engine/validate/spec-validator';
 import type { WorkflowSpec } from '../../src/workflow-engine/spec/workflow-spec';
 import { DEFAULT_LIMITS } from '../../src/workflow-engine/limits';
@@ -513,6 +514,207 @@ test('members may pin a model from their own catalog; the chat session keeps its
     validateSpec(spec([review('sonnet', 'claude-sonnet-5-5')]), context).errors.map((e) => e.path),
     ['members[0].model'],
   );
+});
+
+test('effort levels come from each catalog the way its composer reads them', () => {
+  const codex = {
+    defaultModel: 'gpt-6.1',
+    availableModels: [
+      { name: 'gpt-6.1', supportedReasoningLevels: [{ effort: 'low' }, { effort: 'high' }, { effort: 'xhigh' }] },
+      { name: 'gpt-mini' },
+    ],
+  };
+  assert.deepEqual(catalogEffortLevels('codex', codex, null), ['low', 'high', 'xhigh'], 'no model: the default model');
+  assert.equal(catalogEffortLevels('codex', codex, 'gpt-mini'), null, 'levels not listed: unknown');
+  assert.equal(catalogEffortLevels('codex', codex, 'gpt-missing'), null);
+  const kimi = {
+    defaultModel: null,
+    availableModels: [
+      { name: 'k3', isDefault: true, supportEfforts: ['low', 'high', 'max'] },
+      { name: 'k2-thinking', capabilities: ['thinking'] },
+      { name: 'k2' },
+    ],
+  };
+  assert.deepEqual(catalogEffortLevels('kimi', kimi, null), ['off', 'low', 'high', 'max']);
+  assert.deepEqual(catalogEffortLevels('kimi', kimi, 'k2-thinking'), ['on', 'off']);
+  assert.deepEqual(catalogEffortLevels('kimi', kimi, 'k2'), []);
+  assert.equal(catalogEffortLevels('grok', { availableModels: [{ name: 'g', isDefault: true }] }, null), null, 'the picker offers every level');
+  assert.deepEqual(catalogEffortLevels('grok', { availableModels: [{ name: 'g', reasoningEfforts: ['low', 'high'] }] }, 'g'), ['low', 'high']);
+  assert.deepEqual(catalogEffortLevels('deepseek', { defaultModel: 'd', availableModels: [{ id: 'd', name: 'D', reasoningEfforts: ['off', 'high'] }] }, null), ['off', 'high']);
+  assert.deepEqual(catalogEffortLevels('mimo', { availableModels: [{ id: 'm', reasoningEfforts: ['low', 'max'] }] }, 'm'), ['low', 'max']);
+  assert.deepEqual(catalogEffortLevels('bubble', { availableModels: [{ name: 'b' }] }, 'b'), [], 'no levels listed: none');
+  assert.equal(catalogEffortLevels('opencode', { availableModels: [{ name: 'o' }] }, 'o'), null);
+});
+
+test('every provider with an effort setting names its payload field; the chat session takes none', () => {
+  const fields = Object.fromEntries(PROVIDER_WORKFLOW_DECLARATIONS.map((d) => [d.provider, d.effortField]));
+  assert.deepEqual(fields, {
+    claude: 'claudeReasoningEffort', codex: 'codexReasoningEffort', kimi: 'kimiThinking', opencode: null,
+    grok: 'grokReasoningEffort', devin: 'devinThoughtLevel', mimo: 'mimoReasoningEffort', minimax: 'minimaxThinkingEffort',
+    qoder: null, bubble: 'bubbleThinkingLevel', deepseek: 'deepseekReasoningEffort', pi: null,
+  });
+  assert.deepEqual(memberEffortPayload(declarationFor('devin')!, 'high'), { devinThoughtLevel: 'high' });
+  assert.deepEqual(memberEffortPayload(declarationFor('devin')!, null), {});
+  assert.deepEqual(memberEffortPayload(declarationFor('opencode')!, 'high'), {});
+  const configs = buildMemberConfigs(['devin', 'opencode'] as never, 'claude');
+  assert.deepEqual(configs.map((c) => [c.name, c.supportsEffort]), [['current', undefined], ['opencode', false], ['devin', true]]);
+});
+
+test('a member\'s effort is checked against the levels its model offers', async () => {
+  const configs = buildMemberConfigs(['devin', 'opencode', 'claude'] as never, 'claude', {
+    devin: [{ id: 'gpt-6-1-sol-medium', label: 'GPT 6.1 Sol' }, { id: 'swe-2-high' }],
+  });
+  const reads: string[] = [];
+  const load = async (provider: string, model: string | null) => {
+    reads.push(`${provider}:${model}`);
+    if (provider === 'devin') return model === 'swe-2-high' ? [] : ['low', 'medium', 'high'];
+    if (provider === 'claude') return ['low', 'medium', 'high', 'xhigh', 'max'];
+    throw new Error('offline');
+  };
+  const member = (key: string, agent: string, extra: Partial<WorkflowSpec['members'][number]> = {}): WorkflowSpec['members'][number] =>
+    ({ key, role: agent === 'current' ? 'implementer' : 'reviewer', agent, source: 'user', ...extra });
+  const spec = (members: WorkflowSpec['members']): WorkflowSpec => ({
+    schemaVersion: 1, name: 'Efforts', members, acceptance: [], unsupported: [], assumptions: [],
+    steps: members.map((m) => ({ id: `step-${m.key}`, kind: 'agent', member: m.key, task: [{ goal: true }], workspace: 'snapshot', output: 'review', session: 'fresh' })),
+  } as WorkflowSpec);
+  const check = async (members: WorkflowSpec['members']) => {
+    const s = spec(members);
+    const report = validateSpec(s, await withEffortLevels(s, { memberConfigs: configs, limits: DEFAULT_LIMITS }, load));
+    return { spec: s, errors: report.errors };
+  };
+
+  const ok = await check([
+    member('sol', 'devin', { model: 'gpt-6-1-sol-medium', effort: 'High' }),
+    member('sol-again', 'devin', { model: 'gpt-6-1-sol-medium', effort: 'low' }),
+    member('default', 'devin', { effort: 'medium' }),
+    member('opus', 'claude', { effort: 'xhigh' }),
+  ]);
+  assert.deepEqual(ok.errors, []);
+  assert.equal(ok.spec.members[0].effort, 'high', 'spelled as the model spells it');
+  assert.deepEqual(reads, ['devin:gpt-6-1-sol-medium', 'devin:null', 'claude:null'], 'one read per model');
+
+  const bad = await check([
+    member('ultra', 'devin', { model: 'gpt-6-1-sol-medium', effort: 'ultra' }),
+    member('fixed', 'devin', { model: 'swe-2-high', effort: 'high' }),
+    member('oc', 'opencode', { effort: 'high' }),
+    member('current', 'current', { effort: 'high' }),
+  ]);
+  assert.deepEqual(bad.errors.map((e) => e.path), ['members[0].effort', 'members[1].effort', 'members[2].effort', 'members[3].effort']);
+  assert.match(bad.errors[0].message, /offers no effort "ultra" \(it offers: low, medium, high\)/);
+  assert.match(bad.errors[1].message, /has no reasoning effort levels/);
+
+  // A level that cannot be read is left to the agent rather than refused.
+  const unread = buildMemberConfigs(['codex'] as never);
+  const s = spec([member('x', 'codex', { effort: 'xhigh' })]);
+  assert.deepEqual(validateSpec(s, await withEffortLevels(s, { memberConfigs: unread, limits: DEFAULT_LIMITS }, load)).errors, []);
+});
+
+test('the planner sets a requested effort, and a level the model lacks goes back for repair', async () => {
+  const configs = buildMemberConfigs(['devin', 'claude'] as never, null, { devin: [{ id: 'gpt-6-1-sol-medium', label: 'GPT 6.1 Sol' }] });
+  const plan = (effort: string | null, unsupported: string[] = []) => ({
+    schemaVersion: 1, name: 'review', description: 'Devin reviews',
+    members: [{ key: 'devin-review', role: 'reviewer', agent: 'devin', model: 'gpt-6-1-sol-medium', effort, focus: null, source: 'user' }],
+    acceptance: [], unsupported, assumptions: [],
+    steps: [{ id: 'review', kind: 'agent', parent: null, order: 0, phase: null, condition: null, member: 'devin-review',
+      task: [{ kind: 'goal', text: null, ref: null }], workspace: 'snapshot', output: 'review', route: null, session: 'fresh',
+      argv: null, timeoutMs: null, max: null, question: null, options: null, reason: null, implementer: null, reviewers: null, start: null }],
+  });
+  const runPlanner = async (replies: unknown[]) => {
+    const prompts: string[] = [];
+    let sessionId = '';
+    const reply = (id: string) => setImmediate(() => {
+      const text = '```json\n' + JSON.stringify(replies.shift()) + '\n```';
+      observeTurnMessage(id, { type: 'assistant', uuid: `p-${replies.length}`, message: { content: [{ type: 'text', text }] } } as never);
+      settleTurn(id, 'completed');
+    });
+    const result = await planWorkflow({
+      runId: 'run-plan', goal: '让 Devin agent（模型 GPT 6.1 sol，reasoning effort high）review', plannerAgent: 'claude',
+      projectCwd: root, workDir: path.join(root, `planner-${Math.random()}`),
+      context: { memberConfigs: configs, limits: DEFAULT_LIMITS },
+      effortLevels: async () => ['low', 'medium', 'high'],
+      bridge: {
+        start: async (payload, onCreated) => {
+          prompts.push(payload.prompt);
+          sessionId = `planner-${Math.random()}`;
+          onCreated?.(sessionId);
+          reply(sessionId);
+          return sessionId;
+        },
+        continue: async (payload) => { prompts.push(payload.prompt); reply(payload.sessionId); return true; },
+        stop: () => {}, sessionCwd: () => null, isBusy: () => false, grantFolder: () => () => {},
+      },
+      isCancelled: () => false,
+      onSession: () => {},
+    });
+    return { result, prompts };
+  };
+
+  const first = await runPlanner([plan('high')]);
+  assert.ok(first.result.ok, first.result.ok ? '' : first.result.error);
+  assert.equal(first.result.ok && first.result.spec.members[0].effort, 'high');
+  assert.match(first.prompts[0], /set that member's "effort"/);
+  assert.match(first.prompts[0], /"effort"/);
+
+  const repaired = await runPlanner([plan('ultra'), plan(null, ['reasoning effort ultra'])]);
+  assert.ok(repaired.result.ok);
+  assert.match(repaired.prompts[1], /members\[0\]\.effort: .*it offers: low, medium, high/);
+});
+
+test('a member runs at its planned effort on every turn', async () => {
+  const main = path.join(root, 'effort-main');
+  await fs.mkdir(main);
+  const g = (...args: string[]) => execFileSync('git', args, { cwd: main, encoding: 'utf8' });
+  g('init', '-q');
+  writeFileSync(path.join(main, 'a.ts'), 'export const a = 1;\n');
+  g('add', '-A');
+  g('-c', 'user.email=t@example.com', '-c', 'user.name=T', 'commit', '-qm', 'init');
+  const version = await captureTree(main);
+
+  // Starting a member session records it in the app database, which unit
+  // tests do not open; the start and continue paths send the same payload.
+  const continued: Partial<SessionContinuePayload>[] = [];
+  const host = new AegisWorkflowHost({
+    getRun: () => ({
+      id: 'run-effort', cwd: main, projectCwd: main, title: 'Fix', goal: 'Fix it', location: 'current',
+      options: { adoptions: {}, permissionModes: {}, parent: null },
+    }) as never,
+    members: () => new Map([['impl', {
+      runId: 'run-effort', key: 'impl', role: 'implementer', agent: 'devin', provider: 'devin', model: 'gpt-6-1-sol-medium', effort: 'high',
+      focus: null, source: 'user', permissionMode: null, permissionDefault: true, readOnlyMechanism: null, degraded: [], unverified: false,
+      currentSessionId: 'devin-member',
+    }]]) as never,
+    store: { attachSession: async () => {} } as never,
+    bridge: {
+      start: async () => { throw new Error('the member session must be continued'); },
+      continue: async (payload) => {
+        continued.push(payload);
+        setImmediate(() => {
+          const result = { schemaVersion: 1, status: 'completed', summary: 'done', changes: [], findingResponses: [], blockers: [] };
+          observeTurnMessage(payload.sessionId, { type: 'assistant', uuid: 'e1', message: { content: [{ type: 'text', text: '```json\n' + JSON.stringify(result) + '\n```' }] } } as never);
+          settleTurn(payload.sessionId, 'completed');
+        });
+        return true;
+      },
+      stop: () => {},
+      sessionCwd: () => main,
+      isBusy: () => false,
+      grantFolder: () => () => {},
+    },
+    artifactsDir: path.join(root, 'effort-artifacts'),
+    control: { cancelled: false },
+    appGeneration: 'test',
+    onEvent: () => {},
+  });
+  const outcome = await host.runAgent({
+    key: 'fix', stepId: 'fix', iterations: [0],
+    member: { key: 'impl', role: 'implementer', agent: 'devin', model: 'gpt-6-1-sol-medium', effort: 'high', source: 'user' },
+    workspace: 'write', session: 'continue', outputKind: 'implementation',
+    blocks: [{ kind: 'text', text: 'Fix it.' }] as never,
+    version, previousBlockingFindingIds: [], fingerprint: '{}',
+  });
+  assert.equal(outcome.status, 'succeeded', JSON.stringify(outcome));
+  assert.equal(continued.length, 1);
+  assert.equal(continued[0].devinThoughtLevel, 'high');
 });
 
 test('reviews of existing changes diff against the last commit', async () => {

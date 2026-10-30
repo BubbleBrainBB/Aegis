@@ -68,6 +68,7 @@ export type PlannedWorkflow = {
     role: MemberRole;
     agent: string;
     model: string | null;
+    effort: string | null;
     focus: string | null;
     source: Source;
   }>;
@@ -169,6 +170,7 @@ export function buildPlannedWorkflowSchema(options: PlannerSchemaOptions): JsonS
         role: strEnum(ROLES),
         agent: strEnum(options.agentNames),
         model,
+        effort: nullable(str),
         focus: nullable(str),
         source: strEnum(SOURCES),
       }),

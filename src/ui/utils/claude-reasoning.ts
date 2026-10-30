@@ -1,9 +1,11 @@
 import { rendererStateStorage } from './renderer-state-storage';
 import type { ClaudeReasoningEffort, ClaudeReasoningLevelOption } from '../types';
+import { CLAUDE_REASONING_EFFORT_OPTIONS } from '../../shared/claude-reasoning';
+
+export { CLAUDE_REASONING_EFFORT_OPTIONS };
 
 const STORAGE_KEY = 'cowork.preferredClaudeReasoningEfforts';
 
-export const CLAUDE_REASONING_EFFORT_OPTIONS: ClaudeReasoningEffort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 export const CLAUDE_REASONING_EFFORT_LABELS: Record<ClaudeReasoningEffort, string> = {
   low: 'Low',
   medium: 'Medium',

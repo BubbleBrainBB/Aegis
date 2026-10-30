@@ -31,7 +31,7 @@ import {
 } from '../../../shared/workflow';
 import { AegisWorkflowHost, type HostEvent, type RunControl, type SessionBridge } from './aegis-host';
 import { isGroupAlive, processStartTime, terminateGroup } from './check-executor';
-import { buildMemberConfigs, declarationFor, declarationForAgent, memberSessionPayload } from './member-configs';
+import { buildMemberConfigs, declarationFor, declarationForAgent, memberSessionPayload, withEffortLevels } from './member-configs';
 import { loadModelCatalogs } from './model-catalogs';
 import { planWorkflow, readProjectScripts } from './planner';
 import { setWorkflowSessionPolicy } from './session-hooks';
@@ -57,6 +57,8 @@ export type WorkflowServiceDeps = {
   discardIsolated: (sessionId: string) => Promise<{ ok: boolean; message?: string }>;
   /** A provider's model config as its composer picker reads it; members may only pin these models. */
   modelCatalog?: (provider: string) => Promise<unknown>;
+  /** Effort levels one model offers (null model = the agent's default), or null when unknown. */
+  effortLevels?: (provider: string, model: string | null) => Promise<string[] | null>;
 };
 
 const OPTION_LABELS: Record<string, string> = {
@@ -216,7 +218,7 @@ export class WorkflowService {
     let raw: string | null = null;
     if (template || given) {
       spec = given ?? buildTemplateSpec(run.goal, template!);
-      report = validateSpec(spec, context);
+      report = validateSpec(spec, await withEffortLevels(spec, context, this.deps.effortLevels));
       if (report.errors.length > 0) {
         this.fail(runId, report.errors.map((e) => e.message).join('\n'));
         return;
@@ -229,6 +231,7 @@ export class WorkflowService {
         projectCwd: run.projectCwd,
         workDir: path.join(this.artifactsDir(runId), 'planner'),
         context,
+        effortLevels: this.deps.effortLevels,
         bridge: this.deps.bridge,
         isCancelled: () => store.getRun(runId)?.status !== 'planning',
         onSession: (sessionId) => {
@@ -270,6 +273,7 @@ export class WorkflowService {
           agent: member.agent,
           provider: declaration.provider,
           model: member.model ?? null,
+          effort: isCurrent ? null : member.effort ?? null,
           focus: member.focus ?? null,
           source: member.source,
           permissionMode: session.permissionMode,
@@ -767,6 +771,7 @@ export class WorkflowService {
           provider: m.provider,
           model: m.model,
           modelLabel: (m.model && this.modelLabels.get(m.provider)?.[m.model]) || null,
+          effort: m.effort,
           focus: m.focus,
           source: m.source,
           permissionMode: m.permissionMode,

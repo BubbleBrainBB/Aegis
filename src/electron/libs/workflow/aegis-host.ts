@@ -19,7 +19,7 @@ import type { ReviewResult } from '../../../workflow-engine/spec/results';
 import type { SessionContinuePayload, SessionStartPayload } from '../../../shared/types';
 import { CURRENT_SESSION_AGENT, type WorkflowSessionPolicy } from '../../../shared/workflow';
 import { runCheckCommand } from './check-executor';
-import { declarationFor, memberSessionPayload } from './member-configs';
+import { declarationFor, memberEffortPayload, memberSessionPayload } from './member-configs';
 import {
   cancelTurnExpectation,
   expectTurn,
@@ -196,8 +196,11 @@ export class AegisWorkflowHost implements WorkflowHost {
       const isCurrent = member.agent === CURRENT_SESSION_AGENT;
       const ownFolder = memberSessionCwd(isCurrent, run, workspaceDir);
       if (ownFolder !== workspaceDir) briefContext.outsideSessionFolder = true;
-      // The chat session keeps its own permission mode: nothing is overridden.
-      const payload = isCurrent ? {} : memberSessionPayload(declaration, role, run.options.permissionModes).payload;
+      // The chat session keeps its own permission mode and effort: nothing is overridden.
+      // Others carry their effort on every turn, as a composer does.
+      const payload = isCurrent
+        ? {}
+        : { ...memberSessionPayload(declaration, role, run.options.permissionModes).payload, ...memberEffortPayload(declaration, member.effort) };
       const prompt = renderBrief(instance, briefContext);
       const display = isCurrent ? currentSessionDisplay(instance, this.deps.members()) : undefined;
 

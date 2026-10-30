@@ -17,6 +17,8 @@ import { getAppPreferences, setAppPreferences, getTerminalShellOptions, trackTas
 import { setupSessionGoalIPC, getCachedSessionGoal, publishSessionGoal, rejectSessionGoalStart } from './ipc/session-goal';
 import { setupWorkflowIPC } from './ipc/workflows';
 import { WorkflowService } from './libs/workflow/workflow-service';
+import { catalogEffortLevels } from './libs/workflow/model-catalogs';
+import { CLAUDE_REASONING_EFFORT_OPTIONS } from '../shared/claude-reasoning';
 import { findPendingStartWorkflowCall, setWorkflowChatEntry, workflowTargetFolder } from './libs/workflow/chat-entry';
 import { isFullAccessMode } from '../shared/workflow';
 import type { GoalAction } from '../shared/session-goal';
@@ -727,6 +729,19 @@ async function workflowModelCatalog(provider: string): Promise<unknown> {
     case 'bubble': return getBubbleModelConfig();
     case 'qoder': return getQoderModelConfig();
     default: return null;
+  }
+}
+
+/** Effort levels one model offers, from the same source as its composer picker; null when unknown. */
+async function workflowEffortLevels(provider: string, model: string | null): Promise<string[] | null> {
+  switch (provider) {
+    case 'claude': return [...CLAUDE_REASONING_EFFORT_OPTIONS];
+    case 'devin':
+    case 'minimax': {
+      const read = provider === 'devin' ? await getDevinThoughtLevels(model) : await getMinimaxThinkingEfforts(model);
+      return read.failed ? null : read.levels.map((level) => level.id);
+    }
+    default: return catalogEffortLevels(provider, await workflowModelCatalog(provider), model);
   }
 }
 
@@ -4843,6 +4858,7 @@ function setupWorkflows(mainWindow: BrowserWindow): void {
     applyIsolated: (sessionId) => applyIsolatedWorkspace(sessionId),
     discardIsolated: (sessionId) => discardIsolatedWorkspace(sessionId),
     modelCatalog: workflowModelCatalog,
+    effortLevels: workflowEffortLevels,
   });
   setupWorkflowIPC(service);
   // Workflow sessions are hidden from the thread list, so the board loads

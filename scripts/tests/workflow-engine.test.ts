@@ -135,9 +135,9 @@ const loginPlan = (): PlannedWorkflow => ({
   name: 'login',
   description: 'Implement login; security and edge-case reviews; up to 2 repair rounds',
   members: [
-    { key: 'impl', role: 'implementer', agent: 'codex', model: null, focus: null, source: 'user' },
-    { key: 'security', role: 'reviewer', agent: 'claude', model: null, focus: 'security', source: 'user' },
-    { key: 'edges', role: 'reviewer', agent: 'codex', model: null, focus: 'edge cases', source: 'user' },
+    { key: 'impl', role: 'implementer', agent: 'codex', model: null, effort: null, focus: null, source: 'user' },
+    { key: 'security', role: 'reviewer', agent: 'claude', model: null, effort: null, focus: 'security', source: 'user' },
+    { key: 'edges', role: 'reviewer', agent: 'codex', model: null, effort: null, focus: 'edge cases', source: 'user' },
   ],
   acceptance: [
     { id: 'a1', description: 'Tests pass', verifyKind: 'check', verifyRef: 'tests', source: 'inferred' },
@@ -180,7 +180,19 @@ test('converts the plan example into a reviewLoop tree with its nested check', (
   assert.deepEqual(loop.checks.map((c) => [c.id, c.argv]), [['tests', ['npm', 'test']]]);
   assert.deepEqual(result.spec.acceptance[0].verify, { kind: 'check', step: 'tests' });
   assert.equal(result.spec.members[0].model, undefined);
+  assert.equal(result.spec.members[0].effort, undefined);
   assert.equal(result.spec.members[1].focus, 'security');
+});
+
+test('a planned effort is kept on its member; null or blank means the model default', () => {
+  const plan = loginPlan();
+  plan.members[1] = { ...plan.members[1], effort: ' high ' };
+  plan.members[2] = { ...plan.members[2], effort: '' };
+  const ajv = new Ajv({ strict: false, allErrors: true });
+  assert.ok(ajv.compile(schema)(plan));
+  const result = convertPlannedWorkflow(plan);
+  assert.ok(result.ok);
+  assert.deepEqual(result.spec.members.map((m) => m.effort), [undefined, 'high', undefined]);
 });
 
 /** Investigate → implement, with a proposals-and-judge branch and a repeat. */
