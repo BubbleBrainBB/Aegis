@@ -4562,6 +4562,26 @@ async function commandExists(command: string): Promise<boolean> {
   }
 }
 
+// A shell command can be claimed by a different editor: Cursor's "install
+// 'code' command" points /usr/local/bin/code into Cursor.app, which would make
+// VS Code look installed after it was removed. When the command resolves into
+// an app bundle, that bundle must be one of the candidate's own apps.
+async function commandBelongsToCandidate(command: string, candidate: EditorCandidate): Promise<boolean> {
+  if (process.platform !== 'darwin') return commandExists(command);
+  let resolved: string;
+  try {
+    const { stdout } = await execFileAsync('which', [command], { timeout: 5000 });
+    const commandPath = stdout.trim().split('\n')[0];
+    if (!commandPath) return false;
+    resolved = await fsPromises.realpath(commandPath);
+  } catch {
+    return false;
+  }
+  const bundle = resolved.match(/\/([^/]+)\.app\//)?.[1];
+  if (!bundle || !candidate.appNames?.length) return true;
+  return candidate.appNames.includes(bundle);
+}
+
 interface EditorCandidate {
   id: EnvironmentEditorId;
   label: string;
@@ -4698,7 +4718,7 @@ async function getAvailableEditorCandidate(candidate: EditorCandidate): Promise<
   const appName = candidate.appNames?.find((name) => getDarwinAppPath(name));
   const commandChecks = await Promise.all((candidate.commands ?? []).map(async (command) => ({
     command,
-    available: await commandExists(command),
+    available: await commandBelongsToCandidate(command, candidate),
   })));
   const command = commandChecks.find((check) => check.available)?.command;
 
@@ -4768,9 +4788,11 @@ async function openInEnvironmentEditor(input: OpenInEditorInput): Promise<{ ok: 
       return { ok: true };
     }
 
+    // Checked again at launch: the menu may have listed this editor before
+    // another app took over its shell command.
     const commandChecks = await Promise.all((candidate.commands ?? []).map(async (command) => ({
       command,
-      available: await commandExists(command),
+      available: await commandBelongsToCandidate(command, candidate),
     })));
     const command = commandChecks.find((check) => check.available)?.command;
     if (command) {
