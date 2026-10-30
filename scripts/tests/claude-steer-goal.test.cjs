@@ -126,8 +126,14 @@ async function within(promise, ms, label) {
     const { createPromptHandBack } = require('../../dist-electron/electron/libs/claude-prompt-handback.js');
     const realSetTimeout = global.setTimeout;
     const realClearTimeout = global.clearTimeout;
-    for (const exit of [{ label: 'Stop during preparation', submitted: false }, { label: 'runner ended', submitted: true }]) {
-      const id = `handback-${exit.submitted}`;
+    for (const exit of [
+      { label: 'Stop during preparation', submitted: false, promptId: 'goal-prompt' },
+      { label: 'runner ended', submitted: true, promptId: 'goal-prompt' },
+      // A goal started on an idle or fresh runner: the host has no id for it.
+      { label: 'Stop while preparing a goal started on an idle runner', submitted: false, promptId: undefined },
+      { label: 'runner ended before taking a goal started on an idle runner', submitted: true, promptId: undefined },
+    ]) {
+      const id = `handback-${exit.submitted}-${exit.promptId ?? 'none'}`;
       const ctrl = manager.createClaudeGoalController(id, false);
       const wire = transport(ctrl);
       await ctrl.initialize(wire);
@@ -156,7 +162,7 @@ async function within(promise, ms, label) {
         rejectGoalStart: (error) => manager.rejectClaudeGoalSet(id, error),
         report: (ids) => reported.push(...ids),
       });
-      handBack('goal-prompt', { submitted: exit.submitted, goalSet: true });
+      handBack(exit.promptId, { submitted: exit.submitted, goalSet: true });
       await assert.rejects(within(activation, 2000, exit.label), (error) => error instanceof manager.ClaudeGoalWithdrawnError,
         `${exit.label}: the goal start ends as withdrawn`);
       global.clearTimeout = realClearTimeout;
@@ -164,7 +170,8 @@ async function within(promise, ms, label) {
       for (const handle of goalTimers) assert(cleared.has(handle), `${exit.label}: the 30s goal-start timer is cleared`);
       assert.equal(ctrl.work, exit.submitted ? workBefore - 1 : workBefore,
         `${exit.label}: only a submitted prompt stops counting as work`);
-      assert.deepEqual(reported, ['goal-prompt'], `${exit.label}: the host hears once`);
+      assert.deepEqual(reported, exit.promptId ? ['goal-prompt'] : [],
+        `${exit.label}: the host hears once, and only about a prompt it knows by id`);
       assert.equal(wire.calls.includes('abort'), false, `${exit.label}: no runtime abort`);
       manager.releaseClaudeGoalController(id, ctrl);
     }

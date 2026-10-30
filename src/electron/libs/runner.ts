@@ -815,7 +815,7 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
         // The enqueue settled (pushed, cancelled, aborted, or failed) — it is
         // no longer "pending" for cancelPendingPrompts accounting.
         promptCancellation.settle(seq);
-        if (promptId && !handedOver) handBack(promptId, { submitted: false, goalSet });
+        if (!handedOver && (promptId || goalSet)) handBack(promptId, { submitted: false, goalSet });
       });
   };
 
@@ -1352,6 +1352,8 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
         const answeredPrompts = promptFrame.answered;
         if (promptFrame.withdrawn) promptWithdrawn(promptFrame.withdrawn);
         if (promptFrame.started) {
+          // A /goal prompt the CLI took is the goal controller's from here.
+          goalPromptUuids.delete(promptFrame.started.promptId);
           // The host stores a prompt sent into a busy turn here; its echo
           // follows right behind it.
           onPromptStarted?.(promptFrame.started);
@@ -1579,6 +1581,10 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
       // Prompts sent into a busy turn that the CLI never took: they go back
       // to the host like a withdrawal (Claude never read them).
       for (const uuid of promptLifecycle.unstarted()) promptWithdrawn(uuid);
+      // A /goal prompt the host does not know by id that the CLI never took
+      // (stored at send, it stays): its goal start still ends here.
+      for (const uuid of goalPromptUuids) handBack(undefined, { submitted: true, goalSet: true });
+      goalPromptUuids.clear();
     }
   })();
 

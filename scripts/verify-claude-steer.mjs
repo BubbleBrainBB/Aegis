@@ -142,8 +142,11 @@ assert.match(runner, /onPromptStarted\?\.\(promptFrame\.started\);[\s\S]{0,250}i
 // its finally. The host settles the ledger only for ids it still counts
 // (Stop's cancelPendingPrompts already took them out), so nothing twice.
 assert.match(runner, /inputQueue\.push\(message\);\s*handedOver = true;/, 'the hand-over is marked right at the push');
-assert.match(runner, /promptCancellation\.settle\(seq\);\s*if \(promptId && !handedOver\) handBack\(promptId, \{ submitted: false, goalSet \}\);/,
-  'a prompt that never reached the CLI is handed back once, from the enqueue\'s finally');
+assert.match(runner, /promptCancellation\.settle\(seq\);\s*if \(!handedOver && \(promptId \|\| goalSet\)\) handBack\(promptId, \{ submitted: false, goalSet \}\);/,
+  'a prompt that never reached the CLI is handed back once — a /goal prompt even without a host id');
+assert.ok(runner.includes('for (const uuid of goalPromptUuids) handBack(undefined, { submitted: true, goalSet: true });'),
+  'at runner end, a /goal prompt the CLI never took ends its goal start even without a host id');
+assert.ok(runner.includes('goalPromptUuids.delete(promptFrame.started.promptId);'), 'a /goal prompt the CLI took is no longer tracked');
 // Every exit goes through handBack (goal work, goal-start wait, the host).
 assert.ok(runner.includes('const goalSet = isGoalSetPrompt(trimmed);'), 'a /goal prompt is known from the start of its preparation');
 assert.ok(runner.includes('handBack(uuid, { submitted: true, goalSet: goalPromptUuids.delete(uuid) });'), 'CLI withdrawals hand back through handBack');
