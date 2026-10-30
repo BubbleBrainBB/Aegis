@@ -159,10 +159,12 @@ async function within(promise, ms, label) {
       const reported = [];
       const handBack = createPromptHandBack({
         goal: ctrl,
-        rejectGoalStart: (error) => manager.rejectClaudeGoalSet(id, error),
+        rejectGoalStart: (error, goalSend) => manager.rejectClaudeGoalSet(id, error, goalSend),
         report: (ids) => reported.push(...ids),
       });
-      handBack(exit.promptId, { submitted: exit.submitted, goalSet: true });
+      // The /goal prompt this start dispatched took its send number after
+      // the start began waiting (as the runner numbers it on send).
+      handBack(exit.promptId, { submitted: exit.submitted, goalSend: manager.nextClaudeGoalSend() });
       await assert.rejects(within(activation, 2000, exit.label), (error) => error instanceof manager.ClaudeGoalWithdrawnError,
         `${exit.label}: the goal start ends as withdrawn`);
       global.clearTimeout = realClearTimeout;
@@ -175,6 +177,31 @@ async function within(promise, ms, label) {
       assert.equal(wire.calls.includes('abort'), false, `${exit.label}: no runtime abort`);
       manager.releaseClaudeGoalController(id, ctrl);
     }
+  }
+
+  // B1: an earlier runner's /goal prompt — taken and finished on a CLI
+  // without lifecycle frames, or simply never taken — is swept when that
+  // runner ends (here: aborted because the next goal changed the model). Its
+  // withdrawal must not fail the new goal start, which began waiting after
+  // that prompt was sent; the new goal's own withdrawal still does.
+  {
+    const id = 'replacement-goal';
+    const ctrl = manager.createClaudeGoalController(id, false);
+    await ctrl.initialize(transport(ctrl));
+    const oldGoalSend = manager.nextClaudeGoalSend();           // G1, sent by the old runner
+    let outcome = 'pending';
+    const replacement = manager.awaitClaudeGoalSet(id, 'Second goal', async () => {}).then(
+      () => { outcome = 'activated'; },
+      (error) => { outcome = error; }
+    );
+    await tick();
+    manager.rejectClaudeGoalSet(id, new manager.ClaudeGoalWithdrawnError(), oldGoalSend);  // old runner's end sweep
+    await tick();
+    assert.equal(outcome, 'pending', "an earlier runner's goal prompt never fails a later goal start");
+    manager.rejectClaudeGoalSet(id, new manager.ClaudeGoalWithdrawnError(), manager.nextClaudeGoalSend());
+    await within(replacement, 2000, 'replacement goal');
+    assert(outcome instanceof manager.ClaudeGoalWithdrawnError, "the new goal's own withdrawal still ends it");
+    manager.releaseClaudeGoalController(id, ctrl);
   }
 
   fs.rmSync(root, { recursive: true, force: true });

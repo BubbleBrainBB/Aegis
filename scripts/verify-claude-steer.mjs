@@ -142,21 +142,24 @@ assert.match(runner, /onPromptStarted\?\.\(promptFrame\.started\);[\s\S]{0,250}i
 // its finally. The host settles the ledger only for ids it still counts
 // (Stop's cancelPendingPrompts already took them out), so nothing twice.
 assert.match(runner, /inputQueue\.push\(message\);\s*handedOver = true;/, 'the hand-over is marked right at the push');
-assert.match(runner, /promptCancellation\.settle\(seq\);\s*if \(!handedOver && \(promptId \|\| goalSet\)\) handBack\(promptId, \{ submitted: false, goalSet \}\);/,
+assert.match(runner, /promptCancellation\.settle\(seq\);\s*if \(!handedOver && \(promptId \|\| goalSend !== undefined\)\) handBack\(promptId, \{ submitted: false, goalSend \}\);/,
   'a prompt that never reached the CLI is handed back once — a /goal prompt even without a host id');
-assert.ok(runner.includes('for (const uuid of goalPromptUuids) handBack(undefined, { submitted: true, goalSet: true });'),
+assert.ok(runner.includes('for (const goalSend of goalPromptUuids.values()) handBack(undefined, { submitted: true, goalSend });'),
   'at runner end, a /goal prompt the CLI never took ends its goal start even without a host id');
 assert.ok(runner.includes('goalPromptUuids.delete(promptFrame.started.promptId);'), 'a /goal prompt the CLI took is no longer tracked');
 // Every exit goes through handBack (goal work, goal-start wait, the host).
-assert.ok(runner.includes('const goalSet = isGoalSetPrompt(trimmed);'), 'a /goal prompt is known from the start of its preparation');
-assert.ok(runner.includes('handBack(uuid, { submitted: true, goalSet: goalPromptUuids.delete(uuid) });'), 'CLI withdrawals hand back through handBack');
+assert.ok(runner.includes('const goalSend = isGoalSetPrompt(trimmed) ? nextClaudeGoalSend() : undefined;'),
+  'a /goal prompt is numbered when it is sent, before its preparation');
+assert.ok(runner.includes('handBack(uuid, { submitted: true, goalSend });'), 'CLI withdrawals hand back through handBack');
+// A withdrawal only fails goal starts that began waiting before that prompt was sent.
+assert.ok(runner.includes('rejectGoalStart: (error, goalSend) => rejectClaudeGoalSet(session.id, error, goalSend),'),
+  'goal-start failures carry the /goal prompt\'s send number');
 assert.ok(runner.includes('for (const uuid of promptLifecycle.unstarted()) promptWithdrawn(uuid);'), 'the runner-end sweep hands back through handBack');
 assert.equal((runner.match(/onPromptsWithdrawn\?\.\(/g) || []).length, 1, 'onPromptsWithdrawn is reached only through handBack');
 assert.ok(ipc.includes('const settled = new Set(promptIds.filter((id) => counted.has(id)));'),
   'the ledger only settles ids the runner entry still counts');
 const handback = read('src', 'electron', 'libs', 'claude-prompt-handback.ts');
-assert.ok(handback.includes('if (prompt.goalSet) deps.rejectGoalStart(new ClaudeGoalWithdrawnError());')
-  && runner.includes('rejectGoalStart: (error) => rejectClaudeGoalSet(session.id, error),'),
+assert.ok(handback.includes('if (goalSet) deps.rejectGoalStart(new ClaudeGoalWithdrawnError(), prompt.goalSend!);'),
   'withdrawing a /goal prompt must end its goal-start wait');
 assert.ok(runner.includes('if (promptFrame.withdrawn) promptWithdrawn(promptFrame.withdrawn);'),
   'withdrawals come from the frame loop');

@@ -1,5 +1,5 @@
 import { getSessionProjectSources } from './session-store';
-import { createClaudeGoalController, releaseClaudeGoalController, rejectClaudeGoalSet } from './claude-goal-manager';
+import { createClaudeGoalController, nextClaudeGoalSend, releaseClaudeGoalController, rejectClaudeGoalSet } from './claude-goal-manager';
 import { createPromptHandBack, isGoalSetPrompt } from './claude-prompt-handback';
 import { isWithinProjectPath } from './project-paths';
 import { createSessionSdkMcpServer, SESSION_MCP_SERVER_NAME } from './session-mcp';
@@ -582,8 +582,9 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
   // control sends are not among them): which a turn took, which still wait
   // queued, which Stop withdrew (claude-prompt-lifecycle).
   const promptLifecycle = new ClaudePromptLifecycle();
-  // Which of them set a goal: withdrawing one must end its goal-start wait.
-  const goalPromptUuids = new Set<string>();
+  // Which of them set a goal, by send number: withdrawing one must end the
+  // goal start that is waiting for it (and no later one).
+  const goalPromptUuids = new Map<string, number>();
   // The next interrupt issued is the Stop's (this Stop number): its receipt
   // says which stopped prompts it could not reach (the /goal controller may
   // issue it for us).
@@ -706,7 +707,9 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
     // Stop cancelled it while it was still being prepared, the runner went
     // away, preparing it failed — goes back to the host like a withdrawal.
     let handedOver = false;
-    const goalSet = isGoalSetPrompt(trimmed);
+    // A /goal prompt's send number: its withdrawal only fails goal starts
+    // that began waiting before it was sent.
+    const goalSend = isGoalSetPrompt(trimmed) ? nextClaudeGoalSend() : undefined;
     enqueueChain = enqueueChain
       .then(async () => {
         if (await promptCancellation.race(goalController.ready.then(() => true)) === null) return;
@@ -773,7 +776,7 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
         if (message.uuid) {
           // Only a prompt the host knows by id can be withdrawn and settled.
           promptLifecycle.sent(message.uuid as string, Boolean(promptId));
-          if (goalSet) goalPromptUuids.add(message.uuid as string);
+          if (goalSend !== undefined) goalPromptUuids.set(message.uuid as string, goalSend);
         }
         inputQueue.push(message);
         handedOver = true;
@@ -815,7 +818,7 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
         // The enqueue settled (pushed, cancelled, aborted, or failed) — it is
         // no longer "pending" for cancelPendingPrompts accounting.
         promptCancellation.settle(seq);
-        if (!handedOver && (promptId || goalSet)) handBack(promptId, { submitted: false, goalSet });
+        if (!handedOver && (promptId || goalSend !== undefined)) handBack(promptId, { submitted: false, goalSend });
       });
   };
 
@@ -837,14 +840,16 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
   // (claude-prompt-handback): goal work, the goal-start wait, the host.
   const handBack = createPromptHandBack({
     goal: goalController,
-    rejectGoalStart: (error) => rejectClaudeGoalSet(session.id, error),
+    rejectGoalStart: (error, goalSend) => rejectClaudeGoalSet(session.id, error, goalSend),
     report: (promptIds) => onPromptsWithdrawn?.(promptIds),
   });
   // A prompt the CLI took and then lost (cancelled before it started, or
   // still queued when the runner ends): it was submitted.
   const promptWithdrawn = (uuid: string) => {
     pendingEchoes.delete(uuid);
-    handBack(uuid, { submitted: true, goalSet: goalPromptUuids.delete(uuid) });
+    const goalSend = goalPromptUuids.get(uuid);
+    goalPromptUuids.delete(uuid);
+    handBack(uuid, { submitted: true, goalSend });
   };
 
   // The runtime won't emit init until it has an initial prompt to process.
@@ -1583,7 +1588,7 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
       for (const uuid of promptLifecycle.unstarted()) promptWithdrawn(uuid);
       // A /goal prompt the host does not know by id that the CLI never took
       // (stored at send, it stays): its goal start still ends here.
-      for (const uuid of goalPromptUuids) handBack(undefined, { submitted: true, goalSet: true });
+      for (const goalSend of goalPromptUuids.values()) handBack(undefined, { submitted: true, goalSend });
       goalPromptUuids.clear();
     }
   })();

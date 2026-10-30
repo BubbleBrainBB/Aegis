@@ -16,12 +16,14 @@ import { ClaudeGoalWithdrawnError } from './claude-goal-manager';
  */
 export function createPromptHandBack(deps: {
   goal: { withdrawn(count: number, goalSet: boolean): void };
-  rejectGoalStart(error: Error): void;
+  rejectGoalStart(error: Error, goalSend: number): void;
   report(promptIds: string[]): void;
 }) {
-  return (promptId: string | undefined, prompt: { submitted: boolean; goalSet: boolean }): void => {
-    if (prompt.submitted) deps.goal.withdrawn(1, prompt.goalSet);
-    if (prompt.goalSet) deps.rejectGoalStart(new ClaudeGoalWithdrawnError());
+  /** `goalSend`: the /goal prompt's send number (nextClaudeGoalSend), absent for other prompts. */
+  return (promptId: string | undefined, prompt: { submitted: boolean; goalSend?: number }): void => {
+    const goalSet = prompt.goalSend !== undefined;
+    if (prompt.submitted) deps.goal.withdrawn(1, goalSet);
+    if (goalSet) deps.rejectGoalStart(new ClaudeGoalWithdrawnError(), prompt.goalSend!);
     if (promptId) deps.report([promptId]);
   };
 }
