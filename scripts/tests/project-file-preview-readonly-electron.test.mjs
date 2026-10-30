@@ -231,6 +231,11 @@ async function main() {
     server = await createServer({
       root: projectRoot,
       configFile: path.join(projectRoot, 'vite.config.ts'),
+      // Its own dependency cache, and the language the test loads lazily bundled
+      // up front: a shared cache re-optimized mid-run left the .mjs language
+      // module missing on CI.
+      cacheDir: path.join(tmpDir, 'vite-cache'),
+      optimizeDeps: { include: ['@codemirror/lang-javascript'] },
       server: { host: '127.0.0.1', port: 0, strictPort: false },
     });
     await server.listen();
