@@ -4637,9 +4637,11 @@ async function openInEnvironmentEditor(input: OpenInEditorInput): Promise<{ ok: 
       return { ok: true };
     }
 
+    // Checked again at launch: the menu may have listed this editor before
+    // another app took over its shell command.
     const commandChecks = await Promise.all((candidate.commands ?? []).map(async (command) => ({
       command,
-      available: await commandExists(command),
+      available: await commandBelongsToCandidate(command, candidate),
     })));
     const command = commandChecks.find((check) => check.available)?.command;
     if (command) {
