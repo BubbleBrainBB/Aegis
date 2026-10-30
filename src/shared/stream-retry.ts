@@ -6,10 +6,15 @@ export type RetryResolvedMessage = Extract<StreamMessage, { subtype: 'api_retry_
 /** Only provider output or a turn boundary can settle a connection retry. */
 export function resolvesStreamRetry(message: StreamMessage): boolean {
   if (message.parentToolUseId) return false;
-  if (message.type === 'result' || message.type === 'user_prompt') return true;
+  if (message.type === 'result') return true;
+  // A prompt steered into the live turn is not a turn boundary: the request
+  // being retried is still the same one.
+  if (message.type === 'user_prompt') return !message.steer;
   if (message.type === 'assistant') return message.message.content.length > 0;
-  // A background tool result is not evidence of a recovered API connection.
+  // A background tool result is not evidence of a recovered API connection,
+  // nor is the host's echo of a prompt it sent.
   if (message.type === 'user') {
+    if (message.hostEcho) return false;
     return message.message.content.some(block => block.type === 'text' && Boolean(block.text.trim()));
   }
   if (message.type !== 'stream_event' || message.event.type !== 'content_block_delta') return false;

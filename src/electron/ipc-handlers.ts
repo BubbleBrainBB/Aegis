@@ -26,7 +26,7 @@ import { kimiGoalStartPrompt, parseGoalInput } from '../shared/session-goal';
 import { siteRootPathCandidates } from '../shared/site-root-path';
 import { supportsSessionReferences } from '../shared/session-links';
 import { findProjectFileByName } from './libs/project-file-index';
-import { getClaudeGoalController, readClaudeGoalState, awaitClaudeGoalSet, removeClaudeGoalState } from './libs/claude-goal-manager';
+import { ClaudeGoalWithdrawnError, getClaudeGoalController, readClaudeGoalState, awaitClaudeGoalSet, removeClaudeGoalState } from './libs/claude-goal-manager';
 import { validateClaudeGoalObjective } from './libs/claude-goal';
 import { canonicalProjectPath } from './libs/project-paths';
 import { setupSessionProjectIPC } from './ipc/session-project';
@@ -259,7 +259,7 @@ import { captureFeishuEvent, closeFeishu, setupFeishu } from './feishu/integrati
 import { getMemoryWorkspace, saveMemoryDocument } from './libs/memory-store';
 import { formatClaudeRuntimeBlockingMessage, getClaudeRuntimeStatus, getClaudeRuntimeStatusCached } from './libs/claude-runtime-status';
 import { noteClaudeBackgroundTasks, selectClaudeRunnersToReap, type ClaudeRunnerSnapshot } from './libs/claude-runner-pool';
-import { openSelfStartedTurn, settleClaudeResult } from './libs/claude-turn-accounting';
+import { openSelfStartedTurn, settleClaudeResult, withdrawClaudePrompts } from './libs/claude-turn-accounting';
 import {
   markClaudePromptDispatched,
   markClaudeInit,
@@ -275,6 +275,9 @@ import {
   shouldDropRunnerErrorSilently,
   type StopStateSnapshot,
 } from './libs/claude-stop-reconcile';
+import { planClaudeSend } from './libs/claude-steer';
+import { claudeSortKey } from './libs/claude-session-clock';
+import { opensTurn } from '../shared/turn-boundary';
 import {
   getSkillMarketDetail,
   getSkillMarketHot,
@@ -335,6 +338,7 @@ import type {
   ClaudeRewindInput,
   ClaudeRewindFilesOutcome,
   ClaudeRewindResult,
+  WithdrawnPrompt,
 } from '../shared/types';
 import { buildSessionUserPromptSummaries } from '../shared/outline-summary';
 import { collectSessionSources, type SessionSourcePreview } from '../shared/session-sources';
@@ -2816,9 +2820,11 @@ async function handleEditLatestPrompt(
     previousClaudeAccessMode
   );
   const previousClaudeReasoningEffort = normalizeClaudeReasoningEffort(session.claude_reasoning_effort);
+  // The prompt that opened the latest turn: prompts steered into that turn
+  // are dropped with it.
   let latestUserPromptIndex = -1;
   for (let index = history.length - 1; index >= 0; index -= 1) {
-    if (history[index]?.type === 'user_prompt') {
+    if (opensTurn(history[index])) {
       latestUserPromptIndex = index;
       break;
     }
@@ -3029,9 +3035,11 @@ async function handleEditLatestOpenCodePrompt(
   const previousOpenCodeSessionId = session.opencode_session_id || null;
   const previousModel = session.model || null;
   const previousOpenCodePermissionMode = normalizeOpenCodePermissionMode(session.opencode_permission_mode);
+  // The prompt that opened the latest turn: prompts steered into that turn
+  // are dropped with it.
   let latestUserPromptIndex = -1;
   for (let index = history.length - 1; index >= 0; index -= 1) {
-    if (history[index]?.type === 'user_prompt') {
+    if (opensTurn(history[index])) {
       latestUserPromptIndex = index;
       break;
     }
@@ -3237,9 +3245,11 @@ async function handleEditLatestCodexPrompt(
   const previousCodexPermissionMode = normalizeCodexPermissionMode(session.codex_permission_mode);
   const previousCodexReasoningEffort = normalizeCodexReasoningEffort(session.codex_reasoning_effort);
   const previousCodexFastMode = normalizeCodexFastMode(session.codex_fast_mode);
+  // The prompt that opened the latest turn: prompts steered into that turn
+  // are dropped with it.
   let latestUserPromptIndex = -1;
   for (let index = history.length - 1; index >= 0; index -= 1) {
-    if (history[index]?.type === 'user_prompt') {
+    if (opensTurn(history[index])) {
       latestUserPromptIndex = index;
       break;
     }
@@ -3621,6 +3631,14 @@ const runnerHandles = new Map<
     selfStartedTurn?: boolean;
     /** Live context is stale or poisoned; abort at the next `result` instead of reusing. */
     doomed?: boolean;
+    /**
+     * Composer config changed while a steer joined the live turn. Retire once
+     * drained so the next turn respawns with it; unlike `doomed`, further
+     * steers may still join the live turn.
+     */
+    staleConfig?: boolean;
+    /** The model this Claude runner was last handed (spawn or warm send). */
+    claudeModel?: string;
     /** Automation runners auto-approve permissions; never reuse them for human turns. */
     autoApprove?: boolean;
     /**
@@ -3641,7 +3659,7 @@ const runnerHandles = new Map<
      * prompts cancelled before dispatch
      * are trimmed from the tail alongside their in-flight count.
      */
-    pendingTurnPrompts?: string[];
+    pendingTurnPrompts?: Array<{ prompt: string; promptId?: string }>;
     /**
      * User-stopped (interrupted) turns whose `result` has not landed yet.
      * Their results must report 'idle' (not error), must not trigger failure
@@ -3802,6 +3820,113 @@ function flushClaudeRunners(sessionId?: string): void {
       runnerHandles.delete(id);
     }
   }
+}
+
+/**
+ * A kept-alive Claude runner has no turn left in flight (its last result
+ * landed, or Stop withdrew the prompts still queued). A doomed, staleConfig
+ * or automation runner retires now; any other stays warm for the next send.
+ */
+function finishDrainedClaudeRunner(sessionId: string, entry: RunnerEntry): void {
+  if (entry.doomed || entry.staleConfig || entry.autoApprove) {
+    clearStopFallbackTimer(entry);
+    entry.handle.abort();
+    runnerHandles.delete(sessionId);
+  } else {
+    entry.lastTurnEndedAt = Date.now();
+    sweepIdleClaudeRunners();
+  }
+  // Close the latency window only when the live runner has drained its LAST
+  // turn — clearing on every result would delete a fast follow-up's fresh
+  // window (dispatched after this turn's first output, before its result)
+  // before it can log. A no-output stop/interrupt still lands a result and
+  // drains, so a wedged window is released here too.
+  clearClaudeTurnMetrics(sessionId);
+}
+
+/**
+ * Claude prompts sent into a busy runner, not stored yet: a prompt's place in
+ * history is where the CLI actually took it (folded into the running turn,
+ * opening a turn, or joining a batch), so it is stored when the runner
+ * reports that — or never, if Stop withdrew it or the runner went away first
+ * (Claude never read it; it goes back to the composer queue). Keyed by the
+ * prompt's id, independent of the runner entry that sent it.
+ */
+const deferredClaudePrompts = new Map<string, {
+  sessionId: string;
+  /** What the transcript shows (absent for a hidden /goal prompt). */
+  message?: Extract<StreamMessage, { type: 'user_prompt' }>;
+  /** How it looked in the composer, to hand it back. */
+  draft?: WithdrawnPrompt;
+}>();
+
+/** The pending prompts of a session, in send order (history shows them at its end until stored). */
+function deferredClaudePromptsOf(sessionId: string): StreamMessage[] {
+  return [...deferredClaudePrompts.values()].flatMap((item) => (item.sessionId === sessionId && item.message ? [item.message] : []));
+}
+
+/**
+ * The CLI took a prompt sent into a busy runner: store it here, in stream
+ * order — before its host echo and anything of its turn. One folded into the
+ * running turn or joining a batch is a steer of that turn; one that opened a
+ * turn is that turn's ordinary opening prompt.
+ */
+function storeStartedClaudePrompt(
+  mainWindow: BrowserWindow,
+  sessionId: string,
+  started: { promptId: string; mode: 'folded' | 'opened' | 'joined' }
+): void {
+  const deferred = deferredClaudePrompts.get(started.promptId);
+  if (!deferred || deferred.sessionId !== sessionId) return;
+  deferredClaudePrompts.delete(started.promptId);
+  if (!deferred.message) return;
+  const steer = started.mode !== 'opened';
+  const { steer: _steer, ...ordinary } = deferred.message;
+  const startedAt = claudeSortKey(sessionId);
+  sessions.addMessage(sessionId, { ...ordinary, ...(steer ? { steer: true } : {}), startedAt }, { sortKey: startedAt });
+  broadcast(mainWindow, { type: 'stream.prompt_started', payload: { sessionId, promptId: started.promptId, steer, startedAt } });
+}
+
+/**
+ * Claude prompts the CLI will never take: Stop withdrew them (settled from
+ * the CLI's own frame, in stream order), or the runner went away with them
+ * still queued. They were never stored. Settle the ones this runner still
+ * counts in its turn ledger (counted, and stopped, at dispatch) and hand the
+ * visible ones back to the composer queue.
+ */
+function settleWithdrawnClaudePrompts(
+  mainWindow: BrowserWindow,
+  sessionId: string,
+  handle: RunnerHandle,
+  promptIds: string[]
+): void {
+  promptIds = promptIds.filter((id) => deferredClaudePrompts.get(id)?.sessionId === sessionId);
+  if (promptIds.length === 0) return;
+  const prompts = promptIds.flatMap((id) => {
+    const draft = deferredClaudePrompts.get(id)?.draft;
+    deferredClaudePrompts.delete(id);
+    return draft ? [draft] : [];
+  });
+  const entry = runnerHandles.get(sessionId);
+  if (entry && entry.handle === handle) {
+    const counted = new Set(entry.pendingTurnPrompts?.flatMap((item) => (item.promptId ? [item.promptId] : [])));
+    const settled = new Set(promptIds.filter((id) => counted.has(id)));
+    if (settled.size > 0) {
+      const ledger = withdrawClaudePrompts(
+        { inFlightTurns: entry.inFlightTurns ?? 0, stoppedTurns: entry.stoppedTurns ?? 0 },
+        settled.size
+      );
+      entry.inFlightTurns = ledger.inFlightTurns;
+      entry.stoppedTurns = ledger.stoppedTurns || undefined;
+      entry.pendingTurnPrompts = entry.pendingTurnPrompts?.filter((item) => !item.promptId || !settled.has(item.promptId));
+      if (entry.inFlightTurns === 0) {
+        clearStopFallbackTimer(entry);
+        entry.stopFallbackAttempts = undefined;
+        finishDrainedClaudeRunner(sessionId, entry);
+      }
+    }
+  }
+  broadcast(mainWindow, { type: 'stream.prompts_withdrawn', payload: { sessionId, promptIds, prompts } });
 }
 
 /** Retire DeepSeek runtimes that captured an older per-workspace MCP graph. */
@@ -5593,7 +5718,9 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
           }, { hideGoalPrompt: !settings.appendTranscript });
           if (!started) throw new Error('Claude could not start this goal.');
         }); } catch (error) {
-          handleSessionStop(mainWindow, sessionId);
+          // A goal withdrawn on Stop never reached Claude: the Stop already
+          // ended the turn, and stopping again could hit work sent since.
+          if (!(error instanceof ClaudeGoalWithdrawnError)) handleSessionStop(mainWindow, sessionId);
           throw error;
         }
       }
@@ -5941,6 +6068,14 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
         filesAvailable,
         files: filesAvailable ? await runFilesRewind(true) : null,
       };
+    }
+
+    // A steered prompt joined a turn already running: its echo is no
+    // checkpoint to rewind to (the UI offers none; refuse a stale request).
+    if (sessions.getSessionHistory(sessionId).some((message) =>
+      message.type === 'user_prompt' && message.steer && message.promptId === anchorMessageId
+    )) {
+      return { ok: false, message: 'A message sent into a running turn is not a rewind point.', filesAvailable };
     }
 
     let filesOutcome: ClaudeRewindFilesOutcome | null = null;
@@ -10360,6 +10495,47 @@ async function handleSessionContinueImpl(
   // execute against the old checkout.
   const runnerCwdChanged =
     existingEntry !== undefined && (existingEntry.cwd ?? null) !== effectiveRunnerCwd(session);
+  // A send into a live Claude turn steers it (see claude-steer.ts). The plan
+  // is read from the LIVE entry and acted on by the reuse branch below with
+  // no await in between — nothing the runner emits can change its lifecycle
+  // (doom, background wake, drain) between this decision and the dispatch.
+  // An entry retired or replaced during the awaits above gets no plan and
+  // falls through to a fresh spawn.
+  const claudePlan =
+    nextProvider === 'claude' &&
+    existingEntry?.provider === 'claude' &&
+    runnerHandles.get(sessionId) === existingEntry
+      ? planClaudeSend(existingEntry, {
+          configDrift:
+            modelChanged ||
+            betasChanged ||
+            accessModeChanged ||
+            executionModeChanged ||
+            claudeReasoningEffortChanged,
+          hadInvalidThinking: sanitizedHistoryResult.hadInvalidThinking,
+          model: nextModel,
+        })
+      : null;
+  // The send joins the live turn instead of starting one (the reuse branch
+  // below keeps the runner): its echo must not reset that turn's streaming
+  // text, thinking or retry state.
+  const claudeSteer =
+    claudePlan !== null &&
+    claudePlan.midTurn &&
+    !claudePlan.respawn &&
+    !providerChanged &&
+    !runnerCwdChanged;
+  // A send into a busy runner (a live turn, or a stopped one still draining)
+  // waits in the CLI's queue: it is stored where the CLI actually takes it
+  // (storeStartedClaudePrompt), or never, if Stop withdraws it first. Only
+  // for runners that report prompt lifecycle frames; the rest store at send.
+  const claudeDeferred =
+    claudePlan !== null &&
+    !claudePlan.respawn &&
+    !providerChanged &&
+    !runnerCwdChanged &&
+    (existingEntry?.inFlightTurns ?? 0) > 0 &&
+    existingEntry?.handle.tracksPromptIdentity?.() === true;
   // 运行时状态检查已移动到会话状态广播之后，以便前端立即显示 spinning 效果
 
   if (isDev()) {
@@ -10420,6 +10596,9 @@ async function handleSessionContinueImpl(
   sessions.updateSessionStatus(sessionId, 'running');
   const hideGoalPrompt = internal?.hideGoalPrompt && nextProvider === 'claude' && parseGoalInput(prompt, false).isGoal;
   if (!hideGoalPrompt) sessions.updateLastPrompt(sessionId, outgoingPrompt);
+  // Claude: a deferred prompt's id on the SDK wire (its uuid, echoed by the
+  // runner): how the CLI's lifecycle frames and the turn ledger name it.
+  const nextClaudePromptId = claudeDeferred ? uuidv4() : undefined;
 
   // 广播状态
   broadcast(mainWindow, {
@@ -10456,6 +10635,7 @@ async function handleSessionContinueImpl(
   });
 
   // 广播用户 prompt（在运行时检查之前，让用户消息立即显示）
+  let persistedUserPrompt: Extract<StreamMessage, { type: 'user_prompt' }> | undefined;
   if (!hideGoalPrompt) {
     const createdAt = Date.now();
     // A design comment's row links back to its thread on the canvas.
@@ -10470,11 +10650,13 @@ async function handleSessionContinueImpl(
         ...(workflowPrompt ? { workflowPrompt } : {}),
         ...(design ? { design } : {}),
         ...(designSelection ? { designSelection } : {}),
+        ...(claudeSteer ? { steer: true } : {}),
+        ...(nextClaudePromptId ? { promptId: nextClaudePromptId, deferred: true } : {}),
       },
     });
 
     // 保存 user_prompt
-    sessions.addMessage(sessionId, {
+    persistedUserPrompt = {
       type: 'user_prompt',
       prompt: outgoingPrompt,
       attachments: outgoingAttachments,
@@ -10482,26 +10664,42 @@ async function handleSessionContinueImpl(
       ...(workflowPrompt ? { workflowPrompt } : {}),
       ...(design ? { design } : {}),
       ...(designSelection ? { designSelection } : {}),
-    });
+      ...(claudeSteer ? { steer: true } : {}),
+      ...(nextClaudePromptId ? { promptId: nextClaudePromptId } : {}),
+    };
+    if (nextClaudePromptId) {
+      const draftDesign = sanitizeDesignPromptRef(payload.design);
+      deferredClaudePrompts.set(nextClaudePromptId, {
+        sessionId,
+        message: persistedUserPrompt,
+        draft: {
+          promptId: nextClaudePromptId,
+          prompt: outgoingPrompt,
+          effectivePrompt: (effectivePrompt ?? outgoingPrompt).trim(),
+          attachments: outgoingAttachments,
+          sentAt: createdAt,
+          ...(draftDesign ? { design: draftDesign } : {}),
+          ...(designSelection ? { designSelection } : {}),
+        },
+      });
+    } else {
+      sessions.addMessage(
+        sessionId,
+        persistedUserPrompt,
+        nextProvider === 'claude' ? { sortKey: claudeSortKey(sessionId, createdAt) } : undefined
+      );
+    }
     // The thread is now in progress from the design's current version.
     if (design) markDesignCommentSent(sessionId, design, createdAt);
   }
+  // A hidden /goal prompt has no row, but the ledger still names it.
+  if (nextClaudePromptId && hideGoalPrompt) deferredClaudePrompts.set(nextClaudePromptId, { sessionId });
 
   // 检查运行时状态（在会话状态已设为 running 之后，以便前端立即显示 spinning 效果）
-  if (nextProvider === 'claude') {
-    const runtimeStatus = await getClaudeRuntimeStatusCached(nextModel || null);
-    if (!runtimeStatus.ready) {
-      sessions.updateSessionStatus(sessionId, 'error');
-      broadcast(mainWindow, {
-        type: 'runner.error',
-        payload: {
-          message: formatClaudeRuntimeBlockingMessage(runtimeStatus),
-          sessionId,
-        },
-      });
-      return false;
-    }
-  } else if (nextProvider === 'opencode') {
+  // Claude's check guards spawning only (below the reuse branch): a live
+  // runner already proves its runtime, and the warm path must not await
+  // between planning and dispatch (see claudePlan).
+  if (nextProvider === 'opencode') {
     const runtimeStatus = await getOpencodeRuntimeStatus();
     if (!runtimeStatus.ready) {
       sessions.updateSessionStatus(sessionId, 'error');
@@ -10641,21 +10839,10 @@ async function handleSessionContinueImpl(
       (!deepseekMidTurn && deepseekPermissionModeChanged) ||
       (!deepseekMidTurn && deepseekReasoningEffortChanged) ||
       (nextProvider === 'opencode' && opencodePermissionModeChanged) ||
-      (nextProvider === 'claude' &&
-        (
-          modelChanged ||
-          betasChanged ||
-          accessModeChanged ||
-          executionModeChanged ||
-          claudeReasoningEffortChanged ||
-          // Never reuse a runner whose live context is stale/poisoned, an
-          // auto-approving automation runner for a human turn, or a live
-          // context that still contains invalid thinking blocks the stored
-          // history was sanitized against.
-          existingEntry.doomed === true ||
-          existingEntry.autoApprove === true ||
-          sanitizedHistoryResult.hadInvalidThinking
-        ))
+      // Never reuse a doomed runner, an auto-approving automation runner for
+      // a human turn, or one whose config drifted — except that a steer
+      // defers drift to the drain instead of killing the live turn.
+      claudePlan?.respawn === true
     ) {
       clearStopFallbackTimer(existingEntry);
       existingEntry.handle.abort();
@@ -10664,8 +10851,12 @@ async function handleSessionContinueImpl(
       // A reaper tick or config flush retired the entry while the awaits
       // above ran — fall through to a fresh spawn.
     } else {
-      existingEntry.activeAgentId = sessionAgentId;
-      existingEntry.activeAgentRunId = createAgentRunId(sessionAgentId, 'continue');
+      // A steer joins the run already going: its replies keep that run's id,
+      // or the transcript would split the one turn at the steer.
+      if (!(claudeSteer && existingEntry.activeAgentRunId && existingEntry.activeAgentId === sessionAgentId)) {
+        existingEntry.activeAgentId = sessionAgentId;
+        existingEntry.activeAgentRunId = createAgentRunId(sessionAgentId, 'continue');
+      }
       if (nextProvider === 'claude') {
         // Only a dispatch into an IDLE runner opens a latency window. A turn
         // queued while a previous one is still streaming can't be timed with
@@ -10674,10 +10865,13 @@ async function handleSessionContinueImpl(
         // idle→busy startup latency (cold / warm-reuse / prewarm-hit), which
         // is exactly the idle-dispatch case.
         const wasIdle = (existingEntry.inFlightTurns ?? 0) === 0;
+        // A steer carrying new composer config runs on the live runner's
+        // config; the drained result retires it so the next turn respawns.
+        if (claudePlan?.markStaleConfig) existingEntry.staleConfig = true;
         // Count the dispatched turn BEFORE send so the reaper can never see
         // this entry as idle between dispatch and the first stream message.
         existingEntry.inFlightTurns = (existingEntry.inFlightTurns ?? 0) + 1;
-        (existingEntry.pendingTurnPrompts ??= []).push(runnerPrompt);
+        (existingEntry.pendingTurnPrompts ??= []).push({ prompt: runnerPrompt, promptId: nextClaudePromptId });
         if (wasIdle) {
           markClaudePromptDispatched(
             sessionId,
@@ -10712,11 +10906,15 @@ async function handleSessionContinueImpl(
         bubblePermissionMode: nextBubblePermissionMode,
         bubbleThinkingLevel: nextBubbleThinkingLevel,
         bubblePlanExitMode: nextBubblePlanExitMode,
+        claudePromptId: nextClaudePromptId,
       });
+      // A steer keeps the live turn on the model it started with.
+      const sendModel = claudePlan ? claudePlan.sendModel : nextModel;
+      if (claudePlan) existingEntry.claudeModel = sendModel;
       existingEntry.handle.send(
         runnerPrompt,
         outgoingAttachments,
-        nextModel,
+        sendModel,
         nextProvider === 'codex' ? codexSkills : undefined,
         nextProvider === 'codex' ? codexMentions : undefined,
         sendOptions
@@ -10766,6 +10964,21 @@ async function handleSessionContinueImpl(
         existingEntry.minimaxThinkingEffort = nextMinimaxThinkingEffort;
       }
       return true;
+    }
+  }
+
+  if (nextProvider === 'claude') {
+    const runtimeStatus = await getClaudeRuntimeStatusCached(nextModel || null);
+    if (!runtimeStatus.ready) {
+      sessions.updateSessionStatus(sessionId, 'error');
+      broadcast(mainWindow, {
+        type: 'runner.error',
+        payload: {
+          message: formatClaudeRuntimeBlockingMessage(runtimeStatus),
+          sessionId,
+        },
+      });
+      return false;
     }
   }
 
@@ -10890,7 +11103,8 @@ async function handleSessionContinueImpl(
     nextMimoPermissionMode,
     nextMimoReasoningEffort,
     nextMinimaxPermissionMode,
-    nextMinimaxThinkingEffort
+    nextMinimaxThinkingEffort,
+    nextClaudePromptId
   );
   return true;
 }
@@ -10945,7 +11159,8 @@ function startRunner(
   mimoPermissionMode?: import('../shared/types').MimoPermissionMode,
   mimoReasoningEffort?: string,
   minimaxPermissionMode?: import('../shared/types').MinimaxPermissionMode,
-  minimaxThinkingEffort?: string
+  minimaxThinkingEffort?: string,
+  claudePromptId?: string
 ): void {
   if (!session) return;
 
@@ -11027,6 +11242,7 @@ function startRunner(
   const handle = runAgentLoop({
     codexGoal: provider === 'codex' ? codexGoal : undefined,
     prompt,
+    claudePromptId: provider === 'claude' ? claudePromptId : undefined,
     attachments,
     session: runnerSession,
     resumeSessionId,
@@ -11357,9 +11573,10 @@ function startRunner(
         // Persist the recovery boundary too: deltas themselves are intentionally
         // ephemeral, so history otherwise cannot distinguish waiting from resumed.
         if (tracked.resolved) {
-          sessions.addMessage(session.id, tracked.resolved);
+          const resolved = tracked.resolved;
+          sessions.addMessage(session.id, resolved, provider === 'claude' ? { sortKey: claudeSortKey(session.id) } : undefined);
           broadcast(mainWindow, {
-            type: 'stream.message', payload: { sessionId: session.id, message: tracked.resolved },
+            type: 'stream.message', payload: { sessionId: session.id, message: resolved },
           });
         }
         const attributedMessage = withAgentAttribution(
@@ -11375,8 +11592,12 @@ function startRunner(
         }
         const shouldPersistMessage = shouldPersistProviderMessage(attributedMessage);
         if (shouldPersistMessage) {
-          // 保存消息
-          sessions.addMessage(session.id, attributedMessage);
+          // 保存消息. Stored Claude messages reload in the order they arrived.
+          sessions.addMessage(
+            session.id,
+            attributedMessage,
+            provider === 'claude' ? { sortKey: claudeSortKey(session.id, attributedMessage.createdAt ?? Date.now()) } : undefined
+          );
         }
         // A PR the agent opened with `gh pr create` belongs to this session,
         // as if it had been made with the Create PR button.
@@ -11440,7 +11661,7 @@ function startRunner(
         // included — or the FIFO skews against inFlightTurns. A stale
         // handle's result must NOT shift the replacement entry's queue.
         const queuedTurnPrompt =
-          ownsEntry && settlement.hostPrompts > 0 ? entryForPrompt.pendingTurnPrompts?.shift() : undefined;
+          ownsEntry && settlement.hostPrompts > 0 ? entryForPrompt.pendingTurnPrompts?.shift()?.prompt : undefined;
         if (ownsEntry) {
           for (let extra = 1; extra < settlement.hostPrompts; extra += 1) entryForPrompt.pendingTurnPrompts?.shift();
         }
@@ -11596,7 +11817,12 @@ function startRunner(
                 // just settled and is becoming active now. interrupt() only
                 // ever cancels the ACTIVE turn, so the stop press that marked
                 // it could not reach it — re-issue the interrupt for it here.
-                interruptStoppedTurn(mainWindow, session.id, currentEntry);
+                // A runner that tracks prompt identity does this itself, for
+                // exactly the stopped prompts the Stop could not reach (by
+                // count, the turn starting now might be one sent after Stop).
+                if (!currentEntry.handle.tracksPromptIdentity?.()) {
+                  interruptStoppedTurn(mainWindow, session.id, currentEntry);
+                }
               }
             }
             // Keep the runner alive for follow-up turns (streaming-input
@@ -11607,32 +11833,12 @@ function startRunner(
             // running here, and aborting then would kill that follow-up. The
             // reuse guard already refuses to dispatch new turns into a
             // doomed entry, so deferring loses nothing.
-            const drained = (currentEntry.inFlightTurns ?? 0) === 0;
-            if (drained && (currentEntry.doomed || currentEntry.autoApprove)) {
-              // Retire only once every queued turn has produced its result:
-              // aborting earlier would drop a queued prompt that is already
-              // persisted and counted, leaving the session without an ending
-              // — or kill a live follow-up whose status update a stopped
-              // result just suppressed.
-              clearStopFallbackTimer(currentEntry);
-              currentEntry.handle.abort();
-              runnerHandles.delete(session.id);
-              // Close the latency window only when the live runner has drained
-              // its LAST turn — clearing on every result would delete a fast
-              // follow-up's fresh window (dispatched after this turn's first
-              // output, before its result) before it can log. A no-output
-              // stop/interrupt still lands a result and drains, so a wedged
-              // window is released here too.
-              if (provider === 'claude') {
-                clearClaudeTurnMetrics(session.id);
-              }
-            } else if (drained) {
-              currentEntry.lastTurnEndedAt = Date.now();
-              sweepIdleClaudeRunners();
-              if (provider === 'claude') {
-                clearClaudeTurnMetrics(session.id);
-              }
-            }
+            // Retire only once every queued turn has produced its result:
+            // aborting earlier would drop a queued prompt that is already
+            // persisted and counted, leaving the session without an ending
+            // — or kill a live follow-up whose status update a stopped
+            // result just suppressed.
+            if ((currentEntry.inFlightTurns ?? 0) === 0) finishDrainedClaudeRunner(session.id, currentEntry);
           } else if (provider === 'deepseek' && currentEntry.doomed) {
             // MCP configuration is captured by the Cordis process at spawn.
             // A save during an active DeepSeek turn lets that activity finish,
@@ -11649,6 +11855,8 @@ function startRunner(
         sawTurnOutput = false;
       }
     },
+    onPromptsWithdrawn: (promptIds) => settleWithdrawnClaudePrompts(mainWindow, session.id, handle, promptIds),
+    onPromptStarted: (started) => storeStartedClaudePrompt(mainWindow, session.id, started),
     onSelfStartedTurn: () => {
       // A finished background task woke the agent: count the turn as an
       // obligation so the session shows running, Stop interrupts it and the
@@ -11971,6 +12179,7 @@ function startRunner(
     claudeExecutionMode: provider === 'claude' ? normalizedClaudeExecutionMode : undefined,
     claudeReasoningEffort:
       provider === 'claude' ? normalizeClaudeReasoningEffort(claudeReasoningEffort) : undefined,
+    claudeModel: provider === 'claude' ? resolvedModelOverride : undefined,
     codexExecutionMode: provider === 'codex' ? normalizeCodexExecutionMode(codexExecutionMode) : undefined,
     codexPermissionMode: provider === 'codex' ? normalizeCodexPermissionMode(codexPermissionMode) : undefined,
     codexReasoningEffort:
@@ -12007,7 +12216,7 @@ function startRunner(
     // anchor is stamped now so the reaper's prewarm TTL applies — without it
     // the entry would never be a reap candidate and would leak.
     inFlightTurns: prewarmRunner ? 0 : 1,
-    pendingTurnPrompts: prewarmRunner ? [] : [prompt],
+    pendingTurnPrompts: prewarmRunner ? [] : [{ prompt, ...(claudePromptId ? { promptId: claudePromptId } : {}) }],
     lastTurnEndedAt: prewarmRunner ? Date.now() : undefined,
     prewarmed: prewarmRunner || undefined,
     autoApprove: autoApprovePermissions || undefined,
@@ -12307,7 +12516,12 @@ function handleSessionHistory(mainWindow: BrowserWindow, sessionId: string, repl
     const messages = page.messages;
     const finalMessages =
       session.provider === 'claude' && session.session_origin === 'aegis'
-        ? sanitizeStoredClaudeHistoryPage(sessionId, messages)
+        ? [
+            ...sanitizeStoredClaudeHistoryPage(sessionId, messages),
+            // Prompts sent into the busy runner that the CLI has not taken
+            // yet: shown at the end, as when they were sent.
+            ...deferredClaudePromptsOf(sessionId),
+          ]
         : messages;
 
     emit(mainWindow, {
@@ -12556,7 +12770,11 @@ function handleSessionStop(mainWindow: BrowserWindow, sessionId: string): void {
         // silently destroys a runner that carries a live follow-up turn.
         entry.stoppedTurns = markTurnsStopped(stopStateOf(entry));
         entry.stopFallbackAttempts = undefined;
-        entry.handle.interrupt!().catch(() => resolveStopFallback(mainWindow, sessionId, entry));
+        // The runner's Stop also takes back the steers still queued behind
+        // the live turn (cancelled before the interrupt, in this tick); they
+        // settle from the CLI's own frames (settleWithdrawnClaudePrompts).
+        const stopTurn = entry.handle.stopTurn ?? entry.handle.interrupt!;
+        stopTurn().catch(() => resolveStopFallback(mainWindow, sessionId, entry));
         if (entry.stopFallbackTimer) {
           clearTimeout(entry.stopFallbackTimer);
         }

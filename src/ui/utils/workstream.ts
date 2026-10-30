@@ -1,5 +1,6 @@
 import { isStartWorkflowToolName } from '../../shared/workflow';
 import { isStartSessionToolName } from '../../shared/follow-up';
+import { opensTurn } from '../../shared/turn-boundary';
 import { deriveCompactionEntries, type CompactionEntry, type WorkstreamMessage } from './compaction';
 import { backgroundTaskEndedEntry, isBackgroundTaskEndedMessage, type BackgroundTaskEndedEntry } from './background-task-ended';
 import type { ToolExecutionMetadata } from '../../shared/types';
@@ -394,7 +395,7 @@ export function formatDelegateModelDisplay(
 export function latestTurnHasPendingDelegation(messages: StreamMessage[]): boolean {
   let turnStart = 0;
   for (let i = messages.length - 1; i >= 0; i -= 1) {
-    if (messages[i]?.type === 'user_prompt') {
+    if (opensTurn(messages[i])) {
       turnStart = i;
       break;
     }
@@ -432,7 +433,7 @@ export function latestTurnHasPendingDelegation(messages: StreamMessage[]): boole
 export function latestTurnHasPendingSubagentTasks(messages: StreamMessage[]): boolean {
   let turnStart = 0;
   for (let i = messages.length - 1; i >= 0; i -= 1) {
-    if (messages[i]?.type === 'user_prompt') {
+    if (opensTurn(messages[i])) {
       turnStart = i;
       break;
     }

@@ -65,12 +65,14 @@ assert.equal(
 // result-path clear must be gated on the runner draining its last turn so a
 // queued fast follow-up's fresh window is not deleted before it can log.
 assert.equal(
-  (ipcSource.match(/clearClaudeTurnMetrics\(session\.id\)/g) || []).length >= 2,
+  (ipcSource.match(/clearClaudeTurnMetrics\(session\.id\)/g) || []).length >= 1 &&
+    // The result path clears through finishDrainedClaudeRunner, on drain only.
+    /function finishDrainedClaudeRunner[\s\S]{0,1500}clearClaudeTurnMetrics\(sessionId\)/.test(ipcSource),
   true,
   'P0c: result and error paths must clear the latency window'
 );
 assert.equal(
-  /else if \(drained\) \{[\s\S]{0,200}clearClaudeTurnMetrics\(session\.id\)/.test(ipcSource),
+  ipcSource.includes('if ((currentEntry.inFlightTurns ?? 0) === 0) finishDrainedClaudeRunner(session.id, currentEntry);'),
   true,
   'P0c: result-path latency clear must be gated on the drained branch'
 );
@@ -252,7 +254,7 @@ assert.equal(
   'P3: prewarm entry must start with zero in-flight turns'
 );
 assert.equal(
-  ipcSource.includes('pendingTurnPrompts: prewarmRunner ? [] : [prompt]'),
+  ipcSource.includes('pendingTurnPrompts: prewarmRunner ? [] : [{ prompt, ...(claudePromptId ? { promptId: claudePromptId } : {}) }]'),
   true,
   'P3: prewarm entry must not seed a phantom prompt into the turn FIFO'
 );

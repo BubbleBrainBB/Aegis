@@ -73,3 +73,17 @@ export function openSelfStartedTurn(ledger: ClaudeTurnLedger): ClaudeSelfStarted
     interrupt,
   };
 }
+
+/**
+ * Stop withdrew `count` prompts still queued behind the live turn (cancelled
+ * in the CLI by uuid): they will never get a result. Stop marked every
+ * in-flight obligation stopped, these included, so both counts drop.
+ */
+export function withdrawClaudePrompts(
+  ledger: Pick<ClaudeTurnLedger, 'inFlightTurns' | 'stoppedTurns'>,
+  count: number
+): Pick<ClaudeTurnLedger, 'inFlightTurns' | 'stoppedTurns'> {
+  const inFlightTurns = Math.max(0, ledger.inFlightTurns - count);
+  const stoppedTurns = Math.min(Math.max(0, ledger.stoppedTurns - count), inFlightTurns);
+  return { inFlightTurns, stoppedTurns };
+}

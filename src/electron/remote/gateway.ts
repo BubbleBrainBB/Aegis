@@ -1096,7 +1096,10 @@ export class RemoteGateway {
     const p = event.payload as any;
     const id = p.sessionId as string | undefined;
     let textDelta = false;
-    if (event.type === "stream.user_prompt" && id) {
+    // A turn begins: a prompt that starts one at once, or a prompt sent into
+    // a busy runner once the CLI takes it to open a turn. A steer (and a
+    // prompt still waiting in the CLI's queue) leaves the live turn alone.
+    if (id && ((event.type === "stream.user_prompt" && !p.steer && !p.deferred) || (event.type === "stream.prompt_started" && !p.steer))) {
       this.runIds.set(id, randomUUID());
       this.live.delete(id);
       for (const [key, value] of this.permissions)

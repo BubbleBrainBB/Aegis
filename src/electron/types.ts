@@ -158,6 +158,21 @@ export interface RunnerOptions {
    * woke the agent). Called before that turn's first message.
    */
   onSelfStartedTurn?: () => void;
+  /**
+   * Claude: host prompts the CLI will never take — cancelled before they
+   * started (Stop withdrew them; called in stream order, from the CLI's own
+   * lifecycle frame, before the stopped turn's result and anything sent
+   * after Stop), or still queued when the runner went away.
+   */
+  onPromptsWithdrawn?: (promptIds: string[]) => void;
+  /**
+   * Claude: the CLI took a host prompt — `folded` into the running turn,
+   * `opened` a turn, or `joined` the batch `openerId` opened. Called in
+   * stream order, before the prompt's echo and anything of its turn.
+   */
+  onPromptStarted?: (started: { promptId: string; mode: 'folded' | 'opened' | 'joined'; openerId?: string }) => void;
+  /** Claude: the host's id for the initial prompt (its SDK uuid; see claudePromptId). */
+  claudePromptId?: string;
   onError?: (error: Error) => void;
   onPermissionRequest: (
     toolUseId: string,
@@ -221,6 +236,18 @@ export interface RunnerHandle {
    * streaming-input mode); absent on other providers.
    */
   interrupt?: () => Promise<void>;
+  /**
+   * Claude: the Stop press. Cancels every queued host prompt by uuid, then
+   * interrupts — written in one tick, ahead of anything sent later. The
+   * withdrawals settle through onPromptsWithdrawn; stopped prompts the
+   * interrupt could not reach are interrupted when their turn opens.
+   */
+  stopTurn?: () => Promise<void>;
+  /**
+   * Claude: the CLI reports prompt lifecycle frames, so the runner tracks
+   * each prompt and handles Stop's follow-up interrupts itself.
+   */
+  tracksPromptIdentity?: () => boolean;
   /**
    * Two-phase stop (codex): request `turn/interrupt` and resolve once the
    * provider confirms the turn terminal (`turn/completed(interrupted)`) or

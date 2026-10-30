@@ -1,3 +1,4 @@
+import { opensTurn } from '../shared/turn-boundary';
 import { EnvironmentPanelProvider } from './components/environment/EnvironmentPanelLayout';
 import { Image as ImageStudioIcon } from './components/icons';
 import { ImageStudioPanel, ImageStudioFileActions } from './components/ImageStudioPanel';
@@ -998,7 +999,7 @@ export function App() {
 
       let latestPromptIndex = -1;
       for (let index = session.messages.length - 1; index >= 0; index -= 1) {
-        if (session.messages[index]?.type === 'user_prompt') {
+        if (opensTurn(session.messages[index])) {
           latestPromptIndex = index;
           break;
         }

@@ -1,3 +1,4 @@
+import { opensTurn } from '../../shared/turn-boundary';
 import { useId, useMemo, useState } from 'react';
 import { getAssistantPhase } from '../../shared/assistant-phase';
 import { useAppStore } from '../store/useAppStore';
@@ -18,7 +19,7 @@ export function ImageStudioLatestTurn({ sessionId }: { sessionId: string }) {
   const reply = useMemo(() => {
     const messages = session?.messages || [];
     let start = messages.length - 1;
-    while (start >= 0 && messages[start].type !== 'user_prompt') start--;
+    while (start >= 0 && !opensTurn(messages[start])) start--;
     const candidates = messages.slice(start + 1).filter(message =>
       message.type === 'assistant' && !message.parentToolUseId && getAssistantMarkdownToCopy(message).trim());
     // Prefer the terminal reply; until it arrives show the latest visible narration.

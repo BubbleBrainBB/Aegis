@@ -22,7 +22,8 @@ assert.equal(
   'result handler must decrement inFlightTurns instead of deleting the Claude entry'
 );
 assert.equal(
-  ipcSource.includes('currentEntry.lastTurnEndedAt = Date.now()'),
+  ipcSource.includes('entry.lastTurnEndedAt = Date.now();') &&
+    ipcSource.includes('finishDrainedClaudeRunner(session.id, currentEntry)'),
   true,
   'result handler must stamp the idle anchor for the reaper'
 );
@@ -108,7 +109,7 @@ assert.equal(
 // Turn prompts are a per-turn FIFO: a queued second prompt must never be
 // checked against the first turn's result.
 assert.equal(
-  ipcSource.includes('(existingEntry.pendingTurnPrompts ??= []).push(runnerPrompt)'),
+  ipcSource.includes('(existingEntry.pendingTurnPrompts ??= []).push({ prompt: runnerPrompt, promptId: nextClaudePromptId })'),
   true,
   'continue reuse must enqueue the dispatched prompt'
 );
@@ -128,7 +129,7 @@ assert.equal(
   'a result with queued turns must keep the session status running'
 );
 assert.equal(
-  ipcSource.includes('drained && (currentEntry.doomed || currentEntry.autoApprove)'),
+  ipcSource.includes('if ((currentEntry.inFlightTurns ?? 0) === 0) finishDrainedClaudeRunner(session.id, currentEntry);'),
   true,
   'doomed/automation runners must drain queued turns before retiring'
 );
@@ -230,7 +231,7 @@ assert.equal(
   'continue must skip reuse when stored history was sanitized'
 );
 assert.equal(
-  ipcSource.includes('currentEntry.doomed || currentEntry.autoApprove'),
+  ipcSource.includes('if (entry.doomed || entry.staleConfig || entry.autoApprove) {'),
   true,
   'doomed/automation runners must be retired at result'
 );

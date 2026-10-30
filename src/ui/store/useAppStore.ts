@@ -81,6 +81,7 @@ import {
 import { StreamDeltaCoalescer } from '../utils/stream-delta-coalescer';
 import { archiveRetryStream, restoreRetryHistory } from '../utils/stream-retry';
 import { resolvesStreamRetry } from '../../shared/stream-retry';
+import { useComposerQueueStore } from './useComposerQueueStore';
 import { applySessionAgentSelection } from '../utils/session-model';
 import { useBrowserStateStore } from './useBrowserStateStore';
 import { useWidgetDraftStore } from './useWidgetDraftStore';
@@ -347,8 +348,11 @@ function shouldPreserveStreamingStateForMessage(
   // Subagent (Task) messages commit while the top-level agent may still be
   // streaming its own partial — they must not reset that buffer. Neither may
   // a background task ending: the CLI reports it between stream deltas.
+  // Nor may the host's echo of a prompt it sent: a steer's echo lands while
+  // the turn is still streaming (a new turn's prompt already reset it).
   if (
     message.parentToolUseId ||
+    (message.type === 'user' && message.hostEcho) ||
     message.type === 'goal_completed' ||
     (message.type === 'system' && message.subtype === 'background_task_ended')
   ) {
@@ -1130,9 +1134,22 @@ export const useAppStore = create<Store>()(
         // The prompt echo resets the streaming buffer; deltas buffered from
         // before the echo belong to the pre-echo world — drop them (same
         // visible result as today, where the echo wipes them an instant
-        // after they rendered).
-        streamDeltaCoalescer.discardSession(event.payload.sessionId);
+        // after they rendered). A steer joins the live turn instead: its
+        // buffered deltas are still that turn's output.
+        if (event.payload.steer || event.payload.deferred) {
+          streamDeltaCoalescer.flushSession(event.payload.sessionId);
+        } else {
+          streamDeltaCoalescer.discardSession(event.payload.sessionId);
+        }
         handleUserPrompt(event.payload, set);
+        break;
+
+      case 'stream.prompts_withdrawn':
+        handlePromptsWithdrawn(event.payload, set);
+        break;
+
+      case 'stream.prompt_started':
+        handlePromptStarted(event.payload, set);
         break;
 
       case 'stream.message':
@@ -3604,10 +3621,10 @@ function handleSessionDeleted(
 
 // 处理用户 prompt
 function handleUserPrompt(
-  payload: { sessionId: string; prompt: string; attachments?: Attachment[]; createdAt?: number; workflowPrompt?: WorkflowPromptKind; design?: import('../../shared/types').DesignPromptRef; designSelection?: import('../../shared/types').DesignSelectionRef },
+  payload: { sessionId: string; prompt: string; attachments?: Attachment[]; createdAt?: number; workflowPrompt?: WorkflowPromptKind; design?: import('../../shared/types').DesignPromptRef; designSelection?: import('../../shared/types').DesignSelectionRef; steer?: boolean; promptId?: string; deferred?: boolean },
   set: SetState
 ) {
-  const { sessionId, prompt, attachments, createdAt, workflowPrompt, design, designSelection } = payload;
+  const { sessionId, prompt, attachments, createdAt, workflowPrompt, design, designSelection, steer, promptId, deferred } = payload;
 
   set((state) => {
     const session = state.sessions[sessionId];
@@ -3621,20 +3638,98 @@ function handleUserPrompt(
       ...(workflowPrompt ? { workflowPrompt } : {}),
       ...(design ? { design } : {}),
       ...(designSelection ? { designSelection } : {}),
+      ...(steer ? { steer: true } : {}),
+      ...(promptId ? { promptId } : {}),
     };
+
+    // Not read by the CLI yet: it waits below the transcript, and the live
+    // turn's output keeps streaming above it.
+    if (deferred && userMessage.type === 'user_prompt') {
+      return {
+        ...state,
+        sessions: {
+          ...state.sessions,
+          [sessionId]: { ...session, pendingPrompts: [...(session.pendingPrompts ?? []), userMessage] },
+        },
+      };
+    }
 
     return {
       ...state,
       sessions: {
         ...state.sessions,
-        [sessionId]: {
-          ...session,
-          messages: [...archiveRetryStream(session).messages, userMessage],
-          streaming: createEmptyStreamingState(),
-        },
+        [sessionId]: steer
+          // Steered into the live turn: its partial text, thinking and any
+          // pending retry keep going.
+          ? { ...session, messages: [...session.messages, userMessage] }
+          : {
+              ...session,
+              messages: [...archiveRetryStream(session).messages, userMessage],
+              streaming: createEmptyStreamingState(),
+            },
       },
     };
   });
+}
+
+// The CLI took a prompt sent into a busy runner: it stands where the agent
+// actually read it — the end of the stream right now — as a steer of the
+// running turn or the opening prompt of a new one (its host echo follows).
+// The stored history says the same after a reload.
+function handlePromptStarted(
+  payload: { sessionId: string; promptId: string; steer: boolean; startedAt?: number },
+  set: SetState
+) {
+  const { sessionId, promptId, steer, startedAt } = payload;
+  set((state) => {
+    const session = state.sessions[sessionId];
+    if (!session) return state;
+    const prompt = session.pendingPrompts?.find((message) => message.promptId === promptId)
+      ?? session.messages.find((message) => message.type === 'user_prompt' && message.promptId === promptId);
+    if (prompt?.type !== 'user_prompt') return state;
+    const { steer: _steer, ...ordinary } = prompt;
+    const placed: StreamMessage = {
+      ...ordinary,
+      ...(steer ? { steer: true } : {}),
+      ...(typeof startedAt === 'number' ? { startedAt } : {}),
+    };
+    const messages = [...session.messages.filter((message) => message !== prompt), placed];
+    const pendingPrompts = session.pendingPrompts?.filter((message) => message !== prompt);
+    return { ...state, sessions: { ...state.sessions, [sessionId]: { ...session, messages, pendingPrompts } } };
+  });
+}
+
+// Stop withdrew prompts Claude never read (or the runner went away with them
+// still queued): drop their bubbles and hand them back to the composer queue,
+// in the order they were sent, ahead of anything queued since.
+function handlePromptsWithdrawn(
+  payload: { sessionId: string; promptIds: string[]; prompts: import('../../shared/types').WithdrawnPrompt[] },
+  set: SetState
+) {
+  const { sessionId, promptIds, prompts } = payload;
+  const withdrawn = new Set(promptIds);
+  set((state) => {
+    const session = state.sessions[sessionId];
+    if (!session) return state;
+    const messages = session.messages.filter((message) =>
+      !(message.type === 'user_prompt' && message.promptId && withdrawn.has(message.promptId)) &&
+      !(message.type === 'user' && withdrawn.has(message.uuid))
+    );
+    const pendingPrompts = (session.pendingPrompts ?? []).filter((message) => !(message.promptId && withdrawn.has(message.promptId)));
+    if (messages.length === session.messages.length && pendingPrompts.length === (session.pendingPrompts ?? []).length) return state;
+    return { ...state, sessions: { ...state.sessions, [sessionId]: { ...session, messages, pendingPrompts } } };
+  });
+  if (prompts.length === 0) return;
+  useComposerQueueStore.getState().restore(sessionId, prompts.map((item) => ({
+    id: crypto.randomUUID(),
+    sentAt: item.sentAt,
+    displayPrompt: item.prompt,
+    effectivePrompt: item.effectivePrompt,
+    attachments: item.attachments,
+    references: {},
+    ...(item.design ? { design: item.design } : {}),
+    ...(item.designSelection ? { designSelection: item.designSelection } : {}),
+  })));
 }
 
 // 处理流式消息

@@ -932,7 +932,8 @@ function buildUnavailableStoredMessage(createdAt: number, reason: string): Strea
 function buildMessagePersistenceRecord(
   sessionId: string,
   sourceOrigin: SessionSource,
-  message: StreamMessage
+  message: StreamMessage,
+  sortKey?: number
 ): MessagePersistenceRecord {
   const createdAt =
     typeof (message as StreamMessage & { createdAt?: number }).createdAt === 'number'
@@ -950,7 +951,7 @@ function buildMessagePersistenceRecord(
     messageType: extractMessageType(message),
     sourceOrigin,
     searchText: normalizeSearchText(extractSearchableMessageText(message)),
-    sortKey: createdAt,
+    sortKey: sortKey ?? createdAt,
     parentTurnId: typeof message.parentTurnId === 'string' ? message.parentTurnId : null,
     data: externalized?.storedData || rawData,
     createdAt,
@@ -2398,10 +2399,29 @@ export function findGoalCompletionAnswer(sessionId: string, startedAt: number, c
   return undefined;
 }
 
+/**
+ * After a history rewrite, its last sort key: rows added later must sort
+ * after it even when the rewrite had to push keys past their timestamps.
+ */
+const sortKeyFloors = new Map<string, number>();
+
 // 添加消息
-export function addMessage(sessionId: string, message: StreamMessage): void {
+/**
+ * `sortKey` orders the stored row in history (default: its createdAt) —
+ * a stream that must reload in arrival order passes a strictly increasing
+ * key without touching the message's own timestamp.
+ */
+export function addMessage(sessionId: string, message: StreamMessage, options?: { sortKey?: number }): void {
   const sourceOrigin = getSessionSourceOrigin(sessionId);
-  const record = buildMessagePersistenceRecord(sessionId, sourceOrigin, message);
+  let sortKey = options?.sortKey;
+  const floor = sortKeyFloors.get(sessionId);
+  if (floor !== undefined) {
+    const createdAt = (message as { createdAt?: unknown }).createdAt;
+    const own = sortKey ?? (typeof createdAt === 'number' && Number.isFinite(createdAt) ? createdAt : Date.now());
+    sortKey = Math.max(own, floor + 1);
+    if (sortKey > floor) sortKeyFloors.set(sessionId, sortKey);
+  }
+  const record = buildMessagePersistenceRecord(sessionId, sourceOrigin, message, sortKey);
 
   const stmt = getDb().prepare(`
     INSERT INTO messages (id, session_id, message_type, source_origin, search_text, sort_key, parent_turn_id, data, created_at)
@@ -2480,8 +2500,17 @@ export function replaceSessionHistory(sessionId: string, messages: StreamMessage
     deleteArtifactsStmt.run(sessionId, MESSAGE_PAYLOAD_ARTIFACT_KIND);
     deleteSearchIndexStmt.run(sessionId);
 
+    // The rewrite keeps the order it is given (getSessionHistory's order):
+    // a message's own timestamp need not follow it — a prompt sent into a
+    // busy turn is stored where the agent took it, after output that came
+    // later than its send — and a millisecond tie must not reshuffle rows.
+    let previousSortKey = -Infinity;
     for (const message of nextMessages) {
-      const record = buildMessagePersistenceRecord(sessionId, sourceOrigin, message);
+      const createdAt = (message as { createdAt?: unknown }).createdAt;
+      const sortKey = Math.max(typeof createdAt === 'number' && Number.isFinite(createdAt) ? createdAt : 0, previousSortKey + 1);
+      previousSortKey = sortKey;
+      const record = buildMessagePersistenceRecord(sessionId, sourceOrigin, message, sortKey);
+      sortKeyFloors.set(sessionId, sortKey);
       insertStmt.run(
         record.id,
         record.sessionId,

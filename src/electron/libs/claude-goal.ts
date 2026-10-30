@@ -321,8 +321,29 @@ export class ClaudeGoalController {
     }
   }
 
-  /** True means app-internal command output; omit it from chat/turn accounting. */
-  async receive(message: WireMessage): Promise<boolean> {
+  /**
+   * Host prompts that will never get a result (withdrawn from the CLI queue
+   * on Stop): they no longer count as work.
+   */
+  withdrawn(count: number, goalSetWithdrawn = false) {
+    this.work = Math.max(0, this.work - count);
+    // The /goal never reached Claude: nothing is pending activation.
+    if (goalSetWithdrawn) {
+      this.pendingSet = undefined;
+      this.pendingClear = false;
+    }
+    if (this.work) return;
+    for (const waiter of this.idleWaiters) waiter.resolve();
+    this.idleWaiters.clear();
+  }
+
+  /**
+   * True means app-internal command output; omit it from chat/turn accounting.
+   * `answeredPrompts`: on a result, how many submitted prompts it answers — a
+   * turn that folded queued prompts in answers several at once, a woken turn
+   * may answer none. Unknown (older CLIs) counts as one.
+   */
+  async receive(message: WireMessage, answeredPrompts?: number): Promise<boolean> {
     if (this.disposed) return true;
     if (message.parent_tool_use_id) return false;
     const local = typeof message.local_command_source === 'string';
@@ -381,7 +402,7 @@ export class ClaudeGoalController {
       return true;
     }
     if (message.type === 'result') {
-      this.work = Math.max(0, this.work - 1);
+      this.work = Math.max(0, this.work - (answeredPrompts ?? 1));
       this.pendingSet = undefined;
       this.pendingClear = false;
       await this.refresh();

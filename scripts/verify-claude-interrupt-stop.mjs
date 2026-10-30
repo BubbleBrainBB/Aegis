@@ -13,7 +13,7 @@ const root = process.cwd();
 // The runner must expose the SDK's soft interrupt.
 const runnerSource = fs.readFileSync(path.join(root, 'src', 'electron', 'libs', 'runner.ts'), 'utf8');
 assert.equal(
-  runnerSource.includes('await activeQuery.interrupt()'),
+  runnerSource.includes('const receipt = (await query.interrupt())') && runnerSource.includes('else await interruptQuery();'),
   true,
   'runner.ts must forward interrupt() to the live SDK query'
 );
@@ -31,7 +31,8 @@ const ipcSource = fs.readFileSync(path.join(root, 'src', 'electron', 'ipc-handle
 // process, and every failure to reconcile must route through the guarded
 // fallback (never a direct hard abort that could kill a follow-up turn).
 assert.equal(
-  ipcSource.includes('entry.handle.interrupt!().catch(() => resolveStopFallback(mainWindow, sessionId, entry))'),
+  ipcSource.includes('const stopTurn = entry.handle.stopTurn ?? entry.handle.interrupt!;') &&
+    ipcSource.includes('stopTurn().catch(() => resolveStopFallback(mainWindow, sessionId, entry));'),
   true,
   'handleSessionStop must soft-interrupt and route rejections through the guarded fallback'
 );
@@ -99,7 +100,7 @@ assert.equal(
 // remain in flight — a stopped turn's result must not abort a live follow-up.
 assert.match(
   ipcSource,
-  /drained && \(currentEntry\.doomed \|\| currentEntry\.autoApprove\)/,
+  /if \(\(currentEntry\.inFlightTurns \?\? 0\) === 0\) finishDrainedClaudeRunner\(session\.id, currentEntry\);/,
   'doomed/automation retire at result must wait until the runner drained'
 );
 

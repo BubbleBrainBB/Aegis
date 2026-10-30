@@ -69,6 +69,16 @@ export function removeClaudeGoalState(id: string) {
   rmSync(statePath(id), { force: true });
 }
 
+/**
+ * Every /goal prompt a runner sends takes the next number. A goal start
+ * only hears withdrawals of /goal prompts sent after it began waiting:
+ * one an earlier runner still held (taken or not) can never fail it.
+ */
+let goalSendSequence = 0;
+export function nextClaudeGoalSend(): number {
+  return ++goalSendSequence;
+}
+
 /** Subscribe before dispatch; only a native acknowledgement resolves the action. */
 export async function awaitClaudeGoalSet(
   id: string,
@@ -76,6 +86,7 @@ export async function awaitClaudeGoalSet(
   dispatch: () => Promise<unknown>,
 ) {
   const previousActivation = readClaudeGoalState(id).activationId;
+  const sentBefore = goalSendSequence;
   return new Promise<ClaudeGoalState>((resolve, reject) => {
     let timer: ReturnType<typeof setTimeout>;
     let settled = false;
@@ -97,8 +108,8 @@ export async function awaitClaudeGoalSet(
       )
         finish(undefined, state);
     };
-    const failed = (key: string, error: Error) => {
-      if (key === id) finish(error);
+    const failed = (key: string, error: Error, goalSend?: number) => {
+      if (key === id && (goalSend === undefined || goalSend > sentBefore)) finish(error);
     };
     events.on('change', changed);
     events.on('failure', failed);
@@ -114,6 +125,19 @@ export async function awaitClaudeGoalSet(
     );
   });
 }
-export function rejectClaudeGoalSet(id: string, error: Error) {
-  events.emit('failure', id, error);
+/** The goal's /goal prompt was withdrawn on Stop before Claude read it. */
+export class ClaudeGoalWithdrawnError extends Error {
+  constructor() {
+    super('The goal was taken back before Claude read it.');
+    this.name = 'ClaudeGoalWithdrawnError';
+  }
+}
+
+/**
+ * Fail the session's pending goal start. With `goalSend` (the withdrawn
+ * /goal prompt's number), only a start that began waiting before that
+ * prompt was sent hears it.
+ */
+export function rejectClaudeGoalSet(id: string, error: Error, goalSend?: number) {
+  events.emit('failure', id, error, goalSend);
 }

@@ -232,14 +232,15 @@ app.whenReady().then(async()=>{
   assert.equal(await js('qa.calls.filter(e=>e.type==="session.continue").length'),0);
   await type('Steer follow-up');await key(['meta']);
   assert.equal(await js('qa.calls.filter(e=>e.type==="session.continue").length'),1);
-  await js('qa.queue.getState().takeAll(qa.id);qa.calls=[];qa.store.setState(s=>({sessions:{...s.sessions,[qa.id]:{...s.sessions[qa.id],provider:"claude",model:"sonnet"}}}))');
+  await js('qa.queue.getState().takeAll(qa.id);qa.calls=[];qa.store.setState(s=>({sessions:{...s.sessions,[qa.id]:{...s.sessions[qa.id],provider:"opencode",model:"anthropic/claude-sonnet"}}}))');
+  // A provider that cannot steer still queues when the preference is Steer.
   prefs.setAppPreferences({followUpBehavior:'steer'});await delay(200);
-  await type('Claude queued');await key();
+  await type('Queued without steer');await key();
   assert.equal(await js('(qa.queue.getState().queues[qa.id]||[]).length'),1);
   assert.equal(await js('qa.calls.filter(e=>e.type==="session.continue").length'),0);
   assert.equal(await js('document.querySelector("button[title=\\"Send as the next message\\"]").disabled'),true);
   await js('qa.store.setState(s=>({sessions:{...s.sessions,[qa.id]:{...s.sessions[qa.id],status:"completed"}}}))');
-  await until('qa.calls.some(e=>e.type==="session.continue")','Claude queue flush');
+  await until('qa.calls.some(e=>e.type==="session.continue")','queue flush without steer');
   prefs.setAppPreferences({enterBehavior:'modifier'});await delay(100);
   await type('Line one');await key();assert((await js('document.querySelector("[role=textbox]").textContent')).includes('Line one'));
   const before=await js('qa.calls.length');await key(['meta']);assert((await js('qa.calls.length'))>before);

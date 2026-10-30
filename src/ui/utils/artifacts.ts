@@ -1,3 +1,4 @@
+import { opensTurn } from '../../shared/turn-boundary';
 import type { StreamMessage, ContentBlock } from '../types';
 import { getMessageContentBlocks } from './message-content';
 
@@ -180,7 +181,7 @@ export function extractLatestSuccessfulHtmlArtifactFromLatestTurn(
 ): ArtifactItem | null {
   let latestPromptIndex = -1;
   for (let i = messages.length - 1; i >= 0; i -= 1) {
-    if (messages[i]?.type === 'user_prompt') {
+    if (opensTurn(messages[i])) {
       latestPromptIndex = i;
       break;
     }

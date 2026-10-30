@@ -1,4 +1,6 @@
 import { StreamRetryStatus } from './StreamRetryStatus';
+import { opensTurn } from '../../shared/turn-boundary';
+import { findClaudeRewindAnchor } from '../../shared/claude-rewind-anchor';
 import { EnvironmentChatSurface } from './environment/EnvironmentPanelLayout';
 import { WorkstreamDisclosureRegistry } from './WorkstreamDisclosureState';
 import { ImageStudioComposerHome } from './ImageStudioComposerDock';
@@ -1149,10 +1151,24 @@ export function ChatPane({
     return deriveTurnPhase(session.messages, isRunning, hasRunningTool, isStreaming);
   }, [session?.messages, session?.status, hasRunningTool, showPartialMessage, streamingAssistantText]);
 
+  // The latest prompt bubble, steered or not: the transcript splits the work
+  // at every bubble, so the live segment starts here.
   const lastUserPromptIndex = useMemo(() => {
     if (!session) return -1;
     for (let i = session.messages.length - 1; i >= 0; i -= 1) {
       if (session.messages[i]?.type === 'user_prompt') {
+        return i;
+      }
+    }
+    return -1;
+  }, [session?.messages]);
+
+  // The prompt that opened the latest turn (a steered prompt joins that
+  // turn): the one Edit replaces.
+  const lastTurnOpenerIndex = useMemo(() => {
+    if (!session) return -1;
+    for (let i = session.messages.length - 1; i >= 0; i -= 1) {
+      if (opensTurn(session.messages[i])) {
         return i;
       }
     }
@@ -1179,6 +1195,7 @@ export function ChatPane({
         return false;
       }
       if (message.type === 'user_prompt') {
+        if (message.steer) continue;
         return /^\/compact\b/.test((message.prompt || '').trim());
       }
     }
@@ -1201,7 +1218,8 @@ export function ChatPane({
     (userPromptIndex: number): RewindTarget | null => {
       if (!sessionId || !session) return null;
       const promptMessage = session.messages[userPromptIndex];
-      if (promptMessage?.type !== 'user_prompt') return null;
+      // A steered prompt joined a running turn: no checkpoint opens there.
+      if (promptMessage?.type !== 'user_prompt' || promptMessage.steer) return null;
 
       if (session.provider === 'bubble') {
         let ordinal = 0;
@@ -1218,23 +1236,10 @@ export function ChatPane({
       }
 
       if (session.provider !== 'claude') return null;
-      for (let index = userPromptIndex + 1; index < session.messages.length; index += 1) {
-        const message = session.messages[index];
-        if (!message) continue;
-        if (message.type === 'user_prompt') break;
-        if (message.type !== 'user') continue;
-        const uuid = (message as { uuid?: unknown }).uuid;
-        if (typeof uuid !== 'string' || !uuid) continue;
-        const blocks = Array.isArray(message.message?.content) ? message.message.content : [];
-        if (!blocks.some((block) => block?.type === 'text')) continue;
-        return {
-          sessionId,
-          provider: 'claude',
-          anchorMessageId: uuid,
-          promptPreview: promptMessage.prompt || '',
-        };
-      }
-      return null;
+      const anchorMessageId = findClaudeRewindAnchor(session.messages, userPromptIndex);
+      return anchorMessageId
+        ? { sessionId, provider: 'claude', anchorMessageId, promptPreview: promptMessage.prompt || '' }
+        : null;
     },
     [session, sessionId]
   );
@@ -1246,7 +1251,7 @@ export function ChatPane({
       if (!detail || detail.sessionId !== sessionId) return;
       if (!session || session.status === 'running') return;
       for (let index = session.messages.length - 1; index >= 0; index -= 1) {
-        if (session.messages[index]?.type !== 'user_prompt') continue;
+        if (!opensTurn(session.messages[index])) continue;
         const target = resolveRewindTarget(index);
         if (target) {
           setRewindTarget(target);
@@ -1331,7 +1336,7 @@ export function ChatPane({
     const messages = session?.messages ?? [];
     let start = 0;
     messages.forEach((message, index) => {
-      if (message.type === 'user_prompt' && index > start) {
+      if (opensTurn(message) && index > start) {
         ranges.push({ firstMessageIndex: start, lastMessageIndex: index - 1 });
         start = index;
       }
@@ -1650,6 +1655,7 @@ export function ChatPane({
   }, [
     scrollPositionKey,
     session?.messages.length,
+    session?.pendingPrompts?.length,
     session?.streaming.isStreaming,
     partialMessage,
     partialThinking,
@@ -2237,7 +2243,7 @@ export function ChatPane({
                               session.provider === 'qoder' ||
                               session.provider === 'bubble')
                               ? {
-                                  canEditAndRetry: item.originalIndex === lastUserPromptIndex,
+                                  canEditAndRetry: item.originalIndex === lastTurnOpenerIndex,
                                   isSessionRunning: session.status === 'running',
                                   onRewind:
                                     (session.provider === 'claude' || session.provider === 'bubble') &&
@@ -2369,6 +2375,20 @@ export function ChatPane({
                   <WorkingFooter label={workingLabel} />
                 );
               })()}
+
+              {/* Sent into the running turn, not read by Claude yet: each waits
+                  at the bottom and takes its place in the transcript, as a
+                  steer or as the next turn's prompt, when Claude reads it. */}
+              {session.pendingPrompts?.map((message) => (
+                <div key={`pending-${message.promptId ?? message.createdAt}`} data-pending-prompt>
+                  <MessageCard
+                    sessionId={sessionId}
+                    message={message}
+                    toolStatusMap={toolStatusMap}
+                    toolResultsMap={toolResultsMap}
+                  />
+                </div>
+              ))}
 
               <div />
             </div>
