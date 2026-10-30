@@ -3,7 +3,6 @@ import { isStartSessionToolName } from '../../shared/follow-up';
 import { opensTurn } from '../../shared/turn-boundary';
 import { deriveCompactionEntries, type CompactionEntry, type WorkstreamMessage } from './compaction';
 import { backgroundTaskEndedEntry, isBackgroundTaskEndedMessage, type BackgroundTaskEndedEntry } from './background-task-ended';
-import { isSteerPromptMessage, steerEntry, type SteerEntry } from './steer-entry';
 import type { ToolExecutionMetadata } from '../../shared/types';
 import type {
   AskUserQuestionInput,
@@ -72,7 +71,6 @@ export interface SubagentTrace {
 export type WorkstreamEntry =
   | CompactionEntry
   | BackgroundTaskEndedEntry
-  | SteerEntry
   | {
       id: string;
       type: 'thinking';
@@ -159,7 +157,6 @@ export interface WorkstreamModel {
 type TraceEntry =
   | CompactionEntry
   | BackgroundTaskEndedEntry
-  | SteerEntry
   | { type: 'thinking'; id: string; content: string; streaming?: boolean; interrupted?: boolean }
   | { type: 'note'; id: string; content: string; streaming?: boolean }
   | { type: 'tool'; id: string; block: ToolUseBlock; messageUuid?: string; startedAt?: number };
@@ -523,7 +520,6 @@ export function extractTraceEntries(
     const compaction = compactions.get(msgIdx);
     if (compaction) entries.push(compaction);
     if (isBackgroundTaskEndedMessage(msg)) entries.push(backgroundTaskEndedEntry(msg));
-    if (isSteerPromptMessage(msg)) entries.push(steerEntry(msg, msgIdx));
     if (msg.type !== 'assistant') continue;
 
     for (const [blockIndex, block] of getMessageContentBlocks(msg).entries()) {
@@ -735,7 +731,7 @@ function createEntryFromTrace(
   if (entry.type === 'compaction') {
     return { ...entry, state: entry.state === 'inProgress' && pendingFallbackStatus !== 'pending' ? 'interrupted' : entry.state };
   }
-  if (entry.type === 'backgroundTaskEnded' || entry.type === 'steer') return entry;
+  if (entry.type === 'backgroundTaskEnded') return entry;
   if (entry.type === 'thinking') {
     return {
       id: entry.id,

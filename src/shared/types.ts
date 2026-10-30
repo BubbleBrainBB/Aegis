@@ -1016,7 +1016,7 @@ export type ServerEvent =
   // The CLI took a prompt sent into a busy runner: it now stands at the end
   // of the stream — a steer of the running turn (steer: true: folded in, or
   // joined a batch) or the opening prompt of a new turn.
-  | { type: 'stream.prompt_started'; payload: { sessionId: string; promptId: string; steer: boolean } }
+  | { type: 'stream.prompt_started'; payload: { sessionId: string; promptId: string; steer: boolean; startedAt: number } }
   | { type: 'stream.message'; payload: { sessionId: string; message: StreamMessage } }
   // Incremental stdout/stderr from a tool that is still running (codex
   // commandExecution). Transient display data — never persisted.
@@ -1898,6 +1898,11 @@ export type StreamMessage =
       steer?: boolean;
       /** Claude: the prompt's SDK uuid (its host echo carries it), so a withdrawn steer can be removed. */
       promptId?: string;
+      /**
+       * Claude, sent into a busy runner: when the CLI read it (`createdAt` is
+       * when it was sent). Work before and after a steer is timed from here.
+       */
+      startedAt?: number;
     })
   | (StreamMessageBase & {
       /** Durable, native completion metadata; never sent to the model as a prompt. */

@@ -1151,8 +1151,21 @@ export function ChatPane({
     return deriveTurnPhase(session.messages, isRunning, hasRunningTool, isStreaming);
   }, [session?.messages, session?.status, hasRunningTool, showPartialMessage, streamingAssistantText]);
 
-  // The prompt that opened the latest turn (a steered prompt joins that turn).
+  // The latest prompt bubble, steered or not: the transcript splits the work
+  // at every bubble, so the live segment starts here.
   const lastUserPromptIndex = useMemo(() => {
+    if (!session) return -1;
+    for (let i = session.messages.length - 1; i >= 0; i -= 1) {
+      if (session.messages[i]?.type === 'user_prompt') {
+        return i;
+      }
+    }
+    return -1;
+  }, [session?.messages]);
+
+  // The prompt that opened the latest turn (a steered prompt joins that
+  // turn): the one Edit replaces.
+  const lastTurnOpenerIndex = useMemo(() => {
     if (!session) return -1;
     for (let i = session.messages.length - 1; i >= 0; i -= 1) {
       if (opensTurn(session.messages[i])) {
@@ -1162,21 +1175,11 @@ export function ChatPane({
     return -1;
   }, [session?.messages]);
 
-  // A final answer counts only after the latest user prompt, steered or not: a
-  // steer sent after the agent began answering sends it back to work.
-  const hasStartedFinalAnswer = useMemo(() => {
-    const messages = session?.messages ?? [];
-    let lastPromptIndex = -1;
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-      if (messages[i]?.type === 'user_prompt') {
-        lastPromptIndex = i;
-        break;
-      }
-    }
-    return messages.slice(lastPromptIndex + 1).some((message) =>
+  const hasStartedFinalAnswer = useMemo(() =>
+    session?.messages.slice(lastUserPromptIndex + 1).some((message) =>
       message.type === 'assistant' && !message.parentToolUseId && getAssistantPhase(message) === 'final_answer'
-    );
-  }, [session?.messages]);
+    ) ?? false,
+  [session?.messages, lastUserPromptIndex]);
 
   // Fallback for providers whose manual command precedes the start hook.
   // Once a compaction activity arrives, the timeline owns its live status.
@@ -1652,6 +1655,7 @@ export function ChatPane({
   }, [
     scrollPositionKey,
     session?.messages.length,
+    session?.pendingPrompts?.length,
     session?.streaming.isStreaming,
     partialMessage,
     partialThinking,
@@ -2109,7 +2113,7 @@ export function ChatPane({
                     : item.originalIndex;
                   let turnStartIndex = 0;
                   for (let cursor = turnEndIndex; cursor >= 0; cursor -= 1) {
-                    if (opensTurn(session.messages[cursor])) {
+                    if (session.messages[cursor]?.type === 'user_prompt') {
                       turnStartIndex = cursor;
                       break;
                     }
@@ -2239,7 +2243,7 @@ export function ChatPane({
                               session.provider === 'qoder' ||
                               session.provider === 'bubble')
                               ? {
-                                  canEditAndRetry: item.originalIndex === lastUserPromptIndex,
+                                  canEditAndRetry: item.originalIndex === lastTurnOpenerIndex,
                                   isSessionRunning: session.status === 'running',
                                   onRewind:
                                     (session.provider === 'claude' || session.provider === 'bubble') &&
@@ -2371,6 +2375,20 @@ export function ChatPane({
                   <WorkingFooter label={workingLabel} />
                 );
               })()}
+
+              {/* Sent into the running turn, not read by Claude yet: each waits
+                  at the bottom and takes its place in the transcript, as a
+                  steer or as the next turn's prompt, when Claude reads it. */}
+              {session.pendingPrompts?.map((message) => (
+                <div key={`pending-${message.promptId ?? message.createdAt}`} data-pending-prompt>
+                  <MessageCard
+                    sessionId={sessionId}
+                    message={message}
+                    toolStatusMap={toolStatusMap}
+                    toolResultsMap={toolResultsMap}
+                  />
+                </div>
+              ))}
 
               <div />
             </div>

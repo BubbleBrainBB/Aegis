@@ -19,7 +19,8 @@ assert.deepEqual(withdrawClaudePrompts({ inFlightTurns: 1, stoppedTurns: 0 }, 3)
 // ── Turn boundaries: a steer joins the turn ───────────────────────────────────
 
 const opener: StreamMessage = { type: 'user_prompt', prompt: 'Run the checks', createdAt: 100 };
-const steer: StreamMessage = { type: 'user_prompt', prompt: 'Also lint', createdAt: 300, steer: true, promptId: 'p-steer' };
+// Sent at 300, read by Claude at 330 once the running tool finished.
+const steer: StreamMessage = { type: 'user_prompt', prompt: 'Also lint', createdAt: 300, startedAt: 330, steer: true, promptId: 'p-steer' };
 const echo: StreamMessage = {
   type: 'user', uuid: 'p-steer', message: { content: [{ type: 'text', text: 'Also lint' }] }, hostEcho: true, createdAt: 301,
 } as StreamMessage;
@@ -46,34 +47,34 @@ const turn = [opener, bash, steer, echo, bashResult, lint, lintResult, answer, d
 assert.equal(opensTurn(opener), true);
 assert.equal(opensTurn(steer), false);
 
-function steeredTimeline(messages: StreamMessage[], running: boolean) {
-  const timeline = deriveTranscriptTimelineItems(messages, { sessionRunning: running, activeTurnStartIndex: 0 });
-  const prompts = timeline.filter(item => item.type === 'message' && item.message.type === 'user_prompt');
-  assert.equal(prompts.length, 1, 'only the opener is a bubble; the steer does not split the turn');
+// A steer reads as the user's message, as Codex steers do: a bubble where it
+// joined the turn, with the work before and after it on either side.
+{
+  const timeline = deriveTranscriptTimelineItems(turn, { sessionRunning: false, activeTurnStartIndex: 0 });
+  const shape = timeline.map(item => item.type === 'work' ? 'work'
+    : item.message.type === 'user_prompt' ? `prompt ${item.message.prompt}` : item.message.type);
+  assert.deepEqual(shape.filter(kind => kind !== 'result' && kind !== 'user'),
+    ['prompt Run the checks', 'work', 'prompt Also lint', 'work', 'assistant'],
+    'the steer is a bubble between the work before and after it, never a trace row');
+  for (const item of timeline) {
+    if (item.type !== 'work') continue;
+    const model = createBatchWorkstreamModel({
+      messages: item.group.messages, toolStatusMap: new Map(), toolResultsMap: new Map(), isSessionRunning: false,
+    });
+    assert(model.entries.every(entry => (entry as { summary?: string }).summary !== 'Also lint'), 'no steer row in the trace');
+  }
   const work = timeline.filter(item => item.type === 'work');
-  assert.equal(work.length, 1, 'one work fold for the whole steered turn');
-  const group = work[0];
-  assert(group.type === 'work');
-  const model = createBatchWorkstreamModel({
-    messages: group.group.messages, toolStatusMap: new Map(), toolResultsMap: new Map(), isSessionRunning: group.active,
-  });
-  return { timeline, group, entries: model.entries };
-}
-
-{
-  const { timeline, group, entries } = steeredTimeline(turn, false);
-  const kinds = entries.map(entry => entry.type);
-  assert.deepEqual(kinds.filter(kind => kind !== 'note'), ['tool', 'steer', 'tool'], 'the steer sits in the trace where it joined');
-  const row = entries.find(entry => entry.type === 'steer');
-  assert.equal(row?.summary, 'Also lint');
-  assert.equal(group.group.durationMs, 25000, 'the fold times the whole turn, not the half before the steer');
-  const answerIndex = timeline.findIndex(item => item.type === 'message' && item.message.type === 'assistant');
-  assert(answerIndex > timeline.indexOf(group), 'the final answer stays below the fold');
+  assert.deepEqual(work.map(item => item.type === 'work' && item.canCollapse), [true, true],
+    'the work before the steer was not stopped: it folds like finished work');
+  assert.deepEqual(work.map(item => item.type === 'work' && item.group.durationMs), [230, 370],
+    'each stretch times itself: up to when Claude read the steer, then from there to the result');
 }
 {
-  const { group, entries } = steeredTimeline(turn.slice(0, 6), true);
-  assert.equal(group.active, true, 'mid-run the fold is the live work');
-  assert(entries.some(entry => entry.type === 'steer'));
+  // Mid-run the live segment is the one after the latest bubble.
+  const live = turn.slice(0, 6);
+  const timeline = deriveTranscriptTimelineItems(live, { sessionRunning: true, activeTurnStartIndex: live.indexOf(steer) });
+  const work = timeline.filter(item => item.type === 'work');
+  assert.deepEqual(work.map(item => item.type === 'work' && item.active), [false, true]);
 }
 
 // Latest-turn scans start at the opener, not the steer.
@@ -96,12 +97,10 @@ function steeredTimeline(messages: StreamMessage[], running: boolean) {
   assert.equal(turns.length, 1, 'a steered turn is one change card, not two');
 }
 
-// The outline keeps one entry per turn: the steer's reply and files stay with the opener.
+// The outline lists the steer's bubble like any other.
 {
   const outline = buildSessionUserPromptSummaries([opener, bash, steer, echo, bashResult, lint, lintResult, answer, done]);
-  assert.equal(outline.length, 1, 'no outline entry for a steer (it has no bubble to jump to)');
-  assert.equal(outline[0].text, 'Run the checks');
-  assert.equal(outline[0].replyText, 'Checks and lint pass.', 'the reply after the steer belongs to the opener');
+  assert.deepEqual(outline.map(entry => entry.text), ['Run the checks', 'Also lint']);
 }
 
 // ── Store: Stop hands withdrawn steers back to the composer queue ────────────
@@ -119,6 +118,9 @@ const send = (prompt: string, promptId: string) => {
 };
 send('first steer', 's1');
 send('second steer', 's2');
+assert.deepEqual(useAppStore.getState().sessions[id].pendingPrompts?.map(m => m.prompt), ['first steer', 'second steer'],
+  'unread prompts wait below the transcript, in send order');
+assert.equal(useAppStore.getState().sessions[id].messages.length, 0);
 useComposerQueueStore.getState().enqueue(id, {
   id: 'later', displayPrompt: 'queued after', effectivePrompt: 'queued after', attachments: [], references: {},
 });
@@ -129,7 +131,8 @@ dispatch({ type: 'stream.prompts_withdrawn', payload: { sessionId: id, promptIds
 dispatch({ type: 'stream.prompts_withdrawn', payload: { sessionId: id, promptIds: ['s2', 'hidden'], prompts: [
   draft('s2', 'second steer', 200, 'second steer (resolved)'),
 ] } } as ServerEvent);
-assert.equal(useAppStore.getState().sessions[id].messages.length, 0, 'withdrawn bubbles leave the transcript');
+assert.equal(useAppStore.getState().sessions[id].messages.length, 0, 'unread prompts never sit in the transcript');
+assert.deepEqual(useAppStore.getState().sessions[id].pendingPrompts, [], 'withdrawn bubbles leave the bottom of the transcript');
 assert.deepEqual(
   (useComposerQueueStore.getState().queues[id] ?? []).map(item => [item.displayPrompt, item.effectivePrompt]),
   [['first steer', 'first steer'], ['second steer', 'second steer (resolved)'], ['queued after', 'queued after']],
@@ -153,15 +156,19 @@ assert.deepEqual(
   const secondAnswer = assistant('a-second', 900, [{ type: 'text', text: 'Second answer.' }], 'final_answer');
   useAppStore.setState(state => ({ sessions: { ...state.sessions, [lateId]: {
     ...state.sessions[lateId], provider: 'claude', status: 'running',
-    messages: [opener, bash, late, bashResult, firstAnswer, done],
+    messages: [opener, bash, bashResult, firstAnswer, done],
+    pendingPrompts: [late],
     streaming: { text: '', thinking: '', isStreaming: false },
   } } }));
-  dispatch({ type: 'stream.prompt_started', payload: { sessionId: lateId, promptId: 'p-late', steer: false } } as ServerEvent);
+  dispatch({ type: 'stream.prompt_started', payload: { sessionId: lateId, promptId: 'p-late', steer: false, startedAt: 750 } } as ServerEvent);
   dispatch({ type: 'stream.message', payload: { sessionId: lateId, message: echo } } as ServerEvent);
   const moved = useAppStore.getState().sessions[lateId].messages;
   const lastPrompt = moved.at(-2);
   assert(lastPrompt?.type === 'user_prompt' && lastPrompt.prompt === 'One more thing', 'it now opens the turn after the previous result');
   assert.equal(lastPrompt.steer, undefined, 'no longer a steer');
+  assert.equal(lastPrompt.startedAt, 750, 'it records when Claude read it');
+  assert.equal(lastPrompt.createdAt, 500, 'and keeps when it was sent');
+  assert.deepEqual(useAppStore.getState().sessions[lateId].pendingPrompts, [], 'it left the bottom for its place');
   const timeline = deriveTranscriptTimelineItems([...moved, secondAnswer], { sessionRunning: false });
   assert.equal(timeline.filter(item => item.type === 'message' && item.message.type === 'user_prompt').length, 2,
     'the late steer is its own turn, as a bubble');
@@ -175,7 +182,8 @@ assert.deepEqual(
   const firstAnswer = assistant('a-first', 600, [{ type: 'text', text: 'First answer.' }], 'final_answer');
   useAppStore.setState(state => ({ sessions: { ...state.sessions, [batchId]: {
     ...state.sessions[batchId], provider: 'claude', status: 'running',
-    messages: [opener, b, c, firstAnswer, done],
+    messages: [opener, firstAnswer, done],
+    pendingPrompts: [b, c],
     streaming: { text: '', thinking: '', isStreaming: false },
   } } }));
   dispatch({ type: 'stream.prompt_started', payload: { sessionId: batchId, promptId: 'p-b', steer: false } } as ServerEvent);
@@ -186,8 +194,9 @@ assert.deepEqual(
     'both leave the previous turn in the order the CLI took them; the one that joined the batch is a steer of it');
   const secondAnswer = assistant('a-second', 900, [{ type: 'text', text: 'BEE. SEA.' }], 'final_answer');
   const timeline = deriveTranscriptTimelineItems([...moved, secondAnswer], { sessionRunning: false });
-  assert.equal(timeline.filter(item => item.type === 'message' && item.message.type === 'user_prompt').length, 2,
-    'two turns, two bubbles: the joined prompt is a row, not a third turn');
+  assert.equal(timeline.filter(item => item.type === 'message' && item.message.type === 'user_prompt').length, 3,
+    'every prompt is a bubble');
+  assert.equal(moved.filter(opensTurn).length, 2, 'two turns: the joined prompt opens none');
 }
 
 console.log('claude-steer-turn.test.ts passed');

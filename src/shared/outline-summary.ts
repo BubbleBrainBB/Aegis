@@ -17,9 +17,6 @@ export function buildSessionUserPromptSummaries(
   let currentPaths: Set<string> | null = null;
 
   for (const message of messages) {
-    // A steered prompt joins its turn (a trace row, not a bubble to jump to):
-    // the reply and files after it stay with the prompt that opened the turn.
-    if (message.type === 'user_prompt' && message.steer) continue;
     if (message.type === 'user_prompt' && !message.parentToolUseId) {
       if (typeof message.createdAt !== 'number' || !Number.isFinite(message.createdAt)) {
         current = null;

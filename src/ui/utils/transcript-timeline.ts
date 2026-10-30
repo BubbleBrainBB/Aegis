@@ -1,6 +1,5 @@
 import { isCompactionMessage, type WorkstreamMessage } from './compaction';
 import { isBackgroundTaskEndedMessage } from './background-task-ended';
-import { isSteerPromptMessage } from './steer-entry';
 import { getAssistantPhase } from '../../shared/assistant-phase';
 import type { ContentBlock, StreamMessage } from '../types';
 import type { ThreadGoal } from '../../shared/session-goal';
@@ -120,11 +119,7 @@ function getWorkGroupRunBoundaryKey(group: TimelineWorkGroup): string | null {
 
 function getTimelineItemRunBoundaryKey(item: TranscriptTimelineItem): string | undefined {
   if (item.type === 'work') {
-    // Passive rows (compaction, a steered prompt) carry no agent run of their
-    // own: they sit inside whichever run is going and never split it.
-    if (item.group.messages.every(message =>
-      (isCompactionMessage(message) || isSteerPromptMessage(message)) && !message.agentId && !message.agentRunId
-    )) return undefined;
+    if (item.group.messages.every(message => isCompactionMessage(message) && !message.agentId && !message.agentRunId)) return undefined;
     return getWorkGroupRunBoundaryKey(item.group) || 'assistant:mixed';
   }
 
@@ -300,6 +295,13 @@ interface CollapseTurnOptions {
   sessionRunning?: boolean;
   /** Timestamp of the user prompt that opened this turn, when available. */
   turnStartedAt?: number;
+  /** This stretch of work starts at a prompt steered into the running turn. */
+  startedBySteer?: boolean;
+  /**
+   * When the turn went on past this stretch of work: a prompt was steered in
+   * and the work after it renders below that bubble. Not stopped, just split.
+   */
+  continuedAt?: number;
   /**
    * True for the transcript's final turn. Only that turn can be the one a
    * stop press just interrupted, and only it freezes in place.
@@ -332,7 +334,9 @@ function collapseTurnWorkBeforeAnswer(
   // user was watching vanishes when they press stop. The unresolved-tool
   // requirement keeps result-less utility replies (e.g. local /usage
   // summaries) rendering as normal answers.
+  const continued = options.continuedAt !== undefined;
   const interruptedTurn =
+    !continued &&
     options.trailingTurn === true &&
     options.sessionRunning !== true &&
     !hasTurnResult(turnItems) &&
@@ -401,7 +405,8 @@ function collapseTurnWorkBeforeAnswer(
   const durationMs = resolveCompletedTurnDurationMs(
     turnItems,
     options.turnStartedAt,
-    hasTerminalAnswer
+    hasTerminalAnswer,
+    options
   );
   const completedWorkGroup: TimelineWorkGroup =
     typeof durationMs === 'number'
@@ -417,7 +422,7 @@ function collapseTurnWorkBeforeAnswer(
     // collapsing it on the stop press would make the work the user was
     // watching vanish into the disclosure toggle.
     defaultExpanded: activeWork || interruptedTurn,
-    canCollapse: !interruptedTurn && (hasTerminalAnswer || hasTurnResult(turnItems)),
+    canCollapse: !interruptedTurn && (hasTerminalAnswer || hasTurnResult(turnItems) || continued),
     disclosureResetKey: combinedWorkGroup.id,
   };
 
@@ -440,15 +445,24 @@ function getMessageCreatedAt(message: StreamMessage): number | undefined {
 function resolveCompletedTurnDurationMs(
   turnItems: TranscriptTimelineItem[],
   turnStartedAt: number | undefined,
-  hasTerminalAnswer: boolean
+  hasTerminalAnswer: boolean,
+  split: { startedBySteer?: boolean; continuedAt?: number } = {}
 ): number | undefined {
   const messages = turnItems
     .filter((item): item is Extract<TranscriptTimelineItem, { type: 'message' }> => item.type === 'message')
     .map((item) => item.message);
+  // Work split by a steer: each stretch times itself, up to the steer that
+  // split it, or from the steer that started it.
+  if (split.continuedAt !== undefined) {
+    const startedAt = turnStartedAt ?? messages.map(getMessageCreatedAt).find((at) => at !== undefined);
+    const durationMs = startedAt === undefined ? 0 : split.continuedAt - startedAt;
+    return durationMs > 0 ? durationMs : undefined;
+  }
   const result = [...messages]
     .reverse()
     .find((message): message is Extract<StreamMessage, { type: 'result' }> => message.type === 'result');
-  const reportedDuration = result?.duration_ms;
+  // The CLI's reported duration covers the whole turn, not the stretch after a steer.
+  const reportedDuration = split.startedBySteer ? undefined : result?.duration_ms;
   if (
     typeof reportedDuration === 'number' &&
     Number.isFinite(reportedDuration) &&
@@ -496,20 +510,27 @@ function collapseWorkBeforeTerminalAnswers(
   // only the final turn can be the one a stop press interrupted.
   type Chunk =
     | { kind: 'passthrough'; item: TranscriptTimelineItem }
-    | { kind: 'turn'; items: TranscriptTimelineItem[]; startedAt?: number };
+    | { kind: 'turn'; items: TranscriptTimelineItem[]; startedAt?: number; startedBySteer?: boolean; continuedAt?: number };
   const chunks: Chunk[] = [];
   let currentTurnItems: TranscriptTimelineItem[] = [];
   let currentTurnStartedAt: number | undefined;
+  let currentTurnStartedBySteer = false;
   let endedGoalTurn = false;
   // The current chunk already holds a `result` (kept as a flag: scanning the
   // chunk per item would be quadratic in long turns).
   let currentTurnFinished = false;
 
-  const flushTurn = () => {
+  const flushTurn = (continuedAt?: number) => {
     if (currentTurnItems.length === 0) {
       return;
     }
-    chunks.push({ kind: 'turn', items: currentTurnItems, startedAt: currentTurnStartedAt });
+    chunks.push({
+      kind: 'turn',
+      items: currentTurnItems,
+      startedAt: currentTurnStartedAt,
+      ...(currentTurnStartedBySteer ? { startedBySteer: true } : {}),
+      ...(continuedAt !== undefined ? { continuedAt } : {}),
+    });
     currentTurnItems = [];
     endedGoalTurn = false;
     currentTurnFinished = false;
@@ -524,18 +545,24 @@ function collapseWorkBeforeTerminalAnswers(
     if (endedGoalTurn && (item.type === 'work' || item.message.type === 'assistant')) {
       flushTurn();
       currentTurnStartedAt = undefined;
+      currentTurnStartedBySteer = false;
       currentRunBoundaryKey = null;
       hasAssistantRunBoundary = false;
     }
     if (item.type === 'message' && opensWokenTurn(item, currentTurnFinished)) {
       flushTurn();
       currentTurnStartedAt = getMessageCreatedAt(item.message);
+      currentTurnStartedBySteer = false;
       currentRunBoundaryKey = null;
       hasAssistantRunBoundary = false;
     }
     if (item.type === 'message' && item.message.type === 'user_prompt') {
-      flushTurn();
-      currentTurnStartedAt = getMessageCreatedAt(item.message);
+      // A steer splits its turn without ending it: the work above it goes on below.
+      const steered = item.message.steer === true;
+      const readAt = item.message.startedAt ?? getMessageCreatedAt(item.message);
+      flushTurn(steered ? readAt ?? currentTurnStartedAt : undefined);
+      currentTurnStartedAt = readAt;
+      currentTurnStartedBySteer = steered;
       currentRunBoundaryKey = null;
       hasAssistantRunBoundary = false;
       chunks.push({ kind: 'passthrough', item });
@@ -581,6 +608,8 @@ function collapseWorkBeforeTerminalAnswers(
       ...collapseTurnWorkBeforeAnswer(chunk.items, {
         ...options,
         turnStartedAt: chunk.startedAt,
+        startedBySteer: chunk.startedBySteer,
+        continuedAt: chunk.continuedAt,
         trailingTurn: index === lastTurnChunkIndex,
       })
     );
@@ -679,14 +708,6 @@ export function deriveTranscriptTimelineItems(
         continue;
       }
     } else if (message.parentToolUseId) {
-      continue;
-    }
-
-    // A prompt steered into the running turn is part of that turn's work: a
-    // row in its trace, not a bubble that would split it into two turns.
-    if (isSteerPromptMessage(message)) {
-      pendingWorkMessages.push(message);
-      pendingWorkOriginalIndices.push(originalIndex);
       continue;
     }
 

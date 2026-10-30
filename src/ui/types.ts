@@ -391,6 +391,12 @@ export interface SessionView {
   /** Claude's running background tasks, each stoppable on its own (live only). */
   backgroundTasks?: import('../shared/types').BackgroundTaskInfo[];
   messages: import('../shared/types').StreamMessage[];
+  /**
+   * Prompts sent into a busy Claude runner that the CLI has not read yet
+   * (live only). They wait below the transcript and join it, as a steer or
+   * as the next turn's prompt, where the CLI takes them.
+   */
+  pendingPrompts?: Extract<import('../shared/types').StreamMessage, { type: 'user_prompt' }>[];
   hydrated: boolean;
   historyCursor?: string | null;
   hasMoreHistory?: boolean;

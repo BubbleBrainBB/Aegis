@@ -101,6 +101,11 @@ assert.ok(ipc.includes('onPromptsWithdrawn: (promptIds) => settleWithdrawnClaude
   'withdrawals must settle from the runner\'s frame callback');
 assert.ok(ipc.includes('onPromptStarted: (started) => storeStartedClaudePrompt(mainWindow, session.id, started),'),
   'a prompt sent into a busy runner must be stored where the CLI takes it');
+// It records when the CLI read it (the work around a steer is timed from
+// there) as its sort key, and the renderer gets the same time.
+assert.ok(ipc.includes('sessions.addMessage(sessionId, { ...ordinary, ...(steer ? { steer: true } : {}), startedAt }, { sortKey: startedAt });')
+  && ipc.includes("payload: { sessionId, promptId: started.promptId, steer, startedAt } });"),
+  'a prompt the CLI took is stored and broadcast with the time it was read');
 // Deferred: a send into a busy identity-tracking runner is not stored at send.
 assert.match(ipc, /const claudeDeferred =[\s\S]{0,400}\(existingEntry\?\.inFlightTurns \?\? 0\) > 0 &&\s*existingEntry\?\.handle\.tracksPromptIdentity\?\.\(\) === true;/,
   'only sends into a busy runner that reports prompt lifecycle are deferred');

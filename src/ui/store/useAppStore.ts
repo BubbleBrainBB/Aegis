@@ -1136,7 +1136,7 @@ export const useAppStore = create<Store>()(
         // visible result as today, where the echo wipes them an instant
         // after they rendered). A steer joins the live turn instead: its
         // buffered deltas are still that turn's output.
-        if (event.payload.steer) {
+        if (event.payload.steer || event.payload.deferred) {
           streamDeltaCoalescer.flushSession(event.payload.sessionId);
         } else {
           streamDeltaCoalescer.discardSession(event.payload.sessionId);
@@ -3621,10 +3621,10 @@ function handleSessionDeleted(
 
 // 处理用户 prompt
 function handleUserPrompt(
-  payload: { sessionId: string; prompt: string; attachments?: Attachment[]; createdAt?: number; workflowPrompt?: WorkflowPromptKind; design?: import('../../shared/types').DesignPromptRef; designSelection?: import('../../shared/types').DesignSelectionRef; steer?: boolean; promptId?: string },
+  payload: { sessionId: string; prompt: string; attachments?: Attachment[]; createdAt?: number; workflowPrompt?: WorkflowPromptKind; design?: import('../../shared/types').DesignPromptRef; designSelection?: import('../../shared/types').DesignSelectionRef; steer?: boolean; promptId?: string; deferred?: boolean },
   set: SetState
 ) {
-  const { sessionId, prompt, attachments, createdAt, workflowPrompt, design, designSelection, steer, promptId } = payload;
+  const { sessionId, prompt, attachments, createdAt, workflowPrompt, design, designSelection, steer, promptId, deferred } = payload;
 
   set((state) => {
     const session = state.sessions[sessionId];
@@ -3641,6 +3641,18 @@ function handleUserPrompt(
       ...(steer ? { steer: true } : {}),
       ...(promptId ? { promptId } : {}),
     };
+
+    // Not read by the CLI yet: it waits below the transcript, and the live
+    // turn's output keeps streaming above it.
+    if (deferred && userMessage.type === 'user_prompt') {
+      return {
+        ...state,
+        sessions: {
+          ...state.sessions,
+          [sessionId]: { ...session, pendingPrompts: [...(session.pendingPrompts ?? []), userMessage] },
+        },
+      };
+    }
 
     return {
       ...state,
@@ -3665,19 +3677,25 @@ function handleUserPrompt(
 // running turn or the opening prompt of a new one (its host echo follows).
 // The stored history says the same after a reload.
 function handlePromptStarted(
-  payload: { sessionId: string; promptId: string; steer: boolean },
+  payload: { sessionId: string; promptId: string; steer: boolean; startedAt?: number },
   set: SetState
 ) {
-  const { sessionId, promptId, steer } = payload;
+  const { sessionId, promptId, steer, startedAt } = payload;
   set((state) => {
     const session = state.sessions[sessionId];
     if (!session) return state;
-    const prompt = session.messages.find((message) => message.type === 'user_prompt' && message.promptId === promptId);
+    const prompt = session.pendingPrompts?.find((message) => message.promptId === promptId)
+      ?? session.messages.find((message) => message.type === 'user_prompt' && message.promptId === promptId);
     if (prompt?.type !== 'user_prompt') return state;
     const { steer: _steer, ...ordinary } = prompt;
-    const placed: StreamMessage = steer ? { ...ordinary, steer: true } : ordinary;
+    const placed: StreamMessage = {
+      ...ordinary,
+      ...(steer ? { steer: true } : {}),
+      ...(typeof startedAt === 'number' ? { startedAt } : {}),
+    };
     const messages = [...session.messages.filter((message) => message !== prompt), placed];
-    return { ...state, sessions: { ...state.sessions, [sessionId]: { ...session, messages } } };
+    const pendingPrompts = session.pendingPrompts?.filter((message) => message !== prompt);
+    return { ...state, sessions: { ...state.sessions, [sessionId]: { ...session, messages, pendingPrompts } } };
   });
 }
 
@@ -3697,8 +3715,9 @@ function handlePromptsWithdrawn(
       !(message.type === 'user_prompt' && message.promptId && withdrawn.has(message.promptId)) &&
       !(message.type === 'user' && withdrawn.has(message.uuid))
     );
-    if (messages.length === session.messages.length) return state;
-    return { ...state, sessions: { ...state.sessions, [sessionId]: { ...session, messages } } };
+    const pendingPrompts = (session.pendingPrompts ?? []).filter((message) => !(message.promptId && withdrawn.has(message.promptId)));
+    if (messages.length === session.messages.length && pendingPrompts.length === (session.pendingPrompts ?? []).length) return state;
+    return { ...state, sessions: { ...state.sessions, [sessionId]: { ...session, messages, pendingPrompts } } };
   });
   if (prompts.length === 0) return;
   useComposerQueueStore.getState().restore(sessionId, prompts.map((item) => ({

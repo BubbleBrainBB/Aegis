@@ -7,7 +7,6 @@ import { AttachmentPreviewGrid } from './AttachmentPreviewGrid';
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { TraceChevron, TraceLine, TraceNest, TraceSpinner, type TraceTone } from './TraceLine';
 import {
-  ArrowElbowRight,
   ArrowUpRight,
   BrandGithub,
   BrandSlack,
@@ -155,8 +154,6 @@ export function AssistantWorkstream({
           <CompactionActivity key={group.entry.id} entry={group.entry} />
         ) : group.kind === 'backgroundTaskEnded' ? (
           <BackgroundTaskEndedEntryRow key={group.entry.id} entry={group.entry} />
-        ) : group.kind === 'steer' ? (
-          <SteerEntryRow key={group.entry.id} entry={group.entry} />
         ) : group.kind === 'thinking' ? (
           <ThinkingRow key={group.entry.id} entry={group.entry} />
         ) : (
@@ -196,7 +193,6 @@ export function AssistantWorkstream({
 type EntryGroup =
   | { kind: 'compaction'; entry: Extract<WorkstreamEntry, { type: 'compaction' }> }
   | { kind: 'backgroundTaskEnded'; entry: Extract<WorkstreamEntry, { type: 'backgroundTaskEnded' }> }
-  | { kind: 'steer'; entry: Extract<WorkstreamEntry, { type: 'steer' }> }
   | { kind: 'text'; entry: Extract<WorkstreamEntry, { type: 'note' }> }
   | { kind: 'thinking'; entry: Extract<WorkstreamEntry, { type: 'thinking' }> }
   | { kind: 'widget'; entry: WidgetEntry }
@@ -257,9 +253,6 @@ function groupEntries(entries: WorkstreamEntry[]): EntryGroup[] {
     } else if (entry.type === 'backgroundTaskEnded') {
       flush();
       groups.push({ kind: 'backgroundTaskEnded', entry });
-    } else if (entry.type === 'steer') {
-      flush();
-      groups.push({ kind: 'steer', entry });
     } else if (entry.type === 'note') {
       flush();
       groups.push({ kind: 'text', entry });
@@ -1014,7 +1007,6 @@ function EntryRow({ entry, showChangeHint = true }: { entry: WorkstreamEntry; sh
   const workflowsOutside = useContext(WorkflowBoardsOutside);
   if (entry.type === 'compaction') return <CompactionActivity entry={entry} />;
   if (entry.type === 'backgroundTaskEnded') return <BackgroundTaskEndedEntryRow entry={entry} />;
-  if (entry.type === 'steer') return <SteerEntryRow entry={entry} />;
   if (entry.type === 'task') {
     if (isWorkflowEntry(entry)) return workflowsOutside ? null : <WorkflowEntryBoard entry={entry} />;
     // Task entries render as a subagent chip row rather than a generic tool
@@ -1413,20 +1405,6 @@ export function ResponseDivider({ durationMs }: { durationMs: number | undefined
 
 // Re-export utility types for callers that import alongside.
 export type { ToolResultBlock, ToolUseBlock };
-
-/** A message the user steered into the running turn, where it joined the work. */
-function SteerEntryRow({ entry }: { entry: Extract<WorkstreamEntry, { type: 'steer' }> }) {
-  return (
-    <TraceLine
-      as="div"
-      className="trace-line--steer"
-      icon={<ArrowElbowRight />}
-      title={entry.summary || 'Steer'}
-      meta={entry.attachmentCount > 0 ? `+${entry.attachmentCount} file${entry.attachmentCount > 1 ? 's' : ''}` : undefined}
-      hint={entry.summary}
-    />
-  );
-}
 
 /** A background task that ended mid-turn, at its place in the trace. */
 function BackgroundTaskEndedEntryRow({ entry }: { entry: Extract<WorkstreamEntry, { type: 'backgroundTaskEnded' }> }) {

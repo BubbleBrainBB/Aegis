@@ -4215,8 +4215,6 @@ button.trace-line:hover .trace-line-title { color: var(--text-primary); }
 .trace-line[data-tone="waiting"] .trace-line-icon,
 .trace-line[data-tone="waiting"] .trace-line-meta { color: var(--warning); }
 .trace-line[data-tone="error"] .trace-line-icon { color: var(--error); }
-/* A message the user steered into the running turn reads as theirs, not the agent's. */
-.trace-line--steer .trace-line-title { color: var(--text-primary); }
 .trace-meta-error { color: var(--error); }
 .trace-nest {
   margin-inline-start: 6.5px;

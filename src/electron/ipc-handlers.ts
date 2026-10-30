@@ -3867,8 +3867,9 @@ function storeStartedClaudePrompt(
   if (!deferred.message) return;
   const steer = started.mode !== 'opened';
   const { steer: _steer, ...ordinary } = deferred.message;
-  sessions.addMessage(sessionId, steer ? { ...ordinary, steer: true } : ordinary, { sortKey: claudeSortKey(sessionId) });
-  broadcast(mainWindow, { type: 'stream.prompt_started', payload: { sessionId, promptId: started.promptId, steer } });
+  const startedAt = claudeSortKey(sessionId);
+  sessions.addMessage(sessionId, { ...ordinary, ...(steer ? { steer: true } : {}), startedAt }, { sortKey: startedAt });
+  broadcast(mainWindow, { type: 'stream.prompt_started', payload: { sessionId, promptId: started.promptId, steer, startedAt } });
 }
 
 /**
