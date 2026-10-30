@@ -118,6 +118,58 @@ async function within(promise, ms, label) {
     manager.releaseClaudeGoalController('withdrawn-goal', ctrl);
   }
 
+  // Every hand-back exit settles a goal start: a /goal prompt Stop caught
+  // while it was still being prepared (never submitted), and one still
+  // queued when the runner went away (submitted). Neither may leave the 30s
+  // timer to abort whatever runtime is live by then.
+  {
+    const { createPromptHandBack } = require('../../dist-electron/electron/libs/claude-prompt-handback.js');
+    const realSetTimeout = global.setTimeout;
+    const realClearTimeout = global.clearTimeout;
+    for (const exit of [{ label: 'Stop during preparation', submitted: false }, { label: 'runner ended', submitted: true }]) {
+      const id = `handback-${exit.submitted}`;
+      const ctrl = manager.createClaudeGoalController(id, false);
+      const wire = transport(ctrl);
+      await ctrl.initialize(wire);
+      ctrl.submitted('ordinary work already running');
+      const goalTimers = new Set();
+      const cleared = new Set();
+      global.setTimeout = (fn, ms, ...rest) => {
+        const handle = realSetTimeout(fn, ms, ...rest);
+        if (ms === 30_000) goalTimers.add(handle);
+        return handle;
+      };
+      global.clearTimeout = (handle) => { cleared.add(handle); return realClearTimeout(handle); };
+      let activation;
+      try {
+        activation = manager.awaitClaudeGoalSet(id, 'Ship it', async () => {
+          if (exit.submitted) ctrl.submitted(await ctrl.prepare('/goal Ship it'));
+        });
+      } finally {
+        global.setTimeout = realSetTimeout;
+      }
+      await tick();
+      const workBefore = ctrl.work;
+      const reported = [];
+      const handBack = createPromptHandBack({
+        goal: ctrl,
+        rejectGoalStart: (error) => manager.rejectClaudeGoalSet(id, error),
+        report: (ids) => reported.push(...ids),
+      });
+      handBack('goal-prompt', { submitted: exit.submitted, goalSet: true });
+      await assert.rejects(within(activation, 2000, exit.label), (error) => error instanceof manager.ClaudeGoalWithdrawnError,
+        `${exit.label}: the goal start ends as withdrawn`);
+      global.clearTimeout = realClearTimeout;
+      assert.equal(goalTimers.size, 1);
+      for (const handle of goalTimers) assert(cleared.has(handle), `${exit.label}: the 30s goal-start timer is cleared`);
+      assert.equal(ctrl.work, exit.submitted ? workBefore - 1 : workBefore,
+        `${exit.label}: only a submitted prompt stops counting as work`);
+      assert.deepEqual(reported, ['goal-prompt'], `${exit.label}: the host hears once`);
+      assert.equal(wire.calls.includes('abort'), false, `${exit.label}: no runtime abort`);
+      manager.releaseClaudeGoalController(id, ctrl);
+    }
+  }
+
   fs.rmSync(root, { recursive: true, force: true });
   console.log('claude-steer-goal.test.cjs passed');
   process.exit(0);

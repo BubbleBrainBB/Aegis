@@ -1,5 +1,6 @@
 import { getSessionProjectSources } from './session-store';
-import { ClaudeGoalWithdrawnError, createClaudeGoalController, releaseClaudeGoalController, rejectClaudeGoalSet } from './claude-goal-manager';
+import { createClaudeGoalController, releaseClaudeGoalController, rejectClaudeGoalSet } from './claude-goal-manager';
+import { createPromptHandBack, isGoalSetPrompt } from './claude-prompt-handback';
 import { isWithinProjectPath } from './project-paths';
 import { createSessionSdkMcpServer, SESSION_MCP_SERVER_NAME } from './session-mcp';
 import { isStartWorkflowToolName } from '../../shared/workflow';
@@ -705,6 +706,7 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
     // Stop cancelled it while it was still being prepared, the runner went
     // away, preparing it failed — goes back to the host like a withdrawal.
     let handedOver = false;
+    const goalSet = isGoalSetPrompt(trimmed);
     enqueueChain = enqueueChain
       .then(async () => {
         if (await promptCancellation.race(goalController.ready.then(() => true)) === null) return;
@@ -771,7 +773,7 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
         if (message.uuid) {
           // Only a prompt the host knows by id can be withdrawn and settled.
           promptLifecycle.sent(message.uuid as string, Boolean(promptId));
-          if (/^\s*\/goal\s+\S/i.test(trimmed)) goalPromptUuids.add(message.uuid as string);
+          if (goalSet) goalPromptUuids.add(message.uuid as string);
         }
         inputQueue.push(message);
         handedOver = true;
@@ -813,7 +815,7 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
         // The enqueue settled (pushed, cancelled, aborted, or failed) — it is
         // no longer "pending" for cancelPendingPrompts accounting.
         promptCancellation.settle(seq);
-        if (promptId && !handedOver) onPromptsWithdrawn?.([promptId]);
+        if (promptId && !handedOver) handBack(promptId, { submitted: false, goalSet });
       });
   };
 
@@ -831,15 +833,18 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
     if (promptLifecycle.stopReceipt(generation, stillQueued)) await query.interrupt();
   };
 
-  // A withdrawn prompt never gets a result: it stops counting as goal work,
-  // and a withdrawn /goal ends its start wait now rather than at the timeout
-  // (which would abort the whole runtime).
+  // Every host prompt that will never get a turn leaves through here
+  // (claude-prompt-handback): goal work, the goal-start wait, the host.
+  const handBack = createPromptHandBack({
+    goal: goalController,
+    rejectGoalStart: (error) => rejectClaudeGoalSet(session.id, error),
+    report: (promptIds) => onPromptsWithdrawn?.(promptIds),
+  });
+  // A prompt the CLI took and then lost (cancelled before it started, or
+  // still queued when the runner ends): it was submitted.
   const promptWithdrawn = (uuid: string) => {
     pendingEchoes.delete(uuid);
-    const goalSet = goalPromptUuids.delete(uuid);
-    goalController.withdrawn(1, goalSet);
-    if (goalSet) rejectClaudeGoalSet(session.id, new ClaudeGoalWithdrawnError());
-    onPromptsWithdrawn?.([uuid]);
+    handBack(uuid, { submitted: true, goalSet: goalPromptUuids.delete(uuid) });
   };
 
   // The runtime won't emit init until it has an initial prompt to process.
@@ -1573,9 +1578,7 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
       for (const event of backgroundTasks.end()) emitBackgroundTaskEvent(event);
       // Prompts sent into a busy turn that the CLI never took: they go back
       // to the host like a withdrawal (Claude never read them).
-      const unstarted = promptLifecycle.unstarted();
-      for (const uuid of unstarted) pendingEchoes.delete(uuid);
-      if (unstarted.length > 0) onPromptsWithdrawn?.(unstarted);
+      for (const uuid of promptLifecycle.unstarted()) promptWithdrawn(uuid);
     }
   })();
 
