@@ -101,7 +101,25 @@ app.whenReady().then(() => {
       assert.equal(findClaudeRewindAnchor(history, index), promptId, `${promptId} rewinds to its own checkpoint`);
     }
     assert(history.every((m) => m.createdAt === at), 'timestamps stay wall-clock time: only the sort key orders');
-    console.log('claude-steer-persistence: stored where taken, R3 race order, withdrawal, rewind anchors, same-millisecond reload passed');
+
+    // Rewrites (rewind, edit, sanitize) and forks keep the stored order: a
+    // prompt stored after output newer than its own send time stays there.
+    const deferredSend = at - 5_000;                     // C was sent long before B's turn ran
+    const rewritten = history.map((m) => (m.type === 'user_prompt' && m.promptId === 'pC' ? { ...m, createdAt: deferredSend } : m));
+    sessions.replaceSessionHistory(id, rewritten);
+    assert.deepEqual(sessions.getSessionHistory(id).map(label), history.map(label), 'a rewrite keeps the order it was given');
+    const fork = sessions.createSession({ title: 'Fork', provider: 'claude', cwd: scratch });
+    sessions.copySessionHistory(id, fork.id);
+    // A fork re-keys every uuid: compare what the messages say.
+    const content = (m) => `${m.type}:${m.type === 'user_prompt' ? m.prompt : m.type === 'system' ? m.session_id : JSON.stringify(m.message?.content ?? m.subtype)}`;
+    assert.deepEqual(sessions.getSessionHistory(fork.id).map(content), history.map(content), 'a fork keeps the order');
+    sessions.addMessage(id, { type: 'assistant', uuid: 'after-rewrite', createdAt: at, message: { content: [{ type: 'text', text: 'later' }] } });
+    sessions.close();
+    sessions.initialize();
+    const afterRewrite = sessions.getSessionHistory(id);
+    assert.equal(label(afterRewrite.at(-1)), 'assistant after-rewrite', 'what is stored after a rewrite sorts after it');
+    assert.equal(afterRewrite.find((m) => m.type === 'user_prompt' && m.promptId === 'pC').createdAt, deferredSend, 'timestamps untouched by the rewrite');
+    console.log('claude-steer-persistence: stored where taken, R3 race order, withdrawal, rewind anchors, same-millisecond reload, rewrite + fork order passed');
     sessions.close();
     fs.rmSync(scratch, { recursive: true, force: true });
     app.exit(0);

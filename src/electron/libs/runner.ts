@@ -701,6 +701,10 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
         : undefined;
 
     const seq = promptCancellation.issueSeq();
+    // Whether the prompt reached the CLI. A host prompt that never does —
+    // Stop cancelled it while it was still being prepared, the runner went
+    // away, preparing it failed — goes back to the host like a withdrawal.
+    let handedOver = false;
     enqueueChain = enqueueChain
       .then(async () => {
         if (await promptCancellation.race(goalController.ready.then(() => true)) === null) return;
@@ -770,6 +774,7 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
           if (/^\s*\/goal\s+\S/i.test(trimmed)) goalPromptUuids.add(message.uuid as string);
         }
         inputQueue.push(message);
+        handedOver = true;
 
         // The SDK does not echo streaming-input user prompts back on the
         // message stream, so emit the echo ourselves. Persisting it (keyed by
@@ -808,6 +813,7 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
         // The enqueue settled (pushed, cancelled, aborted, or failed) — it is
         // no longer "pending" for cancelPendingPrompts accounting.
         promptCancellation.settle(seq);
+        if (promptId && !handedOver) onPromptsWithdrawn?.([promptId]);
       });
   };
 

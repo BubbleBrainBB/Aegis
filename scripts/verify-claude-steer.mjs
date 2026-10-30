@@ -138,6 +138,16 @@ assert.match(runner, /onPromptStarted\?\.\(promptFrame\.started\);[\s\S]{0,250}i
   'the prompt is stored before its echo');
 assert.ok(runner.includes('if (unstarted.length > 0) onPromptsWithdrawn?.(unstarted);'),
   'prompts the runner never handed to a turn are handed back when it ends');
+// A host prompt that never reached the CLI (Stop while it was still being
+// prepared, the runner going away, a failed preparation) goes back too: the
+// enqueue marks the hand-over right at the push and reports the rest from
+// its finally. The host settles the ledger only for ids it still counts
+// (Stop's cancelPendingPrompts already took them out), so nothing twice.
+assert.match(runner, /inputQueue\.push\(message\);\s*handedOver = true;/, 'the hand-over is marked right at the push');
+assert.match(runner, /promptCancellation\.settle\(seq\);\s*if \(promptId && !handedOver\) onPromptsWithdrawn\?\.\(\[promptId\]\);/,
+  'a prompt that never reached the CLI is handed back once, from the enqueue\'s finally');
+assert.ok(ipc.includes('const settled = new Set(promptIds.filter((id) => counted.has(id)));'),
+  'the ledger only settles ids the runner entry still counts');
 assert.ok(runner.includes('if (goalSet) rejectClaudeGoalSet(session.id, new ClaudeGoalWithdrawnError());'),
   'withdrawing a /goal prompt must end its goal-start wait');
 assert.ok(runner.includes('if (promptFrame.withdrawn) promptWithdrawn(promptFrame.withdrawn);'),
