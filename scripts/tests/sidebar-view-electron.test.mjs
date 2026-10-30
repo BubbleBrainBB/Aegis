@@ -70,7 +70,8 @@ app.whenReady().then(async()=>{
  const errors=[];win.webContents.on('console-message',e=>{if(e.level==='error')errors.push(e.message)});
  const js=code=>win.webContents.executeJavaScript(code,true);
  // Menus render a little later on CI runners: wait for the element instead of failing at once.
- const point=async selector=>js('new Promise((resolve,reject)=>{const start=performance.now();const t=()=>{const e='+selector+';if(e){const r=e.getBoundingClientRect();resolve({x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)});return}if(performance.now()-start>5000){reject(Error("Missing element"));return}setTimeout(t,50)};t()})');
+ // A runner screen shorter than the window shrinks it: scroll the target into view first.
+ const point=async selector=>js('new Promise((resolve,reject)=>{const start=performance.now();const t=()=>{const e='+selector+';if(e){e.scrollIntoView({block:"nearest"});const r=e.getBoundingClientRect();resolve({x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)});return}if(performance.now()-start>5000){reject(Error("Missing element"));return}setTimeout(t,50)};t()})');
  const byText=text=>'[...document.querySelectorAll("[role=menuitem],[role=menuitemradio],[role=menuitemcheckbox],button")].find(e=>e.textContent.trim().startsWith('+JSON.stringify(text)+'))';
  const click=async selector=>{win.focus();win.webContents.focus();const p=await point(selector);win.webContents.sendInputEvent({type:'mouseMove',...p});win.webContents.sendInputEvent({type:'mouseDown',...p,button:'left',clickCount:1});win.webContents.sendInputEvent({type:'mouseUp',...p,button:'left',clickCount:1});await delay(220)};
  const hover=async selector=>{const p=await point(selector);win.webContents.sendInputEvent({type:'mouseMove',...p});await delay(420)};
