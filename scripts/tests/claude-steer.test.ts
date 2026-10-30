@@ -142,4 +142,40 @@ flush();
 emit(echo('next turn'));
 assert.equal(read().streaming.text, 'Fresh', 'the host echo never clears streaming output');
 
+// A late steer: it lands after the turn's final answer, so the CLI runs it as
+// its own turn. Nothing preserved for the steer may leak into that turn.
+const result = (subtype = 'success'): StreamMessage => ({
+  type: 'result', subtype, duration_ms: 1, total_cost_usd: 0,
+  usage: { input_tokens: 1, output_tokens: 1 },
+} as StreamMessage);
+const answer = (uuid: string, text: string): StreamMessage => ({
+  type: 'assistant', uuid, message: { content: [{ type: 'text', text }] },
+} as StreamMessage);
+
+reset();
+emit(textDelta('Final answer'));
+flush();
+emit(answer('final', 'Final answer'));
+prompt('late steer', true);
+emit(echo('late steer'));
+emit(result());
+emit(textDelta('Steer reply'));
+flush();
+assert.equal(read().streaming.text, 'Steer reply', 'the late steer\'s own turn streams from a clean buffer');
+assert.equal(read().streaming.retry, undefined);
+
+reset();
+emit(thinking('Partial before failure'));
+emit(retry());
+prompt('late steer', true);
+emit(echo('late steer'));
+assert.equal(read().streaming.retry?.uuid, 'retry-1');
+emit(result('error_during_execution'));
+assert.equal(read().streaming.retry, undefined, 'the retried turn\'s result still ends its retry');
+assert.equal(read().messages.filter(m => m.type === 'assistant' && m.interrupted).length, 1,
+  'the failed attempt is archived exactly once');
+emit(thinking('Steer turn'));
+flush();
+assert.equal(read().streaming.thinking, 'Steer turn', 'the next turn does not inherit the failed attempt');
+
 console.log('claude-steer.test.ts passed');

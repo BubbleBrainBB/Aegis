@@ -10331,9 +10331,16 @@ async function handleSessionContinueImpl(
   // execute against the old checkout.
   const runnerCwdChanged =
     existingEntry !== undefined && (existingEntry.cwd ?? null) !== effectiveRunnerCwd(session);
-  // A send into a live Claude turn steers it (see claude-steer.ts).
+  // A send into a live Claude turn steers it (see claude-steer.ts). The plan
+  // is read from the LIVE entry and acted on by the reuse branch below with
+  // no await in between — nothing the runner emits can change its lifecycle
+  // (doom, background wake, drain) between this decision and the dispatch.
+  // An entry retired or replaced during the awaits above gets no plan and
+  // falls through to a fresh spawn.
   const claudePlan =
-    nextProvider === 'claude' && existingEntry?.provider === 'claude'
+    nextProvider === 'claude' &&
+    existingEntry?.provider === 'claude' &&
+    runnerHandles.get(sessionId) === existingEntry
       ? planClaudeSend(existingEntry, {
           configDrift:
             modelChanged ||
@@ -10484,20 +10491,10 @@ async function handleSessionContinueImpl(
   }
 
   // 检查运行时状态（在会话状态已设为 running 之后，以便前端立即显示 spinning 效果）
-  if (nextProvider === 'claude') {
-    const runtimeStatus = await getClaudeRuntimeStatusCached(nextModel || null);
-    if (!runtimeStatus.ready) {
-      sessions.updateSessionStatus(sessionId, 'error');
-      broadcast(mainWindow, {
-        type: 'runner.error',
-        payload: {
-          message: formatClaudeRuntimeBlockingMessage(runtimeStatus),
-          sessionId,
-        },
-      });
-      return false;
-    }
-  } else if (nextProvider === 'opencode') {
+  // Claude's check guards spawning only (below the reuse branch): a live
+  // runner already proves its runtime, and the warm path must not await
+  // between planning and dispatch (see claudePlan).
+  if (nextProvider === 'opencode') {
     const runtimeStatus = await getOpencodeRuntimeStatus();
     if (!runtimeStatus.ready) {
       sessions.updateSessionStatus(sessionId, 'error');
@@ -10757,6 +10754,21 @@ async function handleSessionContinueImpl(
         existingEntry.minimaxThinkingEffort = nextMinimaxThinkingEffort;
       }
       return true;
+    }
+  }
+
+  if (nextProvider === 'claude') {
+    const runtimeStatus = await getClaudeRuntimeStatusCached(nextModel || null);
+    if (!runtimeStatus.ready) {
+      sessions.updateSessionStatus(sessionId, 'error');
+      broadcast(mainWindow, {
+        type: 'runner.error',
+        payload: {
+          message: formatClaudeRuntimeBlockingMessage(runtimeStatus),
+          sessionId,
+        },
+      });
+      return false;
     }
   }
 

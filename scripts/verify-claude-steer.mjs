@@ -59,6 +59,29 @@ assert.ok(
 assert.equal(ipc.match(/\.\.\.\(claudeSteer \? \{ steer: true \} : \{\}\),/g)?.length, 2,
   'both the broadcast and the persisted user_prompt must carry steer');
 
+// Atomicity: the Claude plan is read from the live entry and acted on with no
+// await in between, so no runner event (doom, background wake, drain) can
+// land between the decision and the dispatch. The only awaits allowed in that
+// span are other providers' runtime checks, which never run for Claude.
+assert.match(
+  ipc,
+  /const claudePlan =\s*nextProvider === 'claude' &&\s*existingEntry\?\.provider === 'claude' &&\s*runnerHandles\.get\(sessionId\) === existingEntry/,
+  'the Claude plan must come from the live runner entry'
+);
+const planAt = ipc.indexOf('const claudePlan =');
+const dispatchAt = ipc.indexOf('existingEntry.handle.send(', planAt);
+assert.ok(planAt > 0 && dispatchAt > planAt, 'plan precedes the warm dispatch');
+const span = ipc.slice(planAt, dispatchAt);
+const otherProviderGate = /await get(Opencode|Kimi|Grok|Devin|Mimo|Minimax)RuntimeStatus\(\)/;
+for (const line of span.split('\n').filter(l => !l.trim().startsWith('//') && /\bawait\b/.test(l))) {
+  assert.match(line, otherProviderGate, `no await may sit between the Claude plan and its dispatch: ${line.trim()}`);
+}
+// Claude's runtime check guards spawning only: it sits after the warm
+// dispatch, ahead of startRunner.
+const claudeGateAt = ipc.indexOf('await getClaudeRuntimeStatusCached(nextModel || null)', planAt);
+const spawnAt = ipc.indexOf('startRunner(\n    mainWindow,\n    sessions.getSession(sessionId)', planAt);
+assert.ok(claudeGateAt > dispatchAt && claudeGateAt < spawnAt, 'the Claude runtime check must run on the spawn path only');
+
 const runner = read('src', 'electron', 'libs', 'runner.ts');
 assert.match(runner, /message: \{ content: \[\{ type: 'text', text: trimmed \}\] \},\s*hostEcho: true,/,
   'the runner must mark its own prompt echo');
