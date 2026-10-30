@@ -114,6 +114,14 @@ export async function awaitClaudeGoalSet(
     );
   });
 }
+/** The goal's /goal prompt was withdrawn on Stop before Claude read it. */
+export class ClaudeGoalWithdrawnError extends Error {
+  constructor() {
+    super('The goal was taken back before Claude read it.');
+    this.name = 'ClaudeGoalWithdrawnError';
+  }
+}
+
 export function rejectClaudeGoalSet(id: string, error: Error) {
   events.emit('failure', id, error);
 }

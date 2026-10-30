@@ -130,6 +130,7 @@ export const nativeRuntime: AgentRuntime = {
       // methods — dropping them here would silently disable those features
       // whenever the native runtime wrapper is active.
       interrupt: handle.interrupt,
+      withdrawQueuedPrompts: handle.withdrawQueuedPrompts,
       cancelPendingPrompts: handle.cancelPendingPrompts,
       rewindFiles: handle.rewindFiles,
     };

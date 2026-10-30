@@ -159,10 +159,10 @@ export interface RunnerOptions {
    */
   onSelfStartedTurn?: () => void;
   /**
-   * Claude: prompts the CLI dropped from its queue on Stop before any turn
-   * read them (their ids, see claudePromptId). They will never get a result.
+   * Claude: a host prompt opened a turn of its own (the CLI reported it
+   * started while no turn ran), before that turn's init.
    */
-  onPromptsWithdrawn?: (promptIds: string[]) => void;
+  onPromptOpenedTurn?: (promptId: string) => void;
   onError?: (error: Error) => void;
   onPermissionRequest: (
     toolUseId: string,
@@ -226,6 +226,13 @@ export interface RunnerHandle {
    * streaming-input mode); absent on other providers.
    */
   interrupt?: () => Promise<void>;
+  /**
+   * Claude: on Stop, take back the host prompts still queued behind the live
+   * turn. The cancels are written before this returns; resolves with the ids
+   * (claudePromptId) the CLI confirmed cancelled — they will never get a
+   * result. Call it right before interrupt(), and only for a Stop press.
+   */
+  withdrawQueuedPrompts?: () => Promise<string[]>;
   /**
    * Two-phase stop (codex): request `turn/interrupt` and resolve once the
    * provider confirms the turn terminal (`turn/completed(interrupted)`) or

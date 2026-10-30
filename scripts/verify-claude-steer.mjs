@@ -83,7 +83,39 @@ const claudeGateAt = ipc.indexOf('await getClaudeRuntimeStatusCached(nextModel |
 const spawnAt = ipc.indexOf('startRunner(\n    mainWindow,\n    sessions.getSession(sessionId)', planAt);
 assert.ok(claudeGateAt > dispatchAt && claudeGateAt < spawnAt, 'the Claude runtime check must run on the spawn path only');
 
+// A steer joins the run already going: it keeps the agent run id, or
+// attributed sessions would split the one turn at the steer.
+assert.ok(
+  ipc.includes('if (!(claudeSteer && existingEntry.activeAgentRunId && existingEntry.activeAgentId === sessionAgentId)) {'),
+  'a steer must keep the live agent run id'
+);
+// Stop: the withdrawal's cancels are written right before the interrupt, in
+// one tick; a result's re-interrupt waits while the withdrawal is out.
+assert.match(
+  ipc,
+  /const withdrawal = entry\.handle\.withdrawQueuedPrompts\?\.\(\);\s*entry\.handle\.interrupt!\(\)/,
+  'Stop must issue the withdrawal and the interrupt back to back'
+);
+assert.ok(
+  ipc.includes('if (!currentEntry.stopWithdrawal?.deferReinterrupt()) {'),
+  'a result must not re-interrupt while the withdrawal is unanswered'
+);
+assert.ok(
+  ipc.includes('onPromptOpenedTurn: (promptId) => promoteLateClaudeSteer(mainWindow, session.id, handle, promptId)'),
+  'a steer that opened its own turn must be rewritten as that turn\'s opener'
+);
+assert.ok(
+  ipc.includes('if (!(error instanceof ClaudeGoalWithdrawnError)) handleSessionStop(mainWindow, sessionId);'),
+  'a withdrawn goal start must not stop the session again'
+);
+
 const runner = read('src', 'electron', 'libs', 'runner.ts');
+// Withdrawal belongs to the Stop press alone: re-interrupts (after a result,
+// for a woken turn) must never take back prompts sent after Stop.
+const interruptBody = runner.slice(runner.indexOf('    interrupt: async () => {'), runner.indexOf('    stopTask: async'));
+assert.ok(interruptBody.length > 0 && !/withdraw/i.test(interruptBody), 'interrupt() must not withdraw prompts');
+assert.ok(runner.includes('if (goalSetWithdrawn) rejectClaudeGoalSet(session.id, new ClaudeGoalWithdrawnError());'),
+  'withdrawing a /goal prompt must end its goal-start wait');
 assert.match(runner, /message: \{ content: \[\{ type: 'text', text: trimmed \}\] \},\s*hostEcho: true,/,
   'the runner must mark its own prompt echo');
 

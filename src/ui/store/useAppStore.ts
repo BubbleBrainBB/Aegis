@@ -1148,6 +1148,10 @@ export const useAppStore = create<Store>()(
         handlePromptsWithdrawn(event.payload, set);
         break;
 
+      case 'stream.prompt_opened_turn':
+        handlePromptOpenedTurn(event.payload, set);
+        break;
+
       case 'stream.message':
         if (event.payload.message.type === 'widget_draft') {
           // A show_widget call still being written: drawn live, never kept.
@@ -3653,6 +3657,26 @@ function handleUserPrompt(
             },
       },
     };
+  });
+}
+
+// A steer that came too late opened a turn of its own: it is that turn's
+// ordinary opening prompt, so it leaves the previous turn's work and opens
+// the new turn here (what the stored history says after a reload too).
+function handlePromptOpenedTurn(
+  payload: { sessionId: string; promptId: string; createdAt: number },
+  set: SetState
+) {
+  const { sessionId, promptId, createdAt } = payload;
+  set((state) => {
+    const session = state.sessions[sessionId];
+    if (!session) return state;
+    const index = session.messages.findIndex((message) => message.type === 'user_prompt' && message.promptId === promptId);
+    const steered = session.messages[index];
+    if (steered?.type !== 'user_prompt') return state;
+    const { steer: _steer, ...prompt } = steered;
+    const messages = [...session.messages.slice(0, index), ...session.messages.slice(index + 1), { ...prompt, createdAt }];
+    return { ...state, sessions: { ...state.sessions, [sessionId]: { ...session, messages } } };
   });
 }
 

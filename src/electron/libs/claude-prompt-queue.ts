@@ -36,30 +36,36 @@ export class ClaudePromptQueue {
   }
 
   /**
-   * Observe one raw SDK message. On a top-level result, returns how many of
-   * the host's prompts it answered (undefined when the CLI does not say).
+   * Observe one raw SDK message.
+   * - `answered`: on a top-level result, how many of the host's prompts it
+   *   answered (undefined when the CLI does not say).
+   * - `opened`: a host prompt that opens a turn of its own — reported
+   *   `started` while no turn runs. A prompt sent as a steer that lands here
+   *   arrived too late to join the turn it was sent into.
    */
-  observe(message: WireMessage): number | undefined {
-    if (message.parent_tool_use_id) return undefined;
+  observe(message: WireMessage): { answered?: number; opened?: string } {
+    if (message.parent_tool_use_id) return {};
     if (message.type === 'command_lifecycle') {
-      if (message.state === 'started' && message.command_uuid && this.pending.has(message.command_uuid)) {
-        this.started.add(message.command_uuid);
-      }
-      return undefined;
+      const uuid = message.command_uuid;
+      if (message.state !== 'started' || !uuid || !this.pending.has(uuid) || this.started.has(uuid)) return {};
+      this.started.add(uuid);
+      return this.turnActive ? {} : { opened: uuid };
     }
     if (message.type === 'system' && message.subtype === 'init') {
       this.turnActive = true;
-      return undefined;
+      return {};
     }
-    if (message.type !== 'result') return undefined;
+    if (message.type !== 'result') return {};
     this.turnActive = false;
     const answered = message.user_message_uuids;
-    if (!Array.isArray(answered)) return undefined;
-    return answered.filter((uuid) => {
-      if (typeof uuid !== 'string') return false;
-      this.started.delete(uuid);
-      return this.pending.delete(uuid);
-    }).length;
+    if (!Array.isArray(answered)) return {};
+    return {
+      answered: answered.filter((uuid) => {
+        if (typeof uuid !== 'string') return false;
+        this.started.delete(uuid);
+        return this.pending.delete(uuid);
+      }).length,
+    };
   }
 
   /** Host prompts still queued behind a live turn: what Stop may withdraw. */
@@ -77,5 +83,59 @@ export class ClaudePromptQueue {
       this.started.delete(uuid);
       return this.pending.delete(uuid);
     });
+  }
+}
+
+/**
+ * Withdraw the host prompts still queued behind the live turn: one
+ * cancel_async_message per prompt. Every cancel is written before this
+ * returns its promise — a caller that interrupts right after has the
+ * interrupt reach the CLI behind them, and ahead of anything sent later.
+ * Resolves with the prompts the CLI confirmed cancelled (and the queue still
+ * counted). A prompt being folded in right now refuses the cancel and rides
+ * the turn; transport errors count as not cancelled.
+ */
+export function withdrawQueued(
+  queue: ClaudePromptQueue,
+  cancel: ((uuid: string) => Promise<boolean>) | undefined
+): Promise<string[]> {
+  const queued = cancel ? queue.withdrawable() : [];
+  if (queued.length === 0) return Promise.resolve([]);
+  const outcomes = queued.map((uuid) => cancel!(uuid).then((cancelled) => cancelled === true, () => false));
+  return Promise.all(outcomes).then((done) => queue.withdrawn(queued.filter((_, index) => done[index])));
+}
+
+/**
+ * Stop's withdrawal is in flight until the CLI answers every cancel. Until
+ * then the host's turn ledger still counts the prompts being withdrawn, so a
+ * result that leaves "stopped" turns behind cannot tell a withdrawn steer
+ * from one that will still run — re-interrupting then could stop the turn
+ * the user sent after Stop. Such a re-interrupt waits for the withdrawal to
+ * settle; the ledger is accurate again by then.
+ */
+export class StopWithdrawalGate {
+  private inFlight: Promise<unknown> | null = null;
+  private deferred = false;
+
+  /** Stop started a withdrawal; `settled` runs once it is answered, told whether a re-interrupt waited. */
+  begin(withdrawal: Promise<unknown>, settled: (reinterrupt: boolean) => void): void {
+    // A second Stop while one is out keeps the re-interrupt it may owe.
+    if (!this.inFlight) this.deferred = false;
+    this.inFlight = withdrawal;
+    const finish = () => {
+      if (this.inFlight !== withdrawal) return;
+      this.inFlight = null;
+      const reinterrupt = this.deferred;
+      this.deferred = false;
+      settled(reinterrupt);
+    };
+    withdrawal.then(finish, finish);
+  }
+
+  /** True when the re-interrupt must wait for the withdrawal (it has been noted). */
+  deferReinterrupt(): boolean {
+    if (!this.inFlight) return false;
+    this.deferred = true;
+    return true;
   }
 }

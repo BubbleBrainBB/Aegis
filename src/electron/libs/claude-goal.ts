@@ -325,8 +325,13 @@ export class ClaudeGoalController {
    * Host prompts that will never get a result (withdrawn from the CLI queue
    * on Stop): they no longer count as work.
    */
-  withdrawn(count: number) {
+  withdrawn(count: number, goalSetWithdrawn = false) {
     this.work = Math.max(0, this.work - count);
+    // The /goal never reached Claude: nothing is pending activation.
+    if (goalSetWithdrawn) {
+      this.pendingSet = undefined;
+      this.pendingClear = false;
+    }
     if (this.work) return;
     for (const waiter of this.idleWaiters) waiter.resolve();
     this.idleWaiters.clear();

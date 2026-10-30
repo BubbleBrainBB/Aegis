@@ -24,7 +24,7 @@ import { kimiGoalStartPrompt, parseGoalInput } from '../shared/session-goal';
 import { siteRootPathCandidates } from '../shared/site-root-path';
 import { supportsSessionReferences } from '../shared/session-links';
 import { findProjectFileByName } from './libs/project-file-index';
-import { getClaudeGoalController, readClaudeGoalState, awaitClaudeGoalSet, removeClaudeGoalState } from './libs/claude-goal-manager';
+import { ClaudeGoalWithdrawnError, getClaudeGoalController, readClaudeGoalState, awaitClaudeGoalSet, removeClaudeGoalState } from './libs/claude-goal-manager';
 import { validateClaudeGoalObjective } from './libs/claude-goal';
 import { canonicalProjectPath } from './libs/project-paths';
 import { setupSessionProjectIPC } from './ipc/session-project';
@@ -274,6 +274,7 @@ import {
   type StopStateSnapshot,
 } from './libs/claude-stop-reconcile';
 import { planClaudeSend } from './libs/claude-steer';
+import { StopWithdrawalGate } from './libs/claude-prompt-queue';
 import { opensTurn } from '../shared/turn-boundary';
 import {
   getSkillMarketDetail,
@@ -3651,6 +3652,14 @@ const runnerHandles = new Map<
      */
     promptDrafts?: Map<string, WithdrawnPrompt>;
     /**
+     * Steered prompts, as persisted, until a turn takes them: one that ends up
+     * opening a turn of its own (sent too late to join the running one) is
+     * rewritten as an ordinary prompt at the moment that turn opened.
+     */
+    steerPrompts?: Map<string, Extract<StreamMessage, { type: 'user_prompt' }>>;
+    /** Stop's withdrawal of queued steers, while the CLI has not answered it. */
+    stopWithdrawal?: StopWithdrawalGate;
+    /**
      * User-stopped (interrupted) turns whose `result` has not landed yet.
      * Their results must report 'idle' (not error), must not trigger failure
      * detection, and — with a follow-up turn in flight — must not clobber the
@@ -3819,6 +3828,7 @@ function flushClaudeRunners(sessionId?: string): void {
  */
 function finishDrainedClaudeRunner(sessionId: string, entry: RunnerEntry): void {
   entry.promptDrafts?.clear();
+  entry.steerPrompts?.clear();
   if (entry.doomed || entry.staleConfig || entry.autoApprove) {
     clearStopFallbackTimer(entry);
     entry.handle.abort();
@@ -3853,7 +3863,7 @@ function settleWithdrawnClaudePrompts(
   promptIds: string[]
 ): void {
   const entry = runnerHandles.get(sessionId);
-  if (!entry || entry.handle !== handle) return;
+  if (!entry || entry.handle !== handle || promptIds.length === 0) return;
   const withdrawn = new Set(promptIds);
   const ledger = withdrawClaudePrompts(
     { inFlightTurns: entry.inFlightTurns ?? 0, stoppedTurns: entry.stoppedTurns ?? 0 },
@@ -3865,6 +3875,7 @@ function settleWithdrawnClaudePrompts(
   const prompts = promptIds.flatMap((id) => {
     const draft = entry.promptDrafts?.get(id);
     entry.promptDrafts?.delete(id);
+    entry.steerPrompts?.delete(id);
     return draft ? [draft] : [];
   });
   sessions.deleteMessagesById(sessionId, promptIds.flatMap((id) => [claudePromptRowId(id), id]));
@@ -3874,6 +3885,29 @@ function settleWithdrawnClaudePrompts(
     entry.stopFallbackAttempts = undefined;
     finishDrainedClaudeRunner(sessionId, entry);
   }
+}
+
+/**
+ * A prompt sent as a steer opened a turn of its own: the running turn ended
+ * before the CLI took it. It is an ordinary prompt after all — rewrite it as
+ * one at the moment its turn opened, so the transcript shows it as that
+ * turn's opening message instead of a row inside the previous turn.
+ */
+function promoteLateClaudeSteer(
+  mainWindow: BrowserWindow,
+  sessionId: string,
+  handle: RunnerHandle,
+  promptId: string
+): void {
+  const entry = runnerHandles.get(sessionId);
+  if (!entry || entry.handle !== handle) return;
+  const steered = entry.steerPrompts?.get(promptId);
+  if (!steered) return;
+  entry.steerPrompts!.delete(promptId);
+  const { steer: _steer, ...prompt } = steered;
+  const opened = { ...prompt, createdAt: Date.now() };
+  sessions.addMessage(sessionId, opened, claudePromptRowId(promptId));
+  broadcast(mainWindow, { type: 'stream.prompt_opened_turn', payload: { sessionId, promptId, createdAt: opened.createdAt } });
 }
 
 /** Retire DeepSeek runtimes that captured an older per-workspace MCP graph. */
@@ -5642,7 +5676,9 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
           }, { hideGoalPrompt: !settings.appendTranscript });
           if (!started) throw new Error('Claude could not start this goal.');
         }); } catch (error) {
-          handleSessionStop(mainWindow, sessionId);
+          // A goal withdrawn on Stop never reached Claude: the Stop already
+          // ended the turn, and stopping again could hit work sent since.
+          if (!(error instanceof ClaudeGoalWithdrawnError)) handleSessionStop(mainWindow, sessionId);
           throw error;
         }
       }
@@ -10547,6 +10583,7 @@ async function handleSessionContinueImpl(
   });
 
   // 广播用户 prompt（在运行时检查之前，让用户消息立即显示）
+  let persistedUserPrompt: Extract<StreamMessage, { type: 'user_prompt' }> | undefined;
   if (!hideGoalPrompt) {
     const createdAt = Date.now();
     // A design comment's row links back to its thread on the canvas.
@@ -10567,7 +10604,7 @@ async function handleSessionContinueImpl(
     });
 
     // 保存 user_prompt
-    sessions.addMessage(sessionId, {
+    persistedUserPrompt = {
       type: 'user_prompt',
       prompt: outgoingPrompt,
       attachments: outgoingAttachments,
@@ -10577,7 +10614,8 @@ async function handleSessionContinueImpl(
       ...(designSelection ? { designSelection } : {}),
       ...(claudeSteer ? { steer: true } : {}),
       ...(nextClaudePromptId ? { promptId: nextClaudePromptId } : {}),
-    }, nextClaudePromptId ? claudePromptRowId(nextClaudePromptId) : undefined);
+    };
+    sessions.addMessage(sessionId, persistedUserPrompt, nextClaudePromptId ? claudePromptRowId(nextClaudePromptId) : undefined);
     // The thread is now in progress from the design's current version.
     if (design) markDesignCommentSent(sessionId, design, createdAt);
   }
@@ -10738,8 +10776,12 @@ async function handleSessionContinueImpl(
       // A reaper tick or config flush retired the entry while the awaits
       // above ran — fall through to a fresh spawn.
     } else {
-      existingEntry.activeAgentId = sessionAgentId;
-      existingEntry.activeAgentRunId = createAgentRunId(sessionAgentId, 'continue');
+      // A steer joins the run already going: its replies keep that run's id,
+      // or the transcript would split the one turn at the steer.
+      if (!(claudeSteer && existingEntry.activeAgentRunId && existingEntry.activeAgentId === sessionAgentId)) {
+        existingEntry.activeAgentId = sessionAgentId;
+        existingEntry.activeAgentRunId = createAgentRunId(sessionAgentId, 'continue');
+      }
       if (nextProvider === 'claude') {
         // Only a dispatch into an IDLE runner opens a latency window. A turn
         // queued while a previous one is still streaming can't be timed with
@@ -10765,6 +10807,9 @@ async function handleSessionContinueImpl(
             ...(design ? { design } : {}),
             ...(designSelection ? { designSelection } : {}),
           });
+        }
+        if (claudeSteer && nextClaudePromptId && persistedUserPrompt) {
+          (existingEntry.steerPrompts ??= new Map()).set(nextClaudePromptId, persistedUserPrompt);
         }
         if (wasIdle) {
           markClaudePromptDispatched(
@@ -11703,7 +11748,12 @@ function startRunner(
                 // just settled and is becoming active now. interrupt() only
                 // ever cancels the ACTIVE turn, so the stop press that marked
                 // it could not reach it — re-issue the interrupt for it here.
-                interruptStoppedTurn(mainWindow, session.id, currentEntry);
+                // Unless Stop's withdrawal is still unanswered: the "stopped"
+                // turn left may be a steer being withdrawn, and the turn now
+                // starting the one the user sent after Stop.
+                if (!currentEntry.stopWithdrawal?.deferReinterrupt()) {
+                  interruptStoppedTurn(mainWindow, session.id, currentEntry);
+                }
               }
             }
             // Keep the runner alive for follow-up turns (streaming-input
@@ -11736,7 +11786,7 @@ function startRunner(
         sawTurnOutput = false;
       }
     },
-    onPromptsWithdrawn: (promptIds) => settleWithdrawnClaudePrompts(mainWindow, session.id, handle, promptIds),
+    onPromptOpenedTurn: (promptId) => promoteLateClaudeSteer(mainWindow, session.id, handle, promptId),
     onSelfStartedTurn: () => {
       // A finished background task woke the agent: count the turn as an
       // obligation so the session shows running, Stop interrupts it and the
@@ -12645,7 +12695,28 @@ function handleSessionStop(mainWindow: BrowserWindow, sessionId: string): void {
         // silently destroys a runner that carries a live follow-up turn.
         entry.stoppedTurns = markTurnsStopped(stopStateOf(entry));
         entry.stopFallbackAttempts = undefined;
+        // Stop takes back the steers still queued behind the live turn. The
+        // cancels are written first and the interrupt right behind them, in
+        // this tick — ahead of anything the user sends after Stop.
+        const withdrawal = entry.handle.withdrawQueuedPrompts?.();
         entry.handle.interrupt!().catch(() => resolveStopFallback(mainWindow, sessionId, entry));
+        if (withdrawal) {
+          const handle = entry.handle;
+          (entry.stopWithdrawal ??= new StopWithdrawalGate()).begin(
+            withdrawal.then(
+              (promptIds) => settleWithdrawnClaudePrompts(mainWindow, sessionId, handle, promptIds),
+              () => undefined
+            ),
+            (reinterrupt) => {
+              // A result asked to re-interrupt while the withdrawal was out:
+              // with the ledger settled, a turn still counted as stopped is
+              // one Stop really covers.
+              if (reinterrupt && runnerHandles.get(sessionId) === entry && (entry.stoppedTurns ?? 0) > 0) {
+                interruptStoppedTurn(mainWindow, sessionId, entry);
+              }
+            }
+          );
+        }
         if (entry.stopFallbackTimer) {
           clearTimeout(entry.stopFallbackTimer);
         }
