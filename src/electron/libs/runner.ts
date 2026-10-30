@@ -756,6 +756,7 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
           type: 'user',
           uuid: message.uuid as string,
           message: { content: [{ type: 'text', text: trimmed }] },
+          hostEcho: true,
         } as StreamMessage);
 
         // Record the actual user prompt text here. Claude "user" stream events can

@@ -27,30 +27,40 @@ assert.match(
 );
 
 const ipc = read('src', 'electron', 'ipc-handlers.ts');
-assert.match(
-  ipc,
-  /const claudeMidTurn =\s*nextProvider === 'claude' &&\s*existingEntry\?\.provider === 'claude' &&\s*\(existingEntry\.inFlightTurns \?\? 0\) > \(existingEntry\.stoppedTurns \?\? 0\);/,
-  'a Claude send is mid-turn only while a live (not user-stopped) turn is in flight'
-);
-assert.ok(
-  ipc.includes("(!claudeMidTurn && (claudeConfigDrift || existingEntry.doomed === true))"),
-  'composer drift and doom must not abort a live Claude turn the send steers into'
-);
-assert.ok(
-  ipc.includes('if (claudeMidTurn && claudeConfigDrift) existingEntry.doomed = true;'),
-  'a steer carrying new config must doom the runner so the next turn respawns with it'
-);
+// The reuse/steer decision lives in the pure planner (unit-tested by
+// scripts/tests/claude-steer.test.ts); ipc-handlers must route through it.
+assert.ok(ipc.includes("from './libs/claude-steer'"), 'ipc-handlers must use the claude-steer planner');
 for (const name of ['modelChanged', 'betasChanged', 'accessModeChanged', 'executionModeChanged', 'claudeReasoningEffortChanged']) {
   assert.match(
     ipc,
-    new RegExp(`const claudeConfigDrift =[\\s\\S]{0,200}\\b${name}\\b`),
-    `claudeConfigDrift must include ${name}`
+    new RegExp(`planClaudeSend\\(existingEntry, \\{\\s*configDrift:[\\s\\S]{0,200}\\b${name}\\b`),
+    `configDrift must include ${name}`
   );
 }
-// The drained result retires a doomed runner; that is what applies the drift.
+assert.ok(ipc.includes('claudePlan?.respawn === true'), 'the reuse guard must respawn exactly when the plan says so');
 assert.ok(
-  ipc.includes('if (drained && (currentEntry.doomed || currentEntry.autoApprove))'),
-  'a drained doomed Claude runner must be retired'
+  ipc.includes('if (claudePlan?.markStaleConfig) existingEntry.staleConfig = true;'),
+  'a steer carrying new config must mark the runner staleConfig'
 );
+assert.ok(
+  ipc.includes('const sendModel = claudePlan ? claudePlan.sendModel : nextModel;'),
+  'a steer must hand the runner its current model, never the new selection'
+);
+assert.ok(
+  ipc.includes("claudeModel: provider === 'claude' ? resolvedModelOverride : undefined,"),
+  'a spawned Claude runner must record the model it was handed'
+);
+// The drained result retires a staleConfig runner; that is what applies the drift.
+assert.ok(
+  ipc.includes('if (drained && (currentEntry.doomed || currentEntry.staleConfig || currentEntry.autoApprove))'),
+  'a drained doomed or staleConfig Claude runner must be retired'
+);
+// The prompt echo tells the renderer the turn goes on (stream + persisted copy).
+assert.equal(ipc.match(/\.\.\.\(claudeSteer \? \{ steer: true \} : \{\}\),/g)?.length, 2,
+  'both the broadcast and the persisted user_prompt must carry steer');
+
+const runner = read('src', 'electron', 'libs', 'runner.ts');
+assert.match(runner, /message: \{ content: \[\{ type: 'text', text: trimmed \}\] \},\s*hostEcho: true,/,
+  'the runner must mark its own prompt echo');
 
 console.log('verify-claude-steer: ok');

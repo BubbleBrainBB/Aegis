@@ -128,7 +128,7 @@ assert.equal(
   'a result with queued turns must keep the session status running'
 );
 assert.equal(
-  ipcSource.includes('drained && (currentEntry.doomed || currentEntry.autoApprove)'),
+  ipcSource.includes('drained && (currentEntry.doomed || currentEntry.staleConfig || currentEntry.autoApprove)'),
   true,
   'doomed/automation runners must drain queued turns before retiring'
 );
@@ -230,7 +230,7 @@ assert.equal(
   'continue must skip reuse when stored history was sanitized'
 );
 assert.equal(
-  ipcSource.includes('currentEntry.doomed || currentEntry.autoApprove'),
+  ipcSource.includes('currentEntry.doomed || currentEntry.staleConfig || currentEntry.autoApprove'),
   true,
   'doomed/automation runners must be retired at result'
 );

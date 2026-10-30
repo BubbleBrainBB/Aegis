@@ -52,7 +52,7 @@
     "verify:claude-stream-retry": "npm run transpile:electron && npx tsx scripts/tests/claude-stream-retry.test.ts && npx tsx scripts/tests/stream-retry-history.test.ts && node scripts/tests/stream-retry-persistence.test.mjs",
     "verify:stream-perf": "node scripts/verify-stream-perf.mjs",
     "verify:claude-interrupt-stop": "node scripts/verify-claude-interrupt-stop.mjs",
-    "verify:claude-steer": "node scripts/verify-claude-steer.mjs",
+    "verify:claude-steer": "node scripts/verify-claude-steer.mjs && npx tsx scripts/tests/claude-steer.test.ts",
     "verify:provider-compaction": "npm run transpile:electron && node scripts/tests/provider-compaction.test.cjs && node scripts/tests/bubble-compaction-events.test.mjs && node scripts/tests/bubble-sdk-upgrade.test.mjs && node scripts/tests/bubble-host-contract.test.mjs && npx tsx scripts/tests/compaction-workstream.test.ts",
     "verify:compaction-ui": "node scripts/tests/compaction-electron.test.mjs",
     "verify:codex-compaction": "npm run transpile:electron && node scripts/verify-codex-compaction.mjs && npx tsx scripts/tests/compaction-workstream.test.ts",

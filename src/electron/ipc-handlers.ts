@@ -273,6 +273,7 @@ import {
   shouldDropRunnerErrorSilently,
   type StopStateSnapshot,
 } from './libs/claude-stop-reconcile';
+import { planClaudeSend } from './libs/claude-steer';
 import {
   getSkillMarketDetail,
   getSkillMarketHot,
@@ -3604,8 +3605,16 @@ const runnerHandles = new Map<
      * the flag.
      */
     selfStartedTurn?: boolean;
-    /** Live context or config is stale or poisoned; abort at the next `result` instead of reusing. */
+    /** Live context is stale or poisoned; abort at the next `result` instead of reusing. */
     doomed?: boolean;
+    /**
+     * Composer config changed while a steer joined the live turn. Retire once
+     * drained so the next turn respawns with it; unlike `doomed`, further
+     * steers may still join the live turn.
+     */
+    staleConfig?: boolean;
+    /** The model this Claude runner was last handed (spawn or warm send). */
+    claudeModel?: string;
     /** Automation runners auto-approve permissions; never reuse them for human turns. */
     autoApprove?: boolean;
     /**
@@ -10322,6 +10331,29 @@ async function handleSessionContinueImpl(
   // execute against the old checkout.
   const runnerCwdChanged =
     existingEntry !== undefined && (existingEntry.cwd ?? null) !== effectiveRunnerCwd(session);
+  // A send into a live Claude turn steers it (see claude-steer.ts).
+  const claudePlan =
+    nextProvider === 'claude' && existingEntry?.provider === 'claude'
+      ? planClaudeSend(existingEntry, {
+          configDrift:
+            modelChanged ||
+            betasChanged ||
+            accessModeChanged ||
+            executionModeChanged ||
+            claudeReasoningEffortChanged,
+          hadInvalidThinking: sanitizedHistoryResult.hadInvalidThinking,
+          model: nextModel,
+        })
+      : null;
+  // The send joins the live turn instead of starting one (the reuse branch
+  // below keeps the runner): its echo must not reset that turn's streaming
+  // text, thinking or retry state.
+  const claudeSteer =
+    claudePlan !== null &&
+    claudePlan.midTurn &&
+    !claudePlan.respawn &&
+    !providerChanged &&
+    !runnerCwdChanged;
   // 运行时状态检查已移动到会话状态广播之后，以便前端立即显示 spinning 效果
 
   if (isDev()) {
@@ -10432,6 +10464,7 @@ async function handleSessionContinueImpl(
         ...(workflowPrompt ? { workflowPrompt } : {}),
         ...(design ? { design } : {}),
         ...(designSelection ? { designSelection } : {}),
+        ...(claudeSteer ? { steer: true } : {}),
       },
     });
 
@@ -10444,6 +10477,7 @@ async function handleSessionContinueImpl(
       ...(workflowPrompt ? { workflowPrompt } : {}),
       ...(design ? { design } : {}),
       ...(designSelection ? { designSelection } : {}),
+      ...(claudeSteer ? { steer: true } : {}),
     });
     // The thread is now in progress from the design's current version.
     if (design) markDesignCommentSent(sessionId, design, createdAt);
@@ -10577,21 +10611,6 @@ async function handleSessionContinueImpl(
   // DeepSeek steers mid-turn through the runtime's inbox (client.prompt);
   // config drift while streaming must not abort the live runtime either.
   const deepseekMidTurn = nextProvider === 'deepseek' && session.status === 'running';
-  // Claude folds a prompt pushed while a turn streams into that turn between
-  // tool rounds (streaming input). Config drift must not abort it: the entry
-  // is doomed instead, so it retires once drained and the next turn respawns
-  // with the new config. A turn the user stopped is not live — a send behind
-  // it keeps the abort-and-respawn path.
-  const claudeMidTurn =
-    nextProvider === 'claude' &&
-    existingEntry?.provider === 'claude' &&
-    (existingEntry.inFlightTurns ?? 0) > (existingEntry.stoppedTurns ?? 0);
-  const claudeConfigDrift =
-    modelChanged ||
-    betasChanged ||
-    accessModeChanged ||
-    executionModeChanged ||
-    claudeReasoningEffortChanged;
   // A kimi runner whose adapter session was released while idle (daemon
   // exit, session_gone) is a zombie: reusing its handle throws "No Kimi
   // session found" at send time with a toast and a dropped message. Respawn
@@ -10618,17 +10637,10 @@ async function handleSessionContinueImpl(
       (!deepseekMidTurn && deepseekPermissionModeChanged) ||
       (!deepseekMidTurn && deepseekReasoningEffortChanged) ||
       (nextProvider === 'opencode' && opencodePermissionModeChanged) ||
-      (nextProvider === 'claude' &&
-        (
-          // Never reuse a runner whose live context is stale/poisoned, an
-          // auto-approving automation runner for a human turn, or a live
-          // context that still contains invalid thinking blocks the stored
-          // history was sanitized against. Mid-turn, drift and doom wait for
-          // the drain instead (claudeMidTurn).
-          (!claudeMidTurn && (claudeConfigDrift || existingEntry.doomed === true)) ||
-          existingEntry.autoApprove === true ||
-          sanitizedHistoryResult.hadInvalidThinking
-        ))
+      // Never reuse a doomed runner, an auto-approving automation runner for
+      // a human turn, or one whose config drifted — except that a steer
+      // defers drift to the drain instead of killing the live turn.
+      claudePlan?.respawn === true
     ) {
       clearStopFallbackTimer(existingEntry);
       existingEntry.handle.abort();
@@ -10649,7 +10661,7 @@ async function handleSessionContinueImpl(
         const wasIdle = (existingEntry.inFlightTurns ?? 0) === 0;
         // A steer carrying new composer config runs on the live runner's
         // config; the drained result retires it so the next turn respawns.
-        if (claudeMidTurn && claudeConfigDrift) existingEntry.doomed = true;
+        if (claudePlan?.markStaleConfig) existingEntry.staleConfig = true;
         // Count the dispatched turn BEFORE send so the reaper can never see
         // this entry as idle between dispatch and the first stream message.
         existingEntry.inFlightTurns = (existingEntry.inFlightTurns ?? 0) + 1;
@@ -10689,10 +10701,13 @@ async function handleSessionContinueImpl(
         bubbleThinkingLevel: nextBubbleThinkingLevel,
         bubblePlanExitMode: nextBubblePlanExitMode,
       });
+      // A steer keeps the live turn on the model it started with.
+      const sendModel = claudePlan ? claudePlan.sendModel : nextModel;
+      if (claudePlan) existingEntry.claudeModel = sendModel;
       existingEntry.handle.send(
         runnerPrompt,
         outgoingAttachments,
-        nextModel,
+        sendModel,
         nextProvider === 'codex' ? codexSkills : undefined,
         nextProvider === 'codex' ? codexMentions : undefined,
         sendOptions
@@ -11584,7 +11599,7 @@ function startRunner(
             // reuse guard already refuses to dispatch new turns into a
             // doomed entry, so deferring loses nothing.
             const drained = (currentEntry.inFlightTurns ?? 0) === 0;
-            if (drained && (currentEntry.doomed || currentEntry.autoApprove)) {
+            if (drained && (currentEntry.doomed || currentEntry.staleConfig || currentEntry.autoApprove)) {
               // Retire only once every queued turn has produced its result:
               // aborting earlier would drop a queued prompt that is already
               // persisted and counted, leaving the session without an ending
@@ -11947,6 +11962,7 @@ function startRunner(
     claudeExecutionMode: provider === 'claude' ? normalizedClaudeExecutionMode : undefined,
     claudeReasoningEffort:
       provider === 'claude' ? normalizeClaudeReasoningEffort(claudeReasoningEffort) : undefined,
+    claudeModel: provider === 'claude' ? resolvedModelOverride : undefined,
     codexExecutionMode: provider === 'codex' ? normalizeCodexExecutionMode(codexExecutionMode) : undefined,
     codexPermissionMode: provider === 'codex' ? normalizeCodexPermissionMode(codexPermissionMode) : undefined,
     codexReasoningEffort:

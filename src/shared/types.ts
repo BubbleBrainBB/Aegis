@@ -1006,7 +1006,7 @@ export type ServerEvent =
   | { type: 'session.renamed'; payload: { sessionId: string; title: string; updatedAt: number } }
   | {
       type: 'stream.user_prompt';
-      payload: { sessionId: string; prompt: string; attachments?: Attachment[]; createdAt?: number; workflowPrompt?: WorkflowPromptKind; design?: DesignPromptRef; designSelection?: DesignSelectionRef };
+      payload: { sessionId: string; prompt: string; attachments?: Attachment[]; createdAt?: number; workflowPrompt?: WorkflowPromptKind; design?: DesignPromptRef; designSelection?: DesignSelectionRef; steer?: boolean };
     }
   | { type: 'stream.message'; payload: { sessionId: string; message: StreamMessage } }
   // Incremental stdout/stderr from a tool that is still running (codex
@@ -1871,7 +1871,11 @@ export interface AvailableCommand {
 }
 
 export type StreamMessage =
-  | (StreamMessageBase & { type: 'user_prompt'; prompt: string; attachments?: Attachment[]; workflowPrompt?: WorkflowPromptKind; design?: DesignPromptRef; designSelection?: DesignSelectionRef })
+  | (StreamMessageBase & {
+      type: 'user_prompt'; prompt: string; attachments?: Attachment[]; workflowPrompt?: WorkflowPromptKind; design?: DesignPromptRef; designSelection?: DesignSelectionRef;
+      /** Steered into the live turn: not a turn boundary (streaming and retry state carry on). */
+      steer?: boolean;
+    })
   | (StreamMessageBase & {
       /** Durable, native completion metadata; never sent to the model as a prompt. */
       type: 'goal_completed';
@@ -1995,7 +1999,11 @@ export type StreamMessage =
       usage: CodexContextUsage;
     })
   | (StreamMessageBase & { type: 'assistant'; uuid: string; message: AssistantMessage; streaming?: boolean; phase?: 'commentary' | 'final_answer'; interrupted?: boolean })
-  | (StreamMessageBase & { type: 'user'; uuid: string; message: UserMessage })
+  | (StreamMessageBase & {
+      type: 'user'; uuid: string; message: UserMessage;
+      /** The host's own echo of a prompt it sent (the SDK does not echo streaming input). */
+      hostEcho?: boolean;
+    })
   | (StreamMessageBase & {
       type: 'result';
       subtype: 'success' | string;

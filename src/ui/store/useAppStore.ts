@@ -347,8 +347,11 @@ function shouldPreserveStreamingStateForMessage(
   // Subagent (Task) messages commit while the top-level agent may still be
   // streaming its own partial — they must not reset that buffer. Neither may
   // a background task ending: the CLI reports it between stream deltas.
+  // Nor may the host's echo of a prompt it sent: a steer's echo lands while
+  // the turn is still streaming (a new turn's prompt already reset it).
   if (
     message.parentToolUseId ||
+    (message.type === 'user' && message.hostEcho) ||
     message.type === 'goal_completed' ||
     (message.type === 'system' && message.subtype === 'background_task_ended')
   ) {
@@ -1130,8 +1133,13 @@ export const useAppStore = create<Store>()(
         // The prompt echo resets the streaming buffer; deltas buffered from
         // before the echo belong to the pre-echo world — drop them (same
         // visible result as today, where the echo wipes them an instant
-        // after they rendered).
-        streamDeltaCoalescer.discardSession(event.payload.sessionId);
+        // after they rendered). A steer joins the live turn instead: its
+        // buffered deltas are still that turn's output.
+        if (event.payload.steer) {
+          streamDeltaCoalescer.flushSession(event.payload.sessionId);
+        } else {
+          streamDeltaCoalescer.discardSession(event.payload.sessionId);
+        }
         handleUserPrompt(event.payload, set);
         break;
 
@@ -3604,10 +3612,10 @@ function handleSessionDeleted(
 
 // 处理用户 prompt
 function handleUserPrompt(
-  payload: { sessionId: string; prompt: string; attachments?: Attachment[]; createdAt?: number; workflowPrompt?: WorkflowPromptKind; design?: import('../../shared/types').DesignPromptRef; designSelection?: import('../../shared/types').DesignSelectionRef },
+  payload: { sessionId: string; prompt: string; attachments?: Attachment[]; createdAt?: number; workflowPrompt?: WorkflowPromptKind; design?: import('../../shared/types').DesignPromptRef; designSelection?: import('../../shared/types').DesignSelectionRef; steer?: boolean },
   set: SetState
 ) {
-  const { sessionId, prompt, attachments, createdAt, workflowPrompt, design, designSelection } = payload;
+  const { sessionId, prompt, attachments, createdAt, workflowPrompt, design, designSelection, steer } = payload;
 
   set((state) => {
     const session = state.sessions[sessionId];
@@ -3621,17 +3629,22 @@ function handleUserPrompt(
       ...(workflowPrompt ? { workflowPrompt } : {}),
       ...(design ? { design } : {}),
       ...(designSelection ? { designSelection } : {}),
+      ...(steer ? { steer: true } : {}),
     };
 
     return {
       ...state,
       sessions: {
         ...state.sessions,
-        [sessionId]: {
-          ...session,
-          messages: [...archiveRetryStream(session).messages, userMessage],
-          streaming: createEmptyStreamingState(),
-        },
+        [sessionId]: steer
+          // Steered into the live turn: its partial text, thinking and any
+          // pending retry keep going.
+          ? { ...session, messages: [...session.messages, userMessage] }
+          : {
+              ...session,
+              messages: [...archiveRetryStream(session).messages, userMessage],
+              streaming: createEmptyStreamingState(),
+            },
       },
     };
   });
