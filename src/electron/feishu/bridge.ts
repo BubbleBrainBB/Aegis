@@ -407,12 +407,14 @@ export class FeishuBridge {
     if (!sessionId) return;
     switch (event.type) {
       case "stream.user_prompt":
-        // A steer joins the live turn: it keeps that turn's card.
+        // A steer joins the live turn: it keeps that turn's card. A prompt
+        // sent into a busy runner gets its card when the CLI takes it.
         if (payload.steer && this.turns.has(sessionId)) return;
+        if (payload.deferred) return;
         this.openTurnCard(sessionId);
         return;
-      case "stream.prompt_moved":
-        // A steer that came too late opened a turn of its own.
+      case "stream.prompt_started":
+        // The CLI took a prompt sent into a busy runner to open a turn.
         if (!payload.steer) this.openTurnCard(sessionId);
         return;
       case "stream.message": {

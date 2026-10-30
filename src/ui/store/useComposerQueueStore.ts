@@ -26,6 +26,8 @@ export interface QueuedComposerMessage {
   design?: import('../../shared/types').DesignPromptRef;
   /** The canvas selection shown in the composer when it was queued. */
   designSelection?: DesignSelectionRef;
+  /** A sent prompt handed back (Stop withdrew it): when it was first sent. */
+  sentAt?: number;
   /** An exclusive action keeps its captured session configuration. */
   dispatch?: () => void;
   onRemove?: () => void;
@@ -34,8 +36,12 @@ export interface QueuedComposerMessage {
 interface ComposerQueueStore {
   queues: Record<string, QueuedComposerMessage[]>;
   enqueue: (sessionId: string, item: QueuedComposerMessage) => void;
-  /** Put items back at the head of the queue (sent earlier than anything queued since). */
-  prepend: (sessionId: string, items: QueuedComposerMessage[]) => void;
+  /**
+   * Hand sent prompts back (they carry sentAt): ahead of anything queued
+   * since, among other handed-back ones in the order they were sent — however
+   * many separate hand-backs bring them.
+   */
+  restore: (sessionId: string, items: QueuedComposerMessage[]) => void;
   remove: (sessionId: string, itemId: string) => void;
   /** Atomically remove and return one item (empty result if already gone). */
   takeOne: (sessionId: string, itemId: string) => QueuedComposerMessage | null;
@@ -78,13 +84,18 @@ export const useComposerQueueStore = create<ComposerQueueStore>()((set, get) => 
       },
     })),
 
-  prepend: (sessionId, items) =>
-    set((state) => ({
-      queues: {
-        ...state.queues,
-        [sessionId]: [...items, ...(state.queues[sessionId] ?? [])],
-      },
-    })),
+  restore: (sessionId, items) =>
+    set((state) => {
+      const queue = state.queues[sessionId] ?? [];
+      const restored = [...queue.filter((item) => item.sentAt !== undefined), ...items]
+        .sort((a, b) => (a.sentAt ?? 0) - (b.sentAt ?? 0));
+      return {
+        queues: {
+          ...state.queues,
+          [sessionId]: [...restored, ...queue.filter((item) => item.sentAt === undefined)],
+        },
+      };
+    }),
 
   remove: (sessionId, itemId) => {
     const item = get().queues[sessionId]?.find(entry => entry.id === itemId);

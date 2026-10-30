@@ -1148,8 +1148,8 @@ export const useAppStore = create<Store>()(
         handlePromptsWithdrawn(event.payload, set);
         break;
 
-      case 'stream.prompt_moved':
-        handlePromptMoved(event.payload, set);
+      case 'stream.prompt_started':
+        handlePromptStarted(event.payload, set);
         break;
 
       case 'stream.message':
@@ -3660,32 +3660,30 @@ function handleUserPrompt(
   });
 }
 
-// A steer that came too late started after the turn it was sent into ended:
-// it leaves that turn's work, with its host echo (the /rewind anchor), and
-// goes where the new turn begins — as its opening prompt, or a steer that
-// joined its batch. The stored history says the same after a reload.
-function handlePromptMoved(
-  payload: { sessionId: string; promptId: string; steer: boolean; createdAt: number; echoCreatedAt?: number },
+// The CLI took a prompt sent into a busy runner: it stands where the agent
+// actually read it — the end of the stream right now — as a steer of the
+// running turn or the opening prompt of a new one (its host echo follows).
+// The stored history says the same after a reload.
+function handlePromptStarted(
+  payload: { sessionId: string; promptId: string; steer: boolean },
   set: SetState
 ) {
-  const { sessionId, promptId, steer, createdAt, echoCreatedAt } = payload;
+  const { sessionId, promptId, steer } = payload;
   set((state) => {
     const session = state.sessions[sessionId];
     if (!session) return state;
     const prompt = session.messages.find((message) => message.type === 'user_prompt' && message.promptId === promptId);
     if (prompt?.type !== 'user_prompt') return state;
-    const echo = session.messages.find((message) => message.type === 'user' && message.uuid === promptId);
     const { steer: _steer, ...ordinary } = prompt;
-    const moved: StreamMessage[] = [steer ? { ...prompt, createdAt } : { ...ordinary, createdAt }];
-    if (echo) moved.push({ ...echo, createdAt: echoCreatedAt ?? createdAt });
-    const messages = [...session.messages.filter((message) => message !== prompt && message !== echo), ...moved];
+    const placed: StreamMessage = steer ? { ...ordinary, steer: true } : ordinary;
+    const messages = [...session.messages.filter((message) => message !== prompt), placed];
     return { ...state, sessions: { ...state.sessions, [sessionId]: { ...session, messages } } };
   });
 }
 
-// Stop withdrew queued steers Claude never read: drop their bubbles (and the
-// host echoes carrying the same ids) and hand them back to the composer queue,
-// ahead of anything queued since — they were sent first.
+// Stop withdrew prompts Claude never read (or the runner went away with them
+// still queued): drop their bubbles and hand them back to the composer queue,
+// in the order they were sent, ahead of anything queued since.
 function handlePromptsWithdrawn(
   payload: { sessionId: string; promptIds: string[]; prompts: import('../../shared/types').WithdrawnPrompt[] },
   set: SetState
@@ -3703,8 +3701,9 @@ function handlePromptsWithdrawn(
     return { ...state, sessions: { ...state.sessions, [sessionId]: { ...session, messages } } };
   });
   if (prompts.length === 0) return;
-  useComposerQueueStore.getState().prepend(sessionId, prompts.map((item) => ({
+  useComposerQueueStore.getState().restore(sessionId, prompts.map((item) => ({
     id: crypto.randomUUID(),
+    sentAt: item.sentAt,
     displayPrompt: item.prompt,
     effectivePrompt: item.effectivePrompt,
     attachments: item.attachments,

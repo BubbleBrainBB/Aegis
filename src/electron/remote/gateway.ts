@@ -1096,9 +1096,10 @@ export class RemoteGateway {
     const p = event.payload as any;
     const id = p.sessionId as string | undefined;
     let textDelta = false;
-    // A steer joins the live turn: its run, live text and approvals carry on.
-    // One that came too late opens its own turn after all.
-    if (id && ((event.type === "stream.user_prompt" && !p.steer) || (event.type === "stream.prompt_moved" && !p.steer))) {
+    // A turn begins: a prompt that starts one at once, or a prompt sent into
+    // a busy runner once the CLI takes it to open a turn. A steer (and a
+    // prompt still waiting in the CLI's queue) leaves the live turn alone.
+    if (id && ((event.type === "stream.user_prompt" && !p.steer && !p.deferred) || (event.type === "stream.prompt_started" && !p.steer))) {
       this.runIds.set(id, randomUUID());
       this.live.delete(id);
       for (const [key, value] of this.permissions)

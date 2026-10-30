@@ -933,13 +933,13 @@ function buildMessagePersistenceRecord(
   sessionId: string,
   sourceOrigin: SessionSource,
   message: StreamMessage,
-  rowId?: string
+  sortKey?: number
 ): MessagePersistenceRecord {
   const createdAt =
     typeof (message as StreamMessage & { createdAt?: number }).createdAt === 'number'
       ? ((message as StreamMessage & { createdAt?: number }).createdAt as number)
       : Date.now();
-  const id = rowId || (message as { uuid?: string }).uuid || uuidv4();
+  const id = (message as { uuid?: string }).uuid || uuidv4();
   const rawData = JSON.stringify(message);
   const externalized = shouldExternalizeMessagePayload(message, rawData)
     ? externalizeMessagePayload(sessionId, id, rawData)
@@ -951,7 +951,7 @@ function buildMessagePersistenceRecord(
     messageType: extractMessageType(message),
     sourceOrigin,
     searchText: normalizeSearchText(extractSearchableMessageText(message)),
-    sortKey: createdAt,
+    sortKey: sortKey ?? createdAt,
     parentTurnId: typeof message.parentTurnId === 'string' ? message.parentTurnId : null,
     data: externalized?.storedData || rawData,
     createdAt,
@@ -2400,10 +2400,14 @@ export function findGoalCompletionAnswer(sessionId: string, startedAt: number, c
 }
 
 // 添加消息
-/** `rowId` pins the stored row's id (default: the message uuid) so it can be deleted by it. */
-export function addMessage(sessionId: string, message: StreamMessage, rowId?: string): void {
+/**
+ * `sortKey` orders the stored row in history (default: its createdAt) —
+ * a stream that must reload in arrival order passes a strictly increasing
+ * key without touching the message's own timestamp.
+ */
+export function addMessage(sessionId: string, message: StreamMessage, options?: { sortKey?: number }): void {
   const sourceOrigin = getSessionSourceOrigin(sessionId);
-  const record = buildMessagePersistenceRecord(sessionId, sourceOrigin, message, rowId);
+  const record = buildMessagePersistenceRecord(sessionId, sourceOrigin, message, options?.sortKey);
 
   const stmt = getDb().prepare(`
     INSERT INTO messages (id, session_id, message_type, source_origin, search_text, sort_key, parent_turn_id, data, created_at)
@@ -2457,20 +2461,6 @@ export function addMessage(sessionId: string, message: StreamMessage, rowId?: st
   ) {
     invalidateClaudeUsageReportCache();
   }
-}
-
-/** Removes individual stored messages (and their search rows and payload artifacts) by row id. */
-export function deleteMessagesById(sessionId: string, ids: string[]): void {
-  if (ids.length === 0) return;
-  const deleteMessage = getDb().prepare('DELETE FROM messages WHERE session_id = ? AND id = ?');
-  const deleteSearch = getDb().prepare('DELETE FROM search_index WHERE session_id = ? AND message_id = ?');
-  getDb().transaction(() => {
-    for (const id of ids) {
-      deleteMessagePayloadArtifactForMessage(sessionId, id);
-      deleteMessage.run(sessionId, id);
-      deleteSearch.run(sessionId, id);
-    }
-  })();
 }
 
 export function replaceSessionHistory(sessionId: string, messages: StreamMessage[]): void {

@@ -1006,15 +1006,17 @@ export type ServerEvent =
   | { type: 'session.renamed'; payload: { sessionId: string; title: string; updatedAt: number } }
   | {
       type: 'stream.user_prompt';
-      payload: { sessionId: string; prompt: string; attachments?: Attachment[]; createdAt?: number; workflowPrompt?: WorkflowPromptKind; design?: DesignPromptRef; designSelection?: DesignSelectionRef; steer?: boolean; promptId?: string };
+      payload: { sessionId: string; prompt: string; attachments?: Attachment[]; createdAt?: number; workflowPrompt?: WorkflowPromptKind; design?: DesignPromptRef; designSelection?: DesignSelectionRef; steer?: boolean; promptId?: string;
+        /** Sent into a busy runner: not stored until the CLI takes it (stream.prompt_started), or withdrawn. */
+        deferred?: boolean };
     }
   // Queued steers the user stopped before Claude read them: removed from the
   // transcript and handed back to the composer queue.
   | { type: 'stream.prompts_withdrawn'; payload: { sessionId: string; promptIds: string[]; prompts: WithdrawnPrompt[] } }
-  // A prompt sent as a steer started after the turn it was sent into ended:
-  // it moves (with its host echo) to where the new turn begins — as that
-  // turn's opening prompt, or (steer: true) a steer that joined its batch.
-  | { type: 'stream.prompt_moved'; payload: { sessionId: string; promptId: string; steer: boolean; createdAt: number; echoCreatedAt?: number } }
+  // The CLI took a prompt sent into a busy runner: it now stands at the end
+  // of the stream — a steer of the running turn (steer: true: folded in, or
+  // joined a batch) or the opening prompt of a new turn.
+  | { type: 'stream.prompt_started'; payload: { sessionId: string; promptId: string; steer: boolean } }
   | { type: 'stream.message'; payload: { sessionId: string; message: StreamMessage } }
   // Incremental stdout/stderr from a tool that is still running (codex
   // commandExecution). Transient display data — never persisted.
@@ -1831,6 +1833,8 @@ export interface RetryOutputSnapshot {
 /** A sent prompt taken back before the agent read it (see stream.prompts_withdrawn). */
 export interface WithdrawnPrompt {
   promptId: string;
+  /** When it was sent: withdrawn prompts return to the queue in send order. */
+  sentAt: number;
   prompt: string;
   effectivePrompt: string;
   attachments: Attachment[];

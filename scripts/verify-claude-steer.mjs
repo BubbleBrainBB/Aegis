@@ -99,21 +99,28 @@ assert.ok(
 // not track prompt identity (the runner interrupts what Stop missed itself).
 assert.ok(ipc.includes('onPromptsWithdrawn: (promptIds) => settleWithdrawnClaudePrompts(mainWindow, session.id, handle, promptIds),'),
   'withdrawals must settle from the runner\'s frame callback');
-assert.ok(ipc.includes('onPromptStarted: (started) => moveLateClaudeSteer(mainWindow, session.id, handle, started),'),
-  'a late steer must move to where its turn opened');
+assert.ok(ipc.includes('onPromptStarted: (started) => storeStartedClaudePrompt(mainWindow, session.id, started),'),
+  'a prompt sent into a busy runner must be stored where the CLI takes it');
+// Deferred: a send into a busy identity-tracking runner is not stored at send.
+assert.match(ipc, /const claudeDeferred =[\s\S]{0,400}\(existingEntry\?\.inFlightTurns \?\? 0\) > 0 &&\s*existingEntry\?\.handle\.tracksPromptIdentity\?\.\(\) === true;/,
+  'only sends into a busy runner that reports prompt lifecycle are deferred');
+assert.match(ipc, /if \(nextClaudePromptId\) \{\s*const draftDesign[\s\S]{0,800}\} else \{\s*sessions\.addMessage\(/,
+  'a deferred prompt is registered, not stored, at send');
 assert.ok(ipc.includes('if (!currentEntry.handle.tracksPromptIdentity?.()) {'),
   'no count-based re-interrupt for identity-tracking runners');
-assert.ok(ipc.includes('promptIds = promptIds.filter((id) => counted.delete(id));'),
-  'a withdrawal settles each prompt once, only if still counted');
+assert.ok(ipc.includes('promptIds = promptIds.filter((id) => deferredClaudePrompts.get(id)?.sessionId === sessionId);'),
+  'a withdrawal settles each prompt once');
+assert.ok(!ipc.includes('deleteMessagesById'), 'a withdrawn prompt was never stored: nothing to delete');
 assert.ok(
   ipc.includes('if (!(error instanceof ClaudeGoalWithdrawnError)) handleSessionStop(mainWindow, sessionId);'),
   'a withdrawn goal start must not stop the session again'
 );
-// Stored Claude messages reload in arrival order (claude-session-clock).
-assert.ok(ipc.includes('createdAt: claudeTimestamp(session.id, attributedMessage.createdAt ?? Date.now()),'),
-  'stored Claude stream messages are stamped in arrival order');
-assert.ok(ipc.includes("const createdAt = nextProvider === 'claude' ? claudeTimestamp(sessionId) : Date.now();"),
-  'a Claude prompt is stamped in the same sequence');
+// Stored Claude messages reload in arrival order (claude-session-clock):
+// ordered by sort key, their timestamps untouched.
+assert.ok(ipc.includes("provider === 'claude' ? { sortKey: claudeSortKey(session.id, attributedMessage.createdAt ?? Date.now()) } : undefined"),
+  'stored Claude stream messages carry arrival-order sort keys');
+assert.ok(ipc.includes("nextProvider === 'claude' ? { sortKey: claudeSortKey(sessionId, createdAt) } : undefined"),
+  'a Claude prompt stored at send joins the same sequence');
 
 const runner = read('src', 'electron', 'libs', 'runner.ts');
 // Re-interrupts (after a result, for a woken turn) never withdraw: only the
@@ -121,9 +128,16 @@ const runner = read('src', 'electron', 'libs', 'runner.ts');
 const interruptBody = runner.slice(runner.indexOf('    interrupt: async () => {'), runner.indexOf('    stopTurn: async () => {'));
 assert.ok(interruptBody.length > 0 && !/beginStop|cancelAsyncMessage/.test(interruptBody), 'interrupt() must not withdraw prompts');
 const stopBody = runner.slice(runner.indexOf('    stopTurn: async () => {'), runner.indexOf('    tracksPromptIdentity:'));
-assert.match(stopBody, /const toCancel = promptLifecycle\.beginStop\(\);\s*if \(cancel\) for \(const uuid of toCancel\) void cancel\(uuid\)[\s\S]*stopInterruptPending = true;[\s\S]*await interruptQuery\(\)/,
-  'stopTurn writes the cancels, then the interrupt, without awaiting in between');
-assert.ok(!/await[\s\S]*const toCancel/.test(stopBody), 'nothing awaited before the cancels');
+assert.match(stopBody, /const stop = promptLifecycle\.beginStop\(\);\s*if \(cancel\) for \(const uuid of stop\.cancel\) void cancel\(uuid\)[\s\S]*stopInterruptGeneration = stop\.generation;[\s\S]*await interruptQuery\(\)/,
+  'stopTurn writes the cancels, then the interrupt (tagged with its Stop), without awaiting in between');
+assert.ok(!/await[\s\S]*const stop = /.test(stopBody), 'nothing awaited before the cancels');
+// Echoes wait for the CLI to take their prompt; prompts never taken come back.
+assert.ok(runner.includes('if (promptLifecycle.tracksIdentity && message.uuid) pendingEchoes.set(message.uuid as string, echo);'),
+  'a prompt\'s echo waits for the CLI to take it');
+assert.match(runner, /onPromptStarted\?\.\(promptFrame\.started\);[\s\S]{0,250}if \(echo\) onMessage\(echo\);/,
+  'the prompt is stored before its echo');
+assert.ok(runner.includes('if (unstarted.length > 0) onPromptsWithdrawn?.(unstarted);'),
+  'prompts the runner never handed to a turn are handed back when it ends');
 assert.ok(runner.includes('if (goalSet) rejectClaudeGoalSet(session.id, new ClaudeGoalWithdrawnError());'),
   'withdrawing a /goal prompt must end its goal-start wait');
 assert.ok(runner.includes('if (promptFrame.withdrawn) promptWithdrawn(promptFrame.withdrawn);'),

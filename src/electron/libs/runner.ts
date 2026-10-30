@@ -583,9 +583,12 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
   const promptLifecycle = new ClaudePromptLifecycle();
   // Which of them set a goal: withdrawing one must end its goal-start wait.
   const goalPromptUuids = new Set<string>();
-  // The next interrupt issued is the Stop's: its receipt says which stopped
-  // prompts it could not reach (the /goal controller may issue it for us).
-  let stopInterruptPending = false;
+  // The next interrupt issued is the Stop's (this Stop number): its receipt
+  // says which stopped prompts it could not reach (the /goal controller may
+  // issue it for us).
+  let stopInterruptGeneration: number | null = null;
+  // Host echoes waiting for the CLI to take their prompt.
+  const pendingEchoes = new Map<string, StreamMessage>();
   const backgroundTasks = new ClaudeBackgroundTasks();
   const emitBackgroundTaskEvent = (event: BackgroundTaskEvent) => {
     onMessage(
@@ -772,12 +775,16 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
         // message stream, so emit the echo ourselves. Persisting it (keyed by
         // the minted uuid) is what lets /rewind anchor to this prompt later —
         // resume replays emit the same shape, so downstream handling is shared.
-        onMessage?.({
+        // With lifecycle frames the echo waits for the CLI to take the prompt,
+        // so it is stored where the prompt actually ran (right behind it).
+        const echo = {
           type: 'user',
           uuid: message.uuid as string,
           message: { content: [{ type: 'text', text: trimmed }] },
           hostEcho: true,
-        } as StreamMessage);
+        } as StreamMessage;
+        if (promptLifecycle.tracksIdentity && message.uuid) pendingEchoes.set(message.uuid as string, echo);
+        else onMessage?.(echo);
 
         // Record the actual user prompt text here. Claude "user" stream events can
         // also represent tool results, so the stream alone is not a reliable source
@@ -810,18 +817,19 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
   const interruptQuery = async (): Promise<void> => {
     const query = activeQuery;
     if (!query) return;
-    const isStop = stopInterruptPending;
-    stopInterruptPending = false;
+    const generation = stopInterruptGeneration;
+    stopInterruptGeneration = null;
     const receipt = (await query.interrupt()) as { still_queued?: unknown } | undefined | void;
-    if (!isStop) return;
+    if (generation === null) return;
     const stillQueued = receipt && Array.isArray(receipt.still_queued) ? receipt.still_queued : undefined;
-    if (promptLifecycle.stopReceipt(stillQueued)) await query.interrupt();
+    if (promptLifecycle.stopReceipt(generation, stillQueued)) await query.interrupt();
   };
 
   // A withdrawn prompt never gets a result: it stops counting as goal work,
   // and a withdrawn /goal ends its start wait now rather than at the timeout
   // (which would abort the whole runtime).
   const promptWithdrawn = (uuid: string) => {
+    pendingEchoes.delete(uuid);
     const goalSet = goalPromptUuids.delete(uuid);
     goalController.withdrawn(1, goalSet);
     if (goalSet) rejectClaudeGoalSet(session.id, new ClaudeGoalWithdrawnError());
@@ -1332,8 +1340,14 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
         const promptFrame = promptLifecycle.observe(message as Parameters<typeof promptLifecycle.observe>[0]);
         const answeredPrompts = promptFrame.answered;
         if (promptFrame.withdrawn) promptWithdrawn(promptFrame.withdrawn);
-        if (promptFrame.opened) onPromptStarted?.({ promptId: promptFrame.opened, openerId: promptFrame.opened });
-        if (promptFrame.joined) onPromptStarted?.(promptFrame.joined);
+        if (promptFrame.started) {
+          // The host stores a prompt sent into a busy turn here; its echo
+          // follows right behind it.
+          onPromptStarted?.(promptFrame.started);
+          const echo = pendingEchoes.get(promptFrame.started.promptId);
+          pendingEchoes.delete(promptFrame.started.promptId);
+          if (echo) onMessage(echo);
+        }
         if (promptFrame.interrupt) void interruptQuery().catch(() => undefined);
         if (await goalController.receive(message as unknown as Parameters<typeof goalController.receive>[0], answeredPrompts)) continue;
         if (taskFrame.consumed) continue;
@@ -1551,6 +1565,11 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
       inputQueue.close();
       // Background tasks end with the process.
       for (const event of backgroundTasks.end()) emitBackgroundTaskEvent(event);
+      // Prompts sent into a busy turn that the CLI never took: they go back
+      // to the host like a withdrawal (Claude never read them).
+      const unstarted = promptLifecycle.unstarted();
+      for (const uuid of unstarted) pendingEchoes.delete(uuid);
+      if (unstarted.length > 0) onPromptsWithdrawn?.(unstarted);
     }
   })();
 
@@ -1579,9 +1598,9 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
         throw new Error('Session is not active.');
       }
       const cancel = typeof query.cancelAsyncMessage === 'function' ? query.cancelAsyncMessage.bind(query) : undefined;
-      const toCancel = promptLifecycle.beginStop();
-      if (cancel) for (const uuid of toCancel) void cancel(uuid).catch(() => undefined);
-      stopInterruptPending = true;
+      const stop = promptLifecycle.beginStop();
+      if (cancel) for (const uuid of stop.cancel) void cancel(uuid).catch(() => undefined);
+      stopInterruptGeneration = stop.generation;
       if (goalController.snapshot.goal && goalController.snapshot.goal?.status !== 'complete')
         await goalController.interrupt();
       else await interruptQuery();

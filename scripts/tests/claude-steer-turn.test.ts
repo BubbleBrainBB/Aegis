@@ -112,31 +112,40 @@ useAppStore.setState(state => ({ sessions: { ...state.sessions, [id]: {
   ...state.sessions[id], provider: 'claude', status: 'running', messages: [],
   streaming: { text: '', thinking: '', isStreaming: false },
 } } }));
+// Deferred prompts are shown at once but never echoed or stored until the CLI
+// takes them; a withdrawal removes the bubble and hands the prompt back.
 const send = (prompt: string, promptId: string) => {
-  dispatch({ type: 'stream.user_prompt', payload: { sessionId: id, prompt, createdAt: Date.now(), steer: true, promptId } } as ServerEvent);
-  dispatch({ type: 'stream.message', payload: { sessionId: id, message: {
-    type: 'user', uuid: promptId, message: { content: [{ type: 'text', text: prompt }] }, hostEcho: true,
-  } } } as ServerEvent);
+  dispatch({ type: 'stream.user_prompt', payload: { sessionId: id, prompt, createdAt: Date.now(), steer: true, promptId, deferred: true } } as ServerEvent);
 };
 send('first steer', 's1');
 send('second steer', 's2');
 useComposerQueueStore.getState().enqueue(id, {
   id: 'later', displayPrompt: 'queued after', effectivePrompt: 'queued after', attachments: [], references: {},
 });
-dispatch({ type: 'stream.prompts_withdrawn', payload: { sessionId: id, promptIds: ['s1', 's2', 'hidden'], prompts: [
-  { promptId: 's1', prompt: 'first steer', effectivePrompt: 'first steer', attachments: [] },
-  { promptId: 's2', prompt: 'second steer', effectivePrompt: 'second steer (resolved)', attachments: [] },
+const draft = (promptId: string, prompt: string, sentAt: number, effectivePrompt = prompt) =>
+  ({ promptId, prompt, effectivePrompt, attachments: [], sentAt });
+// The CLI's frames withdraw one prompt at a time: s1's frame, then s2's.
+dispatch({ type: 'stream.prompts_withdrawn', payload: { sessionId: id, promptIds: ['s1'], prompts: [draft('s1', 'first steer', 100)] } } as ServerEvent);
+dispatch({ type: 'stream.prompts_withdrawn', payload: { sessionId: id, promptIds: ['s2', 'hidden'], prompts: [
+  draft('s2', 'second steer', 200, 'second steer (resolved)'),
 ] } } as ServerEvent);
-const left = useAppStore.getState().sessions[id].messages;
-assert.equal(left.length, 0, 'withdrawn bubbles and their host echoes leave the transcript');
+assert.equal(useAppStore.getState().sessions[id].messages.length, 0, 'withdrawn bubbles leave the transcript');
 assert.deepEqual(
   (useComposerQueueStore.getState().queues[id] ?? []).map(item => [item.displayPrompt, item.effectivePrompt]),
   [['first steer', 'first steer'], ['second steer', 'second steer (resolved)'], ['queued after', 'queued after']],
-  'withdrawn steers return ahead of later queued messages, as they were sent'
+  'withdrawn prompts return in send order across separate hand-backs, ahead of later queued messages'
 );
+// Handed back out of order (the runner went away with one, a frame withdrew another).
+{
+  const otherId = useAppStore.getState().createDraftSession('/tmp/claude-steer-order');
+  dispatch({ type: 'stream.prompts_withdrawn', payload: { sessionId: otherId, promptIds: ['b'], prompts: [draft('b', 'second', 20)] } } as ServerEvent);
+  dispatch({ type: 'stream.prompts_withdrawn', payload: { sessionId: otherId, promptIds: ['a'], prompts: [draft('a', 'first', 10)] } } as ServerEvent);
+  assert.deepEqual((useComposerQueueStore.getState().queues[otherId] ?? []).map(item => item.displayPrompt), ['first', 'second']);
+}
 
-// A late steer opened its own turn: the store makes it that turn's opener,
-// after the previous turn's result, and the timeline shows two turns.
+// The CLI takes deferred prompts: each moves to the end of the stream right
+// now — a steer if it folded into the running turn or joined a batch, the
+// opening prompt of a new turn otherwise. Its echo arrives after it.
 {
   const lateId = useAppStore.getState().createDraftSession('/tmp/claude-steer-late');
   const late: StreamMessage = { type: 'user_prompt', prompt: 'One more thing', createdAt: 500, steer: true, promptId: 'p-late' };
@@ -147,44 +156,38 @@ assert.deepEqual(
     messages: [opener, bash, late, bashResult, firstAnswer, done],
     streaming: { text: '', thinking: '', isStreaming: false },
   } } }));
-  dispatch({ type: 'stream.prompt_moved', payload: { sessionId: lateId, promptId: 'p-late', steer: false, createdAt: 800 } } as ServerEvent);
+  dispatch({ type: 'stream.prompt_started', payload: { sessionId: lateId, promptId: 'p-late', steer: false } } as ServerEvent);
+  dispatch({ type: 'stream.message', payload: { sessionId: lateId, message: echo } } as ServerEvent);
   const moved = useAppStore.getState().sessions[lateId].messages;
-  const lastPrompt = moved.at(-1);
-  assert(lastPrompt?.type === 'user_prompt' && lastPrompt.prompt === 'One more thing');
+  const lastPrompt = moved.at(-2);
+  assert(lastPrompt?.type === 'user_prompt' && lastPrompt.prompt === 'One more thing', 'it now opens the turn after the previous result');
   assert.equal(lastPrompt.steer, undefined, 'no longer a steer');
-  assert.equal(lastPrompt.createdAt, 800, 'it opens the turn when that turn opened');
   const timeline = deriveTranscriptTimelineItems([...moved, secondAnswer], { sessionRunning: false });
-  const bubbles = timeline.filter(item => item.type === 'message' && item.message.type === 'user_prompt');
-  assert.equal(bubbles.length, 2, 'the late steer is its own turn, as a bubble');
-  const answers = timeline.filter(item => item.type === 'message' && item.message.type === 'assistant');
-  assert.equal(answers.length, 2, 'each turn keeps its own visible answer');
+  assert.equal(timeline.filter(item => item.type === 'message' && item.message.type === 'user_prompt').length, 2,
+    'the late steer is its own turn, as a bubble');
+  assert.equal(timeline.filter(item => item.type === 'message' && item.message.type === 'assistant').length, 2,
+    'each turn keeps its own visible answer');
 }
-
-// A batch of two late steers: the opener becomes a bubble, the one that
-// joined stays a steer row of that turn; both take their echoes along.
 {
   const batchId = useAppStore.getState().createDraftSession('/tmp/claude-steer-batch');
   const b: StreamMessage = { type: 'user_prompt', prompt: 'Late B', createdAt: 400, steer: true, promptId: 'p-b' };
-  const c: StreamMessage = { type: 'user_prompt', prompt: 'Late C', createdAt: 410, steer: true, promptId: 'p-c' };
-  const echoOf = (promptId: string, text: string, createdAt: number) => ({
-    type: 'user', uuid: promptId, hostEcho: true, createdAt, message: { content: [{ type: 'text', text }] },
-  }) as StreamMessage;
+  const c: StreamMessage = { type: 'user_prompt', prompt: 'Follow-up C', createdAt: 410, promptId: 'p-c' };
   const firstAnswer = assistant('a-first', 600, [{ type: 'text', text: 'First answer.' }], 'final_answer');
   useAppStore.setState(state => ({ sessions: { ...state.sessions, [batchId]: {
     ...state.sessions[batchId], provider: 'claude', status: 'running',
-    messages: [opener, b, echoOf('p-b', 'Late B', 401), c, echoOf('p-c', 'Late C', 411), firstAnswer, done],
+    messages: [opener, b, c, firstAnswer, done],
     streaming: { text: '', thinking: '', isStreaming: false },
   } } }));
-  dispatch({ type: 'stream.prompt_moved', payload: { sessionId: batchId, promptId: 'p-b', steer: false, createdAt: 800, echoCreatedAt: 801 } } as ServerEvent);
-  dispatch({ type: 'stream.prompt_moved', payload: { sessionId: batchId, promptId: 'p-c', steer: true, createdAt: 802, echoCreatedAt: 803 } } as ServerEvent);
+  dispatch({ type: 'stream.prompt_started', payload: { sessionId: batchId, promptId: 'p-b', steer: false } } as ServerEvent);
+  dispatch({ type: 'stream.prompt_started', payload: { sessionId: batchId, promptId: 'p-c', steer: true } } as ServerEvent);
   const moved = useAppStore.getState().sessions[batchId].messages;
-  const shape = moved.map(m => m.type === 'user_prompt' ? `prompt ${m.promptId}${m.steer ? ' (steer)' : ''}` : m.type === 'user' ? `echo ${m.uuid}` : m.type);
-  assert.deepEqual(shape, ['prompt undefined', 'assistant', 'result', 'prompt p-b', 'echo p-b', 'prompt p-c (steer)', 'echo p-c'],
-    'both leave the previous turn; the echo stays right behind its prompt');
+  const shape = moved.map(m => m.type === 'user_prompt' ? `prompt ${m.promptId}${m.steer ? ' (steer)' : ''}` : m.type);
+  assert.deepEqual(shape, ['prompt undefined', 'assistant', 'result', 'prompt p-b', 'prompt p-c (steer)'],
+    'both leave the previous turn in the order the CLI took them; the one that joined the batch is a steer of it');
   const secondAnswer = assistant('a-second', 900, [{ type: 'text', text: 'BEE. SEA.' }], 'final_answer');
   const timeline = deriveTranscriptTimelineItems([...moved, secondAnswer], { sessionRunning: false });
   assert.equal(timeline.filter(item => item.type === 'message' && item.message.type === 'user_prompt').length, 2,
-    'two turns, two bubbles: the joined steer is a row, not a third turn');
+    'two turns, two bubbles: the joined prompt is a row, not a third turn');
 }
 
 console.log('claude-steer-turn.test.ts passed');

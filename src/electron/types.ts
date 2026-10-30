@@ -159,17 +159,18 @@ export interface RunnerOptions {
    */
   onSelfStartedTurn?: () => void;
   /**
-   * Claude: the CLI cancelled a host prompt before it ever started (Stop
-   * withdrew it). Called in stream order, from the CLI's own lifecycle frame
-   * — before the stopped turn's result and anything sent after Stop.
+   * Claude: host prompts the CLI will never take — cancelled before they
+   * started (Stop withdrew them; called in stream order, from the CLI's own
+   * lifecycle frame, before the stopped turn's result and anything sent
+   * after Stop), or still queued when the runner went away.
    */
   onPromptsWithdrawn?: (promptIds: string[]) => void;
   /**
-   * Claude: a host prompt started while no turn ran — it opened a turn
-   * (`openerId === promptId`) or joined the batch `openerId` opened. Called
-   * in stream order, before that turn's init.
+   * Claude: the CLI took a host prompt — `folded` into the running turn,
+   * `opened` a turn, or `joined` the batch `openerId` opened. Called in
+   * stream order, before the prompt's echo and anything of its turn.
    */
-  onPromptStarted?: (started: { promptId: string; openerId: string }) => void;
+  onPromptStarted?: (started: { promptId: string; mode: 'folded' | 'opened' | 'joined'; openerId?: string }) => void;
   /** Claude: the host's id for the initial prompt (its SDK uuid; see claudePromptId). */
   claudePromptId?: string;
   onError?: (error: Error) => void;

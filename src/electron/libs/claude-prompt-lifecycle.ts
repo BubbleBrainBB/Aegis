@@ -15,13 +15,16 @@
  *   when the CLI processes the cancel — ahead of the stopped turn's result
  *   and of anything sent after Stop — so the host settles it before any later
  *   turn's output arrives.
- * - `opened` / `joined`: a prompt that starts while no turn runs opens one;
- *   prompts started after it before the turn's init joined that same batch.
+ * - `started`: where the CLI took a prompt — `folded` into the running turn
+ *   between tool rounds, `opened` a turn (the first to start while no turn
+ *   runs), or `joined` the batch that opener started (before its init). The
+ *   host stores a prompt sent into a busy runner at exactly this point.
  * - Stop: every queued host prompt is cancelled, then the interrupt follows
  *   (both written in one tick). The interrupt stops whatever turn is running
  *   when the CLI processes it. Its receipt lists the stopped prompts it could
  *   not reach (`still_queued`: a batch already parked for the next turn) —
- *   those, and only those, are interrupted again when their turn opens.
+ *   those, and only those, are interrupted again when their turn opens. Each
+ *   Stop is numbered, so a receipt only ever answers its own Stop.
  *   Prompts sent after Stop are never stopped: they reach the CLI behind it.
  *
  * Without lifecycle frames (older CLIs) nothing is tracked and nothing is
@@ -40,13 +43,13 @@ type WireMessage = {
   user_message_uuids?: unknown;
 };
 
+export type PromptStartMode = 'folded' | 'opened' | 'joined';
+
 export interface PromptFrame {
   /** On a top-level result: how many host prompts it answered (undefined when the CLI does not say). */
   answered?: number;
-  /** A host prompt opened a turn of its own. */
-  opened?: string;
-  /** A host prompt started in the batch another prompt opened (before the turn's init). */
-  joined?: { promptId: string; openerId: string };
+  /** The CLI took a host prompt (see PromptStartMode); `openerId` is the prompt that opened its turn. */
+  started?: { promptId: string; mode: PromptStartMode; openerId?: string };
   /** A host prompt the CLI cancelled before it ever started (Stop withdrew it). */
   withdrawn?: string;
   /** The turn just opened carries a prompt Stop could not reach: interrupt it now. */
@@ -74,7 +77,9 @@ export class ClaudePromptLifecycle {
   private readonly stopped = new Set<string>();
   /** Stopped prompts the Stop's interrupt could not reach. */
   private readonly survivors = new Set<string>();
-  private awaitingStopReceipt = false;
+  /** Stops whose interrupt receipt has not been read yet. */
+  private readonly awaitingStopReceipts = new Set<number>();
+  private stopGeneration = 0;
 
   /** Lifecycle frames seen: prompt identity is tracked and Stop can withdraw. */
   get tracksIdentity(): boolean {
@@ -116,25 +121,27 @@ export class ClaudePromptLifecycle {
   }
 
   /**
-   * Stop was pressed: every pending prompt is now stopped. Returns the ones
-   * to cancel by uuid — all still queued (not started) — to be written
-   * before the interrupt. Nothing without lifecycle frames.
+   * Stop was pressed: every pending prompt is now stopped. Returns this
+   * Stop's number and the prompts to cancel by uuid — all still queued (not
+   * started) — to be written before the interrupt. Nothing to cancel without
+   * lifecycle frames.
    */
-  beginStop(): string[] {
+  beginStop(): { generation: number; cancel: string[] } {
     for (const uuid of this.pending) this.stopped.add(uuid);
-    this.awaitingStopReceipt = true;
-    if (!this.lifecycleSeen) return [];
-    return [...this.pending].filter((uuid) => this.withdrawable.has(uuid) && !this.started.has(uuid));
+    const generation = ++this.stopGeneration;
+    this.awaitingStopReceipts.add(generation);
+    if (!this.lifecycleSeen) return { generation, cancel: [] };
+    return { generation, cancel: [...this.pending].filter((uuid) => this.withdrawable.has(uuid) && !this.started.has(uuid)) };
   }
 
   /**
-   * The Stop's interrupt receipt. Records the stopped prompts it could not
-   * reach; true when one of them already opened the turn now running (it
-   * must be interrupted at once). Receipts of other interrupts are ignored.
+   * The interrupt receipt of Stop `generation`. Records the stopped prompts
+   * it could not reach; true when one of them already opened the turn now
+   * running (it must be interrupted at once). Each Stop's receipt counts
+   * once; an earlier Stop's receipt never stands in for a later one's.
    */
-  stopReceipt(stillQueued: readonly unknown[] | undefined): boolean {
-    if (!this.awaitingStopReceipt) return false;
-    this.awaitingStopReceipt = false;
+  stopReceipt(generation: number, stillQueued: readonly unknown[] | undefined): boolean {
+    if (!this.awaitingStopReceipts.delete(generation)) return false;
     if (!this.lifecycleSeen || !stillQueued) return false;
     for (const uuid of stillQueued) {
       if (typeof uuid === 'string' && this.stopped.has(uuid) && this.pending.has(uuid)) this.survivors.add(uuid);
@@ -146,19 +153,29 @@ export class ClaudePromptLifecycle {
     return true;
   }
 
+  /**
+   * Withdrawable prompts the CLI never took — the runner is going away.
+   * They will get no result and no frame; forgotten here.
+   */
+  unstarted(): string[] {
+    const left = [...this.pending].filter((uuid) => this.withdrawable.has(uuid) && !this.started.has(uuid));
+    for (const uuid of left) this.forget(uuid);
+    return left;
+  }
+
   private onStarted(uuid: string): PromptFrame {
     if (this.started.has(uuid)) return {};
     this.started.add(uuid);
     // Folded into the running turn between tool rounds.
-    if (this.turnActive) return {};
+    if (this.turnActive) return { started: { promptId: uuid, mode: 'folded' } };
     const frame: PromptFrame = {};
     if (this.batchOpener === null) {
       this.batchOpener = uuid;
       this.runningTurn.clear();
       this.runningTurnInterrupted = false;
-      frame.opened = uuid;
+      frame.started = { promptId: uuid, mode: 'opened', openerId: uuid };
     } else {
-      frame.joined = { promptId: uuid, openerId: this.batchOpener };
+      frame.started = { promptId: uuid, mode: 'joined', openerId: this.batchOpener };
     }
     this.runningTurn.add(uuid);
     // A survivor opens its turn now that the interrupt has passed: stop it

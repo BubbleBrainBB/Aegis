@@ -44,8 +44,9 @@ async function run(label, s, onMessage, done) {
   for await (const message of s.q) {
     const frame = s.lifecycle.observe(message);
     if (frame.withdrawn) s.log.push(`withdrawn ${s.name(frame.withdrawn)}`);
-    if (frame.opened) s.log.push(`opened ${s.name(frame.opened)}`);
-    if (frame.joined) s.log.push(`joined ${s.name(frame.joined.promptId)}<${s.name(frame.joined.openerId)}`);
+    if (frame.started?.mode === 'opened') s.log.push(`opened ${s.name(frame.started.promptId)}`);
+    if (frame.started?.mode === 'joined') s.log.push(`joined ${s.name(frame.started.promptId)}<${s.name(frame.started.openerId)}`);
+    if (frame.started?.mode === 'folded') s.log.push(`folded ${s.name(frame.started.promptId)}`);
     if (frame.interrupt) s.log.push('interrupt');
     if (message.type === 'result' && !message.parent_tool_use_id) s.log.push(`result ${(message.user_message_uuids ?? []).map(s.name).join('+')}`);
     await onMessage(message);
@@ -67,9 +68,10 @@ async function run(label, s, onMessage, done) {
       stopped = true;
       s.send('B', 'Steer: end with BANANA.');
       await new Promise((resolve) => setTimeout(resolve, 1500));
-      for (const uuid of s.lifecycle.beginStop()) void s.q.cancelAsyncMessage(uuid);
+      const stop = s.lifecycle.beginStop();
+      for (const uuid of stop.cancel) void s.q.cancelAsyncMessage(uuid);
       const receipt = await s.q.interrupt();
-      if (s.lifecycle.stopReceipt(receipt?.still_queued)) s.log.push('interrupt (receipt)');
+      if (s.lifecycle.stopReceipt(stop.generation, receipt?.still_queued)) s.log.push('interrupt (receipt)');
       s.send('C', 'Reply with just: C-AFTER-STOP');
     }
     if (message.type === 'result' && !message.parent_tool_use_id) results += 1;
@@ -104,7 +106,7 @@ async function run(label, s, onMessage, done) {
     }
     if (message.type === 'result' && !message.parent_tool_use_id) results += 1;
   }, () => results >= 1);
-  assert.deepEqual(log.filter((e) => /^(opened|joined)/.test(e)), ['opened A'], 'the steer never opens a turn');
+  assert.deepEqual(log.filter((e) => /^(opened|joined|folded)/.test(e)), ['opened A', 'folded B'], 'the steer folds in, never opens a turn');
   assert(log.includes('result A+B'), 'one result answers both');
 }
 
