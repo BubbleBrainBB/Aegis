@@ -609,7 +609,10 @@ export function PromptInput({
       // Devin folds a session/prompt sent mid-turn into the running turn.
       runtimeProvider === 'devin' ||
       // MiniMax Code takes a text steer (mcode/session/steer) into the running turn.
-      runtimeProvider === 'minimax') &&
+      runtimeProvider === 'minimax' ||
+      // Claude folds a streaming-input prompt into the running turn between
+      // tool rounds; the turn's result lists it in user_message_uuids.
+      runtimeProvider === 'claude') &&
     isRunning &&
     !approvalPending &&
     !delegationPending &&

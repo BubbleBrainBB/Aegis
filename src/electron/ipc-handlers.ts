@@ -3604,7 +3604,7 @@ const runnerHandles = new Map<
      * the flag.
      */
     selfStartedTurn?: boolean;
-    /** Live context is stale or poisoned; abort at the next `result` instead of reusing. */
+    /** Live context or config is stale or poisoned; abort at the next `result` instead of reusing. */
     doomed?: boolean;
     /** Automation runners auto-approve permissions; never reuse them for human turns. */
     autoApprove?: boolean;
@@ -10577,6 +10577,21 @@ async function handleSessionContinueImpl(
   // DeepSeek steers mid-turn through the runtime's inbox (client.prompt);
   // config drift while streaming must not abort the live runtime either.
   const deepseekMidTurn = nextProvider === 'deepseek' && session.status === 'running';
+  // Claude folds a prompt pushed while a turn streams into that turn between
+  // tool rounds (streaming input). Config drift must not abort it: the entry
+  // is doomed instead, so it retires once drained and the next turn respawns
+  // with the new config. A turn the user stopped is not live — a send behind
+  // it keeps the abort-and-respawn path.
+  const claudeMidTurn =
+    nextProvider === 'claude' &&
+    existingEntry?.provider === 'claude' &&
+    (existingEntry.inFlightTurns ?? 0) > (existingEntry.stoppedTurns ?? 0);
+  const claudeConfigDrift =
+    modelChanged ||
+    betasChanged ||
+    accessModeChanged ||
+    executionModeChanged ||
+    claudeReasoningEffortChanged;
   // A kimi runner whose adapter session was released while idle (daemon
   // exit, session_gone) is a zombie: reusing its handle throws "No Kimi
   // session found" at send time with a toast and a dropped message. Respawn
@@ -10605,16 +10620,12 @@ async function handleSessionContinueImpl(
       (nextProvider === 'opencode' && opencodePermissionModeChanged) ||
       (nextProvider === 'claude' &&
         (
-          modelChanged ||
-          betasChanged ||
-          accessModeChanged ||
-          executionModeChanged ||
-          claudeReasoningEffortChanged ||
           // Never reuse a runner whose live context is stale/poisoned, an
           // auto-approving automation runner for a human turn, or a live
           // context that still contains invalid thinking blocks the stored
-          // history was sanitized against.
-          existingEntry.doomed === true ||
+          // history was sanitized against. Mid-turn, drift and doom wait for
+          // the drain instead (claudeMidTurn).
+          (!claudeMidTurn && (claudeConfigDrift || existingEntry.doomed === true)) ||
           existingEntry.autoApprove === true ||
           sanitizedHistoryResult.hadInvalidThinking
         ))
@@ -10636,6 +10647,9 @@ async function handleSessionContinueImpl(
         // idle→busy startup latency (cold / warm-reuse / prewarm-hit), which
         // is exactly the idle-dispatch case.
         const wasIdle = (existingEntry.inFlightTurns ?? 0) === 0;
+        // A steer carrying new composer config runs on the live runner's
+        // config; the drained result retires it so the next turn respawns.
+        if (claudeMidTurn && claudeConfigDrift) existingEntry.doomed = true;
         // Count the dispatched turn BEFORE send so the reaper can never see
         // this entry as idle between dispatch and the first stream message.
         existingEntry.inFlightTurns = (existingEntry.inFlightTurns ?? 0) + 1;
