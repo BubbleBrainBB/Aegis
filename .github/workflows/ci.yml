@@ -12,7 +12,7 @@ concurrency:
 jobs:
   test:
     name: Test & Build (macOS)
-    runs-on: macos-14
+    runs-on: macos-15
     # A run takes ~20 min; a hung Electron test should fail fast, not hold the
     # runner for GitHub's 6-hour default.
     timeout-minutes: 45
