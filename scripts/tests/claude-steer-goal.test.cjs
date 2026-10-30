@@ -87,17 +87,34 @@ async function within(promise, ms, label) {
     const ctrl = manager.createClaudeGoalController('withdrawn-goal', false);
     const wire = transport(ctrl);
     await ctrl.initialize(wire);
-    const started = Date.now();
-    const activation = manager.awaitClaudeGoalSet('withdrawn-goal', 'Never read', async () => {
-      ctrl.submitted(await ctrl.prepare('/goal Never read'));
-    });
+    // Watch the goal-start timer itself: it must be cleared, never left to
+    // fire its runtime abort 30s later.
+    const realSetTimeout = global.setTimeout;
+    const realClearTimeout = global.clearTimeout;
+    const goalTimers = new Set();
+    const cleared = new Set();
+    global.setTimeout = (fn, ms, ...rest) => {
+      const handle = realSetTimeout(fn, ms, ...rest);
+      if (ms === 30_000) goalTimers.add(handle);
+      return handle;
+    };
+    global.clearTimeout = (handle) => { cleared.add(handle); return realClearTimeout(handle); };
+    let activation;
+    try {
+      activation = manager.awaitClaudeGoalSet('withdrawn-goal', 'Never read', async () => {
+        ctrl.submitted(await ctrl.prepare('/goal Never read'));
+      });
+    } finally {
+      global.setTimeout = realSetTimeout;
+    }
     await tick();
+    assert.equal(goalTimers.size, 1, 'the goal start armed its 30s timeout');
     ctrl.withdrawn(1, true);
     manager.rejectClaudeGoalSet('withdrawn-goal', new manager.ClaudeGoalWithdrawnError());
     await assert.rejects(within(activation, 2000, 'withdrawn goal start'), (error) => error instanceof manager.ClaudeGoalWithdrawnError);
-    assert(Date.now() - started < 2000);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    assert.equal(wire.calls.includes('abort'), false, 'the goal-start timeout never fires its runtime abort');
+    global.clearTimeout = realClearTimeout;
+    for (const handle of goalTimers) assert(cleared.has(handle), 'the withdrawal cleared the 30s goal-start timer');
+    assert.equal(wire.calls.includes('abort'), false, 'no runtime abort');
     manager.releaseClaudeGoalController('withdrawn-goal', ctrl);
   }
 

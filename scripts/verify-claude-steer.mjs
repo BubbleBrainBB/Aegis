@@ -89,33 +89,46 @@ assert.ok(
   ipc.includes('if (!(claudeSteer && existingEntry.activeAgentRunId && existingEntry.activeAgentId === sessionAgentId)) {'),
   'a steer must keep the live agent run id'
 );
-// Stop: the withdrawal's cancels are written right before the interrupt, in
-// one tick; a result's re-interrupt waits while the withdrawal is out.
-assert.match(
-  ipc,
-  /const withdrawal = entry\.handle\.withdrawQueuedPrompts\?\.\(\);\s*entry\.handle\.interrupt!\(\)/,
-  'Stop must issue the withdrawal and the interrupt back to back'
-);
+// Stop: the runner's stopTurn (cancels, then the interrupt, in one tick).
 assert.ok(
-  ipc.includes('if (!currentEntry.stopWithdrawal?.deferReinterrupt()) {'),
-  'a result must not re-interrupt while the withdrawal is unanswered'
+  ipc.includes('const stopTurn = entry.handle.stopTurn ?? entry.handle.interrupt!;'),
+  'Stop must go through the runner\'s stopTurn'
 );
-assert.ok(
-  ipc.includes('onPromptOpenedTurn: (promptId) => promoteLateClaudeSteer(mainWindow, session.id, handle, promptId)'),
-  'a steer that opened its own turn must be rewritten as that turn\'s opener'
-);
+// Withdrawals and late-steer moves settle from the CLI's own frames, in
+// stream order; the count-based re-interrupt only runs for runners that do
+// not track prompt identity (the runner interrupts what Stop missed itself).
+assert.ok(ipc.includes('onPromptsWithdrawn: (promptIds) => settleWithdrawnClaudePrompts(mainWindow, session.id, handle, promptIds),'),
+  'withdrawals must settle from the runner\'s frame callback');
+assert.ok(ipc.includes('onPromptStarted: (started) => moveLateClaudeSteer(mainWindow, session.id, handle, started),'),
+  'a late steer must move to where its turn opened');
+assert.ok(ipc.includes('if (!currentEntry.handle.tracksPromptIdentity?.()) {'),
+  'no count-based re-interrupt for identity-tracking runners');
+assert.ok(ipc.includes('promptIds = promptIds.filter((id) => counted.delete(id));'),
+  'a withdrawal settles each prompt once, only if still counted');
 assert.ok(
   ipc.includes('if (!(error instanceof ClaudeGoalWithdrawnError)) handleSessionStop(mainWindow, sessionId);'),
   'a withdrawn goal start must not stop the session again'
 );
+// Stored Claude messages reload in arrival order (claude-session-clock).
+assert.ok(ipc.includes('createdAt: claudeTimestamp(session.id, attributedMessage.createdAt ?? Date.now()),'),
+  'stored Claude stream messages are stamped in arrival order');
+assert.ok(ipc.includes("const createdAt = nextProvider === 'claude' ? claudeTimestamp(sessionId) : Date.now();"),
+  'a Claude prompt is stamped in the same sequence');
 
 const runner = read('src', 'electron', 'libs', 'runner.ts');
-// Withdrawal belongs to the Stop press alone: re-interrupts (after a result,
-// for a woken turn) must never take back prompts sent after Stop.
-const interruptBody = runner.slice(runner.indexOf('    interrupt: async () => {'), runner.indexOf('    stopTask: async'));
-assert.ok(interruptBody.length > 0 && !/withdraw/i.test(interruptBody), 'interrupt() must not withdraw prompts');
-assert.ok(runner.includes('if (goalSetWithdrawn) rejectClaudeGoalSet(session.id, new ClaudeGoalWithdrawnError());'),
+// Re-interrupts (after a result, for a woken turn) never withdraw: only the
+// Stop press does, for the prompts pending at that moment.
+const interruptBody = runner.slice(runner.indexOf('    interrupt: async () => {'), runner.indexOf('    stopTurn: async () => {'));
+assert.ok(interruptBody.length > 0 && !/beginStop|cancelAsyncMessage/.test(interruptBody), 'interrupt() must not withdraw prompts');
+const stopBody = runner.slice(runner.indexOf('    stopTurn: async () => {'), runner.indexOf('    tracksPromptIdentity:'));
+assert.match(stopBody, /const toCancel = promptLifecycle\.beginStop\(\);\s*if \(cancel\) for \(const uuid of toCancel\) void cancel\(uuid\)[\s\S]*stopInterruptPending = true;[\s\S]*await interruptQuery\(\)/,
+  'stopTurn writes the cancels, then the interrupt, without awaiting in between');
+assert.ok(!/await[\s\S]*const toCancel/.test(stopBody), 'nothing awaited before the cancels');
+assert.ok(runner.includes('if (goalSet) rejectClaudeGoalSet(session.id, new ClaudeGoalWithdrawnError());'),
   'withdrawing a /goal prompt must end its goal-start wait');
+assert.ok(runner.includes('if (promptFrame.withdrawn) promptWithdrawn(promptFrame.withdrawn);'),
+  'withdrawals come from the frame loop');
+assert.ok(runner.includes('interrupt: () => interruptQuery(),'), 'the /goal controller interrupts through interruptQuery (Stop receipt)');
 assert.match(runner, /message: \{ content: \[\{ type: 'text', text: trimmed \}\] \},\s*hostEcho: true,/,
   'the runner must mark its own prompt echo');
 

@@ -1,5 +1,6 @@
 import { StreamRetryStatus } from './StreamRetryStatus';
 import { opensTurn } from '../../shared/turn-boundary';
+import { findClaudeRewindAnchor } from '../../shared/claude-rewind-anchor';
 import { EnvironmentChatSurface } from './environment/EnvironmentPanelLayout';
 import { WorkstreamDisclosureRegistry } from './WorkstreamDisclosureState';
 import { ImageStudioComposerHome } from './ImageStudioComposerDock';
@@ -1232,23 +1233,10 @@ export function ChatPane({
       }
 
       if (session.provider !== 'claude') return null;
-      for (let index = userPromptIndex + 1; index < session.messages.length; index += 1) {
-        const message = session.messages[index];
-        if (!message) continue;
-        if (message.type === 'user_prompt') break;
-        if (message.type !== 'user') continue;
-        const uuid = (message as { uuid?: unknown }).uuid;
-        if (typeof uuid !== 'string' || !uuid) continue;
-        const blocks = Array.isArray(message.message?.content) ? message.message.content : [];
-        if (!blocks.some((block) => block?.type === 'text')) continue;
-        return {
-          sessionId,
-          provider: 'claude',
-          anchorMessageId: uuid,
-          promptPreview: promptMessage.prompt || '',
-        };
-      }
-      return null;
+      const anchorMessageId = findClaudeRewindAnchor(session.messages, userPromptIndex);
+      return anchorMessageId
+        ? { sessionId, provider: 'claude', anchorMessageId, promptPreview: promptMessage.prompt || '' }
+        : null;
     },
     [session, sessionId]
   );

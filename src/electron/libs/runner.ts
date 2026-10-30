@@ -32,7 +32,7 @@ import {
 import { getRequiredClaudeCodeRuntime } from './claude-runtime';
 import { createPromptCancellation } from './claude-prompt-cancellation';
 import { ClaudeTurnOriginTracker } from './claude-turn-origin';
-import { ClaudePromptQueue, withdrawQueued } from './claude-prompt-queue';
+import { ClaudePromptLifecycle } from './claude-prompt-lifecycle';
 import { captureGitTreeSnapshot, diffGitTreeSnapshots } from './git-turn-snapshot';
 import { createAegisMemoryMcpServer, buildMemoryContext, MEMORY_SYSTEM_PROMPT } from './memory-mcp';
 import { isDelegateExecutionSession } from './delegate-service';
@@ -560,7 +560,9 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
     claudeReasoningEffort,
     onMessage,
     onSelfStartedTurn,
-    onPromptOpenedTurn,
+    onPromptsWithdrawn,
+    onPromptStarted,
+    claudePromptId: initialPromptId,
     onPermissionRequest,
     onClaudeExecutionModeChange,
     onError,
@@ -575,12 +577,15 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
   let currentModel = typeof model === 'string' && model.trim().length > 0 ? model.trim() : undefined;
   let currentRuntimeModel = toClaudeCodeRuntimeModel(currentModel, betas);
   let activeQuery: ClaudeQuery | null = null;
-  // The prompts this runner sent for the host, until a result names them in
-  // user_message_uuids (hidden goal sends are not among them): which a turn
-  // took, which still wait queued (claude-prompt-queue).
-  const promptQueue = new ClaudePromptQueue();
+  // The prompts this runner sent for the host, frame by frame (hidden goal
+  // control sends are not among them): which a turn took, which still wait
+  // queued, which Stop withdrew (claude-prompt-lifecycle).
+  const promptLifecycle = new ClaudePromptLifecycle();
   // Which of them set a goal: withdrawing one must end its goal-start wait.
   const goalPromptUuids = new Set<string>();
+  // The next interrupt issued is the Stop's: its receipt says which stopped
+  // prompts it could not reach (the /goal controller may issue it for us).
+  let stopInterruptPending = false;
   const backgroundTasks = new ClaudeBackgroundTasks();
   const emitBackgroundTaskEvent = (event: BackgroundTaskEvent) => {
     onMessage(
@@ -757,7 +762,8 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
         if (promptId) message.uuid = promptId as SDKUserMessage['uuid'];
         goalController.submitted(prepared);
         if (message.uuid) {
-          promptQueue.sent(message.uuid as string);
+          // Only a prompt the host knows by id can be withdrawn and settled.
+          promptLifecycle.sent(message.uuid as string, Boolean(promptId));
           if (/^\s*\/goal\s+\S/i.test(trimmed)) goalPromptUuids.add(message.uuid as string);
         }
         inputQueue.push(message);
@@ -798,31 +804,33 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
       });
   };
 
-  // Stop takes back the host prompts still queued behind the live turn (see
-  // withdrawQueued): the cancels are written synchronously, so the host's
-  // interrupt right after reaches the CLI behind them. Never the /goal
-  // controller's commands or background-task notifications, which a blanket
-  // cancel_queued interrupt would drop.
-  const withdrawQueuedPrompts = (): Promise<string[]> => {
-    const query = activeQuery as (ClaudeQuery & { cancelAsyncMessage?: (uuid: string) => Promise<boolean> }) | null;
-    const cancel = query && typeof query.cancelAsyncMessage === 'function'
-      ? (uuid: string) => query.cancelAsyncMessage!(uuid)
-      : undefined;
-    return withdrawQueued(promptQueue, cancel).then((withdrawn) => {
-      if (withdrawn.length === 0) return withdrawn;
-      const goalSetWithdrawn = withdrawn.some((uuid) => goalPromptUuids.has(uuid));
-      for (const uuid of withdrawn) goalPromptUuids.delete(uuid);
-      goalController.withdrawn(withdrawn.length, goalSetWithdrawn);
-      // The goal never reached Claude: end its start wait now rather than at
-      // the timeout, which would abort the whole runtime.
-      if (goalSetWithdrawn) rejectClaudeGoalSet(session.id, new ClaudeGoalWithdrawnError());
-      return withdrawn;
-    });
+  // Every interrupt goes through here, so the Stop's receipt is seen even
+  // when the /goal controller issues it. A stopped prompt the Stop could not
+  // reach that already opened the running turn is interrupted at once.
+  const interruptQuery = async (): Promise<void> => {
+    const query = activeQuery;
+    if (!query) return;
+    const isStop = stopInterruptPending;
+    stopInterruptPending = false;
+    const receipt = (await query.interrupt()) as { still_queued?: unknown } | undefined | void;
+    if (!isStop) return;
+    const stillQueued = receipt && Array.isArray(receipt.still_queued) ? receipt.still_queued : undefined;
+    if (promptLifecycle.stopReceipt(stillQueued)) await query.interrupt();
+  };
+
+  // A withdrawn prompt never gets a result: it stops counting as goal work,
+  // and a withdrawn /goal ends its start wait now rather than at the timeout
+  // (which would abort the whole runtime).
+  const promptWithdrawn = (uuid: string) => {
+    const goalSet = goalPromptUuids.delete(uuid);
+    goalController.withdrawn(1, goalSet);
+    if (goalSet) rejectClaudeGoalSet(session.id, new ClaudeGoalWithdrawnError());
+    onPromptsWithdrawn?.([uuid]);
   };
 
   // The runtime won't emit init until it has an initial prompt to process.
   // Queue the first prompt immediately so the session can start.
-  enqueuePrompt(prompt, attachments, currentModel);
+  enqueuePrompt(prompt, attachments, currentModel, initialPromptId);
 
   // 异步执行
   (async () => {
@@ -1269,7 +1277,7 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
         commands: () => result.supportedCommands(),
         send: (text) => inputQueue.push({ type: 'user', uuid: uuidv4() as SDKUserMessage['uuid'], session_id: currentSessionId,
           parent_tool_use_id: null, message: { role: 'user', content: text } }),
-        interrupt: () => result.interrupt(),
+        interrupt: () => interruptQuery(),
         abort: () => { abortController.abort(); inputQueue.close(); },
       }).catch(error => { rejectClaudeGoalSet(session.id, error); onError?.(error); });
 
@@ -1321,9 +1329,12 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
         // all of them with this one result: the count of the host's own it
         // names lets the host (and the /goal controller) settle each send.
         // CLIs without the field leave it unset; a woken turn may name none.
-        const promptFrame = promptQueue.observe(message as Parameters<typeof promptQueue.observe>[0]);
+        const promptFrame = promptLifecycle.observe(message as Parameters<typeof promptLifecycle.observe>[0]);
         const answeredPrompts = promptFrame.answered;
-        if (promptFrame.opened) onPromptOpenedTurn?.(promptFrame.opened);
+        if (promptFrame.withdrawn) promptWithdrawn(promptFrame.withdrawn);
+        if (promptFrame.opened) onPromptStarted?.({ promptId: promptFrame.opened, openerId: promptFrame.opened });
+        if (promptFrame.joined) onPromptStarted?.(promptFrame.joined);
+        if (promptFrame.interrupt) void interruptQuery().catch(() => undefined);
         if (await goalController.receive(message as unknown as Parameters<typeof goalController.receive>[0], answeredPrompts)) continue;
         if (taskFrame.consumed) continue;
 
@@ -1551,15 +1562,31 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
     },
     send: (text, promptAttachments, requestedModel, _codexSkills, _codexMentions, sendOptions) =>
       enqueuePrompt(text, promptAttachments, requestedModel, sendOptions?.claudePromptId),
-    withdrawQueuedPrompts,
     interrupt: async () => {
       if (!activeQuery) {
         throw new Error('Session is not active.');
       }
       if (goalController.snapshot.goal && goalController.snapshot.goal?.status !== 'complete')
         await goalController.interrupt();
-      else await activeQuery.interrupt();
+      else await interruptQuery();
     },
+    // Stop: cancel every queued host prompt by uuid, then interrupt — all
+    // written in this tick, ahead of anything the user sends after Stop.
+    // Withdrawals settle from the CLI's own frames (onPromptsWithdrawn).
+    stopTurn: async () => {
+      const query = activeQuery as (ClaudeQuery & { cancelAsyncMessage?: (uuid: string) => Promise<boolean> }) | null;
+      if (!query) {
+        throw new Error('Session is not active.');
+      }
+      const cancel = typeof query.cancelAsyncMessage === 'function' ? query.cancelAsyncMessage.bind(query) : undefined;
+      const toCancel = promptLifecycle.beginStop();
+      if (cancel) for (const uuid of toCancel) void cancel(uuid).catch(() => undefined);
+      stopInterruptPending = true;
+      if (goalController.snapshot.goal && goalController.snapshot.goal?.status !== 'complete')
+        await goalController.interrupt();
+      else await interruptQuery();
+    },
+    tracksPromptIdentity: () => promptLifecycle.tracksIdentity,
     stopTask: async (taskId: string) => {
       if (!activeQuery) {
         throw new Error('Session is not active.');

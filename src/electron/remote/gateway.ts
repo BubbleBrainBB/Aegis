@@ -1098,7 +1098,7 @@ export class RemoteGateway {
     let textDelta = false;
     // A steer joins the live turn: its run, live text and approvals carry on.
     // One that came too late opens its own turn after all.
-    if (id && ((event.type === "stream.user_prompt" && !p.steer) || event.type === "stream.prompt_opened_turn")) {
+    if (id && ((event.type === "stream.user_prompt" && !p.steer) || (event.type === "stream.prompt_moved" && !p.steer))) {
       this.runIds.set(id, randomUUID());
       this.live.delete(id);
       for (const [key, value] of this.permissions)

@@ -367,46 +367,54 @@ export class FeishuBridge {
 
   // ── Session events (from the app's broadcast) ───────────────────────────
 
+  /** A new turn of a bound session begins: close the previous card, start this turn's. */
+  private openTurnCard(sessionId: string) {
+    const bound = this.scopeOf(sessionId);
+    if (!bound) return;
+    const previous = this.turns.get(sessionId);
+    if (previous) this.finish(previous, previous.stopped ? "stopped" : "done");
+    const pending = this.pendingTurn.get(sessionId);
+    this.pendingTurn.delete(sessionId);
+    const [scope, binding] = bound;
+    this.queue.block(scope);
+    const target: SendTarget = pending?.target ?? {
+      chatId: binding.chatId,
+      replyTo: binding.anchorMessageId,
+      replyInThread: binding.threadId ? true : undefined,
+    };
+    const run: TurnRun = {
+      scope,
+      sessionId,
+      target,
+      turn: new TurnState(),
+      fromDesktop: !pending,
+      requesters: pending?.requesters ?? [],
+      reactions: pending?.reactions ?? [],
+      stopped: false,
+      seq: 0,
+      rendering: Promise.resolve(),
+      stopToken: "",
+    };
+    run.stopToken = this.token("stop", target.chatId, run.requesters, DAY, { s: sessionId });
+    this.turns.set(sessionId, run);
+    run.timer = setTimeout(() => this.render(run), SHOW_EMPTY_CARD_AFTER_MS);
+  }
+
   capture(event: ServerEvent) {
     if (!this.transport) return;
     const payload = event.payload as { sessionId?: string } & Record<string, unknown>;
     const sessionId = payload?.sessionId;
     if (!sessionId) return;
     switch (event.type) {
-      case "stream.user_prompt": {
-        const bound = this.scopeOf(sessionId);
-        if (!bound) return;
+      case "stream.user_prompt":
         // A steer joins the live turn: it keeps that turn's card.
         if (payload.steer && this.turns.has(sessionId)) return;
-        const previous = this.turns.get(sessionId);
-        if (previous) this.finish(previous, previous.stopped ? "stopped" : "done");
-        const pending = this.pendingTurn.get(sessionId);
-        this.pendingTurn.delete(sessionId);
-        const [scope, binding] = bound;
-        this.queue.block(scope);
-        const target: SendTarget = pending?.target ?? {
-          chatId: binding.chatId,
-          replyTo: binding.anchorMessageId,
-          replyInThread: binding.threadId ? true : undefined,
-        };
-        const run: TurnRun = {
-          scope,
-          sessionId,
-          target,
-          turn: new TurnState(),
-          fromDesktop: !pending,
-          requesters: pending?.requesters ?? [],
-          reactions: pending?.reactions ?? [],
-          stopped: false,
-          seq: 0,
-          rendering: Promise.resolve(),
-          stopToken: "",
-        };
-        run.stopToken = this.token("stop", target.chatId, run.requesters, DAY, { s: sessionId });
-        this.turns.set(sessionId, run);
-        run.timer = setTimeout(() => this.render(run), SHOW_EMPTY_CARD_AFTER_MS);
+        this.openTurnCard(sessionId);
         return;
-      }
+      case "stream.prompt_moved":
+        // A steer that came too late opened a turn of its own.
+        if (!payload.steer) this.openTurnCard(sessionId);
+        return;
       case "stream.message": {
         const run = this.turns.get(sessionId);
         if (run && run.turn.ingest(payload.message as StreamMessage)) this.schedule(run);

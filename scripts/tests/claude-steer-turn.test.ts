@@ -1,7 +1,5 @@
 import assert from 'node:assert/strict';
-import { ClaudePromptQueue, StopWithdrawalGate, withdrawQueued } from '../../src/electron/libs/claude-prompt-queue';
-import { settleClaudeResult, withdrawClaudePrompts } from '../../src/electron/libs/claude-turn-accounting';
-import { markTurnsStopped } from '../../src/electron/libs/claude-stop-reconcile';
+import { withdrawClaudePrompts } from '../../src/electron/libs/claude-turn-accounting';
 import { buildSessionUserPromptSummaries } from '../../src/shared/outline-summary';
 import { opensTurn } from '../../src/shared/turn-boundary';
 import { deriveTranscriptTimelineItems } from '../../src/ui/utils/transcript-timeline';
@@ -10,125 +8,6 @@ import { buildTurnChangeContext } from '../../src/ui/utils/turn-change-records';
 import { useAppStore } from '../../src/ui/store/useAppStore';
 import { useComposerQueueStore } from '../../src/ui/store/useComposerQueueStore';
 import type { ServerEvent, StreamMessage } from '../../src/ui/types';
-
-// ── Runner prompt queue: what Stop may withdraw ──────────────────────────────
-
-const init = { type: 'system', subtype: 'init' };
-const started = (uuid: string) => ({ type: 'command_lifecycle', state: 'started', command_uuid: uuid });
-const result = (uuids?: string[]) => ({ type: 'result', ...(uuids ? { user_message_uuids: uuids } : {}) });
-{
-  const queue = new ClaudePromptQueue();
-  queue.sent('a');
-  assert.deepEqual(queue.withdrawable(), [], 'nothing is withdrawable before a turn runs (prewait batch)');
-  queue.observe(started('a'));
-  queue.observe(init);
-  queue.sent('b');
-  queue.sent('c');
-  assert.deepEqual(queue.withdrawable(), ['b', 'c'], 'steers queued behind the live turn');
-  queue.observe(started('b')); // folded in between tool rounds
-  assert.deepEqual(queue.withdrawable(), ['c'], 'a folded steer rides the turn');
-  assert.deepEqual(queue.withdrawn(['c']), ['c']);
-  assert.equal(queue.observe(result(['a', 'b'])).answered, 2, 'the result answers the opener and the folded steer');
-  assert.deepEqual(queue.withdrawable(), [], 'between turns nothing is offered');
-  assert.equal(queue.observe(result(['c'])).answered, 0, 'a withdrawn prompt is never counted again');
-}
-{
-  const queue = new ClaudePromptQueue();
-  queue.sent('a');
-  queue.observe(init);
-  queue.sent('b');
-  assert.equal(queue.observe(result(['a', 'b'])).answered, 2);
-  assert.deepEqual(queue.withdrawn(['b']), [], 'answered meanwhile: not withdrawn, the ledger already settled it');
-  assert.equal(queue.observe(result()).answered, undefined, 'older CLIs do not say');
-  queue.sent('x');
-  queue.observe(init);
-  queue.observe({ ...started('x'), parent_tool_use_id: 'task' });
-  assert.deepEqual(queue.withdrawable(), ['x'], 'subagent frames never mark a host prompt taken');
-}
-
-// A steer the CLI takes while no turn runs opened a turn of its own (late).
-{
-  const queue = new ClaudePromptQueue();
-  queue.sent('a');
-  assert.deepEqual(queue.observe(started('a')), { opened: 'a' }, 'the opener opens its turn');
-  queue.observe(init);
-  queue.sent('steer');
-  assert.deepEqual(queue.observe(started('steer')), {}, 'folded into the live turn: not an opener');
-  queue.sent('late');
-  queue.observe(result(['a', 'steer']));
-  assert.deepEqual(queue.observe(started('late')), { opened: 'late' }, 'taken after the turn ended: it opens the next turn');
-  assert.deepEqual(queue.observe(started('late')), {}, 'reported once');
-}
-
-// ── Stop: cancels go out before the interrupt, in the same tick ──────────────
-
-void (async () => {
-  const queue = new ClaudePromptQueue();
-  queue.sent('a');
-  queue.observe(started('a'));
-  queue.observe(init);
-  queue.sent('steer');
-  const wire: string[] = [];
-  let ack: (value: boolean) => void = () => {};
-  const withdrawal = withdrawQueued(queue, (uuid) => {
-    wire.push(`cancel ${uuid}`);
-    return new Promise<boolean>((resolve) => { ack = resolve; });
-  });
-  wire.push('interrupt');
-  assert.deepEqual(wire, ['cancel steer', 'interrupt'], 'the interrupt is written behind the cancels, before any later send');
-  ack(true);
-  assert.deepEqual(await withdrawal, ['steer']);
-  assert.deepEqual(await withdrawQueued(new ClaudePromptQueue(), undefined), [], 'CLIs without cancel_async_message withdraw nothing');
-
-  // The race: the stopped turn's result lands before the CLI answers the
-  // cancel, and the user sends a follow-up after Stop. The result must not
-  // re-interrupt (the turn now starting is the follow-up), and once the
-  // withdrawal settles nothing Stop covered is left to interrupt.
-  let ledger = { inFlightTurns: 2, stoppedTurns: 0 }; // turn A + queued steer
-  ledger.stoppedTurns = markTurnsStopped({ ...ledger, stoppedTurns: 0 } as Parameters<typeof markTurnsStopped>[0]);
-  assert.equal(ledger.stoppedTurns, 2);
-  const gate = new StopWithdrawalGate();
-  let releaseCancel: (ids: string[]) => void = () => {};
-  const interrupts: string[] = [];
-  const settledWith: boolean[] = [];
-  gate.begin(new Promise<string[]>((resolve) => { releaseCancel = resolve; }).then((ids) => {
-    ledger = withdrawClaudePrompts(ledger, ids.length);
-  }), (reinterrupt) => {
-    settledWith.push(reinterrupt);
-    if (reinterrupt && ledger.stoppedTurns > 0) interrupts.push('reinterrupt');
-  });
-  const afterResult = settleClaudeResult({ ...ledger, selfStartedTurn: false }, 1);
-  ledger = { inFlightTurns: afterResult.inFlightTurns, stoppedTurns: afterResult.stoppedTurns };
-  assert.equal(ledger.stoppedTurns, 1, 'the steer being withdrawn still counts as stopped');
-  if (!gate.deferReinterrupt()) interrupts.push('reinterrupt');
-  ledger.inFlightTurns += 1; // the follow-up sent after Stop (not stopped)
-  assert.deepEqual(interrupts, [], 'no re-interrupt while the withdrawal is out');
-  releaseCancel(['steer']);
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(settledWith, [true], 'the waiting re-interrupt is reconsidered once');
-  assert.deepEqual(ledger, { inFlightTurns: 1, stoppedTurns: 0 }, 'only the follow-up is in flight');
-  assert.deepEqual(interrupts, [], 'the follow-up is never interrupted');
-  assert.equal(gate.deferReinterrupt(), false, 'no withdrawal out: re-interrupts go straight through');
-
-  // A steer the CLI would not cancel (it was being folded in) stays stopped:
-  // the waiting re-interrupt then goes out for it.
-  {
-    let stopped = { inFlightTurns: 2, stoppedTurns: 2 };
-    const g = new StopWithdrawalGate();
-    let done: (ids: string[]) => void = () => {};
-    const fired: string[] = [];
-    g.begin(new Promise<string[]>((resolve) => { done = resolve; }).then((ids) => {
-      stopped = withdrawClaudePrompts(stopped, ids.length);
-    }), (reinterrupt) => { if (reinterrupt && stopped.stoppedTurns > 0) fired.push('reinterrupt'); });
-    const settled = settleClaudeResult({ ...stopped, selfStartedTurn: false }, 1);
-    stopped = { inFlightTurns: settled.inFlightTurns, stoppedTurns: settled.stoppedTurns };
-    assert.equal(g.deferReinterrupt(), true);
-    done([]);
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual(fired, ['reinterrupt']);
-  }
-  console.log('claude-steer-turn.test.ts: stop withdrawal ordering passed');
-})().catch((error) => { console.error(error); process.exit(1); });
 
 // ── Host ledger: withdrawn prompts never get a result ────────────────────────
 
@@ -268,7 +147,7 @@ assert.deepEqual(
     messages: [opener, bash, late, bashResult, firstAnswer, done],
     streaming: { text: '', thinking: '', isStreaming: false },
   } } }));
-  dispatch({ type: 'stream.prompt_opened_turn', payload: { sessionId: lateId, promptId: 'p-late', createdAt: 800 } } as ServerEvent);
+  dispatch({ type: 'stream.prompt_moved', payload: { sessionId: lateId, promptId: 'p-late', steer: false, createdAt: 800 } } as ServerEvent);
   const moved = useAppStore.getState().sessions[lateId].messages;
   const lastPrompt = moved.at(-1);
   assert(lastPrompt?.type === 'user_prompt' && lastPrompt.prompt === 'One more thing');
@@ -279,6 +158,33 @@ assert.deepEqual(
   assert.equal(bubbles.length, 2, 'the late steer is its own turn, as a bubble');
   const answers = timeline.filter(item => item.type === 'message' && item.message.type === 'assistant');
   assert.equal(answers.length, 2, 'each turn keeps its own visible answer');
+}
+
+// A batch of two late steers: the opener becomes a bubble, the one that
+// joined stays a steer row of that turn; both take their echoes along.
+{
+  const batchId = useAppStore.getState().createDraftSession('/tmp/claude-steer-batch');
+  const b: StreamMessage = { type: 'user_prompt', prompt: 'Late B', createdAt: 400, steer: true, promptId: 'p-b' };
+  const c: StreamMessage = { type: 'user_prompt', prompt: 'Late C', createdAt: 410, steer: true, promptId: 'p-c' };
+  const echoOf = (promptId: string, text: string, createdAt: number) => ({
+    type: 'user', uuid: promptId, hostEcho: true, createdAt, message: { content: [{ type: 'text', text }] },
+  }) as StreamMessage;
+  const firstAnswer = assistant('a-first', 600, [{ type: 'text', text: 'First answer.' }], 'final_answer');
+  useAppStore.setState(state => ({ sessions: { ...state.sessions, [batchId]: {
+    ...state.sessions[batchId], provider: 'claude', status: 'running',
+    messages: [opener, b, echoOf('p-b', 'Late B', 401), c, echoOf('p-c', 'Late C', 411), firstAnswer, done],
+    streaming: { text: '', thinking: '', isStreaming: false },
+  } } }));
+  dispatch({ type: 'stream.prompt_moved', payload: { sessionId: batchId, promptId: 'p-b', steer: false, createdAt: 800, echoCreatedAt: 801 } } as ServerEvent);
+  dispatch({ type: 'stream.prompt_moved', payload: { sessionId: batchId, promptId: 'p-c', steer: true, createdAt: 802, echoCreatedAt: 803 } } as ServerEvent);
+  const moved = useAppStore.getState().sessions[batchId].messages;
+  const shape = moved.map(m => m.type === 'user_prompt' ? `prompt ${m.promptId}${m.steer ? ' (steer)' : ''}` : m.type === 'user' ? `echo ${m.uuid}` : m.type);
+  assert.deepEqual(shape, ['prompt undefined', 'assistant', 'result', 'prompt p-b', 'echo p-b', 'prompt p-c (steer)', 'echo p-c'],
+    'both leave the previous turn; the echo stays right behind its prompt');
+  const secondAnswer = assistant('a-second', 900, [{ type: 'text', text: 'BEE. SEA.' }], 'final_answer');
+  const timeline = deriveTranscriptTimelineItems([...moved, secondAnswer], { sessionRunning: false });
+  assert.equal(timeline.filter(item => item.type === 'message' && item.message.type === 'user_prompt').length, 2,
+    'two turns, two bubbles: the joined steer is a row, not a third turn');
 }
 
 console.log('claude-steer-turn.test.ts passed');

@@ -1148,8 +1148,8 @@ export const useAppStore = create<Store>()(
         handlePromptsWithdrawn(event.payload, set);
         break;
 
-      case 'stream.prompt_opened_turn':
-        handlePromptOpenedTurn(event.payload, set);
+      case 'stream.prompt_moved':
+        handlePromptMoved(event.payload, set);
         break;
 
       case 'stream.message':
@@ -3660,22 +3660,25 @@ function handleUserPrompt(
   });
 }
 
-// A steer that came too late opened a turn of its own: it is that turn's
-// ordinary opening prompt, so it leaves the previous turn's work and opens
-// the new turn here (what the stored history says after a reload too).
-function handlePromptOpenedTurn(
-  payload: { sessionId: string; promptId: string; createdAt: number },
+// A steer that came too late started after the turn it was sent into ended:
+// it leaves that turn's work, with its host echo (the /rewind anchor), and
+// goes where the new turn begins — as its opening prompt, or a steer that
+// joined its batch. The stored history says the same after a reload.
+function handlePromptMoved(
+  payload: { sessionId: string; promptId: string; steer: boolean; createdAt: number; echoCreatedAt?: number },
   set: SetState
 ) {
-  const { sessionId, promptId, createdAt } = payload;
+  const { sessionId, promptId, steer, createdAt, echoCreatedAt } = payload;
   set((state) => {
     const session = state.sessions[sessionId];
     if (!session) return state;
-    const index = session.messages.findIndex((message) => message.type === 'user_prompt' && message.promptId === promptId);
-    const steered = session.messages[index];
-    if (steered?.type !== 'user_prompt') return state;
-    const { steer: _steer, ...prompt } = steered;
-    const messages = [...session.messages.slice(0, index), ...session.messages.slice(index + 1), { ...prompt, createdAt }];
+    const prompt = session.messages.find((message) => message.type === 'user_prompt' && message.promptId === promptId);
+    if (prompt?.type !== 'user_prompt') return state;
+    const echo = session.messages.find((message) => message.type === 'user' && message.uuid === promptId);
+    const { steer: _steer, ...ordinary } = prompt;
+    const moved: StreamMessage[] = [steer ? { ...prompt, createdAt } : { ...ordinary, createdAt }];
+    if (echo) moved.push({ ...echo, createdAt: echoCreatedAt ?? createdAt });
+    const messages = [...session.messages.filter((message) => message !== prompt && message !== echo), ...moved];
     return { ...state, sessions: { ...state.sessions, [sessionId]: { ...session, messages } } };
   });
 }

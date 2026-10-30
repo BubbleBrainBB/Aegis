@@ -1011,9 +1011,10 @@ export type ServerEvent =
   // Queued steers the user stopped before Claude read them: removed from the
   // transcript and handed back to the composer queue.
   | { type: 'stream.prompts_withdrawn'; payload: { sessionId: string; promptIds: string[]; prompts: WithdrawnPrompt[] } }
-  // A prompt sent as a steer opened a turn of its own (too late to join the
-  // running one): it is that turn's ordinary opening prompt, as of createdAt.
-  | { type: 'stream.prompt_opened_turn'; payload: { sessionId: string; promptId: string; createdAt: number } }
+  // A prompt sent as a steer started after the turn it was sent into ended:
+  // it moves (with its host echo) to where the new turn begins — as that
+  // turn's opening prompt, or (steer: true) a steer that joined its batch.
+  | { type: 'stream.prompt_moved'; payload: { sessionId: string; promptId: string; steer: boolean; createdAt: number; echoCreatedAt?: number } }
   | { type: 'stream.message'; payload: { sessionId: string; message: StreamMessage } }
   // Incremental stdout/stderr from a tool that is still running (codex
   // commandExecution). Transient display data — never persisted.

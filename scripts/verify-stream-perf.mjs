@@ -254,7 +254,7 @@ assert.equal(
   'P3: prewarm entry must start with zero in-flight turns'
 );
 assert.equal(
-  ipcSource.includes('pendingTurnPrompts: prewarmRunner ? [] : [{ prompt }]'),
+  ipcSource.includes('pendingTurnPrompts: prewarmRunner ? [] : [{ prompt, ...(claudePromptId ? { promptId: claudePromptId } : {}) }]'),
   true,
   'P3: prewarm entry must not seed a phantom prompt into the turn FIFO'
 );

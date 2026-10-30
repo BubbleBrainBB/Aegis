@@ -159,10 +159,19 @@ export interface RunnerOptions {
    */
   onSelfStartedTurn?: () => void;
   /**
-   * Claude: a host prompt opened a turn of its own (the CLI reported it
-   * started while no turn ran), before that turn's init.
+   * Claude: the CLI cancelled a host prompt before it ever started (Stop
+   * withdrew it). Called in stream order, from the CLI's own lifecycle frame
+   * — before the stopped turn's result and anything sent after Stop.
    */
-  onPromptOpenedTurn?: (promptId: string) => void;
+  onPromptsWithdrawn?: (promptIds: string[]) => void;
+  /**
+   * Claude: a host prompt started while no turn ran — it opened a turn
+   * (`openerId === promptId`) or joined the batch `openerId` opened. Called
+   * in stream order, before that turn's init.
+   */
+  onPromptStarted?: (started: { promptId: string; openerId: string }) => void;
+  /** Claude: the host's id for the initial prompt (its SDK uuid; see claudePromptId). */
+  claudePromptId?: string;
   onError?: (error: Error) => void;
   onPermissionRequest: (
     toolUseId: string,
@@ -227,12 +236,17 @@ export interface RunnerHandle {
    */
   interrupt?: () => Promise<void>;
   /**
-   * Claude: on Stop, take back the host prompts still queued behind the live
-   * turn. The cancels are written before this returns; resolves with the ids
-   * (claudePromptId) the CLI confirmed cancelled — they will never get a
-   * result. Call it right before interrupt(), and only for a Stop press.
+   * Claude: the Stop press. Cancels every queued host prompt by uuid, then
+   * interrupts — written in one tick, ahead of anything sent later. The
+   * withdrawals settle through onPromptsWithdrawn; stopped prompts the
+   * interrupt could not reach are interrupted when their turn opens.
    */
-  withdrawQueuedPrompts?: () => Promise<string[]>;
+  stopTurn?: () => Promise<void>;
+  /**
+   * Claude: the CLI reports prompt lifecycle frames, so the runner tracks
+   * each prompt and handles Stop's follow-up interrupts itself.
+   */
+  tracksPromptIdentity?: () => boolean;
   /**
    * Two-phase stop (codex): request `turn/interrupt` and resolve once the
    * provider confirms the turn terminal (`turn/completed(interrupted)`) or
