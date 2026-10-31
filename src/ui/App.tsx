@@ -74,7 +74,6 @@ import {
   BrowserNativeOverlayContext,
   useBrowserNativeOverlayRegistration,
 } from './components/browser/browser-native-overlay';
-import { TerminalDrawer } from './components/TerminalDrawer';
 import { RightTerminalPanel } from './components/RightTerminalPanel';
 import { SubagentPanel } from './components/SubagentPanel';
 import { SubagentAvatar } from './components/SubagentAvatar';
@@ -86,7 +85,12 @@ import { useBrowserStateStore, type RememberedPage } from './store/useBrowserSta
 import { EnvironmentHub } from './components/environment/EnvironmentHub';
 import { SessionSourcesPanel } from './components/SessionSourcesPanel';
 import { useSessionSources } from './hooks/useSessionSources';
-import { getRightUtilityTabKind, sessionSourceTabPath } from './utils/right-utility-tabs';
+import {
+  createTerminalTabId,
+  getRightUtilityTabKind,
+  isRightUtilityTerminalTab,
+  sessionSourceTabPath,
+} from './utils/right-utility-tabs';
 import { openSessionSource } from './lib/image-studio';
 import { useImageStudioStore } from './store/useImageStudioStore';
 import { Paperclip } from './components/icons';
@@ -221,7 +225,6 @@ export function App() {
   useKeyboardShortcuts();
   const codexModelConfig = useCodexModelConfig();
   const [windowShellRounded, setWindowShellRounded] = useState(getDefaultWindowShellRounded);
-  const [terminalFullscreen, setTerminalFullscreen] = useState(false);
   // Session id of a side chat pending destructive-close confirmation.
   const [sideChatCloseRequest, setSideChatCloseRequest] = useState<string | null>(null);
   const [rightUtilityPanelWidth, setRightUtilityPanelWidthState] = useState(getDefaultRightUtilityPanelWidth);
@@ -259,8 +262,6 @@ export function App() {
     showSettings,
     projectTreeCollapsed,
     projectPanelView,
-    terminalDrawerOpen,
-    terminalDrawerHeight,
     rightUtilityTabs,
     activeRightUtilityTab,
     rightUtilityPanelHidden,
@@ -272,8 +273,6 @@ export function App() {
     sessionsLoaded,
     setProjectTreeCollapsed,
     setProjectPanelView,
-    setTerminalDrawerOpen,
-    setTerminalDrawerHeight,
     setBrowserPanelOpen,
     setActiveRightUtilityTab,
     openRightUtilityTab,
@@ -310,8 +309,6 @@ export function App() {
       showSettings: s.showSettings,
       projectTreeCollapsed: s.projectTreeCollapsed,
       projectPanelView: s.projectPanelView,
-      terminalDrawerOpen: s.terminalDrawerOpen,
-      terminalDrawerHeight: s.terminalDrawerHeight,
       rightUtilityTabs: s.rightUtilityTabs,
       activeRightUtilityTab: s.activeRightUtilityTab,
       rightUtilityPanelHidden: s.rightUtilityPanelHidden,
@@ -323,8 +320,6 @@ export function App() {
       sessionsLoaded: s.sessionsLoaded,
       setProjectTreeCollapsed: s.setProjectTreeCollapsed,
       setProjectPanelView: s.setProjectPanelView,
-      setTerminalDrawerOpen: s.setTerminalDrawerOpen,
-      setTerminalDrawerHeight: s.setTerminalDrawerHeight,
       setBrowserPanelOpen: s.setBrowserPanelOpen,
       setActiveRightUtilityTab: s.setActiveRightUtilityTab,
       openRightUtilityTab: s.openRightUtilityTab,
@@ -780,6 +775,11 @@ export function App() {
         };
       }
       if (kind === 'sources') return { id: tab, kind, label: sessionSourceTabPath(tab)?.split(/[\\/]/).pop() || 'Sources' };
+      if (kind === 'terminal') {
+        // Numbered from the second one on: Terminal, Terminal 2…
+        const index = rightUtilityTabs.filter(isRightUtilityTerminalTab).indexOf(tab);
+        return { id: tab, kind, label: index > 0 ? `Terminal ${index + 1}` : 'Terminal' };
+      }
       if (kind === 'files') {
         return { id: tab, kind, label: activeProjectFileTabs[tab]?.name || 'Files' };
       }
@@ -914,6 +914,7 @@ export function App() {
     rightUtilityTabs,
     showRightUtilityPanels,
   ]);
+
 
   useEffect(() => {
     if (!activeRightUtilityTab || rightUtilityPanelHidden) return;
@@ -1078,22 +1079,6 @@ export function App() {
         sourcesError={sessionSources.error}
         onOpenSources={openSources}
       />
-      <button
-        type="button"
-        onClick={() => {
-          setTerminalDrawerOpen(!terminalDrawerOpen);
-          setTerminalFullscreen(false);
-        }}
-        className={`no-drag inline-flex h-7 w-7 items-center justify-center rounded-lg text-[11px] font-medium transition-colors ${
-          terminalDrawerOpen
-            ? 'bg-[var(--sidebar-item-active)] text-[var(--text-primary)]'
-            : 'text-[var(--text-secondary)] hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)]'
-        }`}
-        title="Bottom terminal"
-        aria-label="Toggle bottom terminal drawer"
-      >
-        <BottomTerminalToggleIcon />
-      </button>
     </>
   );
 
@@ -1242,20 +1227,6 @@ export function App() {
               codexModelConfig={codexModelConfig}
               onWorkspaceGitChanged={refreshEnvironmentGit}
             />
-
-            <TerminalDrawer
-              open={terminalDrawerOpen}
-              height={terminalDrawerHeight}
-              onHeightChange={setTerminalDrawerHeight}
-              fullscreen={terminalFullscreen}
-              onFullscreenChange={setTerminalFullscreen}
-              onClose={() => {
-                setTerminalDrawerOpen(false);
-                setTerminalFullscreen(false);
-              }}
-              sessionId={activeSessionId}
-              cwd={activeSession?.cwd || projectCwd || null}
-            />
           </div>
         </MainSheet>
         </EnvironmentPanelProvider>
@@ -1304,6 +1275,7 @@ export function App() {
             if (kind === 'files') return toggleFilesPanelFullscreen;
             if (kind === 'review') return toggleReviewPanelFullscreen;
             if (kind === 'browser') return toggleBrowserPanelFullscreen;
+            if (kind === 'terminal') return () => setRightPanelFullscreen(rightPanelFullscreen === 'terminal' ? null : 'terminal');
             // Kinds without a fullscreen view of their own can still leave it.
             if (rightPanelFullscreen) return () => setRightPanelFullscreen(null);
             return null;
@@ -1323,7 +1295,7 @@ export function App() {
             }}
             onOpenBrowser={() => openRightUtilityTab('browser', { newTab: true, replace: activeLauncherTab })}
             onOpenReview={() => openRightUtilityTab('review', { replace: activeLauncherTab })}
-            onOpenTerminal={() => openRightUtilityTab('terminal', { replace: activeLauncherTab })}
+            onOpenTerminal={() => openRightUtilityTab(createTerminalTabId(), { replace: activeLauncherTab })}
             onOpenDesign={() => openRightUtilityTab('design', { replace: activeLauncherTab })}
             onOpenUrl={(typed) => {
               openRightUtilityTab('browser', { newTab: true, replace: activeLauncherTab });
@@ -1409,16 +1381,19 @@ export function App() {
               }
             />
           ))}
-          <RightTerminalPanel
-            key={`${activeSessionId ?? 'new'}:terminal`}
-            embedded
-            collapsed={activeUtilityPanel !== 'terminal'}
-            width={renderedRightUtilityPanelWidth}
-            onWidthChange={setRightUtilityPanelWidth}
-            onClose={() => closeRightUtilityTab('terminal')}
-            sessionId={activeSessionId}
-            cwd={activeSession?.cwd || projectCwd || null}
-          />
+          {rightUtilityTabs.filter(isRightUtilityTerminalTab).map((tab) => (
+            <RightTerminalPanel
+              key={`${activeSessionId ?? 'new'}:${tab}`}
+              embedded
+              collapsed={activeUtilityPanel !== 'terminal' || activeRightUtilityTab !== tab}
+              width={renderedRightUtilityPanelWidth}
+              onWidthChange={setRightUtilityPanelWidth}
+              onClose={() => closeRightUtilityTab(tab)}
+              sessionId={activeSessionId}
+              cwd={activeSession?.cwd || projectCwd || null}
+              tabId={tab}
+            />
+          ))}
           {subagentUtilityTabs.map((tabId) => (
             <SubagentPanel
               key={`${activeSessionId ?? 'new'}:${tabId}`}
@@ -1877,6 +1852,7 @@ function RightUtilityTabStrip({
                     />
                   ) : tab.kind === 'browser' && tab.favicon ? (
                     <TabFavicon src={tab.favicon} fallback={Icon} />
+
                   ) : useFileIcon ? (
                     <FileTypeIcon
                       name={tab.label}
@@ -1959,24 +1935,6 @@ function RightUtilityTabStrip({
 // board / environment list), but it is intentionally NOT offered in the
 // launcher menu — it only exists when the main agent has spawned subagents.
 type PanelLauncherKind = 'launcher' | ProjectUtilityPanelKind;
-
-function BottomTerminalToggleIcon() {
-  return (
-    <svg
-      aria-hidden="true"
-      className="h-[14px] w-[14px] shrink-0"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.25"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <rect width="18" height="16" x="3" y="4" rx="4" />
-      <path d="M9 16h6" />
-    </svg>
-  );
-}
 
 function PanelLauncher({
   activePanel,
@@ -2095,6 +2053,7 @@ function RightPanelLauncherContent({
   onOpenSideChat: () => void;
   onOpenBrowser: () => void;
   onOpenReview: () => void;
+  /** Opens a new terminal tab with its own shell. */
   onOpenTerminal: () => void;
   onOpenDesign: () => void;
   onOpenUrl: (typed: string) => void;

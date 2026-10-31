@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
   createLauncherTabId,
+  createTerminalTabId,
   getRightUtilityTabKind,
+  isRightUtilityTerminalTab,
   replaceLauncherTab,
   resolveRightUtilityTabOpen,
 } from '../../src/ui/utils/right-utility-tabs';
@@ -124,6 +126,17 @@ async function main() {
     /useBrowserNativeOverlayRegistration\(lightboxOpen\)/,
     'the attachment lightbox must hide the native browser view while open'
   );
+
+  // Terminals: several can be open, each with its own id, and the first
+  // terminal from before keeps its plain id.
+  const secondTerminal = createTerminalTabId();
+  assert.notEqual(secondTerminal, createTerminalTabId(), 'every new terminal tab gets its own id');
+  assert.equal(getRightUtilityTabKind(secondTerminal), 'terminal');
+  assert.equal(getRightUtilityTabKind('terminal'), 'terminal');
+  assert.equal(isRightUtilityTerminalTab(secondTerminal) && isRightUtilityTerminalTab('terminal'), true);
+  assert.equal(isRightUtilityTerminalTab('files:a'), false);
+  const withTerminals = resolveRightUtilityTabOpen(['terminal'], secondTerminal);
+  assert.deepEqual(withTerminals, { tabs: ['terminal', secondTerminal], activeTab: secondTerminal });
 
   console.log('right-utility-tabs tests passed');
 }

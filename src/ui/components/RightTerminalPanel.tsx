@@ -14,6 +14,7 @@ export function RightTerminalPanel({
   cwd,
   header,
   embedded = false,
+  tabId = 'terminal',
 }: {
   collapsed: boolean;
   width: number;
@@ -23,13 +24,17 @@ export function RightTerminalPanel({
   cwd: string | null;
   header?: ReactNode;
   embedded?: boolean;
+  /** The right pane tab this terminal belongs to; each tab has its own shell. */
+  tabId?: string;
 }) {
   const [isResizing, setIsResizing] = useState(false);
   const [terminalMounted, setTerminalMounted] = useState(!collapsed);
   const resizingRef = useRef(false);
   const startXRef = useRef(0);
   const startWidthRef = useRef(width);
-  const terminalScopeId = sessionId ? `${sessionId}:right-terminal` : cwd ? `project:${cwd}:right-terminal` : null;
+  // The first, plain `terminal` tab keeps the scope it always had.
+  const scopeSuffix = tabId === 'terminal' ? 'right-terminal' : `right-${tabId}`;
+  const terminalScopeId = sessionId ? `${sessionId}:${scopeSuffix}` : cwd ? `project:${cwd}:${scopeSuffix}` : null;
 
   useEffect(() => {
     if (!collapsed) {

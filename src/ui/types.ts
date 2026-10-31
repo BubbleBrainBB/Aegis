@@ -224,7 +224,11 @@ export type ProjectUtilityPanelTarget =
   | `launcher:${string}`
   // A design canvas of this chat (its document id after the colon); plain
   // `design` is the chat's design library.
-  | `design:${string}`;
+  | `design:${string}`
+  // A terminal with its own shell (a fresh id after the colon), so several
+  // can be open. Plain `terminal` is the first terminal from before there
+  // could be more than one.
+  | `terminal:${string}`;
 export interface ProjectFileOpenInput {
   cwd: string;
   path: string;
@@ -319,7 +323,7 @@ export type SessionRightPanelSnapshot = {
   tabs: ProjectUtilityPanelTarget[];
   activeTab: ProjectUtilityPanelTarget | null;
   hidden: boolean;
-  fullscreen: 'browser' | 'files' | 'review' | 'images' | 'design' | null;
+  fullscreen: 'browser' | 'files' | 'review' | 'images' | 'design' | 'terminal' | null;
   fileTabsByUtilityTab: Record<string, SessionRightPanelFileState>;
   reviewDiffSelection: ReviewDiffSelection | null;
 };
@@ -328,7 +332,7 @@ export type SessionRightPanelLiveFields = {
   rightUtilityTabs: ProjectUtilityPanelTarget[];
   activeRightUtilityTab: ProjectUtilityPanelTarget | null;
   rightUtilityPanelHidden: boolean;
-  rightPanelFullscreen: 'browser' | 'files' | 'review' | 'images' | 'design' | null;
+  rightPanelFullscreen: 'browser' | 'files' | 'review' | 'images' | 'design' | 'terminal' | null;
   projectTreeCollapsed: boolean;
   projectPanelView: ProjectPanelView;
   browserPanelOpen: boolean;
@@ -479,10 +483,8 @@ export interface AppState {
   pendingProjectFileOpen: ProjectFileOpenRequest | null;
   clearRightUtilityInstantReveal: () => void;
   reviewDiffSelection: ReviewDiffSelection | null;
-  terminalDrawerOpen: boolean;
-  terminalDrawerHeight: number;
   browserPanelOpen: boolean;
-  rightPanelFullscreen: 'browser' | 'files' | 'review' | 'images' | 'design' | null;
+  rightPanelFullscreen: 'browser' | 'files' | 'review' | 'images' | 'design' | 'terminal' | null;
   /**
    * While the right panel is fullscreen, the main session is its first tab:
    * true when that tab is the one showing. Any panel tab taking focus clears it.
@@ -662,10 +664,8 @@ export interface AppActions {
     utilityTabId: ProjectUtilityPanelTarget,
     fileState: SessionRightPanelFileState
   ) => void;
-  setTerminalDrawerOpen: (open: boolean) => void;
-  setTerminalDrawerHeight: (height: number) => void;
   setBrowserPanelOpen: (open: boolean) => void;
-  setRightPanelFullscreen: (target: 'browser' | 'files' | 'review' | 'images' | 'design' | null) => void;
+  setRightPanelFullscreen: (target: 'browser' | 'files' | 'review' | 'images' | 'design' | 'terminal' | null) => void;
   setRightPanelFullscreenChat: (active: boolean) => void;
   applyUiResumeState: (state: import('../shared/types').UiResumeState | null) => void;
   clearGlobalError: () => void;

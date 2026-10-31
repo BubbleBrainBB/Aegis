@@ -22,8 +22,6 @@ export interface UiResumeState {
   projectCwd: string | null;
   projectTreeCollapsed: boolean;
   projectPanelView: 'files' | 'changes';
-  terminalDrawerOpen?: boolean;
-  terminalDrawerHeight?: number;
   // Recursive tiling workspace layout (source of truth). Serialized PaneNode
   // tree + active leaf id; see src/ui/store/layout-tree.ts. Opaque here to keep
   // the shared types renderer-agnostic.

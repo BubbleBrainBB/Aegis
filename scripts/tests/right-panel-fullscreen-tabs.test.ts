@@ -25,7 +25,7 @@ assert.equal(fs(), 'files', 'a Files tab opened over a fullscreen browser is ful
 start('files:a', 'files');
 store().openRightUtilityTab('terminal');
 store().setProjectTreeCollapsed(true);
-assert.equal(fs(), 'files', 'a terminal keeps the panel fullscreen');
+assert.equal(fs(), 'terminal', 'a terminal opened over a fullscreen file is fullscreen');
 assert.equal(store().activeRightUtilityTab, 'terminal');
 
 // A New tab from the strip's + keeps fullscreen, and so does the tool
@@ -40,8 +40,15 @@ assert.equal(store().rightUtilityTabs.includes(launcher), false);
 
 start('files:a', 'files');
 store().openRightUtilityLauncherTab();
-store().openRightUtilityTab('terminal', { replace: store().activeRightUtilityTab! });
-assert.equal(fs(), 'files', 'a terminal picked on the New tab keeps the panel fullscreen');
+store().openRightUtilityTab('terminal:x', { replace: store().activeRightUtilityTab! });
+assert.equal(fs(), 'terminal', 'a terminal picked on the New tab is fullscreen');
+
+// A terminal can be fullscreen on its own, like a browser.
+start('terminal:a', 'files');
+store().setRightPanelFullscreen(null);
+store().setRightPanelFullscreen('terminal');
+assert.equal(fs(), 'terminal', 'a terminal goes fullscreen');
+assert.equal(store().rightUtilityPanelHidden, false);
 
 // Switching between tabs.
 store().setActiveRightUtilityTab('files:a');
@@ -57,6 +64,10 @@ assert.equal(store().activeRightUtilityTab, 'files:a');
 assert.equal(fs(), 'files', 'the tab that takes over stays fullscreen');
 
 useAppStore.setState({ rightUtilityTabs: ['files:a', 'terminal'], activeRightUtilityTab: 'files:a', rightPanelFullscreen: 'files' });
+store().closeRightUtilityTab('files:a');
+assert.equal(fs(), 'terminal', 'a terminal left behind stays fullscreen');
+
+useAppStore.setState({ rightUtilityTabs: ['files:a', 'sources:%2Fp%2Fa.png'], activeRightUtilityTab: 'files:a', rightPanelFullscreen: 'files' });
 store().closeRightUtilityTab('files:a');
 assert.equal(fs(), null, 'with no tab left that can be fullscreen, the panel docks');
 
