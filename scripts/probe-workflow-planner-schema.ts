@@ -37,7 +37,7 @@ Rules:
 - Steps are a flat list. Nesting is expressed with "parent" (the id of a parallel, repeat or reviewLoop step) and "order" within the parent. Fields that do not apply to a step's kind must be null.
 - Prefer a single "reviewLoop" step for implement → check → parallel review → fix → re-review. Its "max" is the number of repair rounds. Check steps placed inside it use parent = the reviewLoop id and need "argv" and "timeoutMs".
 - Task blocks: {kind:"text", text, ref:null} for instructions, {kind:"goal", text:null, ref:null} to insert the user's goal.
-- "acceptance" lists what must hold at the end: verifyKind "check" with verifyRef = check step id, "review" with verifyRef = reviewer member key, or "manual" with verifyRef null.
+- "acceptance" lists what must hold at the end: verifyKind "check" with verifyRef = check step id, or "review" with verifyRef = reviewer member key.
 - Mark anything the user did not say as source "inferred". Put requirements you cannot express in "unsupported" and assumptions you made in "assumptions".
 
 User request:

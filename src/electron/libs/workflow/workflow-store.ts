@@ -115,8 +115,6 @@ export type RunOptions = {
   includesUserChanges?: boolean;
   /** Steps skipped by their condition, for the UI. */
   skipped?: string[];
-  /** Manual acceptance items the user checked and confirmed. */
-  manualVerified?: string[];
   /** The final version passed G4 (as opposed to a run the user finished early). */
   verifiedFinal?: boolean;
   planOnly?: boolean;
@@ -451,9 +449,46 @@ export function isInstanceSession(sessionId: string): boolean {
   return Boolean(db().prepare('SELECT 1 FROM workflow_instances WHERE session_id = ? LIMIT 1').get(sessionId));
 }
 
+/**
+ * An instance record plus what the app tracks beside the engine: its session
+ * and its latest attempt's clock. `settledAt` ends a successful attempt;
+ * `stoppedAt` ends one the engine left dispatched (failed, cancelled, stopped
+ * for input), null when it ended at an unknown time (Aegis closed under it).
+ * A time that was never recorded stays absent rather than made up.
+ */
+export type StoredInstanceRecord = InstanceRecord & {
+  sessionId?: string;
+  startedAt?: number;
+  settledAt?: number;
+  stoppedAt?: number | null;
+};
+
+/**
+ * The record to store for a write: its session kept, and its attempt clock.
+ * The engine's own dispatch after the last attempt ended (a rerun or a retry)
+ * starts a new attempt and its clock. Updates that carry the stored record
+ * along (attachSession, stopOpenAttempts) keep the clock.
+ */
+export function withAttemptClock(
+  previous: StoredInstanceRecord | undefined,
+  record: StoredInstanceRecord,
+  now: number,
+): StoredInstanceRecord {
+  const lastEnded = previous !== undefined && (previous.state === 'settled' || previous.stoppedAt !== undefined);
+  const newAttempt = record.state === 'dispatched' && record.stoppedAt === undefined && (!previous || lastEnded);
+  const settled = record.state === 'settled';
+  return {
+    ...record,
+    sessionId: record.sessionId ?? previous?.sessionId,
+    startedAt: newAttempt ? now : previous?.startedAt ?? record.startedAt,
+    settledAt: settled ? (previous?.state === 'settled' ? previous.settledAt : undefined) ?? now : undefined,
+    stoppedAt: settled || newAttempt ? undefined : record.stoppedAt !== undefined ? record.stoppedAt : previous?.stoppedAt,
+  };
+}
+
 /** Instance records for one run, cached in memory and written through to SQLite. */
 export class SqliteInstanceStore implements InstanceStore {
-  private readonly cache = new Map<string, InstanceRecord & { sessionId?: string }>();
+  private readonly cache = new Map<string, StoredInstanceRecord>();
 
   constructor(private readonly runId: string) {
     const rows = db()
@@ -473,9 +508,10 @@ export class SqliteInstanceStore implements InstanceStore {
     return [...this.cache.values()];
   }
 
-  async put(record: InstanceRecord & { sessionId?: string }) {
+  async put(record: StoredInstanceRecord) {
     const previous = this.cache.get(record.key);
-    const merged = { ...record, sessionId: record.sessionId ?? previous?.sessionId };
+    const now = Date.now();
+    const merged = withAttemptClock(previous, record, now);
     this.cache.set(record.key, merged);
     db()
       .prepare(
@@ -484,7 +520,18 @@ export class SqliteInstanceStore implements InstanceStore {
          ON CONFLICT(run_id, key) DO UPDATE SET step_id = excluded.step_id, state = excluded.state, seq = excluded.seq,
            session_id = excluded.session_id, record_json = excluded.record_json, updated_at = excluded.updated_at`,
       )
-      .run(this.runId, record.key, record.stepId, record.state, record.seq ?? null, merged.sessionId ?? null, JSON.stringify(merged), Date.now());
+      .run(this.runId, record.key, record.stepId, record.state, record.seq ?? null, merged.sessionId ?? null, JSON.stringify(merged), now);
+  }
+
+  /**
+   * Ends the clock of attempts the engine left dispatched: the run failed,
+   * was cancelled or stopped for input (`at` = now), or Aegis closed under
+   * them (`at` = null: they ended, but nobody saw when).
+   */
+  async stopOpenAttempts(at: number | null = Date.now()) {
+    for (const record of [...this.cache.values()]) {
+      if (record.state === 'dispatched' && record.stoppedAt === undefined) await this.put({ ...record, stoppedAt: at });
+    }
   }
 
   /** Associates the member session that is executing an instance (for UI and recovery). */

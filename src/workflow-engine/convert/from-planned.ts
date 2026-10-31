@@ -92,11 +92,6 @@ export function convertPlannedWorkflow(
   const acceptance: Acceptance[] = [];
   planned.acceptance.forEach((a, i) => {
     const path = `acceptance[${i}]`;
-    if (a.verifyKind === 'manual') {
-      if (a.verifyRef !== null) fail(`${path}.verifyRef`, 'Manual acceptance must not reference a step or member.');
-      acceptance.push({ id: a.id, description: a.description, verify: { kind: 'manual' }, source: a.source });
-      return;
-    }
     if (a.verifyRef === null || a.verifyRef === '') {
       fail(`${path}.verifyRef`, `A ${a.verifyKind} acceptance must name the ${a.verifyKind === 'check' ? 'check step' : 'reviewer'}.`);
       return;

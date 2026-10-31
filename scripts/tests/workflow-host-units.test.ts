@@ -32,6 +32,8 @@ import { validateSpec } from '../../src/workflow-engine/validate/spec-validator'
 import type { WorkflowSpec } from '../../src/workflow-engine/spec/workflow-spec';
 import { DEFAULT_LIMITS } from '../../src/workflow-engine/limits';
 import { headTree } from '../../src/electron/libs/workflow/workspace-snapshot';
+import { withAttemptClock, type StoredInstanceRecord } from '../../src/electron/libs/workflow/workflow-store';
+import { legacyUncheckedRequirements, stepViews } from '../../src/electron/libs/workflow/workflow-service';
 import { isFullAccessMode, isStartWorkflowToolName } from '../../src/shared/workflow';
 import { splitWorkflowResult } from '../../src/ui/utils/workflow-result';
 import { classifyToolUse, deriveReadableToolDisplay } from '../../src/ui/utils/tool-summary';
@@ -729,6 +731,75 @@ test('reviews of existing changes diff against the last commit', async () => {
   await fs.mkdir(empty);
   execFileSync('git', ['init', '-q'], { cwd: empty });
   assert.equal(await headTree(empty), '4b825dc642cb6eb9a060e54bf8d69288fbee4904', 'no commits: the empty tree');
+});
+
+test('a step attempt keeps its clock through metadata writes and restarts it on a rerun or retry', () => {
+  const base = { key: 'r', stepId: 'r', iterations: [], kind: 'agent', fingerprint: 'f' } as const;
+  const dispatched = withAttemptClock(undefined, { ...base, state: 'dispatched' }, 1_000);
+  assert.equal(dispatched.startedAt, 1_000);
+  const attached = withAttemptClock(dispatched, { ...dispatched, sessionId: 's1' }, 5_000);
+  assert.equal(attached.startedAt, 1_000, 'attaching the session keeps the clock');
+  const settled = withAttemptClock(attached, { ...base, state: 'settled', seq: 1 }, 9_000);
+  assert.deepEqual([settled.startedAt, settled.settledAt, settled.stoppedAt, settled.sessionId], [1_000, 9_000, undefined, 's1']);
+  const rerun = withAttemptClock(settled, { ...base, state: 'dispatched' }, 20_000);
+  assert.deepEqual([rerun.startedAt, rerun.settledAt], [20_000, undefined], 'a rerun after a settle starts again');
+
+  // A failed or cancelled attempt stays dispatched; stopping it ends its clock, and a retry starts a new one.
+  const stopped = withAttemptClock(rerun, { ...rerun, stoppedAt: 25_000 }, 25_100);
+  assert.deepEqual([stopped.startedAt, stopped.stoppedAt], [20_000, 25_000]);
+  const lateAttach = withAttemptClock(stopped, { ...stopped, sessionId: 's2' }, 30_000);
+  assert.deepEqual([lateAttach.startedAt, lateAttach.stoppedAt], [20_000, 25_000], 'a write carrying the stopped record changes nothing');
+  const retry = withAttemptClock(lateAttach, { ...base, state: 'dispatched' }, 3_600_000);
+  assert.deepEqual([retry.startedAt, retry.stoppedAt], [3_600_000, undefined], 'the wait before Retry is not counted');
+
+  // Aegis closed under an attempt: it ended, at a time nobody recorded. Nothing is made up, and a retry still starts afresh.
+  const closedUnder = withAttemptClock(retry, { ...retry, stoppedAt: null }, 9_999_999);
+  assert.deepEqual([closedUnder.startedAt, closedUnder.stoppedAt], [3_600_000, null]);
+  const legacy = { ...base, state: 'dispatched' as const };
+  const legacyClosed = withAttemptClock(legacy, { ...legacy, stoppedAt: null }, 9_999_999);
+  assert.deepEqual([legacyClosed.startedAt, legacyClosed.stoppedAt], [undefined, null], 'a record from before timing gets no invented start');
+  const legacySettled = withAttemptClock(legacy, { ...base, state: 'settled', seq: 2 }, 9_999_999);
+  assert.equal(legacySettled.startedAt, undefined, 'settling an untimed attempt does not invent its start either');
+  const afterRestart = withAttemptClock(legacyClosed, { ...base, state: 'dispatched' }, 10_000_000);
+  assert.deepEqual([afterRestart.startedAt, afterRestart.stoppedAt], [10_000_000, undefined]);
+});
+
+test('step views time stopped attempts and take verdicts only from reviews', () => {
+  const spec = {
+    schemaVersion: 1,
+    name: 'Look and review',
+    description: '',
+    members: [
+      { key: 'adv', role: 'advisor', agent: 'codex', source: 'user' },
+      { key: 'rev', role: 'reviewer', agent: 'devin', source: 'user' },
+    ],
+    acceptance: [],
+    unsupported: [],
+    assumptions: [],
+    steps: [
+      { id: 'route', kind: 'agent', member: 'adv', task: [{ goal: true }], workspace: 'snapshot', output: { route: [{ name: 'verdict', kind: 'enum', values: ['approved', 'other'] }] } },
+      { id: 'review', kind: 'agent', member: 'rev', task: [{ goal: true }], workspace: 'snapshot', output: 'review', session: 'fresh' },
+    ],
+  } as WorkflowSpec;
+  const records: StoredInstanceRecord[] = [
+    { key: 'route', stepId: 'route', iterations: [], kind: 'agent', member: 'adv', outputKind: 'route', fingerprint: 'a', state: 'settled', seq: 1, output: { verdict: 'approved' }, startedAt: 0, settledAt: 60_000 },
+    { key: 'review', stepId: 'review', iterations: [], kind: 'agent', member: 'rev', outputKind: 'review', fingerprint: 'b', state: 'dispatched', startedAt: 60_000, stoppedAt: 180_000 },
+  ];
+  const [route, review] = stepViews(spec, records, [], false, null);
+  const closedUnder = stepViews(spec, [records[0], { ...records[1], stoppedAt: null }], [], false, null)[1];
+  assert.deepEqual([closedUnder.startedAt, closedUnder.endedAt], [60_000, null], 'an end nobody recorded stays unknown');
+  assert.equal(route.verdict, null, 'a route field named "verdict" is not a review verdict');
+  assert.deepEqual([review.state, review.startedAt, review.endedAt], ['failed', 60_000, 180_000], 'a cancelled attempt keeps its end');
+});
+
+test('manual requirements in saved specs are reported as unchecked, never left to a person', () => {
+  const spec = {
+    acceptance: [
+      { id: 'tests', description: 'npm test passes', verify: { kind: 'check', step: 'test' }, source: 'user' },
+      { id: 'look', description: 'The page looks right', verify: { kind: 'manual' }, source: 'user' },
+    ],
+  } as unknown as WorkflowSpec;
+  assert.deepEqual(legacyUncheckedRequirements(spec), ['Not checked by an agent: The page looks right']);
 });
 
 (async () => {

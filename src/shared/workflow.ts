@@ -78,6 +78,13 @@ export function isFullAccessMode(provider: string, mode: string | null | undefin
   return Boolean(mode && FULL_ACCESS_MODES[provider]?.includes(mode));
 }
 
+/**
+ * Ends the display text of the turn a finished workflow sends back to its
+ * chat. The workflow's own header already says how it ended, so the chat
+ * draws no row for it.
+ */
+export const WORKFLOW_REPORT_SUFFIX = ' · result sent to this chat';
+
 export type WorkflowMemberView = {
   key: string;
   role: 'implementer' | 'reviewer' | 'advisor';
@@ -114,6 +121,9 @@ export type WorkflowStepView = {
   version: string | null;
   summary: string | null;
   verdict: string | null;
+  /** When this instance was dispatched and settled (epoch ms); null when not recorded. */
+  startedAt: number | null;
+  endedAt: number | null;
 };
 
 export type WorkflowCheckView = {
@@ -128,9 +138,9 @@ export type WorkflowCheckView = {
 export type WorkflowAcceptanceView = {
   id: string;
   description: string;
-  kind: 'check' | 'review' | 'manual';
+  kind: 'check' | 'review';
   source: 'user' | 'template' | 'inferred';
-  status: 'pending' | 'satisfied' | 'unsatisfied' | 'manual' | 'waived';
+  status: 'pending' | 'satisfied' | 'unsatisfied' | 'waived';
 };
 
 export type WorkflowNeedsInput = {
@@ -212,7 +222,6 @@ export type WorkflowAction =
   | { type: 'resume'; runId: string; expectedRevision: number }
   | { type: 'cancel'; runId: string; expectedRevision: number }
   | { type: 'archive'; runId: string }
-  | { type: 'verify-manual'; runId: string; acceptanceId: string }
   | { type: 'waive'; runId: string; acceptanceId: string }
   | { type: 'apply-isolated'; runId: string }
   | { type: 'discard-isolated'; runId: string };

@@ -10,7 +10,8 @@ import { createServer } from 'vite';
 // (Start confirms with the current revision) → running lanes (a reviewer lane
 // opens that member in the right panel; the chat's own fix lane does not) →
 // stays visible while the finished turn's trace is collapsed →
-// a question → the outcome with "Mark verified". QA_CAPTURE=<dir> saves screenshots.
+// a question → a finished run folds to its header and opens onto its outcome
+// (an unmet item is reported, never confirmed by hand). QA_CAPTURE=<dir> saves screenshots.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const qaRoot = path.join(root, 'dev-fixtures');
 await mkdir(qaRoot, { recursive: true });
@@ -24,7 +25,7 @@ const member = (key, role, agent, provider, extra = {}) => ({
 });
 const step = (key, stepId, kind, state, extra = {}) => ({
   key, stepId, kind, phase: null, label: stepId, memberKey: null, iteration: null, group: null,
-  state, sessionId: null, version: null, summary: null, verdict: null, ...extra,
+  state, sessionId: null, version: null, summary: null, verdict: null, startedAt: null, endedAt: null, ...extra,
 });
 const run = {
   id: 'run-1', title: 'Have DeepSeek review your changes', goal: 'Have DeepSeek review your changes and fix what it finds.',
@@ -55,7 +56,7 @@ const a=useAppStore.getState();const id=a.createDraftSession('/tmp/board-project
 const toolUse={type:'tool_use',id:'toolu_wf',name:'mcp__aegis-sessions__start_workflow',input:{request:'Have DeepSeek review your changes and fix what it finds.'}};
 const toolResult={type:'tool_result',tool_use_id:'toolu_wf',content:JSON.stringify({workflowId:'run-1',status:'planning'})};
 const fixReply='I changed multiply to return a * b.\\n\\n\\u0060\\u0060\\u0060json\\n{\\n  "schemaVersion": 1,\\n  "status": "completed",\\n  "summary": "Fixed multiply",\\n  "changes": [{"file":"src/math.js","description":"a * b"}]\\n}\\n\\u0060\\u0060\\u0060';
-const messages=[{type:'user_prompt',uuid:'u1',prompt:'让 DeepSeek review 一下你的改动',createdAt:Date.now()},{type:'assistant',uuid:'a1',message:{content:[{type:'text',text:'Starting a workflow.'},toolUse]}},{type:'user',uuid:'r1',message:{content:[toolResult]}},{type:'user_prompt',uuid:'u2',prompt:"Workflow asked this chat to fix DeepSeek's findings (round 1)",workflowPrompt:'event',createdAt:Date.now()},{type:'assistant',uuid:'a2',message:{content:[{type:'text',text:fixReply}]}},{type:'user_prompt',uuid:'u3',prompt:'# Workflow step: review\\nYou are a reviewer. Long brief text.',workflowPrompt:'task',createdAt:Date.now()}];
+const messages=[{type:'user_prompt',uuid:'u1',prompt:'让 DeepSeek review 一下你的改动',createdAt:Date.now()},{type:'assistant',uuid:'a1',message:{content:[{type:'text',text:'Starting a workflow.'},toolUse]}},{type:'user',uuid:'r1',message:{content:[toolResult]}},{type:'user_prompt',uuid:'u2',prompt:"Workflow asked this chat to fix DeepSeek's findings (round 1)",workflowPrompt:'event',createdAt:Date.now()},{type:'assistant',uuid:'a2',message:{content:[{type:'text',text:fixReply}]}},{type:'user_prompt',uuid:'u3',prompt:'# Workflow step: review\\nYou are a reviewer. Long brief text.',workflowPrompt:'task',createdAt:Date.now()},{type:'user_prompt',uuid:'u4',prompt:'Workflow finished · result sent to this chat',workflowPrompt:'event',createdAt:Date.now()}];
 useAppStore.setState(s=>({projectCwd:'/tmp/board-project',sessions:{...s.sessions,[id]:{...s.sessions[id],provider:'claude',isDraft:false,status:'completed',hydrated:true,messages}}}));
 a.setActiveSession(id);
 function Conversation(){const session=useAppStore(s=>s.sessions[s.activeSessionId]);const results=new Map([['toolu_wf',toolResult]]);const status=new Map([['toolu_wf','success']]);
@@ -88,6 +89,8 @@ try{
  assert.match(body,/Planning the workflow/);assert.doesNotMatch(body,/start_workflow/);
  // Prompts the workflow sent are notices, not user bubbles; a member's brief is one expandable line.
  assert.equal(await js('document.querySelector("[data-workflow-event]")?.textContent'),"Workflow asked this chat to fix DeepSeek's findings (round 1)");
+ assert.equal(await js('document.querySelectorAll("[data-workflow-event]").length'),1,'the finished-workflow report draws no row; the header already says it');
+ assert.doesNotMatch(body,/result sent to this chat/);
  assert.match(body,/Task from workflow/);assert.doesNotMatch(body,/Long brief text/);
  await js('document.querySelector("[data-workflow-task] button").click()');await delay(150);
  assert.match(await text(),/Long brief text/,'expanding shows the brief');
@@ -114,19 +117,20 @@ try{
 
  // Running: reviewer lane opens the member panel; the chat's own fix lane is not a link.
  view={...view,status:'running',revision:4,steps:[
-  STEP('build.rounds[0]/build.review.reviewer','build.review.reviewer','agent','succeeded',{memberKey:'reviewer',phase:'review',iteration:[0],group:'build.rounds',sessionId:'s-rev',verdict:'changes_requested',summary:'One blocking finding'}),
-  STEP('build.rounds[0]/build.fix','build.fix','agent','running',{memberKey:'current',phase:'fix',iteration:[0],group:'build.rounds',sessionId:'PARENT'}),
+  STEP('build.rounds[0]/build.review.reviewer','build.review.reviewer','agent','succeeded',{memberKey:'reviewer',phase:'review',iteration:[0],group:'build.rounds',sessionId:'s-rev',verdict:'changes_requested',summary:'One blocking finding',startedAt:Date.now()-200000,endedAt:Date.now()-75000}),
+  STEP('build.rounds[0]/build.fix','build.fix','agent','running',{memberKey:'current',phase:'fix',iteration:[0],group:'build.rounds',sessionId:'PARENT',startedAt:Date.now()-75000}),
   STEP('build.rounds[1]/build.review.reviewer','build.review.reviewer','agent','pending',{memberKey:'reviewer',phase:'review',iteration:[1],group:'build.rounds'})]};
  await push(view);
  await waitFor('document.body.textContent.includes("This chat · fix")','lanes');
  body=await text();
- assert.match(body,/DeepSeek · review · round 1/);assert.doesNotMatch(body,/Review the uncommitted diff/,'the focus instruction stays in the tooltip');assert.match(body,/changes requested/);
- assert.match(body,/Assumptions \(1\)/,'assumptions collapse to one line once running');assert.doesNotMatch(body,/Assumes:/);
+ assert.match(body,/DeepSeek · review · round 1/);assert.doesNotMatch(body,/Review the uncommitted diff/,'the focus instruction stays in the tooltip');assert.match(body,/Changes requested/);
+ assert.match(body,/2m 5s/,'a settled step shows how long it ran');assert.match(body,/1 of 3· 3m \d+s/,'the header counts finished steps and times the run');
+ assert.match(body,/1 assumption(?!s)/,'assumptions collapse to one line once running');assert.doesNotMatch(body,/Assumes:/);
  await capture('3-running');
  // The chevron collapses the board to its header and opens it again.
  await js('document.querySelector("[data-workflow-toggle]").click()');await delay(150);
  assert.equal(await js('document.querySelector("[data-workflow-board]").textContent.includes("DeepSeek · review")'),false,'collapsed hides the lanes');
- assert.equal(await js('document.querySelector("[data-workflow-board]").textContent.includes("running")'),true,'the header stays');
+ assert.equal(await js('document.querySelector("[data-workflow-board]").textContent.includes("1 of 3")'),true,'the header stays');
  await capture('3b-collapsed');
  await js('document.querySelector("[data-workflow-toggle]").click()');await delay(150);
  assert.equal(await js('document.querySelector("[data-workflow-board]").textContent.includes("DeepSeek · review · round 1")'),true,'expanding shows them again');
@@ -145,18 +149,53 @@ try{
  await clickButton('Finish here');
  assert.deepEqual(await js('qa.actions[1]'),{type:'answer',runId:'run-1',expectedRevision:5,optionId:'finish'});
 
- // Outcome with a manual item.
- view={...view,status:'completed_with_gaps',revision:7,needsInput:null,acceptance:[{id:'a1',description:'DeepSeek approves',kind:'review',source:'user',status:'satisfied'},{id:'a2',description:'The login page still renders',kind:'manual',source:'user',status:'manual'}],
+ // Done with an unmet item: the agents report it, nobody is asked to confirm anything, and the run folds like any other.
+ view={...view,status:'completed_with_gaps',revision:7,needsInput:null,acceptance:[{id:'a1',description:'DeepSeek approves',kind:'review',source:'user',status:'satisfied'},{id:'a2',description:'npm test passes',kind:'check',source:'inferred',status:'unsatisfied'}],
   steps:view.steps.map(s=>s.state==='pending'?s:{...s,state:'succeeded'})};
- await js('qa.onAct=a=>({ok:true,run:'+JSON.stringify({...view,status:'succeeded',revision:8})+'});0');
  await push(view);
- await waitFor('document.body.textContent.includes("Mark verified")','outcome');
- body=await text();
- assert.match(body,/done with open items/);assert.doesNotMatch(body,/waiting/,'unreached steps are hidden once finished');
+ await waitFor('document.querySelector("[data-workflow-status]")?.textContent==="Done with open items"','done with open items');
+ const board=()=>js('document.querySelector("[data-workflow-board]").textContent');
+ assert.doesNotMatch(await board(),/DeepSeek · review/,'a finished run folds to its header');
+ await js('document.querySelector("[data-workflow-toggle]").click()');await delay(150);
+ body=await board();
+ assert.match(body,/npm test passesNot met/);assert.doesNotMatch(body,/Waiting/,'unreached steps are hidden once finished');
+ assert.doesNotMatch(body,/Mark verified/,'nothing waits for the user to confirm it');
+ assert.ok(body.indexOf('1 assumption')<body.indexOf('DeepSeek · review')&&body.indexOf('DeepSeek · review')<body.indexOf('DeepSeek approves'),'assumptions first, then the steps, then the outcome');
  await capture('5-outcome');
- await clickButton('Mark verified');
- assert.deepEqual(await js('qa.actions[2]'),{type:'verify-manual',runId:'run-1',acceptanceId:'a2'});
- await waitFor('document.body.textContent.includes("done ·")||document.body.textContent.includes("· done")','succeeded');
+ await js('document.querySelector("[data-workflow-toggle]").click()');await delay(150);
+
+ // Finished with nothing left to do: named by the plan, says how the reviews ended, stays folded until opened.
+ view={...view,status:'succeeded',revision:9,acceptance:[{id:'a1',description:'DeepSeek approves',kind:'review',source:'user',status:'satisfied'}],unsupported:['Not checked by an agent: The login page still renders'],
+  spec:{schemaVersion:1,name:'DeepSeek review of the multiply fix',description:view.description,members:[],acceptance:[],unsupported:[],assumptions:[],steps:[]},
+  steps:view.steps.filter(s=>s.state!=='pending').concat([STEP('build.rounds[1]/build.review.reviewer','build.review.reviewer','agent','succeeded',{memberKey:'reviewer',phase:'review',iteration:[1],group:'build.rounds',sessionId:'s-rev',verdict:'approved',startedAt:Date.now()-60000,endedAt:Date.now()-1000})])};
+ await push(view);
+ await waitFor('document.querySelector("[data-workflow-status]")?.textContent==="Approved"','approved');
+ assert.match(await board(),/^DeepSeek review of the multiply fix/,'the plan\'s short name is the title');
+ assert.doesNotMatch(await board(),/DeepSeek · review/,'still folded');
+ await capture('6-done-folded');
+ await js('document.querySelector("[data-workflow-toggle]").click()');await delay(150);
+ assert.match(await board(),/DeepSeek · review · round 2/,'it opens on request');
+ assert.match(await board(),/DeepSeek approves/);
+ assert.match(await board(),/Not checked by an agent: The login page still renders/,'what the workflow did not cover is reported, with nothing to confirm');
+ await capture('6b-done-open');
+
+ // Stopped mid-step: the stopped attempt keeps its end, so the run's time covers it.
+ const t0=Date.now();
+ view={...view,status:'cancelled',revision:10,acceptance:[],unsupported:[],steps:[
+  STEP('build.rounds[0]/build.review.reviewer','build.review.reviewer','agent','succeeded',{memberKey:'reviewer',phase:'review',iteration:[0],group:'build.rounds',sessionId:'s-rev',verdict:'approved',startedAt:t0-300000,endedAt:t0-240000}),
+  STEP('build.rounds[0]/build.fix','build.fix','agent','failed',{memberKey:'current',phase:'fix',iteration:[0],group:'build.rounds',sessionId:'PARENT',startedAt:t0-240000,endedAt:t0-60000})]};
+ await push(view);
+ await waitFor('document.querySelector("[data-workflow-status]")?.textContent==="Stopped"','stopped');
+ assert.match(await board(),/Stopped· 4m(?! \d)/,'the header counts the stopped step too');
+ assert.match(await board(),/This chat · fix3mFailed/,'the stopped step shows how long it ran');
+
+ // Aegis closed under the fix: its end is unknown, so neither the step nor the run shows a made-up time.
+ view={...view,status:'interrupted',revision:11,needsInput:{reason:'app-restart',detail:'Aegis closed while this workflow was running.',instanceKey:null,stepId:null,question:null,options:[{id:'confirm-stopped',label:'Nothing is still running — continue'},{id:'cancel',label:'Cancel'}]},
+  steps:view.steps.map(s=>s.state==='failed'?{...s,endedAt:null}:s)};
+ await push(view);
+ await waitFor('document.querySelector("[data-workflow-status]")?.textContent==="Interrupted"','interrupted');
+ assert.doesNotMatch(await board(),/Interrupted·/,'no total when a step\'s end is unknown');
+ assert.match(await board(),/This chat · fixFailed/,'the step keeps no duration');
  assert.deepEqual(errors.filter(e=>!/Failed to load resource|DevTools/.test(e)),[]);
  console.log(JSON.stringify({ok:true}));app.exit(0);
 }catch(e){console.error(e);console.error(errors);await capture('failure');app.exit(1)}
