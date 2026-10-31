@@ -487,7 +487,7 @@ function ModelLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDai
   const header = 'px-3 pb-2 pt-3 align-bottom text-[11.5px] font-normal leading-[15px] text-[var(--text-muted)]';
   const cell = 'px-3 py-2.5 whitespace-nowrap tabular-nums';
 
-  const renderRow = (row: LedgerRow, kind: 'model' | 'others' | 'nested') => (
+  const renderRow = (row: LedgerRow, kind: 'model' | 'others') => (
     <tr key={row.key} className="border-t border-[var(--border)]" data-usage-model-row={kind === 'others' ? 'others' : row.label}>
       <td className={`${cell} overflow-hidden`}>
         {kind === 'others' ? (
@@ -501,8 +501,8 @@ function ModelLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDai
             <ChevronDown className={`h-3.5 w-3.5 transition-transform ${othersOpen ? 'rotate-180' : ''}`} />
           </button>
         ) : (
-          <div className={`flex min-w-0 items-center gap-2.5 ${kind === 'nested' ? 'pl-[26px]' : ''}`}>
-            {kind === 'model' ? <ModelProviderLogo model={row.label} color="var(--text-muted)" /> : null}
+          <div className="flex min-w-0 items-center gap-2.5">
+            <ModelProviderLogo model={row.label} color="var(--text-muted)" />
             <span className="min-w-0 truncate font-medium text-[var(--text-primary)]" title={row.label}>{row.label}</span>
           </div>
         )}
@@ -579,7 +579,7 @@ function ModelLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDai
             <tbody>
               {visible.map((model) => renderRow(rowOf(model), 'model'))}
               {restRow ? renderRow(restRow, 'others') : null}
-              {restRow && othersOpen ? rest.map((model) => renderRow(rowOf(model), 'nested')) : null}
+              {restRow && othersOpen ? rest.map((model) => renderRow(rowOf(model), 'model')) : null}
             </tbody>
             <tfoot>
               <tr className="border-t border-[var(--text-primary)]/60 font-semibold text-[var(--text-primary)]" data-usage-model-row="total">
@@ -1077,16 +1077,14 @@ function limitTone(remaining: number): string {
   return remaining < 5 ? 'var(--error)' : remaining < 20 ? 'var(--warning)' : 'var(--accent)';
 }
 
-/** "2h 25m", "2d 6h", "35m": time until a window resets. */
-function formatResetIn(resetsAt: number | null | undefined, now = Date.now()): string | null {
-  if (!resetsAt) return null;
-  const ms = normalizeTimestampMs(resetsAt) - now;
-  if (ms <= 0) return 'now';
-  const minutes = Math.round(ms / 60_000);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ${minutes % 60}m`;
-  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+/** "today", "tomorrow" or "Sat, Oct 31", plus the clock time, for a moment in the next few days. */
+function formatDayAndTime(at: Date, now = new Date()): { day: string; time: string } {
+  const time = at.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((startOfDay(at) - startOfDay(now)) / 86_400_000);
+  if (days === 0) return { day: 'today', time };
+  if (days === 1) return { day: 'tomorrow', time };
+  return { day: at.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }), time };
 }
 
 /** How far through its window the clock is (0–1), when the window says how long it is. */
@@ -1111,7 +1109,7 @@ function LimitRing({ remaining }: { remaining: number }) {
   );
 }
 
-/** The detail behind a chip: the bar with a pace tick, used vs time gone, and when it resets. */
+/** The detail behind a chip: the bar with a time tick, when it resets, and a warning only if it runs out first. */
 function PlanLimitDetail({ chip }: { chip: PlanLimitChip }) {
   const window = chip.window;
   if (!window) {
@@ -1126,24 +1124,19 @@ function PlanLimitDetail({ chip }: { chip: PlanLimitChip }) {
     );
   }
   const remaining = Math.round(window.remainingPercent);
-  const used = Math.round(window.usedPercent);
   const elapsed = windowElapsed(window);
-  const resetsAt = window.resetsAt ? new Date(normalizeTimestampMs(window.resetsAt)) : null;
-  let pace: string | null = null;
-  if (elapsed !== null && elapsed > 0.05 && window.usedPercent > 0) {
-    const projected = window.usedPercent / elapsed;
-    if (projected <= 100) pace = `At this pace you'll have about ${Math.max(0, Math.round(100 - projected))}% left.`;
-    else {
-      // The rest of the window's share goes at the same rate: (left ÷ used) × time so far.
-      const hitAt = Date.now() + ((100 - window.usedPercent) / window.usedPercent) * elapsed * window.windowDurationMins! * 60_000;
-      pace = `At this pace you'll reach the limit ${new Date(hitAt).toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' })}.`;
-    }
+  const reset = window.resetsAt ? formatDayAndTime(new Date(normalizeTimestampMs(window.resetsAt))) : null;
+  let runsOut: string | null = null;
+  if (elapsed !== null && elapsed > 0.05 && window.usedPercent > 0 && window.usedPercent / elapsed > 100) {
+    // The rest of the window's share goes at the same rate: (left ÷ used) × time so far.
+    const hitAt = formatDayAndTime(new Date(Date.now() + ((100 - window.usedPercent) / window.usedPercent) * elapsed * window.windowDurationMins! * 60_000));
+    runsOut = hitAt.day === 'today' ? `Runs out around ${hitAt.time} at this rate` : `Runs out ${hitAt.day} around ${hitAt.time} at this rate`;
   }
   return (
-    <div className="space-y-2">
+    <div className="space-y-2.5">
       <div className="flex items-center justify-between gap-4 text-[13px] font-semibold text-[var(--text-primary)]">
         <span>{chip.label}</span>
-        <span className="tabular-nums">{remaining}% left</span>
+        <span className="tabular-nums" style={remaining < 20 ? { color: limitTone(remaining) } : undefined}>{remaining}% left</span>
       </div>
       <div className="relative h-1.5 rounded-full bg-[var(--bg-tertiary)]">
         <div className="h-full rounded-full" style={{ width: `${Math.max(0, Math.min(100, remaining))}%`, backgroundColor: limitTone(remaining) }} />
@@ -1152,17 +1145,13 @@ function PlanLimitDetail({ chip }: { chip: PlanLimitChip }) {
           <span className="absolute -top-[3px] h-3 w-px bg-[var(--text-secondary)]" style={{ left: `${(1 - elapsed) * 100}%` }} aria-hidden="true" />
         ) : null}
       </div>
-      <div className="flex items-center justify-between gap-4 text-[12px] text-[var(--text-muted)]">
-        <span>{used}% used</span>
-        {elapsed !== null ? <span>{Math.round(elapsed * 100)}% of the window gone</span> : null}
-      </div>
-      <div className="text-[12.5px] leading-[18px] text-[var(--text-secondary)]">
-        {resetsAt
-          ? `Resets ${resetsAt.toLocaleString(undefined, { weekday: 'long', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}.`
-          : 'No reset time reported.'}
-        {pace ? ` ${pace}` : ''}
-        {chip.detail ? ` ${chip.detail}` : ''}
-      </div>
+      {reset || runsOut || chip.detail ? (
+        <div className="space-y-1 text-[12.5px] leading-[18px] tabular-nums">
+          {reset ? <div className="text-[var(--text-secondary)]">Resets {reset.day} at {reset.time}</div> : null}
+          {runsOut ? <div className="font-medium text-[var(--error)]">{runsOut}</div> : null}
+          {chip.detail ? <div className="text-[var(--text-secondary)]">{chip.detail}</div> : null}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1170,7 +1159,6 @@ function PlanLimitDetail({ chip }: { chip: PlanLimitChip }) {
 function PlanLimitChipView({ chip }: { chip: PlanLimitChip }) {
   const [open, setOpen] = useState(false);
   const remaining = chip.window ? Math.round(chip.window.remainingPercent) : null;
-  const resetIn = chip.window ? formatResetIn(chip.window.resetsAt) : null;
   return (
     <span
       className="relative"
@@ -1193,7 +1181,6 @@ function PlanLimitChipView({ chip }: { chip: PlanLimitChip }) {
         <span className="font-semibold tabular-nums" style={chip.alert ? { color: 'var(--error)' } : remaining !== null && remaining < 20 ? { color: limitTone(remaining) } : { color: 'var(--text-primary)' }}>
           {remaining !== null ? `${remaining}%` : chip.value}
         </span>
-        {resetIn ? <span className="text-[var(--text-muted)]">· {resetIn}</span> : null}
       </button>
       {open ? (
         <div role="tooltip" className="absolute right-0 top-[calc(100%+6px)] z-20 w-[300px] max-w-[calc(100vw-32px)] rounded-xl border border-[var(--border)] bg-[var(--popover-bg,var(--bg-primary))] p-3.5 shadow-[0_8px_24px_rgba(0,0,0,0.12),0_2px_6px_rgba(0,0,0,0.08)]">
@@ -1206,8 +1193,8 @@ function PlanLimitChipView({ chip }: { chip: PlanLimitChip }) {
 
 /**
  * The agent's plan limits on one slim line under the toolbar: the plan, then a
- * chip per limit (share left and time to reset). Hovering a chip shows its
- * detail; refresh and failure notes sit at the start of the line.
+ * chip per limit (share left). Hovering a chip shows its detail; refresh and
+ * failure notes sit at the start of the line.
  */
 function PlanLimitStrip({ limits }: { limits: PlanLimits }) {
   return (
