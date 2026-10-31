@@ -5,9 +5,13 @@ import { CURRENT_SESSION_AGENT } from '../../shared/workflow';
 type WorkflowState = {
   runs: Record<string, WorkflowRunView>;
   loaded: boolean;
-  /** Boards the user collapsed in the chat, by run id (survives the board remounting). */
-  collapsed: Record<string, boolean>;
-  toggleCollapsed: (runId: string) => void;
+  /**
+   * Boards the user opened or folded in the chat, by run id (survives the
+   * board remounting), with whether the run had ended then. A choice made
+   * while it ran does not outlast the run: an ending run folds again.
+   */
+  expanded: Record<string, { open: boolean; ended: boolean }>;
+  setExpanded: (runId: string, choice: { open: boolean; ended: boolean }) => void;
   load: () => Promise<void>;
   upsert: (view: WorkflowRunView) => void;
   act: (action: WorkflowAction) => Promise<WorkflowActionResult>;
@@ -18,8 +22,8 @@ let loading: Promise<void> | null = null;
 export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   runs: {},
   loaded: false,
-  collapsed: {},
-  toggleCollapsed: (runId) => set((state) => ({ collapsed: { ...state.collapsed, [runId]: !state.collapsed[runId] } })),
+  expanded: {},
+  setExpanded: (runId, choice) => set((state) => ({ expanded: { ...state.expanded, [runId]: choice } })),
 
   load: () => {
     loading ??= window.electron.workflows

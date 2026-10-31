@@ -9,10 +9,18 @@ import type { InstanceRecord, Version } from './engine';
 export type AcceptanceStatus = {
   id: string;
   description: string;
-  kind: 'check' | 'review' | 'manual';
-  status: 'satisfied' | 'unsatisfied' | 'manual';
+  kind: 'check' | 'review';
+  status: 'satisfied' | 'unsatisfied';
   evidenceKey?: string;
 };
+
+/**
+ * Specs saved before acceptance became agent-only may still hold "manual"
+ * items; they are left out rather than waiting on a person.
+ */
+export function agentVerified<T extends { verify: { kind: string } }>(acceptance: T[]): T[] {
+  return acceptance.filter((item) => item.verify.kind === 'check' || item.verify.kind === 'review');
+}
 
 export function evaluateAcceptance(
   spec: Pick<WorkflowSpec, 'acceptance'>,
@@ -20,9 +28,8 @@ export function evaluateAcceptance(
   finalVersion: Version,
 ): AcceptanceStatus[] {
   const settled = records.filter((r) => r.state === 'settled');
-  return spec.acceptance.map((item): AcceptanceStatus => {
+  return agentVerified(spec.acceptance).map((item): AcceptanceStatus => {
     const base = { id: item.id, description: item.description, kind: item.verify.kind };
-    if (item.verify.kind === 'manual') return { ...base, status: 'manual' };
     let evidence: InstanceRecord | undefined;
     if (item.verify.kind === 'check') {
       const stepId = item.verify.step;

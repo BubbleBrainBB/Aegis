@@ -21,7 +21,12 @@ export type Member = {
 export type Acceptance = {
   id: string;
   description: string;
-  verify: { kind: 'check'; step: string } | { kind: 'review'; member: string } | { kind: 'manual' };
+  /**
+   * Agents verify every requirement: a check that passes or a reviewer who
+   * approves. Nothing waits for a person to confirm it; what no check or
+   * review can confirm is reported to the user instead.
+   */
+  verify: { kind: 'check'; step: string } | { kind: 'review'; member: string };
   source: Source;
 };
 

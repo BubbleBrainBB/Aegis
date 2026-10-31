@@ -271,7 +271,7 @@ type Member = {
 type Acceptance = {
   id: string;
   description: string;
-  verify: { kind: 'check'; step: string } | { kind: 'review'; member: string } | { kind: 'manual' };
+  verify: { kind: 'check'; step: string } | { kind: 'review'; member: string };
   source: 'user' | 'template' | 'inferred';
 };
 
@@ -384,7 +384,7 @@ type PlannedWorkflow = {
   name: string;
   description: string;
   members: Array<{ key: string; role: 'implementer' | 'reviewer' | 'advisor'; agent: string; model: string | null; focus: string | null; source: 'user' | 'template' | 'inferred' }>;
-  acceptance: Array<{ id: string; description: string; verifyKind: 'check' | 'review' | 'manual'; verifyRef: string | null; source: 'user' | 'template' | 'inferred' }>;
+  acceptance: Array<{ id: string; description: string; verifyKind: 'check' | 'review'; verifyRef: string | null; source: 'user' | 'template' | 'inferred' }>;
   unsupported: string[];
   assumptions: string[];
   steps: Array<{
@@ -566,7 +566,7 @@ Aegis 接入的每个 Provider（当前为 Claude、Codex、Kimi、OpenCode、Gr
 
 关卡只能发现检查时刻之前已经发生的变化，无法预知之后的延迟写入。因此“成功”的含义是“版本 R(n) 满足全部验收要求”：完成卡显示被验收的 tree hash，最终产物就是该快照。完成后若文件监听发现目录偏离 R(n)，UI 提示“当前目录已偏离验收版本”，不撤销 R(n) 的验收记录。
 
-**验收判定：**流程执行完毕且 G4 通过后，Host 逐项检查 `acceptance`：`check` 要求该检查步骤在 R(n) 上有 `passed` 实例；`review` 要求该成员在 R(n) 上有 `approved` 实例；`manual` 显示“待人工验收”。全部满足才设 `succeeded`；有未满足项时显示“完成（含未满足项）”并逐条列出，不显示成功。用户显式豁免某项时记录为例外，显示“完成（含豁免）”。
+**验收判定：**流程执行完毕且 G4 通过后，Host 逐项检查 `acceptance`：`check` 要求该检查步骤在 R(n) 上有 `passed` 实例；`review` 要求该成员在 R(n) 上有 `approved` 实例。验收只由 Agent 完成，没有人工验收项：检查和评审都确认不了的要求不列为验收项，由成员在结果里说明，聊天会话向用户汇报。全部满足才设 `succeeded`；有未满足项时显示“完成（含未满足项）”并逐条列出，不显示成功。用户显式豁免某项时记录为例外，显示“完成（含豁免）”。
 
 **租约：**写入步骤与检查占用工作流运行目录的独占租约。租约按 canonical path、真实路径及父子目录关系检测冲突，约束的是工作流自身的执行，以及 Aegis 在该目录发起的 Git 切换与 handoff；不同 linked worktree 可分别持有写入租约，仓库级 Git 操作仍需单独协调。
 

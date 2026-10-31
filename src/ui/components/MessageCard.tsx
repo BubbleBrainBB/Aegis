@@ -8,6 +8,7 @@ import { useDesignStore } from '../store/useDesignStore';
 import { ChevronRight, Copy, Check, History, Lightbulb, Pencil, RotateCcw, TargetArrow, Undo2, Workflow } from './icons';
 import { parseGoalInput, supportsGoalUI, isClaudeGoalClearObjective } from '../../shared/session-goal';
 import type { ThreadGoal } from '../../shared/session-goal';
+import { WORKFLOW_REPORT_SUFFIX } from '../../shared/workflow';
 import { formatDurationLabel } from '../utils/format-duration';
 import { cn } from '@/ui/lib/utils';
 import { useAppStore } from '../store/useAppStore';
@@ -76,7 +77,9 @@ export function MessageCard({
   switch (message.type) {
     case 'user_prompt':
       // Prompts the workflow engine sent are not the user's words.
-      if (message.workflowPrompt === 'event') return <WorkflowEventRow text={message.prompt} />;
+      if (message.workflowPrompt === 'event') {
+        return message.prompt.endsWith(WORKFLOW_REPORT_SUFFIX) ? null : <WorkflowEventRow text={message.prompt} />;
+      }
       if (message.workflowPrompt === 'task') return <WorkflowTaskRow text={message.prompt} />;
       if (message.workflowPrompt === 'follow-up') {
         return isSubSessionsFinishedPrompt(message.prompt)

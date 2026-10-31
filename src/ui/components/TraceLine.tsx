@@ -13,6 +13,8 @@ interface TraceLineProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, '
   title: ReactNode;
   /** Small facts after the title: elapsed, diff stat, exit code, failed count. */
   meta?: ReactNode;
+  /** Facts pinned to the line's end, before the trail: a step's time and verdict. */
+  aside?: ReactNode;
   /** One glyph after the meta: chevron, spinner, link arrow or interrupted mark. */
   trail?: ReactNode;
   tone?: TraceTone;
@@ -27,6 +29,7 @@ export function TraceLine({
   icon,
   title,
   meta,
+  aside,
   trail,
   tone = 'default',
   hint,
@@ -39,6 +42,7 @@ export function TraceLine({
       <span className="trace-line-icon" aria-hidden="true">{icon}</span>
       <span className="trace-line-title">{title}</span>
       {meta ? <span className="trace-line-meta">{meta}</span> : null}
+      {aside ? <span className="trace-line-aside">{aside}</span> : null}
       {trail ? <span className="trace-line-trail" aria-hidden="true">{trail}</span> : null}
     </>
   );

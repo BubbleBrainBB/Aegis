@@ -8,7 +8,7 @@ import * as path from 'path';
 import { DEFAULT_LIMITS } from '../../../workflow-engine/limits';
 import { expandSpec, reviewsBeforeWrite, type XStep } from '../../../workflow-engine/engine/expand';
 import { runWorkflow, type EngineResult, type InstanceRecord, type WorkflowEvent } from '../../../workflow-engine/engine/engine';
-import { evaluateAcceptance } from '../../../workflow-engine/engine/acceptance';
+import { agentVerified, evaluateAcceptance } from '../../../workflow-engine/engine/acceptance';
 import type { ReviewResult } from '../../../workflow-engine/spec/results';
 import type { WorkflowSpec } from '../../../workflow-engine/spec/workflow-spec';
 import {
@@ -28,6 +28,7 @@ import {
   type WorkflowStartRequest,
   type WorkflowStepView,
   type WorkflowTemplateRequest,
+  WORKFLOW_REPORT_SUFFIX,
 } from '../../../shared/workflow';
 import { AegisWorkflowHost, type HostEvent, type RunControl, type SessionBridge } from './aegis-host';
 import { isGroupAlive, processStartTime, terminateGroup } from './check-executor';
@@ -339,21 +340,13 @@ export class WorkflowService {
         if (this.active.get(run.id)?.running) return this.reject(run.id, 'Stop the workflow before archiving it.');
         store.updateRun(run.id, { archived: true });
         break;
-      case 'verify-manual':
       case 'waive': {
         if (run.status !== 'succeeded' && run.status !== 'completed_with_gaps') {
           return this.reject(run.id, 'Acceptance can be settled once the workflow has finished.');
         }
         const item = run.spec?.acceptance.find((a) => a.id === action.acceptanceId);
         if (!item) return this.reject(run.id, 'Unknown acceptance item.');
-        if (action.type === 'verify-manual' && item.verify.kind !== 'manual') {
-          return this.reject(run.id, 'Only manual items are verified by hand.');
-        }
-        const options =
-          action.type === 'verify-manual'
-            ? { ...run.options, manualVerified: [...new Set([...(run.options.manualVerified ?? []), item.id])] }
-            : { ...run.options, waivers: [...new Set([...run.options.waivers, item.id])] };
-        store.updateRun(run.id, { options });
+        store.updateRun(run.id, { options: { ...run.options, waivers: [...new Set([...run.options.waivers, item.id])] } });
         await this.settleAcceptance(run.id);
         break;
       }
@@ -454,10 +447,11 @@ export class WorkflowService {
     if (this.active.get(runId)?.running) return;
     const active: Active = { control: { cancelled: false }, pauseRequested: false, host: null, running: true };
     this.active.set(runId, active);
+    let instances: store.SqliteInstanceStore | null = null;
     try {
       await this.prepareWorkspace(runId);
       const run = store.getRun(runId)!;
-      const instances = new store.SqliteInstanceStore(runId);
+      instances = new store.SqliteInstanceStore(runId);
       const membersById = () => new Map(store.listMembers(runId).map((m) => [m.key, m]));
       for (const member of store.listMembers(runId)) {
         if (member.currentSessionId && member.agent !== CURRENT_SESSION_AGENT) {
@@ -493,6 +487,8 @@ export class WorkflowService {
       this.fail(runId, error instanceof Error ? error.message : String(error));
     } finally {
       active.running = false;
+      // Whatever is still dispatched stopped with the engine.
+      await instances?.stopOpenAttempts().catch((error) => console.warn('[workflow] could not record stopped steps', error));
       this.publish(runId);
     }
   }
@@ -572,8 +568,8 @@ export class WorkflowService {
 
   /**
    * Success means every requirement holds on the verified final version
-   * (plan §6.4): manual items count once the user confirms them; a waived
-   * item never yields "succeeded", only "completed with gaps".
+   * (plan §6.4), as a passing check or an approving review; a waived item
+   * never yields "succeeded", only "completed with gaps".
    */
   private async settleAcceptance(runId: string) {
     const run = store.getRun(runId)!;
@@ -581,11 +577,7 @@ export class WorkflowService {
     const version = run.finalVersion ?? run.baselineVersion!;
     const acceptance = evaluateAcceptance(run.spec!, records, version).map((item) => ({
       id: item.id,
-      status: run.options.waivers.includes(item.id)
-        ? 'waived'
-        : item.status === 'manual' && (run.options.manualVerified ?? []).includes(item.id)
-          ? 'satisfied'
-          : item.status,
+      status: run.options.waivers.includes(item.id) ? 'waived' : item.status,
     }));
     const allSatisfied = acceptance.every((a) => a.status === 'satisfied');
     store.updateRun(runId, {
@@ -638,6 +630,8 @@ export class WorkflowService {
       }
     }
     for (const run of store.listUnfinishedRuns()) {
+      // The steps that were running ended when Aegis closed, at a time nobody recorded.
+      void new store.SqliteInstanceStore(run.id).stopOpenAttempts(null).catch(() => {});
       void this.restartNeeds(run.id).then((needsInput) => {
         store.updateRun(run.id, { status: 'interrupted', needsInput, appGeneration: this.deps.appGeneration });
         this.publish(run.id);
@@ -735,7 +729,7 @@ export class WorkflowService {
       const records = new store.SqliteInstanceStore(runId).all();
       const ok = await this.deps.reportToParent(
         parent.sessionId,
-        `Workflow ${STATUS_WORDS[view.status] ?? view.status} · result sent to this chat`,
+        `Workflow ${STATUS_WORDS[view.status] ?? view.status}${WORKFLOW_REPORT_SUFFIX}`,
         parentReport(view, records),
       );
       if (!ok) console.warn('[workflow] could not report the result to the chat session', parent.sessionId);
@@ -782,7 +776,7 @@ export class WorkflowService {
           currentSessionId: m.currentSessionId,
         };
       }),
-      acceptance: (run.spec?.acceptance ?? []).map((item) => ({
+      acceptance: agentVerified(run.spec?.acceptance ?? []).map((item) => ({
         id: item.id,
         description: item.description,
         kind: item.verify.kind,
@@ -797,7 +791,7 @@ export class WorkflowService {
         highlight: c.authorization.kind === 'confirm' && c.authorization.highlight,
         reasons: c.authorization.kind === 'confirm' ? c.authorization.reasons : [],
       })),
-      unsupported: run.spec?.unsupported ?? [],
+      unsupported: [...(run.spec?.unsupported ?? []), ...legacyUncheckedRequirements(run.spec)],
       assumptions: run.spec?.assumptions ?? [],
       warnings: (report?.warnings ?? []).map((w) => w.message),
       confirmReasons: report ? effectiveConfirmReasons(report, run.options.parent).map((r) => r.message) : [],
@@ -825,6 +819,17 @@ export class WorkflowService {
 /** What stops the plan for the user; command approvals follow the requesting chat's permission mode. */
 function effectiveConfirmReasons(report: ValidationReport, parent: WorkflowParent | null | undefined): ConfirmReason[] {
   return report.confirmReasons.filter((reason) => !(reason.kind === 'check' && parent?.fullAccess === true));
+}
+
+/**
+ * Specs saved before acceptance became agent-only may hold "manual" items. No
+ * agent checks them and nobody is asked to confirm them, so they are reported
+ * with what the workflow did not cover, for the chat to judge and report.
+ */
+export function legacyUncheckedRequirements(spec: WorkflowSpec | null | undefined): string[] {
+  const all = spec?.acceptance ?? [];
+  const checked = new Set(agentVerified(all).map((item) => item.id));
+  return all.filter((item) => !checked.has(item.id)).map((item) => `Not checked by an agent: ${item.description}`);
 }
 
 function titleFor(goal: string): string {
@@ -857,7 +862,7 @@ function parentReport(view: WorkflowRunView, records: InstanceRecord[]): string 
     }
     const output = record.output as Record<string, unknown> | undefined;
     if (!output) continue;
-    if (typeof output.verdict === 'string') {
+    if (record.outputKind === 'review' && typeof output.verdict === 'string') {
       lines.push(`- Review by ${memberLabel(record.member)}${round}: ${output.verdict}. ${String(output.summary ?? '')}`);
       for (const finding of (output.findings as Array<Record<string, unknown>> | undefined) ?? []) {
         const where = finding.file ? ` ${finding.file}${finding.line ? `:${finding.line}` : ''}` : '';
@@ -876,8 +881,9 @@ function parentReport(view: WorkflowRunView, records: InstanceRecord[]): string 
     '<<<BEGIN workflow report>>>',
     lines.length ? lines.join('\n') : '(no results)',
     acceptance.length ? `\nAcceptance:\n${acceptance.join('\n')}` : null,
+    view.unsupported.length ? `\nNot covered by the workflow:\n${view.unsupported.map((u) => `- ${u}`).join('\n')}` : null,
     '<<<END workflow report>>>',
-    'Tell the user the outcome briefly. Do not start another workflow for this request unless the user asks for one.',
+    'Tell the user the outcome briefly: what was done, and what is still open (failed checks, findings left unresolved, unmet acceptance items, parts the workflow did not cover). Do not start another workflow for this request unless the user asks for one.',
   ]
     .filter((line): line is string => line !== null)
     .join('\n');
@@ -1002,16 +1008,16 @@ export function buildTemplateSpec(goal: string, template: WorkflowTemplateReques
 }
 
 /** Flatten the expanded spec plus instance records into UI rows (plan §8.2). */
-function stepViews(
+export function stepViews(
   spec: WorkflowSpec,
-  records: Array<InstanceRecord & { sessionId?: string }>,
+  records: Array<store.StoredInstanceRecord>,
   skipped: string[],
   running: boolean,
   needsInput: WorkflowNeedsInput | null,
 ): WorkflowStepView[] {
   const views: WorkflowStepView[] = [];
   const ranAt = new Map<string, number>();
-  const byStep = new Map<string, Array<InstanceRecord & { sessionId?: string }>>();
+  const byStep = new Map<string, Array<store.StoredInstanceRecord>>();
   for (const record of [...records].sort((a, b) => (a.seq ?? Number.MAX_SAFE_INTEGER) - (b.seq ?? Number.MAX_SAFE_INTEGER))) {
     const list = byStep.get(record.stepId) ?? [];
     list.push(record);
@@ -1052,6 +1058,8 @@ function stepViews(
           version: null,
           summary: null,
           verdict: null,
+          startedAt: null,
+          endedAt: null,
         });
         continue;
       }
@@ -1064,7 +1072,9 @@ function stepViews(
               : record.passed
                 ? 'passed'
                 : 'failed'
-            : ((output as ReviewResult | undefined)?.verdict ?? null);
+            : record.outputKind === 'review'
+              ? ((output as ReviewResult | undefined)?.verdict ?? null)
+              : null; // A route output may name a field "verdict"; only reviews give one.
         const waiting = needsInput?.instanceKey === record.key;
         ranAt.set(record.key, record.seq ?? Number.MAX_SAFE_INTEGER);
         views.push({
@@ -1090,6 +1100,8 @@ function stepViews(
           version: record.versionOut ?? record.versionIn ?? null,
           summary: typeof output?.summary === 'string' ? output.summary : null,
           verdict,
+          startedAt: record.startedAt ?? null,
+          endedAt: record.settledAt ?? record.stoppedAt ?? null,
         });
       }
       for (const key of skippedKeys) {
@@ -1108,6 +1120,8 @@ function stepViews(
           version: null,
           summary: null,
           verdict: null,
+          startedAt: null,
+          endedAt: null,
         });
       }
     }

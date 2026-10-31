@@ -75,7 +75,7 @@ export type PlannedWorkflow = {
   acceptance: Array<{
     id: string;
     description: string;
-    verifyKind: 'check' | 'review' | 'manual';
+    verifyKind: 'check' | 'review';
     verifyRef: string | null;
     source: Source;
   }>;
@@ -180,7 +180,7 @@ export function buildPlannedWorkflowSchema(options: PlannerSchemaOptions): JsonS
       items: object({
         id: str,
         description: str,
-        verifyKind: strEnum(['check', 'review', 'manual']),
+        verifyKind: strEnum(['check', 'review']),
         verifyRef: nullable(str),
         source: strEnum(SOURCES),
       }),
