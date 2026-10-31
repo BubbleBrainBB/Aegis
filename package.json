@@ -86,7 +86,7 @@
     "verify:markdown-frontmatter": "npx tsx scripts/tests/markdown-frontmatter-preview.test.ts && node scripts/tests/markdown-frontmatter-preview-electron.test.mjs",
     "verify:project-file-navigation": "npx tsx scripts/tests/project-file-navigation.test.ts",
     "verify:html-preview": "npm run transpile:electron && npx tsx scripts/tests/html-preview.test.ts && node node_modules/electron/cli.js scripts/tests/html-preview-electron.test.cjs",
-    "verify:right-utility-tabs": "npx tsx scripts/tests/right-utility-tabs.test.ts",
+    "verify:right-utility-tabs": "npx tsx scripts/tests/right-utility-tabs.test.ts && npx tsx scripts/tests/right-panel-fullscreen-tabs.test.ts",
     "verify:right-panel-resize": "npm run verify:right-utility-tabs && node scripts/tests/right-panel-resize-electron.test.mjs",
     "verify:files-rail-collapse": "node scripts/tests/files-rail-collapse-electron.test.mjs",
     "verify:session-right-panel": "npx tsx scripts/tests/session-right-panel.test.ts",

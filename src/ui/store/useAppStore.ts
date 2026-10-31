@@ -148,12 +148,12 @@ const runtimeNoticeClearTimers = new Map<string, number>();
 let projectFileOpenRequestCounter = 0;
 
 type RightPanelFullscreen = Store['rightPanelFullscreen'];
-const FULLSCREEN_TAB_KINDS = new Set<string>(['browser', 'files', 'review', 'images']);
+const FULLSCREEN_TAB_KINDS = new Set<string>(['browser', 'files', 'review', 'images', 'terminal']);
 
 /**
  * Fullscreen belongs to the right panel, not to one tab: opening or switching
  * tabs keeps it. It follows the active tab when that kind has its own
- * fullscreen view; other kinds (terminal, sources…) keep the current value so
+ * fullscreen view; other kinds (sources, side chats…) keep the current value so
  * the panel stays full-width.
  */
 function fullscreenFollowingTab(
@@ -397,11 +397,6 @@ function isGrokStreamCommit(message: StreamMessage): boolean {
   );
 }
 
-function sanitizeTerminalDrawerHeight(height: number | undefined, fallback = 280): number {
-  if (typeof height !== 'number' || Number.isNaN(height)) return fallback;
-  return Math.min(640, Math.max(180, Math.round(height)));
-}
-
 function sanitizeChatSplitRatio(ratio: number | undefined, fallback = 0.5): number {
   if (typeof ratio !== 'number' || Number.isNaN(ratio)) return fallback;
   return Math.min(0.65, Math.max(0.35, ratio));
@@ -463,8 +458,6 @@ function persistUiResumeStateSnapshot(state: Pick<
   | 'projectCwd'
   | 'projectTreeCollapsed'
   | 'projectPanelView'
-  | 'terminalDrawerOpen'
-  | 'terminalDrawerHeight'
   | 'workspaceLayout'
   | 'chatLayoutMode'
   | 'savedSplitVisible'
@@ -484,8 +477,6 @@ function persistUiResumeStateSnapshot(state: Pick<
     projectCwd: state.projectCwd,
     projectTreeCollapsed: state.projectTreeCollapsed,
     projectPanelView: state.projectPanelView,
-    terminalDrawerOpen: state.terminalDrawerOpen,
-    terminalDrawerHeight: state.terminalDrawerHeight,
     // Legacy two-pane fields kept in the blob as a compat shadow so an older
     // app version can still restore a (collapsed) layout after a downgrade.
     chatLayoutMode: state.chatLayoutMode,
@@ -698,21 +689,6 @@ function normalizeProjectPanelView(
     return value;
   }
   return 'files';
-}
-
-function resolveInitialTerminalDrawerOpen(
-  resumeState: import('../../shared/types').UiResumeState | null
-): boolean {
-  if (!resumeState) {
-    return false;
-  }
-
-  // Older persisted blobs used "terminal" before the drawer had its own flag.
-  if ((resumeState.projectPanelView as string) === 'terminal') {
-    return true;
-  }
-
-  return resumeState.terminalDrawerOpen === true;
 }
 
 function normalizeClaudeAccessMode(value: unknown): import('../types').ClaudeAccessMode {
@@ -985,8 +961,6 @@ export const useAppStore = create<Store>()(
       rightUtilityInstantRevealPending: false,
       pendingProjectFileOpen: null,
       reviewDiffSelection: null,
-      terminalDrawerOpen: resolveInitialTerminalDrawerOpen(initialUiResumeState),
-      terminalDrawerHeight: sanitizeTerminalDrawerHeight(initialUiResumeState?.terminalDrawerHeight),
       browserPanelOpen: false,
       rightPanelFullscreen: null,
       rightPanelFullscreenChat: false,
@@ -2322,16 +2296,6 @@ export const useAppStore = create<Store>()(
     });
   },
 
-  setTerminalDrawerOpen: (terminalDrawerOpen) => {
-    set({ terminalDrawerOpen });
-    persistUiResumeStateSnapshot(get());
-  },
-
-  setTerminalDrawerHeight: (terminalDrawerHeight) => {
-    set({ terminalDrawerHeight: sanitizeTerminalDrawerHeight(terminalDrawerHeight) });
-    persistUiResumeStateSnapshot(get());
-  },
-
   setBrowserPanelOpen: (browserPanelOpen) => {
     set((state) => {
       const activeBrowserTab = isRightUtilityBrowserTab(state.activeRightUtilityTab)
@@ -2353,8 +2317,8 @@ export const useAppStore = create<Store>()(
   },
 
   setRightPanelFullscreen: (target) => {
-    // Images, a design and review just take the whole window; the panel stays shown.
-    if (target === 'images' || target === 'design' || target === 'review') {
+    // Images, a design, review and a terminal just take the whole window; the panel stays shown.
+    if (target === 'images' || target === 'design' || target === 'review' || target === 'terminal') {
       set({
         rightPanelFullscreen: target,
         rightPanelFullscreenChat: false,
@@ -2424,8 +2388,6 @@ export const useAppStore = create<Store>()(
         projectCwd: resumeState.projectCwd ?? null,
         projectTreeCollapsed: resumeState.projectTreeCollapsed,
         projectPanelView: normalizeProjectPanelView(resumeState.projectPanelView),
-        terminalDrawerOpen: resolveInitialTerminalDrawerOpen(resumeState),
-        terminalDrawerHeight: sanitizeTerminalDrawerHeight(resumeState.terminalDrawerHeight),
         chatLayoutMode,
         savedSplitVisible,
         activePaneId,
@@ -2821,8 +2783,6 @@ export const useAppStore = create<Store>()(
             state.activeSessionId
           ),
         }),
-        terminalDrawerOpen: state.terminalDrawerOpen,
-        terminalDrawerHeight: state.terminalDrawerHeight,
         theme: state.theme,
         themeState: state.themeState,
         uiFontFamily: state.uiFontFamily,
@@ -2854,8 +2814,6 @@ export const useAppStore = create<Store>()(
           projectTreeCollapsed?: boolean;
           projectPanelView?: import('../types').ProjectPanelView;
           rightPanelBySessionId?: unknown;
-          terminalDrawerOpen?: boolean;
-          terminalDrawerHeight?: number;
           theme?: Theme;
           themeState?: AppearanceState;
           uiFontFamily?: string;
@@ -2950,11 +2908,6 @@ export const useAppStore = create<Store>()(
             Object.keys(rightPanelBySessionId).length > 0
               ? rightPanelBySessionId
               : currentState.rightPanelBySessionId,
-          terminalDrawerOpen: persisted?.terminalDrawerOpen ?? currentState.terminalDrawerOpen,
-          terminalDrawerHeight: sanitizeTerminalDrawerHeight(
-            persisted?.terminalDrawerHeight,
-            currentState.terminalDrawerHeight
-          ),
           theme,
           themeState,
           uiFontFamily,

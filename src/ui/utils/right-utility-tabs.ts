@@ -6,6 +6,7 @@ import type {
 let fileTabCounter = 0;
 let browserTabCounter = 0;
 let launcherTabCounter = 0;
+let terminalTabCounter = 0;
 
 export function sessionSourceTab(path: string): ProjectUtilityPanelTarget {
   return `sources:${encodeURIComponent(path)}`;
@@ -33,6 +34,18 @@ export function isRightUtilitySubagentTab(
   target: ProjectUtilityPanelTarget | null | undefined
 ): target is ProjectUtilityPanelTarget {
   return target === 'subagent' || Boolean(target?.startsWith('subagent:'));
+}
+
+export function isRightUtilityTerminalTab(
+  target: ProjectUtilityPanelTarget | null | undefined
+): target is ProjectUtilityPanelTarget {
+  return target === 'terminal' || Boolean(target?.startsWith('terminal:'));
+}
+
+/** A new terminal tab with its own shell. */
+export function createTerminalTabId(): ProjectUtilityPanelTarget {
+  terminalTabCounter += 1;
+  return `terminal:${Date.now().toString(36)}-${terminalTabCounter}`;
 }
 
 export function isRightUtilityLauncherTab(
@@ -109,6 +122,7 @@ export function getRightUtilityTabKind(
   if (isRightUtilityBrowserTab(target)) return 'browser';
   if (isRightUtilitySubagentTab(target)) return 'subagent';
   if (isRightUtilitySideChatTab(target)) return 'side-chat';
+  if (isRightUtilityTerminalTab(target)) return 'terminal';
   return target as ProjectUtilityPanelKind;
 }
 
