@@ -46,7 +46,7 @@ function Harness(){
  return <Tooltip.Provider><div style={{display:'flex',height:'100vh',background:'var(--bg-primary)'}}>
  <aside style={{width:300,padding:'12px 8px',background:'var(--app-sidebar-surface)',overflow:'auto'}}>
   <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'4px 4px 12px'}}><b style={{fontSize:20,letterSpacing:'-0.04em'}}>Aegis</b><SidebarViewMenu/></div>
-  <FolderTreeView projectCwd="/projects/coworker" onSessionClick={s.setActiveSession} onSelectProjectFolder={()=>{}} onNewSessionForProject={()=>{}} />
+  {s.showSettings?null:<FolderTreeView projectCwd="/projects/coworker" onSessionClick={s.setActiveSession} onSelectProjectFolder={()=>{}} onNewSessionForProject={()=>{}} />}
  </aside><main style={{flex:1}}/></div></Tooltip.Provider>;
 }
 createRoot(document.getElementById('root')).render(<Harness/>);
@@ -118,17 +118,69 @@ app.whenReady().then(async()=>{
   assert.deepEqual(await members('needs-input'),['s1','s2']);
   assert.deepEqual(await members('running'),['s3','s4']);
   assert.deepEqual(await members('review'),['s5','s6','s7'],'unseen result, open PR and live worktree wait on review');
-  assert.deepEqual(await members('completed'),[],'Completed starts folded');
+  assert.deepEqual(await members('completed'),['s10','s12','s8','s9'].sort(),'Completed starts open; a merged PR lands in it');
   assert.equal(await js('document.querySelector("[aria-label=\\\\"View options (customized)\\\\"]")!==null'),true,'changed options tint the trigger');
   assert.equal(await js('document.querySelector("[data-session-id=s5]").textContent.includes("coworker")'),false,'rows show the session only, not its project');
   await screenshot('3-state');
+
+  // Past five sessions a state group folds the rest behind Show more, like a project.
+  const sessionListToggle='[...document.querySelectorAll("[data-sidebar-state=completed] button")].find(e=>/^Show (more|less)$/.test(e.textContent))';
+  const toggleLabel=()=>js('('+sessionListToggle+')?.textContent ?? null');
+  assert.equal(await toggleLabel(),null,'a short group has no Show more');
+  await js('(()=>{const s=qa.app.getState().sessions;qa.app.setState({sessions:{...s,c1:{...s.s9,id:"c1"},c2:{...s.s9,id:"c2"},c3:{...s.s9,id:"c3"}}})})()');await delay(200);
+  assert.equal((await members('completed')).length,5,'only the first five show');
+  assert.equal(await toggleLabel(),'Show more');
+  await click(sessionListToggle);
+  assert.equal((await members('completed')).length,7,'Show more lists the whole group');
+  assert.equal(await toggleLabel(),'Show less');
+  await screenshot('3b-state-show-more');
+
+  // Settings unmounts the list; coming back keeps what was folded and shown.
+  const openAndCloseSettings=async()=>{
+    await js('qa.app.setState({showSettings:true})');await delay(200);
+    assert.equal(await js('!!document.querySelector("[data-sidebar-state]")'),false,'Settings unmounts the list');
+    await js('qa.app.setState({showSettings:false})');await delay(200);
+  };
+  await openAndCloseSettings();
+  assert.equal((await members('completed')).length,7,'Show more survives Settings');
+  await click(sessionListToggle);
+  assert.equal((await members('completed')).length,5,'Show less returns to the first five');
+  await openAndCloseSettings();
+  assert.equal((await members('completed')).length,5,'Show less survives Settings');
   await click('document.querySelector("[data-sidebar-state=completed] button")');
-  assert.deepEqual(await members('completed'),['s10','s12','s8','s9'].sort(),'a merged PR lands in Completed');
+  assert.deepEqual(await members('completed'),[],'the header folds a group');
+  assert.equal(await toggleLabel(),null,'a folded group has no Show more');
+  await openAndCloseSettings();
+  assert.deepEqual(await members('completed'),[],'a fold survives Settings');
+  await click('document.querySelector("[data-sidebar-state=completed] button")');
+  assert.equal((await members('completed')).length,5,'unfolding keeps the group short');
+  await js('(()=>{const {c1,c2,c3,...s}=qa.app.getState().sessions;qa.app.setState({sessions:s})})()');await delay(200);
 
   // A new task nothing was sent from yet sits above the groups, in none of them.
   await js('(()=>{const s=qa.app.getState().sessions;qa.app.setState({sessions:{...s,d1:{...s.s8,id:"d1",title:"New Chat",isDraft:true,status:"idle",updatedAt:Date.now()}}})})()');await delay(200);
   assert.deepEqual(await members('draft'),['d1']);
   for(const state of ['needs-input','running','review','completed'])assert.equal((await members(state)).includes('d1'),false,'a draft is not '+state);
+  await js('(()=>{const {d1,...s}=qa.app.getState().sessions;qa.app.setState({sessions:s})})()');await delay(200);
+
+  // Going to a draft reveals its project, but a fold made after that outlives Settings.
+  await setView({groupBy:'project'});
+  const projectHeader='document.querySelector("button[title=\\\\"/projects/coworker\\\\"][aria-expanded]")';
+  const projectOpen=()=>js(projectHeader+'.getAttribute("aria-expanded")==="true"');
+  const activate=id=>js('qa.app.getState().setActiveSession('+JSON.stringify(id)+')').then(()=>delay(200));
+  await js('(()=>{const s=qa.app.getState().sessions;qa.app.setState({sessions:{...s,d1:{...s.s8,id:"d1",title:"New Chat",isDraft:true,status:"idle",updatedAt:Date.now()}}})})()');await delay(200);
+  await click(projectHeader);
+  assert.equal(await projectOpen(),false,'the header folds a project');
+  await activate('d1');
+  assert.equal(await projectOpen(),true,'going to a draft reveals its project');
+  await click(projectHeader);
+  assert.equal(await projectOpen(),false,'a project with the active draft can still be folded');
+  await openAndCloseSettings();
+  assert.equal(await projectOpen(),false,'that fold survives Settings');
+  await activate('s3');
+  assert.equal(await projectOpen(),false,'leaving the draft does not unfold');
+  await activate('d1');
+  assert.equal(await projectOpen(),true,'going back to the draft reveals its project again');
+  await activate('s3');
   await js('(()=>{const {d1,...s}=qa.app.getState().sessions;qa.app.setState({sessions:s})})()');await delay(200);
 
   // Group by Date: every session has a bucket, old ones by month.
@@ -156,7 +208,7 @@ app.whenReady().then(async()=>{
   assert.equal(await js('!!document.querySelector("[aria-label^=\\\\"Pull request #\\\\"],[data-pull-request-count]")'),false);
 
   assert.deepEqual(errors.filter(e=>!/No handler registered/.test(e)),[]);
-  console.log(JSON.stringify({ok:true,checks:['project grouping with pinned and archived entry','view menu rows and submenu','derived state groups','collapsed completed','date buckets','activity, project and status filters','PR glyph toggle']}));
+  console.log(JSON.stringify({ok:true,checks:['project grouping with pinned and archived entry','view menu rows and submenu','derived state groups','state group show more','group fold and show more survive Settings','draft project reveal and fold','date buckets','activity, project and status filters','PR glyph toggle']}));
   app.exit(0);
  }catch(e){console.error(e);console.error(errors);await screenshot('failure');app.exit(1)}
 });

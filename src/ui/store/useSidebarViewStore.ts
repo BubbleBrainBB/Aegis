@@ -14,9 +14,27 @@ import {
 interface SidebarViewStore extends SidebarViewOptions {
   /** Grouping to return to when the state-view shortcut is pressed again. */
   previousGroupBy: SidebarGroupBy;
+  /**
+   * Which groups are folded, and which show every session instead of the first
+   * few. Kept here because the Sidebar unmounts while Settings is open. Not persisted.
+   */
+  collapsedGroups: ReadonlySet<string>;
+  expandedSessionGroups: ReadonlySet<string>;
+  toggleGroupCollapsed: (key: string) => void;
+  /** The draft whose project was last unfolded for it, so a remount does not undo a later fold. */
+  revealedDraft: { sessionId: string; project: string } | null;
+  /** Unfold the project when going to a draft; pass null while no draft is active. */
+  revealDraftProject: (draft: { sessionId: string; project: string } | null) => void;
+  toggleSessionListExpanded: (key: string) => void;
   setOption: <K extends keyof SidebarViewOptions>(key: K, value: SidebarViewOptions[K]) => void;
   toggleStateView: () => void;
   reset: () => void;
+}
+
+function withToggled(keys: ReadonlySet<string>, key: string): Set<string> {
+  const next = new Set(keys);
+  if (!next.delete(key)) next.add(key);
+  return next;
 }
 
 function pickValid<T extends string>(value: unknown, labels: Record<T, string>, fallback: T): T {
@@ -28,6 +46,25 @@ export const useSidebarViewStore = create<SidebarViewStore>()(
     (set) => ({
       ...DEFAULT_SIDEBAR_VIEW,
       previousGroupBy: DEFAULT_SIDEBAR_VIEW.groupBy,
+      collapsedGroups: new Set<string>(),
+      expandedSessionGroups: new Set<string>(),
+      toggleGroupCollapsed: (key) =>
+        set((state) => ({ collapsedGroups: withToggled(state.collapsedGroups, key) })),
+      revealedDraft: null,
+      revealDraftProject: (draft) =>
+        set((state) => {
+          const revealed = state.revealedDraft;
+          if (revealed?.sessionId === draft?.sessionId && revealed?.project === draft?.project) return state;
+          return {
+            revealedDraft: draft,
+            collapsedGroups:
+              draft && state.collapsedGroups.has(draft.project)
+                ? withToggled(state.collapsedGroups, draft.project)
+                : state.collapsedGroups,
+          };
+        }),
+      toggleSessionListExpanded: (key) =>
+        set((state) => ({ expandedSessionGroups: withToggled(state.expandedSessionGroups, key) })),
       setOption: (key, value) => set({ [key]: value } as Partial<SidebarViewStore>),
       toggleStateView: () =>
         set((state) =>
