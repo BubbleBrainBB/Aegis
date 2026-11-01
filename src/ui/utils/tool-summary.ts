@@ -1,6 +1,7 @@
 import { isStartWorkflowToolName } from '../../shared/workflow';
 import { isShowWidgetToolName, isWidgetGuideToolName, widgetFromToolInput } from '../../shared/widget';
 import { isProposeFollowUpToolName, isStartSessionToolName, isWithdrawFollowUpToolName } from '../../shared/follow-up';
+import { isReportStatusToolName, TURN_REPORT_OUTCOMES, turnReportLabel, type TurnReportOutcome } from '../../shared/turn-report';
 
 const followUpTitle = (input: unknown) => {
   const title = (input as { title?: unknown } | null)?.title;
@@ -40,6 +41,14 @@ function getStringField(input: unknown, key: string): string | null {
   return typeof value === 'string' && value.trim() ? value : null;
 }
 
+/** The report_status call as the user reads it: "Needs your answer", "Blocked"... */
+function reportedStatus(input: unknown): string {
+  const outcome = getStringField(input, 'outcome');
+  return outcome && (TURN_REPORT_OUTCOMES as readonly string[]).includes(outcome)
+    ? turnReportLabel(outcome as TurnReportOutcome)
+    : 'status';
+}
+
 function getProviderDisplayTitle(input: unknown): string | null {
   return (
     getStringField(input, '__aegisDisplayTitle') ||
@@ -59,6 +68,7 @@ export function getToolSummary(name: string, input: unknown): string {
   if (isProposeFollowUpToolName(name)) return `Follow-up: ${followUpTitle(input)}`;
   if (isWithdrawFollowUpToolName(name)) return 'Withdrew a follow-up task';
   if (isStartSessionToolName(name)) return `Sub-session: ${followUpTitle(input)}`;
+  if (isReportStatusToolName(name)) return reportedStatus(input);
   const design = designToolDisplay(name, input, 'success');
   if (design) return design.target;
 
@@ -367,6 +377,9 @@ export function deriveReadableToolDisplay(
   }
   if (isStartSessionToolName(name)) {
     return { verb: status === 'pending' ? 'Starting session' : 'Started session', target: followUpTitle(input) };
+  }
+  if (isReportStatusToolName(name)) {
+    return { verb: status === 'pending' ? 'Reporting' : 'Reported', target: reportedStatus(input) };
   }
   const design = designToolDisplay(name, input, status);
   if (design) return design;

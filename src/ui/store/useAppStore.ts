@@ -582,6 +582,7 @@ function freshSessionViewFromInfo(info: import('../../shared/types').SessionInfo
     teamMode: normalizeSessionTeamMode(info.teamMode),
     teamId: info.teamId || null,
     handoffSourceProvider: info.handoffSourceProvider || null,
+    turnReport: info.turnReport ?? null,
     latestClaudeModelUsage: info.latestClaudeModelUsage,
     messages: [],
     hydrated: false,
@@ -1204,6 +1205,20 @@ export const useAppStore = create<Store>()(
 
       case 'follow-up.updated':
         useFollowUpStore.getState().upsert(event.payload);
+        break;
+
+      case 'session.turn_report':
+        set((state) => {
+          const session = state.sessions[event.payload.sessionId];
+          if (!session) return state;
+          return {
+            ...state,
+            sessions: {
+              ...state.sessions,
+              [event.payload.sessionId]: { ...session, turnReport: event.payload.report },
+            },
+          };
+        });
         break;
 
       case 'permission.dismissed':
@@ -3105,6 +3120,8 @@ function handleSessionList(
       teamMode: normalizeSessionTeamMode(session.teamMode),
       teamId: session.teamId || null,
       handoffSourceProvider: session.handoffSourceProvider || null,
+      turnReport: session.turnReport ?? null,
+      backgroundTasks: existing?.backgroundTasks,
       latestClaudeModelUsage: session.latestClaudeModelUsage,
       messages: existing?.messages || [],
       hydrated: existing?.hydrated || false,
@@ -3395,6 +3412,8 @@ function handleSessionStatus(
               ? session.streaming
               : createEmptyStreamingState(),
           runtimeNotice: nextRuntimeNotice,
+          // A new run starts with no report (main clears it in the same write).
+          turnReport: status === 'running' && session.status !== 'running' ? null : session.turnReport,
           updatedAt: Date.now(),
         },
       },

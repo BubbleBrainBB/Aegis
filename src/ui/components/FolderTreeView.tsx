@@ -42,6 +42,7 @@ import {
   type SidebarSessionState,
 } from '../utils/sidebar-view';
 import type { AgentProvider, SessionView } from '../types';
+import { turnReportNeedsUser, turnReportTitle } from '../../shared/turn-report';
 import { AgentIcon } from './ComposerAgentControls';
 import { SessionHandoffProviderRoute } from './SessionHandoffIndicator';
 
@@ -526,8 +527,15 @@ export function FolderTreeView({
 
   const isExpanded = (key: string) => !collapsedGroups.has(key);
 
-  const runtimeBadgeFor = (session: SessionView) =>
-    session.runtimeNotice ?? (session.status === 'running' ? 'running' : null);
+  const runtimeBadgeFor = (session: SessionView) => {
+    if (session.status === 'running') return session.runtimeNotice ?? 'running';
+    // A turn that changed nothing, or whose work goes on in the background,
+    // leaves no result to look at.
+    const outcome = session.turnReport?.outcome;
+    const stillWorking = outcome === 'in_progress' && !!session.backgroundTasks?.length;
+    if (session.runtimeNotice === 'completed' && (outcome === 'nothing_to_do' || stillWorking)) return null;
+    return session.runtimeNotice ?? null;
+  };
   // 平铺列表只放会话本身；所属项目在悬停卡片里。按日期分组时（Codex 式）
   // 项目放在标题下的第二行，因为分组本身不再说明项目。
   /**
@@ -1240,6 +1248,12 @@ function SessionItem({
                   className="h-2 w-2 flex-shrink-0 rounded-full bg-[var(--warning)]"
                   title="Waiting for your approval"
                   aria-label="Waiting for your approval"
+                />
+              ) : session.status !== 'running' && runtimeBadge !== 'error' && turnReportNeedsUser(session.turnReport) ? (
+                <span
+                  className="h-2 w-2 flex-shrink-0 rounded-full bg-[var(--warning)]"
+                  title={turnReportTitle(session.turnReport!)}
+                  aria-label={turnReportTitle(session.turnReport!)}
                 />
               ) : runtimeBadge === 'running' ? (
                 <Loader2

@@ -10,7 +10,8 @@ export const PROPOSE_FOLLOW_UP_TOOL = 'propose_follow_up';
 export const WITHDRAW_FOLLOW_UP_TOOL = 'withdraw_follow_up';
 export const START_SESSION_TOOL = 'start_session';
 
-function matchesTool(name: unknown, tool: string): boolean {
+/** True for `tool` bare or namespaced by a runtime (`mcp__server__tool`, `server.tool`, `server/tool`). */
+export function matchesTool(name: unknown, tool: string): boolean {
   if (typeof name !== 'string') return false;
   const normalized = name.trim();
   return (

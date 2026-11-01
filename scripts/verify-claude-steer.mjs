@@ -52,7 +52,8 @@ assert.ok(
 );
 // The drained result retires a staleConfig runner; that is what applies the drift.
 assert.ok(
-  ipc.includes('if (entry.doomed || entry.staleConfig || entry.autoApprove) {') &&
+  ipc.includes('return !!(entry.doomed || entry.staleConfig || entry.autoApprove);') &&
+    ipc.includes('if (claudeRunnerRetiresWhenDrained(entry)) {') &&
     ipc.includes('if ((currentEntry.inFlightTurns ?? 0) === 0) finishDrainedClaudeRunner(session.id, currentEntry);'),
   'a drained doomed or staleConfig Claude runner must be retired'
 );

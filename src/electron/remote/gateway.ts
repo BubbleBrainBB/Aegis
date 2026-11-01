@@ -77,6 +77,8 @@ export interface RemoteRuntime {
   lan?: { host: string } | false;
   projects(): Project[];
   sessions(): RemoteSession[];
+  /** True when the agent reported its turn left nothing for the user (no change, or a task still running). */
+  quietTurn?(id: string): boolean;
   history(id: string): RemoteMessage[];
   start(
     project: Project,
@@ -1129,7 +1131,10 @@ export class RemoteGateway {
     if (event.type === "permission.request" && id) this.notify("approval", id);
     if (event.type === "session.status" && id) {
       if (["running", "stopping"].includes(p.status)) this.running.add(id);
-      else if (this.running.delete(id)) this.notify(p.status === "error" ? "failed" : "finished", id);
+      else if (this.running.delete(id)) {
+        if (p.status === "error") this.notify("failed", id);
+        else if (!this.runtime.quietTurn?.(id)) this.notify("finished", id);
+      }
     }
     if (event.type === "permission.request")
       this.permissions.set(

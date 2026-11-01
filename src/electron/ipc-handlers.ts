@@ -11,6 +11,8 @@ import { FollowUpService } from './libs/follow-up/service';
 import { FollowUpStore } from './libs/follow-up/store';
 import { setFollowUpSessionCheck } from './libs/follow-up/registry';
 import { setFollowUpToolEntry } from './libs/follow-up/tool';
+import { setTurnReportEntry } from './libs/turn-report-tool';
+import { parseTurnReport, type TurnReport } from '../shared/turn-report';
 import { setShortcutCaptureActive } from './libs/keyboard-shortcuts';
 import { getSystemFonts, getSystemFontFamilies } from './libs/system-fonts';
 import { getAppPreferences, setAppPreferences, getTerminalShellOptions, trackTaskPowerState } from './libs/app-preferences';
@@ -3779,6 +3781,17 @@ function hasClaudeBackgroundWork(entry: RunnerEntry): boolean {
   return (entry.runningBackgroundTasks ?? 0) > 0;
 }
 
+/** A runner that retires as soon as its last turn lands; its tasks die with it. */
+function claudeRunnerRetiresWhenDrained(entry: RunnerEntry): boolean {
+  return !!(entry.doomed || entry.staleConfig || entry.autoApprove);
+}
+
+/** Whether a live runner holds a task that will wake this session when it ends. */
+function hasSessionBackgroundWork(sessionId: string): boolean {
+  const entry = runnerHandles.get(sessionId);
+  return !!entry && !claudeRunnerRetiresWhenDrained(entry) && hasClaudeBackgroundWork(entry);
+}
+
 function sweepIdleClaudeRunners(): void {
   const victims = selectClaudeRunnersToReap(snapshotClaudeRunners(), Date.now());
   for (const sessionId of victims) {
@@ -3829,7 +3842,7 @@ function flushClaudeRunners(sessionId?: string): void {
  * or automation runner retires now; any other stays warm for the next send.
  */
 function finishDrainedClaudeRunner(sessionId: string, entry: RunnerEntry): void {
-  if (entry.doomed || entry.staleConfig || entry.autoApprove) {
+  if (claudeRunnerRetiresWhenDrained(entry)) {
     clearStopFallbackTimer(entry);
     entry.handle.abort();
     runnerHandles.delete(sessionId);
@@ -3880,6 +3893,10 @@ function storeStartedClaudePrompt(
   const deferred = deferredClaudePrompts.get(started.promptId);
   if (!deferred || deferred.sessionId !== sessionId) return;
   deferredClaudePrompts.delete(started.promptId);
+  // A queued prompt only now starts or joins a turn. The session never left
+  // 'running' in between, so a report the previous turn filed after the send
+  // would otherwise describe this one.
+  clearTurnReport(mainWindow, sessionId);
   if (!deferred.message) return;
   const steer = started.mode !== 'opened';
   const { steer: _steer, ...ordinary } = deferred.message;
@@ -5201,10 +5218,37 @@ function setupFollowUps(mainWindow: BrowserWindow): void {
   setupFollowUpIPC(service);
 }
 
+/** Stores the agent's report of how its turn ends and shows it at once. */
+function recordTurnReport(mainWindow: BrowserWindow, sessionId: string, report: TurnReport | null): void {
+  sessions.setSessionTurnReport(sessionId, report);
+  broadcast(mainWindow, { type: 'session.turn_report', payload: { sessionId, report } });
+}
+
+/** A new message starts a new turn; the last report described the old one. */
+function clearTurnReport(mainWindow: BrowserWindow, sessionId: string): void {
+  if (sessions.getSession(sessionId)?.turn_report) recordTurnReport(mainWindow, sessionId, null);
+}
+
+function setupTurnReports(mainWindow: BrowserWindow): void {
+  setTurnReportEntry({
+    history: (sessionId) => sessions.getSessionHistory(sessionId),
+    record: (sessionId, report) => {
+      const row = sessions.getSession(sessionId);
+      if (!row) return 'This conversation no longer exists.';
+      // Workflow members and other hidden runs report through their own owner.
+      if (row.hidden_from_threads === 1) return null;
+      recordTurnReport(mainWindow, sessionId, report);
+      return null;
+    },
+  });
+}
+
 export function setupIPCHandlers(mainWindow: BrowserWindow): void {
   // 初始化数据库
   sessions.initialize();
+  setupTurnReports(mainWindow);
   setupRemoteIPC(mainWindow, {
+    hasBackgroundWork: hasSessionBackgroundWork,
     start: async (project, provider, prompt, extras) => {
       const payload: SessionStartPayload = {
         cwd: project.path, projectCwd: project.path, provider, prompt, title: prompt.slice(0, 60), skipTitleGeneration: true,
@@ -5343,7 +5387,7 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
       row.status !== 'running' &&
       row.hidden_from_threads !== 1
     ) {
-      notifySessionDone(row);
+      notifySessionDone(row, { backgroundWork: hasSessionBackgroundWork(row.id) });
     }
   });
 
@@ -9650,6 +9694,7 @@ function buildSessionInfoFromRow(
     teamMode: normalizeSessionTeamMode(row.team_mode),
     teamId: row.team_id || null,
     handoffSourceProvider: (row.handoff_source_provider as AgentProvider | null) || null,
+    turnReport: parseTurnReport(row.turn_report),
     latestClaudeModelUsage,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -10720,6 +10765,8 @@ async function handleSessionContinueImpl(
       teamId: nextTeamId,
     },
   });
+
+  clearTurnReport(mainWindow, sessionId);
 
   // 广播用户 prompt（在运行时检查之前，让用户消息立即显示）
   let persistedUserPrompt: Extract<StreamMessage, { type: 'user_prompt' }> | undefined;
@@ -11797,6 +11844,8 @@ function startRunner(
         const hasQueuedTurns = provider === 'claude' && ownsEntry && settlement.inFlightTurns > 0;
         const pursuingGoal = provider === 'codex' && turnStatus === 'completed' && getCachedSessionGoal(session.id)?.goal?.status === 'active';
         const liveStatus: SessionStatus = hasQueuedTurns || pursuingGoal ? 'running' : turnStatus;
+        // A goal runs its next turn without leaving 'running' or a new prompt.
+        if (pursuingGoal) clearTurnReport(mainWindow, session.id);
         const status: SessionStatus = stoppedByUser ? 'idle' : liveStatus;
         // A user-stopped turn's result writes and broadcasts NO status at
         // all: the stop already reported 'idle' synchronously, and anything

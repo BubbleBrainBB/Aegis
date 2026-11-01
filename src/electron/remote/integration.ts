@@ -9,6 +9,7 @@ import { RemoteGateway, type RemoteRuntime } from "./gateway";
 import { RemoteJournal } from "./journal";
 import { defaultRelay } from "./relay-auth";
 import { projectMessages } from "../../shared/remote/projection";
+import { parseTurnReport } from "../../shared/turn-report";
 import type { RemoteAgentOptions } from "../../shared/remote/protocol";
 import type { ServerEvent } from "../../shared/types";
 export { remoteTaskPayload } from "./task-payload";
@@ -142,7 +143,7 @@ export function setupRemoteIPC(
   actions: Pick<
     RemoteRuntime,
     "start" | "send" | "stop" | "permission" | "hasPermission"
-  >,
+  > & { hasBackgroundWork(id: string): boolean },
 ) {
   const file = join(app.getPath("userData"), "remote-companion.enc");
   const projectId = (path: string) =>
@@ -217,6 +218,10 @@ export function setupRemoteIPC(
               plan: (s.provider === "codex" ? s.codex_execution_mode : s.provider === "claude" ? s.claude_execution_mode : null) === "plan" || undefined,
             },
           }));
+      },
+      quietTurn: (id) => {
+        const outcome = parseTurnReport(sessions.getSession(id)?.turn_report)?.outcome;
+        return outcome === "nothing_to_do" || (outcome === "in_progress" && actions.hasBackgroundWork(id));
       },
       history: (id) => projectMessages(sessions.getSessionHistory(id)),
       confirm: async (name, peerId) => {

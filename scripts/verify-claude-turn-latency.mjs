@@ -231,7 +231,7 @@ assert.equal(
   'continue must skip reuse when stored history was sanitized'
 );
 assert.equal(
-  ipcSource.includes('if (entry.doomed || entry.staleConfig || entry.autoApprove) {'),
+  ipcSource.includes('return !!(entry.doomed || entry.staleConfig || entry.autoApprove);') && ipcSource.includes('if (claudeRunnerRetiresWhenDrained(entry)) {'),
   true,
   'doomed/automation runners must be retired at result'
 );

@@ -16,6 +16,8 @@ import {
 import { DESIGN_TOOL_SPECS, designMcpContent, designToolAnnotations, runDesignTool } from '../design/tools';
 import { findToolCallerSessionId } from './tool-caller-attribution';
 import { designToolNameOf, type DesignToolName } from '../../shared/design-tools';
+import { REPORT_STATUS_TOOL } from '../../shared/turn-report';
+import { reportClaudeStatus, reportStatus, reportStatusDescription, reportStatusSchema, type ReportStatusArgs } from './turn-report-tool';
 
 export const SESSION_MCP_SERVER_NAME = 'aegis-sessions';
 const schema = {
@@ -26,9 +28,14 @@ const schema = {
 };
 const annotations = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
 const workflowAnnotations = { readOnlyHint: false, destructiveHint: false, openWorldHint: false };
+// Writes only Aegis's own record of the turn, so it runs without approval.
+const reportStatusAnnotations = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
 
 /** Maps a tool call's request `_meta` to the Aegis session that made it. */
-export type SessionMetaResolver = (meta: Record<string, unknown> | undefined) => Promise<string | null>;
+export type SessionMetaResolver = (
+  meta: Record<string, unknown> | undefined,
+  options?: { direct?: boolean },
+) => Promise<string | null>;
 
 /**
  * The session an HTTP design call belongs to: the runtime's signed session
@@ -82,6 +89,22 @@ export function buildSessionMcpServer(options: {
       description: WIDGET_GUIDE_DESCRIPTION, inputSchema: widgetGuideSchema, annotations: showWidgetAnnotations,
     }, widgetGuideTool);
   }
+  // Only for a caller the runtime names (signed header or request meta): a
+  // report must never land on a session guessed from history.
+  if (offers(REPORT_STATUS_TOOL) && (options.callerSessionId || options.resolveFromMeta)) {
+    server.registerTool(REPORT_STATUS_TOOL, {
+      // No background wake over HTTP, so no "in_progress".
+      description: reportStatusDescription(false), inputSchema: reportStatusSchema(false), annotations: reportStatusAnnotations,
+    }, async (args: ReportStatusArgs, context?: { _meta?: Record<string, unknown> }) => {
+      const sessionId = options.callerSessionId
+        // Direct: a subagent's report must not speak for its parent's turn.
+        ?? await options.resolveFromMeta?.(context?._meta, { direct: true }).catch(() => null);
+      if (!sessionId) {
+        return { content: [{ type: 'text', text: 'Only the main agent of an Aegis conversation can report its status.' }], isError: true };
+      }
+      return reportStatus(sessionId, args);
+    });
+  }
   for (const spec of DESIGN_TOOL_SPECS) {
     if (!offers(spec.name)) continue;
     server.registerTool(spec.name, {
@@ -106,13 +129,13 @@ export function buildSessionMcpServer(options: {
 /**
  * In-process server for one Claude or Qoder session. `callerSessionId`
  * identifies the session for start_workflow, the follow-up tools,
- * start_session and the design tools; workflow members get none of the
- * first three, and follow-up sessions no proposal tools (they may still
+ * start_session, report_status and the design tools; workflow members get none of the
+ * first four, and follow-up sessions no proposal tools (they may still
  * start a session when their user asks). HTTP servers never offer the
  * follow-up tools: their caller is not bound to the session.
  */
 export async function createSessionSdkMcpServer(
-  options: { callerSessionId?: string; workflows?: boolean; followUps?: boolean; subSessions?: boolean } = {},
+  options: { callerSessionId?: string; workflows?: boolean; followUps?: boolean; subSessions?: boolean; turnReports?: boolean } = {},
 ) {
   const dynamicImport = new Function('specifier', 'return import(specifier)') as
     (specifier: string) => Promise<typeof import('@anthropic-ai/claude-agent-sdk')>;
@@ -141,6 +164,13 @@ export async function createSessionSdkMcpServer(
         ? [sdk.tool(START_SESSION_TOOL, START_SESSION_DESCRIPTION, startSessionSchema,
           (args: StartSessionArgs, extra: unknown) => startSessionTool(options.callerSessionId!, args, extra),
           { annotations: workflowAnnotations, alwaysLoad: true })]
+        : []),
+      ...(options.turnReports && options.callerSessionId
+        // Claude's background tasks wake the session, so it may report "in_progress".
+        ? [sdk.tool(REPORT_STATUS_TOOL, reportStatusDescription(true), reportStatusSchema(true),
+          (args: ReportStatusArgs, extra: unknown) => reportClaudeStatus(options.callerSessionId!, args, extra),
+          // Always in the prompt: the agent must know it exists before its turn ends.
+          { annotations: reportStatusAnnotations, alwaysLoad: true })]
         : []),
       // Always in the prompt, so the agent reaches for it when a visual helps.
       sdk.tool(SHOW_WIDGET_TOOL, SHOW_WIDGET_DESCRIPTION, showWidgetSchema, showWidgetTool,

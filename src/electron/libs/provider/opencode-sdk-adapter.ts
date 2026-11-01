@@ -77,7 +77,7 @@ export type OpenCodeServeManagerLike = {
   subscribe(sessionID: string, listener: OpenCodeEventListener): () => void;
   close(): Promise<void>;
   setBrowserUseHooks?(
-    resolve: (meta: Record<string, unknown> | undefined) => Promise<string | null>,
+    resolve: (meta: Record<string, unknown> | undefined, options?: { direct?: boolean }) => Promise<string | null>,
     canRestart: () => boolean
   ): void;
 };
@@ -404,7 +404,7 @@ export class OpenCodeSdkAdapter implements ProviderAdapter {
     this.manager = manager;
     // Optional: test doubles of the serve manager may not implement it.
     this.manager.setBrowserUseHooks?.(
-      (meta) => this.resolveBrowserUseThread(meta),
+      (meta, options) => this.resolveBrowserUseThread(meta, options),
       () => this.sessions.size === 0
     );
   }
@@ -412,15 +412,19 @@ export class OpenCodeSdkAdapter implements ProviderAdapter {
   /**
    * The Aegis thread behind a browser_use call: OpenCode names its session in
    * the MCP request meta. A subagent runs in a child session, so unknown ids
-   * follow their parent up to the session a thread owns.
+   * follow their parent up to the session a thread owns. `direct` refuses
+   * that walk, for calls that speak for the thread's own turn.
    */
-  private async resolveBrowserUseThread(meta: Record<string, unknown> | undefined): Promise<string | null> {
+  private async resolveBrowserUseThread(
+    meta: Record<string, unknown> | undefined,
+    options?: { direct?: boolean },
+  ): Promise<string | null> {
     let id = getString(meta?.['ai.opencode/sessionID']).trim();
     for (let depth = 0; id && depth < 4; depth += 1) {
       for (const session of this.sessions.values()) {
         if (session.providerSessionId === id) return session.threadId;
       }
-      if (this.sessions.size === 0) return null;
+      if (options?.direct || this.sessions.size === 0) return null;
       const client = await this.manager.getClient();
       const info = await client.getSession(id).catch(() => null);
       id = getString(info?.parentID).trim();

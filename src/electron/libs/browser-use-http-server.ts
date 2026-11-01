@@ -70,7 +70,10 @@ let serverPromise: Promise<BrowserUseHttpServerInfo> | null = null;
 let httpServer: HttpServer | null = null;
 const sessionCapabilities = new Map<string, { sessionId: string; createdAt: number }>();
 /** Maps a tool call's request `_meta` to the Aegis session that made it. */
-export type BrowserUseSessionResolver = (meta: Record<string, unknown> | undefined) => Promise<string | null>;
+export type BrowserUseSessionResolver = (
+  meta: Record<string, unknown> | undefined,
+  options?: { direct?: boolean },
+) => Promise<string | null>;
 const providerCapabilities = new Map<string, BrowserUseSessionResolver>();
 
 /** Current server descriptor for adapters that pass MCP entries per session

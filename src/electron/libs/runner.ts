@@ -5,6 +5,7 @@ import { isWithinProjectPath } from './project-paths';
 import { createSessionSdkMcpServer, SESSION_MCP_SERVER_NAME } from './session-mcp';
 import { isStartWorkflowToolName } from '../../shared/workflow';
 import { isShowWidgetToolName, isWidgetGuideToolName } from '../../shared/widget';
+import { isReportStatusToolName } from '../../shared/turn-report';
 import { designToolNameOf } from '../../shared/design-tools';
 import { WidgetDraftTracker, trackMessagesStreamEvent } from './widget-draft';
 import { toClaudeContentBlocks } from './claude-message-content';
@@ -918,6 +919,7 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
         workflows: offersWorkflows,
         followUps: offersWorkflows && !isFollowUpSession(session.id),
         subSessions: offersWorkflows,
+        turnReports: offersWorkflows,
       });
       if (workflowPolicy?.readOnly) {
         for (const name of Object.keys(mcpServers)) delete (mcpServers as Record<string, unknown>)[name];
@@ -1129,6 +1131,11 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
               return currentPermissionMode === 'plan'
                 ? { behavior: 'deny' as const, message: 'This session is in plan mode. Start the session once the plan is approved.' }
                 : { behavior: 'allow' as const, updatedInput: input };
+            }
+            // A status report only updates Aegis's record of the turn: nothing
+            // to approve, plan mode included.
+            if (isReportStatusToolName(toolName)) {
+              return { behavior: 'allow' as const, updatedInput: input };
             }
             // A widget only draws in the chat: nothing to approve, plan mode included.
             if (isShowWidgetToolName(toolName) || isWidgetGuideToolName(toolName)) {
