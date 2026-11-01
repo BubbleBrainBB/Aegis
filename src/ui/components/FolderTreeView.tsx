@@ -286,6 +286,7 @@ export function FolderTreeView({
     projectGroups,
     chatSessions,
     flatSessions,
+    draftSessions,
     stateGroups,
     timeGroups,
     sectionGroups,
@@ -404,6 +405,8 @@ export function FolderTreeView({
     const flatSessions = view.groupBy === 'none' ? [...regularSessions].sort(byTime) : [];
 
     const stateGroups: { state: SidebarSessionState; sessions: SessionView[] }[] = [];
+    // New tasks nothing has been sent from yet sit above the state groups, in none of them.
+    const draftSessions: SessionView[] = [];
     if (view.groupBy === 'state') {
       const byState = new Map<SidebarSessionState, SessionView[]>();
       for (const session of regularSessions) {
@@ -411,12 +414,17 @@ export function FolderTreeView({
           unread: organization.sessions[session.id]?.unread,
           pullRequest: primaryPullRequest(prsBySession[session.id]),
         });
+        if (!state) {
+          draftSessions.push(session);
+          continue;
+        }
         byState.set(state, [...(byState.get(state) ?? []), session]);
       }
       for (const state of SIDEBAR_STATE_ORDER) {
         const members = byState.get(state);
         if (members?.length) stateGroups.push({ state, sessions: members.sort(byTime) });
       }
+      draftSessions.sort(byTime);
     }
 
     const timeGroups: { label: string; sessions: SessionView[] }[] = [];
@@ -441,6 +449,7 @@ export function FolderTreeView({
       projectGroups,
       chatSessions,
       flatSessions,
+      draftSessions,
       stateGroups,
       timeGroups,
       sectionGroups,
@@ -634,6 +643,11 @@ export function FolderTreeView({
           {isExpanded(group.id) && (group.sessions.length ? group.sessions.map((session) => renderFlatSession(session, 'section')) : <div className="px-2 py-1 text-[12px] text-[var(--text-muted)]">No threads yet</div>)}
         </section>
       ))}
+      {draftSessions.length > 0 && (
+        <section className="mb-4" data-sidebar-state="draft">
+          {draftSessions.map((session) => renderFlatSession(session, 'state'))}
+        </section>
+      )}
       {stateGroups.map((group) => {
         const key = `state:${group.state}`;
         const expanded = isExpanded(key);
@@ -893,6 +907,7 @@ export function FolderTreeView({
         chatSessions.length === 0 &&
         pinnedSessions.length === 0 &&
         flatSessions.length === 0 &&
+        draftSessions.length === 0 &&
         stateGroups.length === 0 &&
         timeGroups.length === 0 && (
           <div className="py-8 text-center text-[13px] text-[var(--text-muted)]">
