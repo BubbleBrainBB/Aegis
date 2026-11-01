@@ -41,3 +41,30 @@ export function openProjectNewChat(cwd: string, sourceSessionId?: string | null)
   const draftId = state.createDraftSession(dir, null, { projectCwd: dir });
   return draftId;
 }
+
+/** Turn an unsent draft into a chat with no project; the last project stays the default for New Task. */
+export function openNoProjectChat(sourceSessionId?: string | null) {
+  const state = useAppStore.getState();
+  if (state.pendingStart || !sourceSessionId) return;
+  const source = state.sessions[sourceSessionId];
+  if (!source?.isDraft || source.messages.length > 0 || !(source.projectCwd || source.cwd)) return;
+  useAppStore.setState((current) => ({
+    sessions: {
+      ...current.sessions,
+      [source.id]: {
+        ...current.sessions[source.id],
+        cwd: '',
+        projectCwd: null,
+        channelId: DEFAULT_WORKSPACE_CHANNEL_ID,
+        envMode: 'local',
+        worktreePath: null,
+        associatedWorktreePath: null,
+        associatedWorktreeBranch: null,
+        associatedWorktreeRef: null,
+        updatedAt: Date.now(),
+      },
+    },
+    draftStartMode: { ...current.draftStartMode, [source.id]: 'local' },
+  }));
+  return source.id;
+}

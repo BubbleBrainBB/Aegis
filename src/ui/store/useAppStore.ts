@@ -1,4 +1,5 @@
 import { useWorkflowStore } from './useWorkflowStore';
+import { startFailed, startSucceeded } from '../utils/start-lease';
 import { useFollowUpStore } from './useFollowUpStore';
 import { useSessionOrganizationStore, changeSessionOrganization } from './useSessionOrganizationStore';
 import { create } from 'zustand';
@@ -550,6 +551,7 @@ function freshSessionViewFromInfo(info: import('../../shared/types').SessionInfo
     readOnly: info.readOnly === true,
     cwd: info.cwd,
     projectCwd: info.projectCwd ?? info.cwd ?? null,
+    isChat: info.isChat,
     envMode: info.envMode ?? (info.worktreePath ? 'worktree' : 'local'),
     worktreePath: info.worktreePath ?? null,
     associatedWorktreePath: info.associatedWorktreePath ?? null,
@@ -1087,6 +1089,7 @@ export const useAppStore = create<Store>()(
             };
           });
         }
+        startSucceeded(event.payload.startId);
         handleSessionStatus(event.payload, set, get);
         break;
 
@@ -1282,6 +1285,8 @@ export const useAppStore = create<Store>()(
         break;
 
       case 'runner.error': {
+        // A composer's start that failed before its session existed gives the message back.
+        startFailed(event.payload.startId);
         set({ globalError: event.payload.message, pendingStart: false, pendingDraftSessionId: null });
         // Session-scoped hydration failure: retry once automatically, then
         // surface the manual Retry affordance. Gated on hydrationPending so
@@ -3069,6 +3074,7 @@ function handleSessionList(
       readOnly: session.readOnly === true,
       cwd: session.cwd,
       projectCwd: session.projectCwd ?? session.cwd ?? null,
+      isChat: session.isChat,
       envMode: session.envMode ?? (session.worktreePath ? 'worktree' : 'local'),
       worktreePath: session.worktreePath ?? null,
       associatedWorktreePath: session.associatedWorktreePath ?? null,
@@ -3186,6 +3192,9 @@ function handleSessionStatus(
     background?: boolean;
     cwd?: string;
     projectCwd?: SessionInfo['projectCwd'];
+    isChat?: boolean;
+    startId?: string;
+    draftSessionId?: string;
     envMode?: SessionInfo['envMode'];
     worktreePath?: SessionInfo['worktreePath'];
     associatedWorktreePath?: SessionInfo['associatedWorktreePath'];
@@ -3223,6 +3232,9 @@ function handleSessionStatus(
     agentId,
     cwd,
     projectCwd,
+    isChat,
+    startId,
+    draftSessionId,
     envMode,
     worktreePath,
     associatedWorktreePath,
@@ -3305,6 +3317,7 @@ function handleSessionStatus(
           cwd: cwd || session.cwd,
           projectCwd:
             projectCwd !== undefined ? projectCwd : session.projectCwd ?? cwd ?? session.cwd ?? null,
+          isChat: isChat ?? session.isChat,
           envMode: envMode ?? session.envMode ?? (worktreePath || session.worktreePath ? 'worktree' : 'local'),
           worktreePath: worktreePath !== undefined ? worktreePath : session.worktreePath ?? null,
           associatedWorktreePath:
@@ -3388,7 +3401,11 @@ function handleSessionStatus(
     });
   } else {
     // A background start (a follow-up card) never takes over the draft being written.
-    const pendingDraftSessionId = background ? null : state.pendingDraftSessionId;
+    // A composer start names its own draft (or none), so another draft that is
+    // starting meanwhile is never taken for it; older starts use the pending one.
+    const pendingDraftSessionId = background ? null
+      : startId ? draftSessionId ?? null
+        : state.pendingDraftSessionId;
     const nextSessions = { ...state.sessions };
     if (pendingDraftSessionId && nextSessions[pendingDraftSessionId]?.isDraft) {
       delete nextSessions[pendingDraftSessionId];
@@ -3405,6 +3422,7 @@ function handleSessionStatus(
       readOnly: false,
       cwd,
       projectCwd: projectCwd ?? cwd ?? null,
+      isChat,
       envMode: envMode ?? (worktreePath ? 'worktree' : 'local'),
       worktreePath: worktreePath ?? null,
       associatedWorktreePath: associatedWorktreePath ?? null,
@@ -3487,7 +3505,12 @@ function handleSessionStatus(
       activeChannelByProject: applyActiveProjectChannel(state.activeChannelByProject, newSession),
       ...layoutPatch(layout),
       activeSessionId: shouldFocusNewSession ? sessionId : state.activeSessionId,
-      ...(background ? {} : { showNewSession: false, pendingStart: false, pendingDraftSessionId: null }),
+      ...(background ? {} : {
+        showNewSession: false,
+        pendingStart: false,
+        // Another draft's start that is still in progress keeps its claim.
+        pendingDraftSessionId: startId && state.pendingDraftSessionId !== pendingDraftSessionId ? state.pendingDraftSessionId : null,
+      }),
       rightPanelBySessionId,
       ...(pendingDraftSessionId ? { draftPromotion: { from: pendingDraftSessionId, to: sessionId } } : {}),
     });

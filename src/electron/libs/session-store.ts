@@ -587,6 +587,7 @@ export function initialize(): void {
   ensureColumn('sessions', 'team_mode', "TEXT DEFAULT 'channel_default'");
   ensureColumn('sessions', 'team_id', 'TEXT');
   ensureColumn('sessions', 'project_cwd', 'TEXT');
+  ensureColumn('sessions', 'is_chat', 'INTEGER DEFAULT 0');
   ensureColumn('sessions', 'env_mode', "TEXT DEFAULT 'local'");
   ensureColumn('sessions', 'worktree_path', 'TEXT');
   ensureColumn('sessions', 'associated_worktree_path', 'TEXT');
@@ -1274,7 +1275,8 @@ export function moveSessionWithProjectSources(sessionId: string, projectCwd: str
     const insert = getDb().prepare('INSERT OR IGNORE INTO project_sources (project_cwd, source_path) VALUES (?, ?)');
     const row = getSession(sessionId);
     const previous = row?.project_cwd || row?.cwd;
-    if (previous) {
+    // A chat's folder joins the target as a source; it does not become a project.
+    if (previous && !row?.is_chat) {
       const primary = canonicalProjectPath(previous);
       insert.run(primary, primary);
     }
@@ -1284,6 +1286,8 @@ export function moveSessionWithProjectSources(sessionId: string, projectCwd: str
       projectCwd, envMode: 'local', worktreePath: null,
       associatedWorktreePath: null, associatedWorktreeBranch: null, associatedWorktreeRef: null,
     });
+    // A chat moved into a project is one of the project's sessions from now on.
+    getDb().prepare('UPDATE sessions SET is_chat = 0 WHERE id = ?').run(sessionId);
   })();
 }
 
@@ -1422,6 +1426,7 @@ export function createSession(params: {
   channelId?: string;
   teamMode?: SessionTeamMode;
   teamId?: string | null;
+  isChat?: boolean;
 }): SessionRow {
   const now = Date.now();
   const id = uuidv4();
@@ -1464,6 +1469,11 @@ export function createSession(params: {
 
   if ((params.provider || 'claude') === 'claude') {
     invalidateClaudeUsageReportCache();
+  }
+  // A caller that knows (a fork, from its captured source) decides; otherwise a
+  // session working in a chat's folder is a chat too.
+  if (params.isChat ?? Boolean(params.cwd && isChatFolder(params.cwd))) {
+    getDb().prepare('UPDATE sessions SET is_chat = 1 WHERE id = ?').run(id);
   }
 
   if (
@@ -4191,14 +4201,20 @@ export function searchChatMessages(query: string, limit = 60): ChatSessionSearch
   });
 }
 
+/** A folder made for a chat stays a chat: anything else started there joins it. */
+export function isChatFolder(cwd: string): boolean {
+  return Boolean(getDb().prepare('SELECT 1 FROM sessions WHERE is_chat = 1 AND cwd = ? LIMIT 1').get(cwd));
+}
+
 // 获取最近使用的工作目录
 export function listRecentCwds(limit: number = 8): string[] {
   // 限制范围 1-20
   const safeLimit = Math.max(1, Math.min(20, limit));
 
+  // A chat's folder is not a project to offer.
   const stmt = getDb().prepare(`
     SELECT DISTINCT cwd FROM sessions
-    WHERE cwd IS NOT NULL AND cwd != ''
+    WHERE cwd IS NOT NULL AND cwd != '' AND COALESCE(is_chat, 0) = 0
     ORDER BY updated_at DESC
     LIMIT ?
   `);

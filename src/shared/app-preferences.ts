@@ -16,6 +16,8 @@ export interface AppPreferences {
   fontSmoothing: boolean;
   pointerCursors: boolean;
   diffMarkers: 'color' | 'signs';
+  /** Where chats without a project get their folders; empty means ~/Documents/Aegis. */
+  chatsFolder: string;
 }
 
 export const DEFAULT_APP_PREFERENCES: AppPreferences = {
@@ -25,6 +27,7 @@ export const DEFAULT_APP_PREFERENCES: AppPreferences = {
   plainTextComposer: false,
   uiFontSize: 13, codeFontSize: 12, reduceMotion: 'system',
   fontSmoothing: true, pointerCursors: true, diffMarkers: 'color',
+  chatsFolder: '',
 };
 
 export function normalizeAppPreferences(value: unknown): AppPreferences {
@@ -46,6 +49,7 @@ export function normalizeAppPreferences(value: unknown): AppPreferences {
   }
   if (input.reduceMotion === 'on' || input.reduceMotion === 'off') result.reduceMotion = input.reduceMotion;
   if (input.diffMarkers === 'signs') result.diffMarkers = 'signs';
+  if (typeof input.chatsFolder === 'string' && input.chatsFolder.length <= 4096 && (input.chatsFolder === '' || /^(\/|[A-Za-z]:[\\/])/.test(input.chatsFolder))) result.chatsFolder = input.chatsFolder;
   return result;
 }
 

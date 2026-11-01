@@ -1027,7 +1027,7 @@ export type ServerEvent =
   | { type: 'computerUse.grants'; payload: { sessionId: string; grants: ComputerUseGrantView[]; reason: string } }
   | { type: 'computerUse.preview'; payload: { sessionId: string; open: boolean } }
   | { type: 'computerUse.stopped'; payload: { sessionId: string } }
-  | { type: 'runner.error'; payload: { message: string; sessionId?: string } }
+  | { type: 'runner.error'; payload: { message: string; sessionId?: string; /** The composer start that failed before its session existed. */ startId?: string } }
   // Codex app-server pushed a fresh authoritative model catalog — renderers
   // should refetch codex model config (fast-mode eligibility may change).
   | { type: 'codex.modelCatalogUpdated'; payload: Record<string, never> }
@@ -1166,6 +1166,10 @@ export interface SessionStartPayload {
   channelId?: string;
   // "在隔离副本中运行"：开跑前在项目里建一个 worktree，session 全程活在里面
   createIsolatedWorkspace?: boolean;
+  /** No project: Aegis makes the chat its own folder under the chats folder. */
+  chat?: boolean;
+  /** Set by a composer: echoed on the created session's status, or on the error if the start fails first. */
+  startId?: string;
 }
 
 // ── Claude rewind (conversation/files checkpoint restore) ───────────────────
@@ -1530,6 +1534,8 @@ export interface SessionInfo {
   readOnly?: boolean;
   cwd?: string;
   projectCwd?: string | null;
+  /** Started with no project: cwd is a folder Aegis made for this chat. */
+  isChat?: boolean;
   envMode?: ThreadEnvironmentMode;
   worktreePath?: string | null;
   associatedWorktreePath?: string | null;
@@ -1598,6 +1604,10 @@ export interface SessionStatusPayload {
   status: SessionStatus;
   /** A new session started in the background: list it without focusing it. */
   background?: boolean;
+  /** The composer start that created this session. */
+  startId?: string;
+  /** The draft that start promoted; only it is replaced by the new session. */
+  draftSessionId?: string;
   scope?: SessionScope;
   agentId?: string | null;
   source?: SessionSource;
@@ -1605,6 +1615,8 @@ export interface SessionStatusPayload {
   title?: string;
   cwd?: string;
   projectCwd?: string | null;
+  /** Started with no project: cwd is a folder Aegis made for this chat. */
+  isChat?: boolean;
   envMode?: ThreadEnvironmentMode;
   worktreePath?: string | null;
   associatedWorktreePath?: string | null;

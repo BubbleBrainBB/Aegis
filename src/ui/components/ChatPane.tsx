@@ -41,8 +41,8 @@ import { StructuredResponse } from './StructuredResponse';
 import { LiveWidgetDrafts, WorkingFooter } from './AssistantWorkstream';
 import { PromptInput } from './PromptInput';
 import { NewThreadLanding } from './NewThreadLanding';
-import { NewThreadProjectHeading } from './NewThreadProjectHeading';
-import { openProjectNewChat } from '../utils/project-new-chat';
+import { ChatFolderNote, NewThreadProjectHeading } from './NewThreadProjectHeading';
+import { openNoProjectChat, openProjectNewChat } from '../utils/project-new-chat';
 import { SessionHandoffProviderRoute } from './SessionHandoffIndicator';
 import { ComposerContextPills } from './ComposerContextPills';
 import { InSessionSearch } from './search/InSessionSearch';
@@ -483,7 +483,7 @@ export function SessionWorkspaceControl({
     }
   }, [handleSelectBranch, isRunning, pendingStopAction]);
 
-  if (session.isDraft || session.scope === 'dm' || !projectCwd || !effectiveCwd) {
+  if (session.isDraft || session.isChat || session.scope === 'dm' || !projectCwd || !effectiveCwd) {
     return null;
   }
 
@@ -1904,6 +1904,7 @@ export function ChatPane({
     },
     [threadStarterCwd, sessionId]
   );
+  const switchDraftToChat = useCallback(() => openNoProjectChat(sessionId), [sessionId]);
   const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
     const droppedSessionId = event.dataTransfer.getData('application/x-aegis-session-id');
     if (!droppedSessionId || !onDropSession) {
@@ -1979,9 +1980,11 @@ export function ChatPane({
             </div>
           ) : null}
           {showThreadStarter ? (
-            <NewThreadLanding heading={<NewThreadProjectHeading cwd={threadStarterCwd} sessionId={sessionId} onSelectProject={switchDraftFolder} disabled={pendingStart} />}>
+            <NewThreadLanding heading={<NewThreadProjectHeading cwd={threadStarterCwd} sessionId={sessionId} onSelectProject={switchDraftFolder} onSelectNoProject={switchDraftToChat} disabled={pendingStart} />}>
               <div className="mx-auto w-full max-w-3xl">
+                {/* One composer per draft: a draft's unsent or starting message is its own. */}
                 <PromptInput
+                  key={sessionId ?? 'draft'}
                   sessionId={sessionId}
                   menuSide="top"
                   composerSurface="landing"
@@ -1992,6 +1995,7 @@ export function ChatPane({
                       hasSelectedCwd={Boolean(threadStarterCwd)}
                       disabled={pendingStart}
                       onSelectRecent={switchDraftFolder}
+                      onSelectNoProject={switchDraftToChat}
                       sessionId={sessionId}
                       startMode={sessionId ? draftStartMode[sessionId] || 'local' : 'local'}
                       onStartModeChange={(mode) => {
@@ -2000,6 +2004,7 @@ export function ChatPane({
                     />
                   }
                 />
+                {!threadStarterCwd ? <ChatFolderNote /> : null}
               </div>
             </NewThreadLanding>
           ) : (

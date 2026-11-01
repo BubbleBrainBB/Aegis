@@ -87,7 +87,8 @@ function projects() {
     ...new Set(
       sessions
         .listSessions()
-        .filter((s) => s.hidden_from_threads !== 1)
+        // A chat's own folder is not a project.
+        .filter((s) => s.hidden_from_threads !== 1 && s.is_chat !== 1)
         .map((s) => s.project_cwd || s.cwd)
         .filter((p): p is string => !!p)
         .map((p) => canonicalProjectPath(p)),

@@ -1,4 +1,6 @@
 import type { DesignPromptRef, DesignSelectionRef } from '../../shared/types';
+import { acquireStart, markStartSent, releaseUnsentStart, startLeaseFor, useStartLease } from '../utils/start-lease';
+import { saveDraftComposer, takeDraftComposer } from '../utils/draft-composer';
 import { useImageStudioAttachments } from '../hooks/useImageStudioAttachments';
 import { useImageStudioStore, EMPTY_IMAGE_STUDIO } from '../store/useImageStudioStore';
 import { resolveImageStudioReferences } from '../lib/image-studio';
@@ -576,7 +578,41 @@ export function PromptInput({
     () => isSessionEffectivelyBusy(activeSession?.status, activeSession?.messages ?? []),
     [activeSession?.status, activeSession?.messages]
   );
-  const isBusy = isEffectivelyRunning || isStopping || pendingStart || approvalPending;
+  // Each draft has its own composer (keyed in ChatPane): what was typed there
+  // and not sent is kept while another chat is on screen and comes back with
+  // the draft. Runs before the lease below, which takes precedence.
+  const draftComposerKey = activeSession?.isDraft ? activeSession.id : null;
+  const unsentRef = useRef({ prompt, attachments });
+  unsentRef.current = { prompt, attachments };
+  useEffect(() => {
+    if (!draftComposerKey) return;
+    const unsent = takeDraftComposer(draftComposerKey);
+    if (unsent) {
+      setPrompt(unsent.prompt);
+      setCursorIndex(unsent.prompt.length);
+      setAttachments(unsent.attachments);
+    }
+    return () => {
+      // A start in progress (or failed) holds its own text; a sent or closed draft keeps nothing.
+      if (startLeaseFor(draftComposerKey)) return;
+      if (!useAppStore.getState().sessions[draftComposerKey]?.isDraft) return;
+      saveDraftComposer(draftComposerKey, unsentRef.current);
+    };
+  }, [draftComposerKey]);
+  // A draft's first message stays in the composer, locked, until its
+  // conversation exists; a failed start just unlocks it.
+  const draftStartLocked = useStartLease(activeSession?.isDraft ? activeSession.id : null, {
+    show: (sent) => {
+      setPrompt(sent.prompt);
+      setCursorIndex(sent.prompt.length);
+      setAttachments(sent.attachments);
+      if (sent.goal) sessionGoal.setDraft(true);
+    },
+    onCreated: () => {
+      resetComposer();
+    },
+  });
+  const isBusy = isEffectivelyRunning || isStopping || pendingStart || draftStartLocked || approvalPending;
   const attachmentImport = useAttachmentImport(targetSessionId, isBusy, (created) => {
     setAttachments((previous) => {
       const paths = new Set(previous.map(attachment => attachment.path));
@@ -672,6 +708,7 @@ export function PromptInput({
     prompt,
     cursorIndex,
   });
+
 
   const resetComposer = useCallback(() => {
     setPrompt('');
@@ -838,231 +875,246 @@ export function PromptInput({
       return;
     }
 
-    const displayPrompt = isGoal ? goalInput.objective : prompt.trim();
-    const normalizedPrompt = await buildDispatchPrompt();
-    if (normalizedPrompt === null) {
-      return;
-    }
-    const outgoingPrompt = displayPrompt;
-    // Side chats (Codex parity): the FIRST send carries the side-conversation
-    // preamble on the effective prompt so the fork doesn't continue the
-    // parent thread's task; the displayed prompt stays exactly what the user
-    // typed. Subsequent sends are plain.
-    const sideChatEntry = activeSession
-      ? useAppStore.getState().sideChats[activeSession.id]
-      : undefined;
-    if (sideChatEntry?.constraintPending) {
-      useAppStore.getState().noteSideChatUserTurn(activeSession.id);
-    }
-    const outgoingEffectivePrompt = sideChatEntry?.constraintPending
-      ? buildSideChatEffectivePrompt(normalizedPrompt)
-      : normalizedPrompt;
-    const outgoingAttachments = attachments;
-    // The canvas chip goes with this message: what the user saw is what the agent gets.
-    const outgoingDesignSelection = useDesignStore.getState().selections[activeSession.id];
-    const imageEdit = attachments.some(item => item.id.startsWith('image-studio:')) && supportsImageStudio(runtimeProvider);
-    const codexReferences = runtimeProvider === 'codex'
-      ? capabilityMenu.selectedSkill ? buildCodexReferencePayload(capabilityMenu.selectedSkill)
-        : imageEdit ? await resolveImageStudioReferences(activeSession.cwd) : {}
-      : {};
-    if (isGoal && !activeSession.isDraft) {
-      if (goalSubmitting) return;
-      // Kimi's typed `/goal pause|resume` is a control: nothing is replaced.
-      const kimiControl = agentSelection.provider === 'kimi' && kimiGoalControlWord(goalInput.objective) !== null;
-      if (!kimiControl && sessionGoal.goal && sessionGoal.goal.status !== 'complete' && !(await confirmDialog({
-        title: 'Replace current goal?',
-        description: `This will keep the chat but replace the saved goal with your current composer text.\n\n${displayPrompt}`,
-        confirmLabel: 'Replace goal', cancelLabel: 'Cancel', tone: 'default',
-      }))) return;
-      setGoalSubmitting(true);
-      try {
-        await sessionGoal.change({ type: 'set', status: 'active', objective: buildGoalObjective(parseGoalInput(normalizedPrompt, true).objective, outgoingAttachments) }, {
-          appendTranscript: true,
-          claudeAccessMode: agentSelection.claudePermissionMode, claudeReasoningEffort: agentSelection.claudeReasoningEffort || undefined,
-          model: selectedModel || undefined, codexPermissionMode: agentSelection.codexPermissionMode,
-          codexReasoningEffort: agentSelection.codexReasoningEffort || undefined, codexFastMode: agentSelection.codexFastMode,
-          ...(agentSelection.provider === 'kimi' ? { kimiPermissionMode: agentSelection.kimiPermissionMode } : {}),
+    // A draft's first message: take its lease before any await, so a second
+    // Send cannot start another conversation while this one is prepared.
+    const draftStartId = activeSession.isDraft
+      ? acquireStart(
+          activeSession.id,
+          { prompt, attachments, goal: sessionGoal.drafting },
+          // Goal mode is kept outside the composer: end it on success even if it is gone.
+          { onSucceeded: () => sessionGoal.setDraft(false) },
+        )
+      : null;
+    if (activeSession.isDraft && !draftStartId) return;
+    try {
+      const displayPrompt = isGoal ? goalInput.objective : prompt.trim();
+      const normalizedPrompt = await buildDispatchPrompt();
+      if (normalizedPrompt === null) {
+        return;
+      }
+      const outgoingPrompt = displayPrompt;
+      // Side chats (Codex parity): the FIRST send carries the side-conversation
+      // preamble on the effective prompt so the fork doesn't continue the
+      // parent thread's task; the displayed prompt stays exactly what the user
+      // typed. Subsequent sends are plain.
+      const sideChatEntry = activeSession
+        ? useAppStore.getState().sideChats[activeSession.id]
+        : undefined;
+      if (sideChatEntry?.constraintPending) {
+        useAppStore.getState().noteSideChatUserTurn(activeSession.id);
+      }
+      const outgoingEffectivePrompt = sideChatEntry?.constraintPending
+        ? buildSideChatEffectivePrompt(normalizedPrompt)
+        : normalizedPrompt;
+      const outgoingAttachments = attachments;
+      // The canvas chip goes with this message: what the user saw is what the agent gets.
+      const outgoingDesignSelection = useDesignStore.getState().selections[activeSession.id];
+      const imageEdit = attachments.some(item => item.id.startsWith('image-studio:')) && supportsImageStudio(runtimeProvider);
+      const codexReferences = runtimeProvider === 'codex'
+        ? capabilityMenu.selectedSkill ? buildCodexReferencePayload(capabilityMenu.selectedSkill)
+          : imageEdit ? await resolveImageStudioReferences(activeSession.cwd) : {}
+        : {};
+      if (isGoal && !activeSession.isDraft) {
+        if (goalSubmitting) return;
+        // Kimi's typed `/goal pause|resume` is a control: nothing is replaced.
+        const kimiControl = agentSelection.provider === 'kimi' && kimiGoalControlWord(goalInput.objective) !== null;
+        if (!kimiControl && sessionGoal.goal && sessionGoal.goal.status !== 'complete' && !(await confirmDialog({
+          title: 'Replace current goal?',
+          description: `This will keep the chat but replace the saved goal with your current composer text.\n\n${displayPrompt}`,
+          confirmLabel: 'Replace goal', cancelLabel: 'Cancel', tone: 'default',
+        }))) return;
+        setGoalSubmitting(true);
+        try {
+          await sessionGoal.change({ type: 'set', status: 'active', objective: buildGoalObjective(parseGoalInput(normalizedPrompt, true).objective, outgoingAttachments) }, {
+            appendTranscript: true,
+            claudeAccessMode: agentSelection.claudePermissionMode, claudeReasoningEffort: agentSelection.claudeReasoningEffort || undefined,
+            model: selectedModel || undefined, codexPermissionMode: agentSelection.codexPermissionMode,
+            codexReasoningEffort: agentSelection.codexReasoningEffort || undefined, codexFastMode: agentSelection.codexFastMode,
+            ...(agentSelection.provider === 'kimi' ? { kimiPermissionMode: agentSelection.kimiPermissionMode } : {}),
+          });
+          if (agentSelection.provider === 'claude') {
+            agentSelection.setClaudeExecutionMode('execute');
+            setSessionClaudeMode(activeSession.id, agentSelection.claudePermissionMode, 'execute');
+          } else if (agentSelection.provider === 'codex') {
+            agentSelection.setCodexExecutionMode('execute');
+            setSessionCodexExecutionMode(activeSession.id, 'execute');
+          }
+          sessionGoal.setDraft(false);
+          if (goalTargetRef.current === activeSession.id) resetComposer();
+        } catch (error) { toast.error(error instanceof Error ? error.message : 'Failed to set goal'); }
+        finally { setGoalSubmitting(false); }
+        return;
+      }
+      if (activeSession.isDraft) {
+        // No project: the main process makes the chat a folder of its own.
+        const startsChat = !activeSession.cwd?.trim();
+        const startId = draftStartId!;
+        markStartSent(startId);
+        setPendingStart(true);
+        useAppStore.setState({ pendingDraftSessionId: activeSession.id });
+        const projectKey = (activeSession.cwd || '').trim() || '__no_project__';
+        const channelId =
+          activeSession.channelId ||
+          activeChannelByProject[projectKey] ||
+          DEFAULT_WORKSPACE_CHANNEL_ID;
+        sendEvent({
+          type: 'session.start',
+          payload: {
+            startId,
+            draftSessionId: activeSession.id,
+            title: activeSession.title || 'New Chat',
+            skipTitleGeneration: activeSession.draftTitleEdited || undefined,
+            codexGoal: isGoal && agentSelection.provider === 'codex' ? { type: 'set', status: 'active', objective: buildGoalObjective(parseGoalInput(normalizedPrompt, true).objective, outgoingAttachments) } : undefined,
+            prompt: isGoal ? (runtimeProvider === 'claude' ? `/goal ${buildGoalObjective(parseGoalInput(normalizedPrompt, true).objective, outgoingAttachments)}` : `/goal ${outgoingPrompt}`) : outgoingPrompt,
+            effectivePrompt: outgoingEffectivePrompt,
+            cwd: activeSession.cwd || undefined,
+            chat: startsChat || undefined,
+            projectCwd: startsChat ? null : activeSession.projectCwd ?? activeSession.cwd ?? null,
+            envMode: activeSession.envMode ?? 'local',
+            worktreePath: activeSession.worktreePath ?? null,
+            associatedWorktreePath: activeSession.associatedWorktreePath ?? null,
+            associatedWorktreeBranch: activeSession.associatedWorktreeBranch ?? null,
+            associatedWorktreeRef: activeSession.associatedWorktreeRef ?? null,
+            scope: 'project',
+            channelId,
+            createIsolatedWorkspace:
+              (!startsChat && draftStartMode[activeSession.id] === 'worktree') || undefined,
+            attachments: outgoingAttachments.length > 0 ? outgoingAttachments : undefined,
+            ...(outgoingDesignSelection ? { designSelection: outgoingDesignSelection } : {}),
+            provider: runtimeProvider,
+            model: selectedModel || undefined,
+            claudeAccessMode:
+              runtimeProvider === 'claude'
+                ? agentSelection.claudePermissionMode
+                : undefined,
+            claudeExecutionMode:
+              runtimeProvider === 'claude'
+                ? (isGoal ? 'execute' : agentSelection.claudeExecutionMode)
+                : undefined,
+            claudeReasoningEffort:
+              runtimeProvider === 'claude'
+                ? agentSelection.claudeReasoningEffort || undefined
+                : undefined,
+            ...codexReferences,
+            codexExecutionMode:
+              runtimeProvider === 'codex' ? (isGoal ? 'execute' : agentSelection.codexExecutionMode) : undefined,
+            codexPermissionMode:
+              runtimeProvider === 'codex'
+                ? agentSelection.codexPermissionMode
+                : undefined,
+            codexReasoningEffort:
+              runtimeProvider === 'codex'
+                ? agentSelection.codexReasoningEffort || undefined
+                : undefined,
+            codexFastMode:
+              runtimeProvider === 'codex' ? agentSelection.codexFastMode : undefined,
+            kimiPermissionMode:
+              runtimeProvider === 'kimi' || runtimeProvider === 'grok'
+                ? agentSelection.kimiPermissionMode
+                : undefined,
+            kimiThinking:
+              runtimeProvider === 'kimi' ? agentSelection.kimiThinkingToSend : undefined,
+            grokPermissionMode:
+              runtimeProvider === 'grok'
+                ? agentSelection.kimiPermissionMode
+                : undefined,
+            grokReasoningEffort:
+              runtimeProvider === 'grok'
+                ? agentSelection.grokReasoningEffort || undefined
+                : undefined,
+            opencodePermissionMode:
+              runtimeProvider === 'opencode'
+                ? agentSelection.opencodePermissionMode
+                : undefined,
+            qoderPermissionMode:
+              runtimeProvider === 'qoder'
+                ? agentSelection.qoderPermissionMode
+                : undefined,
+            deepseekPermissionMode:
+              runtimeProvider === 'deepseek'
+                ? agentSelection.deepseekPermissionMode
+                : undefined,
+            deepseekAgentPreset:
+              runtimeProvider === 'deepseek'
+                ? agentSelection.deepseekAgentPreset
+                : undefined,
+            deepseekReasoningEffort:
+              runtimeProvider === 'deepseek'
+                ? agentSelection.deepseekReasoningEffort
+                : undefined,
+            devinPermissionMode:
+              runtimeProvider === 'devin'
+                ? agentSelection.devinPermissionMode
+                : undefined,
+            devinThoughtLevel:
+              runtimeProvider === 'devin'
+                ? agentSelection.devinThoughtLevel || undefined
+                : undefined,
+            mimoPermissionMode:
+              runtimeProvider === 'mimo'
+                ? agentSelection.mimoPermissionMode
+                : undefined,
+            mimoReasoningEffort:
+              runtimeProvider === 'mimo'
+                ? agentSelection.mimoReasoningEffort || undefined
+                : undefined,
+            minimaxPermissionMode:
+              runtimeProvider === 'minimax'
+                ? agentSelection.minimaxPermissionMode
+                : undefined,
+            minimaxThinkingEffort:
+              runtimeProvider === 'minimax'
+                ? agentSelection.minimaxThinkingEffort || undefined
+                : undefined,
+            bubblePermissionMode:
+              runtimeProvider === 'bubble'
+                ? agentSelection.bubbleExecutionMode === 'plan'
+                  ? 'plan'
+                  : agentSelection.bubblePermissionMode
+                : undefined,
+            bubblePlanExitMode: runtimeProvider === 'bubble'
+              ? agentSelection.bubblePermissionMode === 'bypassPermissions' ? 'bypassPermissions' : 'default'
+              : undefined,
+            bubbleThinkingLevel:
+              runtimeProvider === 'bubble'
+                ? agentSelection.bubbleThinkingLevel || undefined
+                : undefined,
+            teamMode: 'solo',
+            teamId: null,
+          },
         });
-        if (agentSelection.provider === 'claude') {
-          agentSelection.setClaudeExecutionMode('execute');
-          setSessionClaudeMode(activeSession.id, agentSelection.claudePermissionMode, 'execute');
-        } else if (agentSelection.provider === 'codex') {
-          agentSelection.setCodexExecutionMode('execute');
-          setSessionCodexExecutionMode(activeSession.id, 'execute');
-        }
-        sessionGoal.setDraft(false);
-        if (goalTargetRef.current === activeSession.id) resetComposer();
-      } catch (error) { toast.error(error instanceof Error ? error.message : 'Failed to set goal'); }
-      finally { setGoalSubmitting(false); }
-      return;
-    }
-    if (activeSession.isDraft) {
-      if (!activeSession.cwd?.trim()) {
-        toast.error('Select a project folder before starting a task.');
+        // The text stays, locked, until the conversation exists (useStartLease).
         return;
       }
 
-      if (isGoal) sessionGoal.setDraft(false);
-      setPendingStart(true);
-      useAppStore.setState({ pendingDraftSessionId: activeSession.id });
-      const projectKey = (activeSession.cwd || '').trim() || '__no_project__';
-      const channelId =
-        activeSession.channelId ||
-        activeChannelByProject[projectKey] ||
-        DEFAULT_WORKSPACE_CHANNEL_ID;
-      sendEvent({
-        type: 'session.start',
-        payload: {
-          draftSessionId: activeSession.id,
-          title: activeSession.title || 'New Chat',
-          skipTitleGeneration: activeSession.draftTitleEdited || undefined,
-          codexGoal: isGoal && agentSelection.provider === 'codex' ? { type: 'set', status: 'active', objective: buildGoalObjective(parseGoalInput(normalizedPrompt, true).objective, outgoingAttachments) } : undefined,
-          prompt: isGoal ? (runtimeProvider === 'claude' ? `/goal ${buildGoalObjective(parseGoalInput(normalizedPrompt, true).objective, outgoingAttachments)}` : `/goal ${outgoingPrompt}`) : outgoingPrompt,
+      // Queue locally for all providers, or steer when the runtime supports it.
+      // Queued messages auto-send after successful completion.
+      const shouldSteer = !imageEdit && canSteerWhileRunning && ((preferences.followUpBehavior === 'steer') !== invertFollowUp);
+      if (canQueueWhileRunning && !shouldSteer) {
+        useComposerQueueStore.getState().enqueue(activeSession.id, {
+          id: crypto.randomUUID(),
+          displayPrompt: outgoingPrompt,
           effectivePrompt: outgoingEffectivePrompt,
-          cwd: activeSession.cwd,
-          projectCwd: activeSession.projectCwd ?? activeSession.cwd ?? null,
-          envMode: activeSession.envMode ?? 'local',
-          worktreePath: activeSession.worktreePath ?? null,
-          associatedWorktreePath: activeSession.associatedWorktreePath ?? null,
-          associatedWorktreeBranch: activeSession.associatedWorktreeBranch ?? null,
-          associatedWorktreeRef: activeSession.associatedWorktreeRef ?? null,
-          scope: 'project',
-          channelId,
-          createIsolatedWorkspace:
-            draftStartMode[activeSession.id] === 'worktree' || undefined,
-          attachments: outgoingAttachments.length > 0 ? outgoingAttachments : undefined,
+          attachments: outgoingAttachments,
+          references: codexReferences,
+          exclusive: imageEdit,
           ...(outgoingDesignSelection ? { designSelection: outgoingDesignSelection } : {}),
-          provider: runtimeProvider,
-          model: selectedModel || undefined,
-          claudeAccessMode:
-            runtimeProvider === 'claude'
-              ? agentSelection.claudePermissionMode
-              : undefined,
-          claudeExecutionMode:
-            runtimeProvider === 'claude'
-              ? (isGoal ? 'execute' : agentSelection.claudeExecutionMode)
-              : undefined,
-          claudeReasoningEffort:
-            runtimeProvider === 'claude'
-              ? agentSelection.claudeReasoningEffort || undefined
-              : undefined,
-          ...codexReferences,
-          codexExecutionMode:
-            runtimeProvider === 'codex' ? (isGoal ? 'execute' : agentSelection.codexExecutionMode) : undefined,
-          codexPermissionMode:
-            runtimeProvider === 'codex'
-              ? agentSelection.codexPermissionMode
-              : undefined,
-          codexReasoningEffort:
-            runtimeProvider === 'codex'
-              ? agentSelection.codexReasoningEffort || undefined
-              : undefined,
-          codexFastMode:
-            runtimeProvider === 'codex' ? agentSelection.codexFastMode : undefined,
-          kimiPermissionMode:
-            runtimeProvider === 'kimi' || runtimeProvider === 'grok'
-              ? agentSelection.kimiPermissionMode
-              : undefined,
-          kimiThinking:
-            runtimeProvider === 'kimi' ? agentSelection.kimiThinkingToSend : undefined,
-          grokPermissionMode:
-            runtimeProvider === 'grok'
-              ? agentSelection.kimiPermissionMode
-              : undefined,
-          grokReasoningEffort:
-            runtimeProvider === 'grok'
-              ? agentSelection.grokReasoningEffort || undefined
-              : undefined,
-          opencodePermissionMode:
-            runtimeProvider === 'opencode'
-              ? agentSelection.opencodePermissionMode
-              : undefined,
-          qoderPermissionMode:
-            runtimeProvider === 'qoder'
-              ? agentSelection.qoderPermissionMode
-              : undefined,
-          deepseekPermissionMode:
-            runtimeProvider === 'deepseek'
-              ? agentSelection.deepseekPermissionMode
-              : undefined,
-          deepseekAgentPreset:
-            runtimeProvider === 'deepseek'
-              ? agentSelection.deepseekAgentPreset
-              : undefined,
-          deepseekReasoningEffort:
-            runtimeProvider === 'deepseek'
-              ? agentSelection.deepseekReasoningEffort
-              : undefined,
-          devinPermissionMode:
-            runtimeProvider === 'devin'
-              ? agentSelection.devinPermissionMode
-              : undefined,
-          devinThoughtLevel:
-            runtimeProvider === 'devin'
-              ? agentSelection.devinThoughtLevel || undefined
-              : undefined,
-          mimoPermissionMode:
-            runtimeProvider === 'mimo'
-              ? agentSelection.mimoPermissionMode
-              : undefined,
-          mimoReasoningEffort:
-            runtimeProvider === 'mimo'
-              ? agentSelection.mimoReasoningEffort || undefined
-              : undefined,
-          minimaxPermissionMode:
-            runtimeProvider === 'minimax'
-              ? agentSelection.minimaxPermissionMode
-              : undefined,
-          minimaxThinkingEffort:
-            runtimeProvider === 'minimax'
-              ? agentSelection.minimaxThinkingEffort || undefined
-              : undefined,
-          bubblePermissionMode:
-            runtimeProvider === 'bubble'
-              ? agentSelection.bubbleExecutionMode === 'plan'
-                ? 'plan'
-                : agentSelection.bubblePermissionMode
-              : undefined,
-          bubblePlanExitMode: runtimeProvider === 'bubble'
-            ? agentSelection.bubblePermissionMode === 'bypassPermissions' ? 'bypassPermissions' : 'default'
-            : undefined,
-          bubbleThinkingLevel:
-            runtimeProvider === 'bubble'
-              ? agentSelection.bubbleThinkingLevel || undefined
-              : undefined,
-          teamMode: 'solo',
-          teamId: null,
-        },
-      });
-      resetComposer();
-      return;
-    }
+        });
+        resetComposer();
+        return;
+      }
 
-    // Queue locally for all providers, or steer when the runtime supports it.
-    // Queued messages auto-send after successful completion.
-    const shouldSteer = !imageEdit && canSteerWhileRunning && ((preferences.followUpBehavior === 'steer') !== invertFollowUp);
-    if (canQueueWhileRunning && !shouldSteer) {
-      useComposerQueueStore.getState().enqueue(activeSession.id, {
-        id: crypto.randomUUID(),
+      sendContinueEvent(activeSession.id, {
         displayPrompt: outgoingPrompt,
         effectivePrompt: outgoingEffectivePrompt,
         attachments: outgoingAttachments,
         references: codexReferences,
-        exclusive: imageEdit,
         ...(outgoingDesignSelection ? { designSelection: outgoingDesignSelection } : {}),
       });
       resetComposer();
-      return;
+    } finally {
+      if (draftStartId) releaseUnsentStart(draftStartId);
     }
-
-    sendContinueEvent(activeSession.id, {
-      displayPrompt: outgoingPrompt,
-      effectivePrompt: outgoingEffectivePrompt,
-      attachments: outgoingAttachments,
-      references: codexReferences,
-      ...(outgoingDesignSelection ? { designSelection: outgoingDesignSelection } : {}),
-    });
-    resetComposer();
   };
 
   // One payload builder for all three continue paths: direct send, chip
@@ -1676,7 +1728,7 @@ export function PromptInput({
                 ? 'Starting session...'
                 : idlePlaceholder
             }
-            disabled={pendingStart || approvalPending}
+            disabled={pendingStart || draftStartLocked || approvalPending}
             placeholderClassName={isLandingSurface ? 'inset-x-4 top-3 text-[14px] leading-[21px]' : undefined}
             className="w-full bg-transparent px-4 pt-3 pb-1 text-[14px] outline-none resize-none min-h-[56px] max-h-[200px] disabled:opacity-50"
             autoFocus={isLandingSurface}
@@ -1945,6 +1997,7 @@ export function PromptInput({
                   (!prompt.trim() && attachments.length === 0) ||
                   modelSetupRequired ||
                   pendingStart ||
+                  draftStartLocked ||
                   approvalPending ||
                   (isEffectivelyRunning && !canQueueWhileRunning)
                 }

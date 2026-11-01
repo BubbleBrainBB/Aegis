@@ -3,11 +3,13 @@ import { Popover } from '@base-ui-components/react/popover';
 import { Command } from 'cmdk';
 import { toast } from 'sonner';
 import { useAppStore } from '../store/useAppStore';
-import { Folder, Plus, Search } from './icons';
+import { Folder, MessageCircle, Plus, Search } from './icons';
 
-export function ComposerProjectPicker({ cwd, onSelect, disabled = false, variant = 'control', projectName: label }: {
+export function ComposerProjectPicker({ cwd, onSelect, onSelectNoProject, disabled = false, variant = 'control', projectName: label }: {
   cwd: string;
   onSelect: (cwd: string) => void;
+  /** Offers "No project": the conversation becomes a chat with a folder of its own. */
+  onSelectNoProject?: () => void;
   disabled?: boolean;
   variant?: 'hero' | 'control';
   projectName?: string;
@@ -30,7 +32,7 @@ export function ComposerProjectPicker({ cwd, onSelect, disabled = false, variant
   const projects = useMemo(() => Array.from(new Set([
     cwd,
     ...Object.values(sessions)
-      .filter((session) => !session.hiddenFromThreads && session.scope !== 'dm')
+      .filter((session) => !session.hiddenFromThreads && session.scope !== 'dm' && !session.isChat)
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .map((session) => session.projectCwd || session.cwd || ''),
     ...recentCwds,
@@ -42,6 +44,11 @@ export function ComposerProjectPicker({ cwd, onSelect, disabled = false, variant
     setOpen(false);
     if (!disabled && dir !== cwd) onSelect(dir);
   };
+  const selectNoProject = () => {
+    setOpen(false);
+    if (!disabled && cwd) onSelectNoProject?.();
+  };
+  const noProject = !cwd && Boolean(onSelectNoProject);
   const browse = async () => {
     setOpen(false);
     try {
@@ -61,10 +68,13 @@ export function ComposerProjectPicker({ cwd, onSelect, disabled = false, variant
         <Popover.Trigger
           disabled={disabled}
           aria-label={variant === 'hero' ? `Switch project: ${projectName}` : 'Project folder'}
-          title={cwd || 'Choose project'}
+          title={cwd || (noProject ? 'No project' : 'Choose project')}
           className={variant === 'hero' ? 'aegis-new-thread-project-link' : 'aegis-composer-context-pill aegis-composer-project-control'}
         >
-          {variant === 'hero' ? `${projectName}?` : <>
+          {variant === 'hero' ? `${projectName}?` : noProject ? <>
+            <MessageCircle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            <span className="min-w-0 truncate">No project</span>
+          </> : <>
             <Folder className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
             <span className="min-w-0 truncate">{projectName || 'Choose project'}</span>
           </>}
@@ -78,8 +88,18 @@ export function ComposerProjectPicker({ cwd, onSelect, disabled = false, variant
                   <Command.Input ref={searchRef} value={query} onValueChange={setQuery} aria-label="Search projects" placeholder="Search projects" className="min-w-0 w-full bg-transparent text-[12.5px] leading-[18px] text-[var(--text-primary)] outline-none placeholder:text-[var(--text-muted)]" />
                 </div>
                 <Command.List>
+                  {onSelectNoProject ? (
+                    <div className="border-b border-[var(--border)] py-1">
+                      <Command.Item value="__no_project__" onSelect={selectNoProject} data-current={noProject || undefined} className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-[5px] text-[12.5px] leading-[18px] text-[var(--text-primary)] data-[current]:bg-[var(--bg-tertiary)] data-[selected=true]:bg-[var(--bg-tertiary)]">
+                        <MessageCircle aria-hidden="true" className={`h-3.5 w-3.5 shrink-0 ${noProject ? 'text-[var(--accent)]' : 'text-[var(--text-secondary)]'}`} />
+                        <span className="min-w-0 flex-1 truncate">No project</span>
+                        <span className="shrink-0 text-[11px] text-[var(--text-muted)]">chat</span>
+                      </Command.Item>
+                    </div>
+                  ) : null}
                   {/* Only the projects scroll; New project stays pinned below them. */}
                   <div className="max-h-[min(232px,45vh)] overflow-y-auto py-1">
+                    {onSelectNoProject ? <div className="px-2 pb-0.5 pt-1 text-[11px] text-[var(--text-muted)]">Projects</div> : null}
                     {filteredProjects.length === 0 && <div className="px-2 py-2 text-[12.5px] leading-[18px] text-[var(--text-muted)]">No projects found</div>}
                     {filteredProjects.map((dir) => {
                       const current = dir === cwd;

@@ -23,7 +23,7 @@ export function useSessionActionsMenu(session: SessionView) {
   const sessions = useAppStore(s => s.sessions);
   const projectCwd = useAppStore(s => s.projectCwd);
   const projectIdentity = (cwd: string) => organization.projectSources?.[cwd]?.[0] || cwd;
-  const projects = [...new Set([projectCwd, ...Object.values(organization.projectSources ?? {}).map(roots => roots[0]), ...Object.values(sessions).filter(s => !s.hiddenFromThreads && s.scope !== 'dm').map(s => s.projectCwd || s.cwd)].filter((p): p is string => Boolean(p)).map(projectIdentity))].slice(0, 250);
+  const projects = [...new Set([projectCwd, ...Object.values(organization.projectSources ?? {}).map(roots => roots[0]), ...Object.values(sessions).filter(s => !s.hiddenFromThreads && s.scope !== 'dm' && !s.isChat).map(s => s.projectCwd || s.cwd)].filter((p): p is string => Boolean(p)).map(projectIdentity))].slice(0, 250);
   const [launchers, setLaunchers] = useState<EnvironmentEditorLauncher[]>([]);
   useEffect(() => {
     if (!window.electron?.getEnvironmentEditorLaunchers) return;
@@ -207,19 +207,20 @@ export function useSessionActionsMenu(session: SessionView) {
     { type: 'separator' },
     ...(providerSupportsFork ? [{ label: 'Fork', icon: 'fork' as const, enabled: canFork && !worktreeAction, submenu: [
       { id: 'fork-local' as const, label: inWorktree ? 'This worktree' : 'Local', icon: 'fork' as const },
-      { id: 'fork-worktree' as const, label: 'New worktree', icon: 'worktree' as const, enabled: !inWorktree },
+      ...(session.isChat ? [] : [{ id: 'fork-worktree' as const, label: 'New worktree', icon: 'worktree' as const, enabled: !inWorktree }]),
       { id: 'fork' as const, label: 'New pane', icon: 'window' as const },
     ] }] : []),
     { type: 'separator' },
     ...(launchers.length ? [{ label: 'Open in', icon: 'folder' as const, enabled: Boolean(session.cwd), submenu: launchers.map((editor, i): SessionMenuItem => ({ id: `editor:${i}`, label: editor.label, icon: 'window' })) }] : []),
     { id: 'open-window', label: 'Open in new window', icon: 'window', enabled: editable },
-    { label: 'Worktree', icon: 'worktree', submenu: inWorktree ? [
+    // A chat's folder is not a repository: no worktrees.
+    ...(session.isChat ? [] : [{ label: 'Worktree', icon: 'worktree', submenu: inWorktree ? [
       { id: 'new-worktree-thread', label: 'New thread in this worktree', icon: 'worktree', enabled: !worktreeAction },
       { id: 'apply-worktree', label: 'Squash-merge back into project', icon: 'apply', enabled: canChangeWorktree && !sharesParentWorktree },
       { id: 'discard-worktree', label: 'Discard worktree…', icon: 'trash', enabled: canChangeWorktree && !sharesParentWorktree },
     ] : [
       { id: 'move-worktree', label: worktreeAction === 'move' ? 'Moving into a new worktree…' : 'Move into a new worktree', icon: 'worktree', enabled: canChangeWorktree },
-    ] },
+    ] } satisfies SessionMenuItem]),
     { type: 'separator' },
     { id: 'delete', label: 'Delete…', icon: 'trash', enabled: !worktreeAction },
   ];

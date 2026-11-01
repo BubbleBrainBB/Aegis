@@ -21,6 +21,7 @@ import type { EnvironmentEditorLauncher } from '../../../shared/types';
 import type { ActiveEnvironmentContext } from './useActiveEnvironmentContext';
 import type { GitEnvironmentState } from './useGitEnvironment';
 import { EnvironmentGitActionsSection } from './EnvironmentGitActionsSection';
+import { EnvironmentChatSection } from './EnvironmentChatSection';
 import { EnvironmentComputerUseSection, environmentHasComputerUseSection } from './EnvironmentComputerUseSection';
 import { useAppStore } from '../../store/useAppStore';
 import { deriveSubagentSummaries } from '../../utils/subagent-registry';
@@ -355,7 +356,9 @@ export function EnvironmentHub({
     void git.refresh({ force: false });
   }, [context.contextKey, open, git.refresh]);
 
-  const available = !(knownNonGit && !hasComputerUse && subagents.length === 0 && prs.items.length === 0 && !prs.error && !sources.length && !sourcesError);
+  // A chat without a project always has its outputs and sources to show.
+  const chatSession = !context.unavailableReason && context.session?.isChat ? context.session : null;
+  const available = Boolean(chatSession) || !(knownNonGit && !hasComputerUse && subagents.length === 0 && prs.items.length === 0 && !prs.error && !sources.length && !sourcesError);
   const setRequested = layout?.setRequested;
   useEffect(() => {
     setRequested?.(available && dockedOpen);
@@ -391,6 +394,15 @@ export function EnvironmentHub({
           className={`no-drag overflow-hidden rounded-[20px] bg-[var(--popover-bg)] shadow-[var(--popover-shadow-lg)] ${pinnedMode ? 'environment-panel-pinned' : 'absolute right-0 top-full z-[70] mt-1.5 max-h-[min(680px,calc(100vh-64px))] w-[300px] max-w-[calc(100vw-24px)]'}`}
         >
           <div className="scrollbar-slim max-h-[min(680px,calc(100vh-64px))] overflow-y-auto py-2.5">
+            {chatSession ? <>
+              <EnvironmentChatSection session={chatSession} open={open} onOpenSources={onOpenSources} onNavigate={() => setOpen(false)} />
+              <EnvironmentComputerUseSection
+                session={context.session}
+                sessionId={context.sessionId}
+                previewOpen={previewOpen}
+              />
+              <EnvironmentSubagentSection session={context.session} summaries={subagents} onNavigate={() => setOpen(false)} />
+            </> : <>
             {!knownNonGit ? <>
             <div className="flex items-center gap-2 px-3.5 pb-1">
               <div className="flex min-h-7 min-w-0 flex-1 items-center text-[12px] font-medium text-[var(--text-secondary)]">
@@ -499,6 +511,7 @@ export function EnvironmentHub({
                 <EnvironmentSubagentSection session={context.session} summaries={subagents} onNavigate={() => setOpen(false)} />
               </>
             ) : null}
+            </>}
           </div>
         </div>
   ) : null;

@@ -53,6 +53,7 @@ type ProjectGroup = {
 };
 
 const DEFAULT_VISIBLE_SESSIONS_PER_PROJECT = 5;
+const CHATS_GROUP_KEY = '__chats__';
 const SESSION_BRANCH_CACHE_TTL_MS = 30_000;
 
 type SessionBranchCacheEntry = {
@@ -145,6 +146,11 @@ function formatSidebarTime(timestamp: number): string {
 
 function getSessionProjectPath(session: SessionView): string | null {
   return session.projectCwd?.trim() || session.cwd?.trim() || null;
+}
+
+/** Chats without a project, and older sessions that never had a folder. */
+function isChatSession(session: SessionView): boolean {
+  return Boolean(session.isChat) || !getSessionProjectPath(session);
 }
 
 function getSessionBranchCwd(session: SessionView): string | null {
@@ -278,6 +284,7 @@ export function FolderTreeView({
   const {
     pinnedSessions,
     projectGroups,
+    chatSessions,
     flatSessions,
     stateGroups,
     timeGroups,
@@ -352,9 +359,14 @@ export function FolderTreeView({
       : unsectioned;
 
     const projectGroups: ProjectGroup[] = [];
+    const chatSessions: SessionView[] = [];
     if (view.groupBy === 'project') {
       const grouped = new Map<string, ProjectGroup>();
       for (const session of regularSessions) {
+        if (isChatSession(session)) {
+          chatSessions.push(session);
+          continue;
+        }
         // 按项目根分组：worktree thread 的 cwd 指向 .worktrees/ 下的检出目录，
         // 用 projectCwd 兜底才不会把它当成一个独立"项目"
         const fullPath = getSessionProjectPath(session);
@@ -386,6 +398,7 @@ export function FolderTreeView({
           .map((group) => ({ ...group, sessions: group.sessions.sort(byTime) }))
           .sort((left, right) => latest(right) - latest(left))
       );
+      chatSessions.sort(byTime);
     }
 
     const flatSessions = view.groupBy === 'none' ? [...regularSessions].sort(byTime) : [];
@@ -426,6 +439,7 @@ export function FolderTreeView({
     return {
       pinnedSessions,
       projectGroups,
+      chatSessions,
       flatSessions,
       stateGroups,
       timeGroups,
@@ -845,8 +859,38 @@ export function FolderTreeView({
         );
       })}
 
+      {chatSessions.length > 0 && (
+        <section className="mb-4 mt-1" aria-label="Chats">
+          <div className="mb-1 flex items-center px-1">
+            <div className="rounded-md px-1 text-[13px] text-[var(--text-muted)]">Chats</div>
+          </div>
+          {(expandedSessionGroups.has(CHATS_GROUP_KEY)
+            ? chatSessions
+            : chatSessions.slice(0, DEFAULT_VISIBLE_SESSIONS_PER_PROJECT)
+          ).map((session) => renderFlatSession(session, 'chat'))}
+          {chatSessions.length > DEFAULT_VISIBLE_SESSIONS_PER_PROJECT ? (
+            <button
+              type="button"
+              className="px-2 py-1.5 text-left text-[12px] text-[var(--text-muted)] transition-colors duration-150 hover:text-[var(--text-primary)] focus-visible:text-[var(--text-primary)] focus-visible:outline-none"
+              aria-expanded={expandedSessionGroups.has(CHATS_GROUP_KEY)}
+              onClick={() => {
+                setExpandedSessionGroups((current) => {
+                  const next = new Set(current);
+                  if (next.has(CHATS_GROUP_KEY)) next.delete(CHATS_GROUP_KEY);
+                  else next.add(CHATS_GROUP_KEY);
+                  return next;
+                });
+              }}
+            >
+              {expandedSessionGroups.has(CHATS_GROUP_KEY) ? 'Show less' : 'Show more'}
+            </button>
+          ) : null}
+        </section>
+      )}
+
       {sectionGroups.every(group => group.sessions.length === 0) &&
         projectGroups.length === 0 &&
+        chatSessions.length === 0 &&
         pinnedSessions.length === 0 &&
         flatSessions.length === 0 &&
         stateGroups.length === 0 &&
@@ -1041,8 +1085,9 @@ function SessionItem({
   } | null>(null);
   const inWorktree = session.envMode === 'worktree' && Boolean(session.worktreePath);
   const projectPath = getSessionProjectPath(session);
-  const projectLabel = getProjectLabel(projectPath);
-  const branchCwd = getSessionBranchCwd(session);
+  const projectLabel = session.isChat ? 'Chat' : getProjectLabel(projectPath);
+  // A chat's folder has no branch to look up.
+  const branchCwd = session.isChat ? null : getSessionBranchCwd(session);
   const storedWorktreeBranch = session.associatedWorktreeBranch?.trim() || null;
   const lookedUpBranch = branchLookup?.cwd === branchCwd ? branchLookup.branch : null;
   const branch = storedWorktreeBranch || lookedUpBranch;
