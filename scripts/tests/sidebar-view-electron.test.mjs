@@ -125,6 +125,12 @@ app.whenReady().then(async()=>{
   await click('document.querySelector("[data-sidebar-state=completed] button")');
   assert.deepEqual(await members('completed'),['s10','s12','s8','s9'].sort(),'a merged PR lands in Completed');
 
+  // A new task nothing was sent from yet sits above the groups, in none of them.
+  await js('(()=>{const s=qa.app.getState().sessions;qa.app.setState({sessions:{...s,d1:{...s.s8,id:"d1",title:"New Chat",isDraft:true,status:"idle",updatedAt:Date.now()}}})})()');await delay(200);
+  assert.deepEqual(await members('draft'),['d1']);
+  for(const state of ['needs-input','running','review','completed'])assert.equal((await members(state)).includes('d1'),false,'a draft is not '+state);
+  await js('(()=>{const {d1,...s}=qa.app.getState().sessions;qa.app.setState({sessions:s})})()');await delay(200);
+
   // Group by Date: every session has a bucket, old ones by month.
   await setView({groupBy:'date'});
   const dateHeaders=await js('[...document.querySelectorAll("section > div")].map(e=>e.textContent)');

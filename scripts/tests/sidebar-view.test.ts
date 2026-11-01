@@ -21,7 +21,7 @@ Object.defineProperty(globalThis, 'localStorage', {
 });
 
 type StateInput = Parameters<typeof deriveSidebarSessionState>[0];
-const idle: StateInput = { status: 'completed', permissionRequests: [], runtimeNotice: undefined, envMode: 'local', worktreePath: null };
+const idle: StateInput = { status: 'completed', permissionRequests: [], runtimeNotice: undefined, envMode: 'local', worktreePath: null, isDraft: false };
 const pr = (state: GitPullRequestSummary['state']): GitPullRequestSummary => ({
   number: 7,
   title: 'Sidebar view options',
@@ -32,6 +32,8 @@ const permission = { toolUseId: 't', toolName: 'Bash', input: {} } as unknown as
 
 // --- state derivation -------------------------------------------------------
 
+assert.equal(deriveSidebarSessionState({ ...idle, status: 'idle', isDraft: true }, {}), null,
+  'a new task nothing was sent from has no state yet');
 assert.equal(deriveSidebarSessionState({ ...idle, status: 'running', permissionRequests: [permission] }, {}), 'needs-input',
   'a pending approval outranks running');
 assert.equal(deriveSidebarSessionState({ ...idle, status: 'running' }, {}), 'running');
