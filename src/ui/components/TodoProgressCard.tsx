@@ -3,16 +3,18 @@ import type { TodoProgressItem, TodoProgressState } from '../utils/todo-progress
 
 function TodoStatusIcon({ item }: { item: TodoProgressItem }) {
   if (item.status === 'completed') {
-    return <CheckCircle2 className="h-4 w-4 flex-shrink-0 text-[var(--success)]" />;
+    return <CheckCircle2 className="h-3.5 w-3.5 text-[var(--success)]" />;
   }
 
   if (item.status === 'in_progress') {
-    return <LoaderCircle className="h-4 w-4 flex-shrink-0 animate-spin text-[var(--accent)]" />;
+    return <LoaderCircle className="h-3.5 w-3.5 animate-spin text-[var(--accent)]" />;
   }
 
-  return <Circle className="h-4 w-4 flex-shrink-0 text-[var(--text-muted)]" />;
+  return <Circle className="h-3.5 w-3.5 text-[var(--text-muted)]" />;
 }
 
+// Rows use the reply's body size and the trace's 12px for secondary text and
+// 14px icons, so the card reads as part of the turn rather than louder than it.
 export function TodoProgressCard({
   state,
   className = '',
@@ -28,27 +30,27 @@ export function TodoProgressCard({
 
   return (
     <div
-      className={`rounded-xl border border-[var(--border)] bg-[var(--bg-primary)]/90 px-3 py-3 ${className}`.trim()}
+      className={`rounded-xl border border-[var(--border)] bg-[var(--bg-primary)]/90 px-3 py-2.5 ${className}`.trim()}
     >
-      <div className="flex items-center gap-2">
-        <ListTodo className="h-4 w-4 text-[var(--text-secondary)]" />
-        <div>
-          <div className="text-sm font-medium text-[var(--text-primary)]">Todo progress</div>
-          <div className="text-xs text-[var(--text-muted)]">{summaryParts.join(' · ')}</div>
-        </div>
+      <div className="flex items-baseline gap-2">
+        <ListTodo className="h-3.5 w-3.5 flex-shrink-0 self-center text-[var(--text-secondary)]" />
+        <span className="flex-shrink-0 whitespace-nowrap font-medium text-[var(--text-primary)]">Todo progress</span>
+        <span className="trace-text min-w-0 truncate text-[var(--text-muted)]">{summaryParts.join(' · ')}</span>
       </div>
 
-      <div className="mt-3 space-y-2">
+      <div className="mt-2 space-y-1">
         {state.todos.map((todo, index) => {
           const displayText =
             todo.status === 'in_progress' && todo.activeForm ? todo.activeForm : todo.content;
 
           return (
-            <div key={`${todo.content}-${index}`} className="flex items-start gap-2.5">
-              <TodoStatusIcon item={todo} />
-              <div className="min-w-0 pt-0.5">
+            <div key={`${todo.content}-${index}`} className="flex items-start gap-2">
+              <span className="flex h-5 flex-shrink-0 items-center">
+                <TodoStatusIcon item={todo} />
+              </span>
+              <div className="min-w-0">
                 <div
-                  className={`text-sm leading-5 ${
+                  className={`leading-5 ${
                     todo.status === 'completed'
                       ? 'text-[var(--text-secondary)] line-through'
                       : 'text-[var(--text-primary)]'
@@ -57,7 +59,7 @@ export function TodoProgressCard({
                   {displayText}
                 </div>
                 {todo.status === 'in_progress' && todo.activeForm && todo.activeForm !== todo.content && (
-                  <div className="mt-0.5 text-xs text-[var(--text-muted)]">{todo.content}</div>
+                  <div className="trace-text text-[var(--text-muted)]">{todo.content}</div>
                 )}
               </div>
             </div>
