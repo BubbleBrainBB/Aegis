@@ -1724,7 +1724,6 @@ export function PromptInput({
                 <PermissionModePicker
                   value={agentSelection.claudePermissionMode}
                   options={CLAUDE_PERMISSION_MODE_OPTIONS}
-                  menuMinWidthClass="min-w-[176px]"
                   onChange={(mode) => {
                     agentSelection.setClaudePermissionMode(mode);
                     if (activeSession) {
@@ -1767,7 +1766,6 @@ export function PromptInput({
                 <PermissionModePicker
                   value={agentSelection.qoderPermissionMode}
                   options={QODER_PERMISSION_MODE_OPTIONS}
-                  menuMinWidthClass="min-w-[176px]"
                   onChange={agentSelection.setQoderPermissionMode}
                   disabled={isBusy}
                   menuSide={menuSide}
@@ -1795,7 +1793,6 @@ export function PromptInput({
                 <PermissionModePicker
                   value={agentSelection.devinPermissionMode}
                   options={DEVIN_PERMISSION_MODE_OPTIONS}
-                  menuMinWidthClass="min-w-[176px]"
                   onChange={agentSelection.setDevinPermissionMode}
                   menuSide={menuSide}
                 />
@@ -1804,7 +1801,6 @@ export function PromptInput({
                 <PermissionModePicker
                   value={agentSelection.mimoPermissionMode}
                   options={MIMO_PERMISSION_MODE_OPTIONS}
-                  menuMinWidthClass="min-w-[176px]"
                   onChange={agentSelection.setMimoPermissionMode}
                   menuSide={menuSide}
                 />
@@ -1813,7 +1809,6 @@ export function PromptInput({
                 <PermissionModePicker
                   value={agentSelection.minimaxPermissionMode}
                   options={MINIMAX_PERMISSION_MODE_OPTIONS}
-                  menuMinWidthClass="min-w-[176px]"
                   onChange={agentSelection.setMinimaxPermissionMode}
                   menuSide={menuSide}
                 />
@@ -1822,7 +1817,6 @@ export function PromptInput({
                 <PermissionModePicker
                   value={agentSelection.bubblePermissionMode}
                   options={BUBBLE_PERMISSION_MODE_OPTIONS}
-                  menuMinWidthClass="min-w-[176px]"
                   onChange={agentSelection.setBubblePermissionMode}
                   disabled={isBusy}
                   menuSide={menuSide}
