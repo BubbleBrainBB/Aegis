@@ -233,8 +233,6 @@ export function FolderTreeView({
   }, [followUpsLoaded]);
   const followUpProposals = useFollowUpStore(s => s.proposals);
   const subSessionParentMap = useMemo(() => subSessionParents(followUpProposals), [followUpProposals]);
-  // Parents whose sub-sessions are folded away; all start open.
-  const [collapsedParents, setCollapsedParents] = useState<Set<string>>(() => new Set());
   const {
     sessions,
     activeWorkspace,
@@ -247,11 +245,11 @@ export function FolderTreeView({
   const view = useSidebarViewOptions();
   const setViewOption = useSidebarViewStore((state) => state.setOption);
   const prsBySession = useSidebarPullRequests(view.showPullRequests || view.groupBy === 'state');
-  // Completed starts folded: Group by State is for what still needs you.
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set(['state:completed']));
-  const [expandedSessionGroups, setExpandedSessionGroups] = useState<Set<string>>(
-    () => new Set()
-  );
+  const collapsedGroups = useSidebarViewStore((state) => state.collapsedGroups);
+  const toggleGroupExpanded = useSidebarViewStore((state) => state.toggleGroupCollapsed);
+  const revealDraftProject = useSidebarViewStore((state) => state.revealDraftProject);
+  const expandedSessionGroups = useSidebarViewStore((state) => state.expandedSessionGroups);
+  const toggleSessionListExpanded = useSidebarViewStore((state) => state.toggleSessionListExpanded);
   const isChatWorkspaceActive = activeWorkspace === 'chat';
 
   const activeDraft = activeSessionId ? sessions[activeSessionId] : undefined;
@@ -259,14 +257,12 @@ export function FolderTreeView({
     ? activeDraft.projectCwd || activeDraft.cwd || '__no_project__'
     : null;
   useLayoutEffect(() => {
-    if (!activeDraftProject || !isChatWorkspaceActive) return;
-    setCollapsedGroups((current) => {
-      if (!current.has(activeDraftProject)) return current;
-      const next = new Set(current);
-      next.delete(activeDraftProject);
-      return next;
-    });
-  }, [activeSessionId, activeDraftProject, isChatWorkspaceActive]);
+    revealDraftProject(
+      activeSessionId && activeDraftProject && isChatWorkspaceActive
+        ? { sessionId: activeSessionId, project: activeDraftProject }
+        : null
+    );
+  }, [activeSessionId, activeDraftProject, isChatWorkspaceActive, revealDraftProject]);
 
   // Sessions currently mounted in any workspace pane. With recursive tiling
   // there is no single "split pair" — every open session simply renders with the
@@ -530,18 +526,6 @@ export function FolderTreeView({
 
   const isExpanded = (key: string) => !collapsedGroups.has(key);
 
-  const toggleGroupExpanded = (key: string) => {
-    setCollapsedGroups((current) => {
-      const next = new Set(current);
-      if (next.has(key)) {
-        next.delete(key);
-      } else {
-        next.add(key);
-      }
-      return next;
-    });
-  };
-
   const runtimeBadgeFor = (session: SessionView) =>
     session.runtimeNotice ?? (session.status === 'running' ? 'running' : null);
   // 平铺列表只放会话本身；所属项目在悬停卡片里。按日期分组时（Codex 式）
@@ -558,19 +542,15 @@ export function FolderTreeView({
   ) => {
     const children = subSessionsByRoot.get(session.id);
     if (!children?.length) return <Fragment key={key}>{renderRow(session, depth)}</Fragment>;
-    const expanded = !collapsedParents.has(session.id);
+    // Parents whose sub-sessions are folded away; all start open.
+    const foldKey = `sub-sessions:${session.id}`;
+    const expanded = !collapsedGroups.has(foldKey);
     const nest: SubSessionNest = {
       count: children.length,
       running: children.filter((child) => child.status === 'running').length,
       waiting: children.some((child) => child.permissionRequests.length > 0),
       expanded,
-      onToggle: () =>
-        setCollapsedParents((current) => {
-          const next = new Set(current);
-          if (next.has(session.id)) next.delete(session.id);
-          else next.add(session.id);
-          return next;
-        }),
+      onToggle: () => toggleGroupExpanded(foldKey),
     };
     return (
       <Fragment key={key}>
@@ -651,6 +631,10 @@ export function FolderTreeView({
       {stateGroups.map((group) => {
         const key = `state:${group.state}`;
         const expanded = isExpanded(key);
+        const sessionListExpanded = expandedSessionGroups.has(key);
+        const visibleSessions = sessionListExpanded
+          ? group.sessions
+          : group.sessions.slice(0, DEFAULT_VISIBLE_SESSIONS_PER_PROJECT);
         return (
           <section key={key} className="mb-4" data-sidebar-state={group.state}>
             <button type="button" className={groupHeaderClass} aria-expanded={expanded} onClick={() => toggleGroupExpanded(key)}>
@@ -658,7 +642,10 @@ export function FolderTreeView({
               <span className="text-[11.5px] tabular-nums">{group.sessions.length}</span>
               {!expanded ? <ChevronRight className="ml-auto h-3.5 w-3.5" /> : null}
             </button>
-            {expanded && group.sessions.map((session) => renderFlatSession(session, 'state'))}
+            {expanded && visibleSessions.map((session) => renderFlatSession(session, 'state'))}
+            {expanded && group.sessions.length > DEFAULT_VISIBLE_SESSIONS_PER_PROJECT ? (
+              <SessionListToggle expanded={sessionListExpanded} onToggle={() => toggleSessionListExpanded(key)} />
+            ) : null}
           </section>
         );
       })}
@@ -848,24 +835,11 @@ export function FolderTreeView({
                   })()
                 )}
                 {hasMoreSessions ? (
-                  <button
-                    type="button"
-                    className="ml-8 px-2 py-1.5 text-left text-[12px] text-[var(--text-muted)] transition-colors duration-150 hover:text-[var(--text-primary)] focus-visible:text-[var(--text-primary)] focus-visible:outline-none"
-                    aria-expanded={sessionListExpanded}
-                    onClick={() => {
-                      setExpandedSessionGroups((current) => {
-                        const next = new Set(current);
-                        if (next.has(group.key)) {
-                          next.delete(group.key);
-                        } else {
-                          next.add(group.key);
-                        }
-                        return next;
-                      });
-                    }}
-                  >
-                    {sessionListExpanded ? 'Show less' : 'Show more'}
-                  </button>
+                  <SessionListToggle
+                    className="ml-8"
+                    expanded={sessionListExpanded}
+                    onToggle={() => toggleSessionListExpanded(group.key)}
+                  />
                 ) : null}
               </div>
             )}
@@ -883,21 +857,10 @@ export function FolderTreeView({
             : chatSessions.slice(0, DEFAULT_VISIBLE_SESSIONS_PER_PROJECT)
           ).map((session) => renderFlatSession(session, 'chat'))}
           {chatSessions.length > DEFAULT_VISIBLE_SESSIONS_PER_PROJECT ? (
-            <button
-              type="button"
-              className="px-2 py-1.5 text-left text-[12px] text-[var(--text-muted)] transition-colors duration-150 hover:text-[var(--text-primary)] focus-visible:text-[var(--text-primary)] focus-visible:outline-none"
-              aria-expanded={expandedSessionGroups.has(CHATS_GROUP_KEY)}
-              onClick={() => {
-                setExpandedSessionGroups((current) => {
-                  const next = new Set(current);
-                  if (next.has(CHATS_GROUP_KEY)) next.delete(CHATS_GROUP_KEY);
-                  else next.add(CHATS_GROUP_KEY);
-                  return next;
-                });
-              }}
-            >
-              {expandedSessionGroups.has(CHATS_GROUP_KEY) ? 'Show less' : 'Show more'}
-            </button>
+            <SessionListToggle
+              expanded={expandedSessionGroups.has(CHATS_GROUP_KEY)}
+              onToggle={() => toggleSessionListExpanded(CHATS_GROUP_KEY)}
+            />
           ) : null}
         </section>
       )}
@@ -930,6 +893,27 @@ export function FolderTreeView({
         </button>
       ) : null}
     </div>
+  );
+}
+
+function SessionListToggle({
+  expanded,
+  onToggle,
+  className = '',
+}: {
+  expanded: boolean;
+  onToggle: () => void;
+  className?: string;
+}) {
+  return (
+    <button
+      type="button"
+      className={`${className} px-2 py-1.5 text-left text-[12px] text-[var(--text-muted)] transition-colors duration-150 hover:text-[var(--text-primary)] focus-visible:text-[var(--text-primary)] focus-visible:outline-none`}
+      aria-expanded={expanded}
+      onClick={onToggle}
+    >
+      {expanded ? 'Show less' : 'Show more'}
+    </button>
   );
 }
 
