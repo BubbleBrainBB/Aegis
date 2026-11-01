@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import * as DropdownMenu from './ui/dropdown-menu';
-import { ShieldCheck } from './icons';
+import { Check, ShieldCheck } from './icons';
 import { FullAccessPermissionIcon } from './FullAccessPermissionIcon';
 
 import type { PermissionModeOption } from '../utils/permission-modes';
@@ -12,7 +12,6 @@ export function PermissionModePicker<M extends string>({
   onChange,
   disabled,
   menuSide = 'top',
-  menuMinWidthClass = 'min-w-[152px]',
 }: {
   value: M;
   options: ReadonlyArray<PermissionModeOption<M>>;
@@ -20,7 +19,6 @@ export function PermissionModePicker<M extends string>({
   disabled?: boolean;
   /** Bottom-anchored composers open upward; other surfaces can override. */
   menuSide?: 'top' | 'bottom';
-  menuMinWidthClass?: string;
 }) {
   const [open, setOpen] = useState(false);
   useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
@@ -54,7 +52,10 @@ export function PermissionModePicker<M extends string>({
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
         <DropdownMenu.Content side={menuSide} align="start" sideOffset={8}
-          className={`flex ${menuMinWidthClass} max-w-[calc(100vw-32px)] flex-col p-1`}>
+          className="flex w-[272px] max-w-[calc(100vw-32px)] flex-col p-1.5">
+          <div className="px-2.5 pb-1 pt-1 text-[12px] font-medium text-[var(--text-muted)]">
+            Permissions
+          </div>
           {options.filter((option) => !option.hidden).map((option) => (
             <PermissionModeOptionRow key={option.mode} option={option}
               active={option.mode === value} onSelect={(mode) => { if (!disabled) onChange(mode); }} />
@@ -77,13 +78,25 @@ function PermissionModeOptionRow<M extends string>({
   return (
     <DropdownMenu.Item
       onSelect={() => onSelect(option.mode)}
-      className={`rounded-lg px-3 py-1.5 text-left text-[13px] outline-none transition-colors data-[highlighted]:bg-[var(--bg-tertiary)] ${
-        active
-          ? 'bg-[var(--bg-tertiary)] font-semibold text-[var(--text-primary)]'
-          : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]'
-      }`}
+      className="flex items-start gap-2 rounded-lg px-2.5 py-1.5 text-left outline-none transition-colors data-[highlighted]:bg-[var(--bg-tertiary)]"
     >
-      <span className="truncate">{option.label}</span>
+      <span className="min-w-0 flex-1">
+        <span className={`block truncate text-[13px] ${
+          option.tone === 'full-access'
+            ? 'text-[var(--warning)]'
+            : option.tone === 'danger'
+              ? 'text-[var(--error)]'
+              : 'text-[var(--text-primary)]'
+        }`}>
+          {option.label}
+        </span>
+        {option.description ? (
+          <span className="block truncate text-[12px] text-[var(--text-muted)]">{option.description}</span>
+        ) : null}
+      </span>
+      {active ? (
+        <Check className="mt-0.5 h-4 w-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />
+      ) : null}
     </DropdownMenu.Item>
   );
 }
