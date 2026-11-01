@@ -90,13 +90,15 @@ export const SIDEBAR_STATE_LABELS: Record<SidebarSessionState, string> = {
   completed: 'Completed',
 };
 
+/** Null while the session is still a draft: nothing has been sent, so there is no state yet. */
 export function deriveSidebarSessionState(
   session: Pick<
     SessionView,
-    'status' | 'permissionRequests' | 'runtimeNotice' | 'envMode' | 'worktreePath'
+    'status' | 'permissionRequests' | 'runtimeNotice' | 'envMode' | 'worktreePath' | 'isDraft'
   >,
   context: { unread?: boolean; pullRequest?: GitPullRequestSummary | null }
-): SidebarSessionState {
+): SidebarSessionState | null {
+  if (session.isDraft) return null;
   const running = session.status === 'running' || session.status === 'stopping';
   if (session.permissionRequests.length > 0) return 'needs-input';
   if (running) return 'running';
