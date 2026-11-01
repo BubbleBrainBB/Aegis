@@ -1,11 +1,11 @@
 /** Current Standard API token rates, USD per million tokens.
- * Verified 2026-09-20: https://developers.openai.com/api/docs/pricing
+ * Verified 2026-11-01: https://developers.openai.com/api/docs/pricing
  * Context rule: https://developers.openai.com/api/docs/models/gpt-6-astra
  * Cache writes replace the uncached-input rate; they are not an additive fee.
  * This is a current API-equivalent estimate, not historical subscription billing.
  */
 export const CODEX_API_PRICING_URL = 'https://developers.openai.com/api/docs/pricing';
-export const CODEX_API_PRICING_VERIFIED_AT = '2026-09-20';
+export const CODEX_API_PRICING_VERIFIED_AT = '2026-11-01';
 
 interface CodexPrice {
   input: number;
@@ -15,7 +15,11 @@ interface CodexPrice {
   longContext?: boolean;
 }
 const PRICES: Record<string, CodexPrice> = {
+  'gpt-6.1-sol': { input: 2, cached: 0.1, cacheWrite: 2.5, output: 10, longContext: true },
+  'gpt-6.1-terra': { input: 1, cached: 0.05, cacheWrite: 1.25, output: 5, longContext: true },
   'gpt-6-astra': { input: 10, cached: 1, cacheWrite: 12.5, output: 50, longContext: true },
+  'gpt-6-sol': { input: 2, cached: 0.2, cacheWrite: 2.5, output: 10, longContext: true },
+  'gpt-6-luna': { input: 0.1, cached: 0.01, cacheWrite: 0.125, output: 0.5, longContext: true },
   'gpt-5.6-sol': { input: 4, cached: 0.4, cacheWrite: 5, output: 20, longContext: true },
   'gpt-5.6-terra': { input: 2, cached: 0.2, cacheWrite: 2.5, output: 12, longContext: true },
   'gpt-5.6-luna': { input: 0.2, cached: 0.02, cacheWrite: 0.25, output: 1.2, longContext: true },
