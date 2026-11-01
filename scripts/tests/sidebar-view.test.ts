@@ -53,6 +53,33 @@ assert.equal(deriveSidebarSessionState(worktree, { pullRequest: pr('closed') }),
 assert.equal(deriveSidebarSessionState({ ...worktree, worktreePath: null }, {}), 'completed',
   'applying or discarding the worktree clears it');
 
+// --- the agent's own report of how its turn ended ---------------------------
+const report = (outcome: NonNullable<StateInput['turnReport']>['outcome']): StateInput['turnReport'] =>
+  ({ outcome, summary: 'x', reportedAt: 1 });
+assert.equal(deriveSidebarSessionState({ ...idle, turnReport: report('question') }, {}), 'needs-input',
+  'a question waits on you, seen or not');
+assert.equal(deriveSidebarSessionState({ ...idle, runtimeNotice: 'completed', turnReport: report('blocked') }, {}), 'needs-input',
+  'a blocker outranks an unseen result');
+assert.equal(deriveSidebarSessionState({ ...idle, status: 'running', turnReport: report('question') }, {}), 'running',
+  'a run in progress outranks the last report');
+assert.equal(deriveSidebarSessionState({ ...idle, runtimeNotice: 'error', turnReport: report('nothing_to_do') }, {}), 'needs-input',
+  'an unseen failure is a failure whatever was reported');
+const task = { taskId: 't', description: 'tests', taskType: 'local_bash' };
+assert.equal(deriveSidebarSessionState({ ...idle, turnReport: report('in_progress'), backgroundTasks: [task] }, {}), 'running',
+  'work still going in the background needs nothing from you');
+assert.equal(deriveSidebarSessionState({ ...idle, turnReport: report('in_progress'), backgroundTasks: [] }, {}), 'completed',
+  'a stored report outlives its tasks (restart, runner gone): nothing is running any more');
+assert.equal(deriveSidebarSessionState({ ...idle, runtimeNotice: 'completed', turnReport: report('in_progress') }, {}), 'review',
+  'with no task left, the run status decides');
+assert.equal(deriveSidebarSessionState({ ...idle, runtimeNotice: 'completed', turnReport: report('nothing_to_do') }, {}), 'completed',
+  'a turn with nothing to change has no result to review');
+assert.equal(deriveSidebarSessionState({ ...idle, turnReport: report('nothing_to_do') }, { unread: true }), 'review',
+  'marked unread still means review');
+assert.equal(deriveSidebarSessionState({ ...idle, turnReport: report('nothing_to_do') }, { pullRequest: pr('open') }), 'review',
+  'an open PR from earlier work still waits on review');
+assert.equal(deriveSidebarSessionState({ ...idle, runtimeNotice: 'completed', turnReport: null }, {}), 'review',
+  'no report: the run status decides, as before');
+
 // --- filters and sorting ----------------------------------------------------
 
 const now = Date.UTC(2026, 8, 28, 12);

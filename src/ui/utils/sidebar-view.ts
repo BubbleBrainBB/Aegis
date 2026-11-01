@@ -95,7 +95,7 @@ export function deriveSidebarSessionState(
   session: Pick<
     SessionView,
     'status' | 'permissionRequests' | 'runtimeNotice' | 'envMode' | 'worktreePath' | 'isDraft'
-  >,
+  > & Partial<Pick<SessionView, 'turnReport' | 'backgroundTasks'>>,
   context: { unread?: boolean; pullRequest?: GitPullRequestSummary | null }
 ): SidebarSessionState | null {
   if (session.isDraft) return null;
@@ -105,7 +105,16 @@ export function deriveSidebarSessionState(
   // Only a failure you have not looked at yet; an old one you already saw
   // would otherwise sit in Needs input forever.
   if (session.runtimeNotice === 'error') return 'needs-input';
-  if (session.runtimeNotice === 'completed' || context.unread) return 'review';
+  // The agent's own report of how the turn ended (shared/turn-report.ts):
+  // a question or blocker waits on you until your next message; work still
+  // going in the background needs nothing, for as long as a task is alive to
+  // wake the agent (a restart ends them, and the stored report outlives them);
+  // "nothing to change" has no result to review.
+  const outcome = session.turnReport?.outcome;
+  if (outcome === 'question' || outcome === 'blocked') return 'needs-input';
+  if (outcome === 'in_progress' && session.backgroundTasks?.length) return 'running';
+  const finished = session.runtimeNotice === 'completed' && outcome !== 'nothing_to_do';
+  if (finished || context.unread) return 'review';
   const pr = context.pullRequest;
   if (pr?.state === 'open') return 'review';
   // A live worktree holds work that has not been applied back yet, unless

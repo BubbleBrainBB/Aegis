@@ -2,6 +2,7 @@ import { Notification, app } from 'electron';
 import { readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import type { SessionRow } from '../types';
+import { parseTurnReport, turnReportLabel } from '../../shared/turn-report';
 
 export interface NotificationSettings {
   enabled: boolean;
@@ -94,8 +95,24 @@ export function notifySessionInput(row: SessionRow, requestId: string, question:
     { kind: 'session', sessionId: row.id }, question ? 'input' : 'approval');
 }
 
-export function notifySessionDone(row: SessionRow): void {
+export function notifySessionDone(row: SessionRow, options: { backgroundWork?: boolean } = {}): void {
   const failed = row.status === 'error';
+  // The agent's report says how the turn ended (shared/turn-report.ts): a
+  // question or blocker is input the user owes; a turn with nothing to change
+  // gives them nothing to act on. "in_progress" is quiet only while a task is
+  // alive: with none, nothing will wake the agent to report later.
+  const report = failed ? null : parseTurnReport(row.turn_report);
+  if (report?.outcome === 'nothing_to_do') return;
+  if (report?.outcome === 'in_progress' && options.backgroundWork) return;
+  if (report && report.outcome !== 'in_progress') {
+    show(
+      report.outcome === 'question' ? 'Agent needs your input' : `Agent is ${turnReportLabel(report.outcome).toLowerCase()}`,
+      `${row.title || 'Untitled thread'}: ${report.question || report.summary}`,
+      { kind: 'session', sessionId: row.id },
+      'input',
+    );
+    return;
+  }
   show(
     failed ? 'Agent run failed' : 'Agent run finished',
     row.title || 'Untitled thread',

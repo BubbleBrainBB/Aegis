@@ -2,6 +2,8 @@ import { CompactionTracker } from './compaction-tracker';
 import { addAgentCost, costFields, emptyCostDetails } from '../agent-cost';
 import { createPiSessionReader, createPiShowWidget, createPiStartWorkflow, createPiWidgetGuide } from '../session-native-tool';
 import { createPiDesignTools } from '../../design/tools';
+import { createPiReportStatus } from '../turn-report-tool';
+import { REPORT_STATUS_TOOL } from '../../../shared/turn-report';
 import { DESIGN_TOOL_NAMES } from '../../../shared/design-tools';
 import { getWorkflowSessionPolicy } from '../workflow/session-hooks';
 import { WidgetDraftTracker } from '../widget-draft';
@@ -351,9 +353,10 @@ export class PiSdkAdapter implements ProviderAdapter {
       agentDir: resolvePiAgentDir(),
       modelRuntime,
       sessionManager,
-      // Workflow members do not get the workflow entry (no nested workflows).
-      tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls', 'read_session', SHOW_WIDGET_TOOL, WIDGET_GUIDE_TOOL, ...DESIGN_TOOL_NAMES, ...(offersWorkflows ? [START_WORKFLOW_TOOL] : [])],
-      customTools: [createPiSessionReader(), createPiShowWidget(), createPiWidgetGuide(), ...createPiDesignTools(input.threadId), ...(offersWorkflows ? [createPiStartWorkflow(input.threadId)] : [])],
+      // Workflow members do not get the workflow entry (no nested workflows)
+      // or status reports (their workflow reads their turns).
+      tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls', 'read_session', SHOW_WIDGET_TOOL, WIDGET_GUIDE_TOOL, ...DESIGN_TOOL_NAMES, ...(offersWorkflows ? [START_WORKFLOW_TOOL, REPORT_STATUS_TOOL] : [])],
+      customTools: [createPiSessionReader(), createPiShowWidget(), createPiWidgetGuide(), ...createPiDesignTools(input.threadId), ...(offersWorkflows ? [createPiStartWorkflow(input.threadId), createPiReportStatus(input.threadId)] : [])],
       ...(selectedModel ? { model: selectedModel } : {}),
     });
 

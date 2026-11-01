@@ -3,6 +3,7 @@ import { estimateCodexUsageCost, CODEX_API_PRICING_VERIFIED_AT } from './codex-p
 import { canonicalProjectPath } from './project-paths';
 import type { SessionOrganizationChange, SessionOrganizationSnapshot } from '../../shared/session-organization';
 import type { SessionPullRequest } from '../../shared/types';
+import type { TurnReport } from '../../shared/turn-report';
 import Database from 'better-sqlite3';
 import { app } from 'electron';
 import { createHash } from 'crypto';
@@ -596,6 +597,8 @@ export function initialize(): void {
   ensureColumn('sessions', 'handoff_source_provider', 'TEXT');
   ensureColumn('sessions', 'handoff_pending', 'INTEGER DEFAULT 0');
   ensureColumn('sessions', 'handoff_source_session_id', 'TEXT');
+  // The agent's report of how its latest turn ended (shared/turn-report.ts), as JSON.
+  ensureColumn('sessions', 'turn_report', 'TEXT');
   ensureColumn('messages', 'message_type', 'TEXT');
   ensureColumn('messages', 'source_origin', 'TEXT');
   ensureColumn('messages', 'search_text', 'TEXT');
@@ -1845,10 +1848,14 @@ export function updateSessionStatus(sessionId: string, status: SessionStatus): v
     ? ((getSession(sessionId)?.status as SessionStatus | undefined) ?? null)
     : null;
   const now = Date.now();
+  // A new run starts with no report: the last turn's report described that turn only.
   const stmt = getDb().prepare(`
-    UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?
+    UPDATE sessions
+    SET status = ?, updated_at = ?,
+        turn_report = CASE WHEN ? = 'running' AND status IS NOT 'running' THEN NULL ELSE turn_report END
+    WHERE id = ?
   `);
-  stmt.run(status, now, sessionId);
+  stmt.run(status, now, status, sessionId);
   if (sessionStatusListener) {
     const row = getSession(sessionId);
     if (row) {
@@ -1857,6 +1864,13 @@ export function updateSessionStatus(sessionId: string, status: SessionStatus): v
       queueMicrotask(() => listener(row, previous));
     }
   }
+}
+
+/** Store (or clear) the agent's report of how its current turn ends. */
+export function setSessionTurnReport(sessionId: string, report: TurnReport | null): void {
+  getDb()
+    .prepare('UPDATE sessions SET turn_report = ? WHERE id = ?')
+    .run(report ? JSON.stringify(report) : null, sessionId);
 }
 
 // 启动期清算：app 崩溃/强退后残留的 running session 没有任何 runner 句柄，

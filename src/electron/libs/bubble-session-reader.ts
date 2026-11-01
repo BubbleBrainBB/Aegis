@@ -3,6 +3,7 @@ import { createNativeSessionReader, createNativeShowWidget, createNativeStartWor
 import { createBubbleBrowserUseTool } from './bubble-browser-use-tool';
 import { isBrowserUseEnabled } from './browser-use-permissions';
 import { createNativeDesignTools } from '../design/tools';
+import { createNativeReportStatus } from './turn-report-tool';
 import type { BubbleContentPart } from './provider/bubble-sdk-loader';
 
 export const BUBBLE_SESSION_TOOL = 'read_session';
@@ -18,6 +19,7 @@ export function bubbleHostTools(sessionId?: string): object[] {
   if (sessionId && isBrowserUseEnabled()) tools.push(createBubbleBrowserUseTool(sessionId));
   // Design tools act on this session's designs.
   if (sessionId) tools.push(...createNativeDesignTools(sessionId));
+  if (sessionId) tools.push(createNativeReportStatus(sessionId));
   return tools;
 }
 

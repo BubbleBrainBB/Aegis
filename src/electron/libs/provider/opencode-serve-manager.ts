@@ -245,7 +245,7 @@ export class OpenCodeServeManager {
     console.log(`[OpenCodeServeManager] starting opencode ${binary.version.raw} from ${binary.path}`);
     const hostname = '127.0.0.1';
     // Session tools that need the caller (designs) name it from the call's request meta.
-    registerSessionMetaResolver(OPENCODE_SESSION_RESOLVER, (meta) => this.resolveBrowserSession?.(meta) ?? Promise.resolve(null));
+    registerSessionMetaResolver(OPENCODE_SESSION_RESOLVER, (meta, options) => this.resolveBrowserSession?.(meta, options) ?? Promise.resolve(null));
     const [port, reader] = await Promise.all([findAvailablePort(hostname), getSessionReaderHttpConfig({ resolver: OPENCODE_SESSION_RESOLVER })]);
     const password = randomBytes(24).toString('base64url');
     const resolve = this.resolveBrowserSession;

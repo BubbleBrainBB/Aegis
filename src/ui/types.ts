@@ -431,6 +431,8 @@ export interface SessionView {
   activeCodexTurnId?: string | null;
   streaming: SessionStreamingState;
   runtimeNotice?: 'completed' | 'error';
+  /** How the agent says its latest turn ended; null when it did not say (shared/turn-report.ts). */
+  turnReport?: import('../shared/turn-report').TurnReport | null;
   createdAt?: number;
   updatedAt: number;
 }

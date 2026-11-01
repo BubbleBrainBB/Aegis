@@ -995,6 +995,7 @@ export interface AppUpdateStatus {
 export type ServerEvent =
   | { type: 'workflow.updated'; payload: import('./workflow').WorkflowRunView }
   | { type: 'follow-up.updated'; payload: import('./follow-up').FollowUpProposalView }
+  | { type: 'session.turn_report'; payload: { sessionId: string; report: import('./turn-report').TurnReport | null } }
   | { type: 'session.open'; payload: { sessionId: string } }
   | { type: 'session.list'; payload: { sessions: SessionInfo[] } }
   | { type: 'session.status'; payload: SessionStatusPayload }
@@ -1585,6 +1586,8 @@ export interface SessionInfo {
   teamMode?: SessionTeamMode;
   teamId?: string | null;
   /** Set when this session was created by handing off from another agent. */
+  /** How the agent says its latest turn ended (shared/turn-report.ts); null when it did not say. */
+  turnReport?: import('./turn-report').TurnReport | null;
   handoffSourceProvider?: AgentProvider | null;
   latestClaudeModelUsage?: LatestClaudeModelUsage;
   createdAt: number;
