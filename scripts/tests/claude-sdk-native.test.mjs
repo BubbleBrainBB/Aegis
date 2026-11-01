@@ -11,7 +11,9 @@
 //   own; ClaudeTurnOriginTracker (command_lifecycle + init) flags exactly that
 //   turn, even with a prompt sent as the task finishes;
 // - a turn opened while a background task runs keeps its chip, and the task's
-//   end yields one transcript outcome (ClaudeBackgroundTasks).
+//   end yields one transcript outcome (ClaudeBackgroundTasks);
+// - a backgrounded Bash call's tool result names its output file, which the
+//   composer's peek reads while the command runs.
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { execSync } from 'node:child_process';
@@ -21,6 +23,8 @@ import { join } from 'node:path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { ClaudeTurnOriginTracker } from '../../src/electron/libs/claude-turn-origin.ts';
 import { ClaudeBackgroundTasks } from '../../src/electron/libs/claude-background-tasks.ts';
+import { readBackgroundOutputTail } from '../../src/electron/libs/background-task-output-file.ts';
+import { backgroundTaskLinks } from '../../src/shared/background-task-output.ts';
 
 let claudePath = '';
 try {
@@ -241,7 +245,7 @@ try {
   // the chips Aegis derives (ClaudeBackgroundTasks) must survive it, and the
   // task's end yields exactly one transcript outcome.
   {
-    backgroundCommand = 'sleep 4';
+    backgroundCommand = "echo 'CI/Lint pass https://github.com/o/r/actions/runs/123456/job/7'; sleep 4";
     const { q, send } = session({
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
@@ -250,19 +254,24 @@ try {
     });
     const tasks = new ClaudeBackgroundTasks();
     const chipLists = [], outcomes = [];
-    let results = 0, resultsAfterOutcome = 0;
+    let results = 0, resultsAfterOutcome = 0, runningTaskId = '', peek = null;
     send('run it', '88888888-8888-4888-8888-888888888888');
     const deadline = setTimeout(() => {
       throw new Error(`background outcome timed out: ${JSON.stringify({ chipLists, outcomes, results })}`);
     }, 30000);
     for await (const message of q) {
       for (const event of tasks.observe(message).events) {
-        if (event.kind === 'tasks') chipLists.push(event.tasks.map((task) => task.toolUseId ?? task.taskId));
+        if (event.kind === 'tasks') {
+          chipLists.push(event.tasks.map((task) => task.toolUseId ?? task.taskId));
+          if (event.tasks[0]) runningTaskId = event.tasks[0].taskId;
+        }
         else outcomes.push(event.outcome);
       }
       if (message.type === 'system' && message.subtype === 'init') chipLists.push('init');
       if (message.type !== 'result') continue;
       results += 1;
+      // The turn that launched it is over and the command still runs.
+      if (results === 1 && tasks.outputFile(runningTaskId)) peek = await readBackgroundOutputTail(tasks.outputFile(runningTaskId));
       if (results === 1) send('next', '99999999-9999-4999-8999-999999999999');
       if (outcomes.length) resultsAfterOutcome += 1;
       if (resultsAfterOutcome >= 1) break;
@@ -279,10 +288,14 @@ try {
     assert.equal(outcomes[0].status, 'completed');
     assert.equal(outcomes[0].toolUseId, 'toolu_background');
     assert.equal(outcomes[0].description, 'Sleep in the background');
+    assert.ok(chipLists.some((list) => Array.isArray(list) && list.includes('toolu_background')), `the chip learns its tool call: ${JSON.stringify(chipLists)}`);
+    assert.ok(peek?.text.includes('CI/Lint pass'), `the peek reads the running command's output: ${JSON.stringify({ runningTaskId, peek })}`);
+    assert.equal(backgroundTaskLinks({ output: peek.text })[0]?.url, 'https://github.com/o/r/actions/runs/123456');
+    assert.equal(tasks.outputFile(runningTaskId), undefined, 'forgotten once it ends');
     backgroundCommand = '';
     q.close?.();
   }
-  console.log('claude-sdk-native: a background task outlives the turns opened while it runs and ends in one outcome');
+  console.log('claude-sdk-native: a background task outlives the turns opened while it runs and ends in one outcome; its output file is readable while it runs');
   console.log('claude-sdk-native: summary context usage is local; queued prompts fold into one result naming each; interrupt spares background tasks and stopTask stops one; a finished background task starts a turn the origin tracker flags');
 } finally {
   server.close();

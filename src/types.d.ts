@@ -543,6 +543,7 @@ declare global {
     showSessionMenu: (request: SessionMenuRequest) => Promise<SessionMenuAction | null>;
     copySessionValue: (sessionId: string, target: 'link' | 'cwd') => Promise<void>;
     openExternalUrl: (url: string) => Promise<{ ok: boolean; message?: string }>;
+    readBackgroundTaskOutput: (sessionId: string, taskId: string) => Promise<import('./shared/background-task-output').BackgroundTaskOutput | null>;
     subscribeStatistics: (callback: (data: StatisticsData) => void) => () => void;
     getStaticData: () => Promise<StaticData>;
     browser: {

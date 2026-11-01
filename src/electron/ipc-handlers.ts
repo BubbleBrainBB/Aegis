@@ -4628,6 +4628,24 @@ function generateCommitMessageFromGitChanges(
   return trimCommitSubject(`${type}: ${verb} ${target}`);
 }
 
+/** owner/repo of a session's origin remote, looked up once per session and cwd. */
+const sessionGitHubRepos = new Map<string, Promise<string | null>>();
+function sessionGitHubRepo(sessionId: string): Promise<string | null> {
+  const session = sessions.getSession(sessionId);
+  const cwd = session?.worktree_path || session?.cwd || session?.project_cwd;
+  if (!cwd) return Promise.resolve(null);
+  const key = `${sessionId}\n${cwd}`;
+  let repo = sessionGitHubRepos.get(key);
+  if (!repo) {
+    repo = getGitOriginRemote(cwd).then((remote) => {
+      const parsed = remote ? parseGitHubRepoFromRemote(remote) : null;
+      return parsed ? `${parsed.owner}/${parsed.repo}` : null;
+    });
+    sessionGitHubRepos.set(key, repo);
+  }
+  return repo;
+}
+
 async function getGitOriginRemote(cwd: string): Promise<string | null> {
   try {
     const { stdout } = await execFileAsync('git', ['remote', 'get-url', 'origin'], {
@@ -9388,6 +9406,16 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
 
   ipcMainHandle('open-in-editor', async (_event, input: OpenInEditorInput) => {
     return openInEnvironmentEditor(input);
+  });
+
+  // The composer's background task peek: a running command's output tail,
+  // plus the session's GitHub repo so `gh run watch <id>` can link its run.
+  ipcMainHandle('session-background-task-output', async (_event, sessionId: unknown, taskId: unknown) => {
+    if (typeof sessionId !== 'string' || typeof taskId !== 'string') return null;
+    const output = await runnerHandles.get(sessionId)?.handle.readTaskOutput?.(taskId);
+    if (!output) return null;
+    const repo = await sessionGitHubRepo(sessionId);
+    return repo ? { ...output, repo } : output;
   });
 
   ipcMainHandle('open-external-url', async (_event, url: string) => {

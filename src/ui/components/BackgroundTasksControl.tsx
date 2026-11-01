@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
+import { Popover } from '@base-ui-components/react/popover';
 import { Bot, LoaderCircle, Terminal, Workflow, X } from './icons';
+import { BackgroundTaskPeek, noteBackgroundTaskSeen } from './BackgroundTaskPeek';
 import { sendEvent } from '../hooks/useIPC';
 import { useAppStore } from '../store/useAppStore';
 import { findToolCallMessage } from '../utils/tool-call-lookup';
@@ -7,6 +9,8 @@ import type { BackgroundTaskInfo } from '../../shared/types';
 
 /** Chips shown before the rest fold into "+N". */
 const VISIBLE_TASKS = 3;
+
+const chipButtonClass = 'inline-flex min-w-0 items-center gap-1.5 rounded-l-full py-1 pl-2.5 pr-1 transition-colors hover:text-[var(--text-primary)] enabled:hover:bg-[var(--bg-tertiary)] disabled:cursor-default';
 
 export function backgroundTaskKind(taskType: string | undefined, subagentType?: string): string {
   if (!taskType) return 'Background task';
@@ -51,9 +55,10 @@ export function openBackgroundTaskDetail(sessionId: string, task: { taskType?: s
 
 /**
  * The Claude session's running background tasks, a row of chips above the
- * composer. A chip opens the task's detail (a subagent's trace panel, or the
- * tool call that started it); its × stops that task alone. The session
- * declares perTaskStopAffordance, so the composer's Stop ends only the turn.
+ * composer. A command's chip opens a peek at its output and links; any other
+ * chip opens the task's detail (a subagent's trace panel, or the tool call
+ * that started it). The × stops that task alone. The session declares
+ * perTaskStopAffordance, so the composer's Stop ends only the turn.
  */
 export function BackgroundTasksControl({
   sessionId,
@@ -64,6 +69,8 @@ export function BackgroundTasksControl({
 }) {
   const [stopping, setStopping] = useState<ReadonlySet<string>>(new Set());
   const [expanded, setExpanded] = useState(false);
+  const [peekTaskId, setPeekTaskId] = useState<string | null>(null);
+  for (const task of tasks) noteBackgroundTaskSeen(task.taskId);
   // A stopped task leaves the next snapshot; forget it then.
   useEffect(() => {
     setStopping((current) => {
@@ -97,16 +104,50 @@ export function BackgroundTasksControl({
             key={task.taskId}
             className={`inline-flex min-w-0 max-w-[260px] items-center rounded-full border border-[var(--border)] bg-[var(--bg-primary)] text-[var(--text-primary)] ${isStopping ? 'opacity-60' : ''}`}
           >
-            <button
-              type="button"
-              onClick={() => openBackgroundTaskDetail(sessionId, task)}
-              disabled={!task.toolUseId}
-              title={hint}
-              className="inline-flex min-w-0 items-center gap-1.5 rounded-l-full py-1 pl-2.5 pr-1 transition-colors hover:text-[var(--text-primary)] enabled:hover:bg-[var(--bg-tertiary)] disabled:cursor-default"
-            >
-              <BackgroundTaskIcon taskType={task.taskType} />
-              <span className="truncate">{isStopping ? 'Stopping…' : task.description}</span>
-            </button>
+            {task.taskType === 'local_bash' ? (
+              <Popover.Root
+                open={peekTaskId === task.taskId}
+                onOpenChange={(open) => setPeekTaskId(open ? task.taskId : null)}
+              >
+                <Popover.Trigger
+                  title={task.description}
+                  className={`${chipButtonClass} data-[popup-open]:bg-[var(--bg-tertiary)]`}
+                >
+                  <BackgroundTaskIcon taskType={task.taskType} />
+                  <span className="truncate">{isStopping ? 'Stopping…' : task.description}</span>
+                </Popover.Trigger>
+                <Popover.Portal>
+                  <Popover.Positioner side="top" align="start" sideOffset={8} className="z-[9999]">
+                    <Popover.Popup
+                      aria-label={`${task.description} output`}
+                      className="popover-surface w-[480px] max-w-[calc(100vw-32px)] text-left font-normal tracking-normal"
+                    >
+                      <BackgroundTaskPeek
+                        sessionId={sessionId}
+                        task={task}
+                        stopping={isStopping}
+                        onStop={() => stop(task.taskId)}
+                        onShowInTranscript={task.toolUseId ? () => {
+                          setPeekTaskId(null);
+                          openBackgroundTaskDetail(sessionId, task);
+                        } : undefined}
+                      />
+                    </Popover.Popup>
+                  </Popover.Positioner>
+                </Popover.Portal>
+              </Popover.Root>
+            ) : (
+              <button
+                type="button"
+                onClick={() => openBackgroundTaskDetail(sessionId, task)}
+                disabled={!task.toolUseId}
+                title={hint}
+                className={chipButtonClass}
+              >
+                <BackgroundTaskIcon taskType={task.taskType} />
+                <span className="truncate">{isStopping ? 'Stopping…' : task.description}</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={() => stop(task.taskId)}
