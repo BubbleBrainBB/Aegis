@@ -2,8 +2,6 @@ import { ImageStudioSessionContext, openImageStudio } from '../lib/image-studio'
 import { isValidElement, memo, useContext, useEffect, useMemo, useState, type MouseEvent, type ReactNode } from 'react';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import { parseSessionLink } from '../../shared/session-links';
-import remarkGfm from 'remark-gfm';
-import remarkMath from 'remark-math';
 import rehypeRaw from 'rehype-raw';
 import rehypeKatex from 'rehype-katex';
 import rehypeSanitize from 'rehype-sanitize';
@@ -31,6 +29,7 @@ import {
   resolveGeneratedMediaPath,
   stripGeneratedMediaEmbeds,
 } from '../utils/generated-media';
+import { markdownRemarkPlugins } from '../utils/markdown-math';
 
 async function statProjectFile(cwd: string, relativePath: string): Promise<string | null> {
   try {
@@ -893,7 +892,7 @@ function MDContentImpl({ content, className = '', allowHtml = false }: MDContent
       <ErrorBoundary fallback={fallback} resetKey={renderedContent}>
         <ReactMarkdown
           urlTransform={url => parseSessionLink(url) ? url : defaultUrlTransform(url)}
-          remarkPlugins={[remarkGfm, remarkMath]}
+          remarkPlugins={markdownRemarkPlugins}
           rehypePlugins={rehypePlugins}
           disallowedElements={disallowedElements}
           unwrapDisallowed={true}
