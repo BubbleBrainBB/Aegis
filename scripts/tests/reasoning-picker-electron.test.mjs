@@ -15,6 +15,9 @@ import { ComposerAgentModelPicker, ComposerModelPicker } from '/src/ui/component
 import '/src/ui/index.css';
 import { useAppStore } from '/src/ui/store/useAppStore';
 window.electron = { getAgentRuntimeDirectory: async () => ({checkedAt:Date.now(),entries:[]}) };
+// The slider's recent pointer, input and focus events, reported when a drag assertion fails.
+window.qaEvents=[];
+for(const type of ['pointerdown','pointermove','pointerup','pointercancel','lostpointercapture','input','focusout'])document.addEventListener(type,e=>{if(e.target?.type!=='range')return;window.qaEvents.push(type+(e.clientX!==undefined?'@'+Math.round(e.clientX)+'/'+e.buttons:'')+'='+e.target.value);window.qaEvents=window.qaEvents.slice(-40);},true);
 const names = ['claude','codex','grok','kimi','bubble','deepseek','pi','opencode','qoder'];
 const choices = Object.fromEntries(names.map(p=>[p, Array.from({length:10},(_,i)=>({key:p+i,value:p+i,label:p+' model '+i,description:'Model description '+i}))]));
 const codexModels=choices.codex.map((m,i)=>({name:m.value,label:i===0?'GPT-6 Astra':m.label,defaultReasoningEffort:'high',supportsFastMode:i===0,supportedReasoningLevels:(i===1?['low','high']:i===2?[]:i===3?['high']:i===4?['high','turbo','low']:['low','medium','high','xhigh']).map(effort=>({effort}))}));
@@ -68,7 +71,7 @@ app.whenReady().then(async()=>{
  // Retries refocus the slider unless the step is about focus staying there.
  const activeElement=()=>js('(()=>{const a=document.activeElement;return a?a.tagName+(a.getAttribute("aria-label")?"["+a.getAttribute("aria-label")+"]":"")+(a.type?"("+a.type+")":""):"none"})()');
  const press=async(keyCode,expr,expected,message,refocus=true)=>{let focused='';for(let attempt=0;attempt<3;attempt++){if(attempt>0&&refocus)await focusSlider();focused=await activeElement();await key(keyCode);for(let i=0;i<20;i++){if(await js(expr)===expected)return;await delay(50);}}assert.equal(await js(expr),expected,(message||keyCode)+' (focus was on '+focused+')');};
- const settle=async(expr,expected,message)=>{let value;for(let i=0;i<60;i++){value=await js(expr);if(value===expected)break;await delay(50);}assert.equal(value,expected,message);};
+ const settle=async(expr,expected,message)=>{let value;for(let i=0;i<60;i++){value=await js(expr);if(value===expected)break;await delay(50);}assert.equal(value,expected,typeof message==='function'?await message():message);};
  // Menu items on the CI runner sometimes miss a press: retry the click like
  // press(), then fall back to a DOM click. (No hover first: hovering a menu
  // item takes focus, which the slider checks rely on.)
@@ -76,6 +79,27 @@ app.whenReady().then(async()=>{
  const slider='.effort-model-view:not([inert]) input[type=range]';
  // The click can land while the menu is still settling (seen on CI); keys must go to the slider.
  const focusSlider=()=>js('document.querySelector('+JSON.stringify(slider)+').focus()');
+ // Drag points come from the slider's rect after layout: the macOS 15 runner's screen is smaller than
+ // the window, so macOS shrinks it. Points sit 4px inside the ends, past the thumb's centre, so they
+ // clamp to the first and last tier.
+ const sliderPoint=async fraction=>{const r=await js('(()=>{const e=document.querySelector('+JSON.stringify(slider)+');e.scrollIntoView({block:"nearest",inline:"nearest"});const r=e.getBoundingClientRect();return {x:r.x,y:r.y,w:r.width,h:r.height};})()');return {x:Math.round(r.x+4+(r.w-8)*fraction),y:Math.round(r.y+r.h/2)};};
+ const mouse=(type,point,extra={})=>win.webContents.sendInputEvent({type,x:point.x,y:point.y,button:'left',clickCount:1,...extra});
+ const sliderText='document.querySelector('+JSON.stringify(slider)+').getAttribute("aria-valuetext")';
+ const sliderEvents=async()=>' (slider events: '+(await js('qaEvents.join(" ")'))+')';
+ // Presses the slider at one end and drags to the other until the held preview shows the expected tier.
+ // The CI runner sometimes loses a synthetic move, leaving the value where the drag started (seen as
+ // "drag release commits: 'xhigh' !== 'low'"), so the moves are sent again while the preview lags.
+ const dragPreview=async(from,to,expected,message)=>{
+  const start=await sliderPoint(from),end=await sliderPoint(to);
+  await js('qaEvents=[]');
+  mouse('mouseDown',start);
+  for(let attempt=0;attempt<3&&await js(sliderText)!==expected;attempt++){
+   for(let step=1;step<=4;step++){mouse('mouseMove',{x:Math.round(start.x+(end.x-start.x)*step/4),y:end.y},{modifiers:['leftButtonDown']});await delay(30);}
+   for(let i=0;i<20&&await js(sliderText)!==expected;i++)await delay(50);
+  }
+  assert.equal(await js(sliderText),expected,message+await sliderEvents());
+  return end;
+ };
  const triggerRect=async(selector='[aria-label="Select agent and model"]')=>js('(()=>{const e=document.querySelector('+JSON.stringify(selector)+');const r=e.getBoundingClientRect();return {text:e.innerText,x:r.x,width:r.width,neighborX:document.querySelector("[data-qa=neighbor]").getBoundingClientRect().x};})()');
  const assertStable=async(before,selector)=>{
   const after=await triggerRect(selector);
@@ -112,35 +136,34 @@ app.whenReady().then(async()=>{
   await settle('document.querySelector(".effort-picker-selected-effort").textContent','Extra High','toolbar effort follows keyboard selection');
   await settle('document.querySelector('+JSON.stringify(slider)+').getAttribute("aria-valuetext")','Extra High');
   // Real mouse drag previews while held and commits on release.
-  const r=await js('(()=>{const r=document.querySelector('+JSON.stringify(slider)+').getBoundingClientRect();return {x:r.x,y:r.y,w:r.width,h:r.height};})()');
-  win.webContents.sendInputEvent({type:'mouseDown',x:Math.round(r.x+r.w-14),y:Math.round(r.y+r.h/2),button:'left',clickCount:1});
-  win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(r.x+14),y:Math.round(r.y+r.h/2),movementX:-r.w,movementY:0});await delay(200);
-  await settle('qa.efforts.codex','xhigh','drag preview does not write configuration');
-  win.webContents.sendInputEvent({type:'mouseUp',x:Math.round(r.x+14),y:Math.round(r.y+r.h/2),button:'left',clickCount:1});await delay(200);
-  await settle('qa.efforts.codex','low','drag release commits');
+  let dragEnd=await dragPreview(1,0,'Low','drag previews the tier under the pointer');
+  assert.equal(await js('qa.efforts.codex'),'xhigh','drag preview does not write configuration');
+  mouse('mouseUp',dragEnd);
+  await settle('qa.efforts.codex','low',async()=>'drag release commits'+await sliderEvents());
   await press('End','qa.efforts.codex','xhigh','keyboard remains on slider after dragging',false);
   await js('document.querySelector('+JSON.stringify(slider)+').dispatchEvent(new WheelEvent("wheel",{deltaY:30,cancelable:true,bubbles:true}))');await delay(100);
   await settle('qa.efforts.codex','high','focused wheel advances one discrete tier');
-  win.webContents.sendInputEvent({type:'mouseDown',x:Math.round(r.x+r.w-14),y:Math.round(r.y+r.h/2),button:'left',clickCount:1});
-  win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(r.x+14),y:Math.round(r.y+r.h/2),movementX:-r.w,movementY:0});await delay(150);
-  await settle('document.querySelector('+JSON.stringify(slider)+').getAttribute("aria-valuetext")','Low');
+  dragEnd=await dragPreview(1,0,'Low','drag previews again after a keyboard change');
   await settle('document.querySelector(".effort-picker-selected-effort").textContent','Low','toolbar follows drag preview before commit');
   await js('document.querySelector('+JSON.stringify(slider)+').dispatchEvent(new PointerEvent("pointercancel",{pointerId:1,bubbles:true}))');await delay(100);
   await settle('qa.efforts.codex','high','pointer cancel discards preview');
   await settle('document.querySelector('+JSON.stringify(slider)+').getAttribute("aria-valuetext")','High');
-  win.webContents.sendInputEvent({type:'mouseUp',x:Math.round(r.x+14),y:Math.round(r.y+r.h/2),button:'left',clickCount:1});await delay(100);
+  mouse('mouseUp',dragEnd);await delay(100);
   await click(slider);await focusSlider();await press('Home','qa.efforts.codex','low');
   await clickUntil('[aria-label="Reset reasoning to default"]','qa.efforts.codex','high','reset returns to the default effort');
   await clickUntil('[aria-label="Fast mode"]','qa.fast',true,'fast mode turns on');
   assert.equal(await js('document.querySelector(\'[aria-label="Fast mode"]\').getAttribute("aria-checked")'),'true');
   await assertStable(closedTrigger);
   const initialHeight=await js('document.querySelector(".effort-model-views").getBoundingClientRect().height');
-  // Every frame of the transition, recorded in the page: a single sample at a fixed delay misses it on slow CI runners.
-  const heights=await js('new Promise(resolve=>{const el=document.querySelector(".effort-model-views");const out=[];Array.from(document.querySelectorAll("[aria-label]")).find(e=>e.getAttribute("aria-label")==="Choose model").click();const start=performance.now();const tick=()=>{out.push(el.getBoundingClientRect().height);if(performance.now()-start<700)requestAnimationFrame(tick);else resolve(out);};requestAnimationFrame(tick);})');
+  // The CI runner can paint as few as 5 frames in 700ms, so a 320ms transition may fall between two
+  // frames. Poll from timers instead: each poll reads the height and whether a height transition is
+  // running (getAnimations flushes style, so it sees the transition whether or not a frame was painted).
+  const motion=await js('new Promise(resolve=>{const el=document.querySelector(".effort-model-views");const heights=[];let transition=0;Array.from(document.querySelectorAll("[aria-label]")).find(e=>e.getAttribute("aria-label")==="Choose model").click();const start=performance.now();const poll=()=>{heights.push(el.getBoundingClientRect().height);const t=el.getAnimations().find(a=>a.transitionProperty==="height"&&a.playState!=="finished");if(t)transition=Math.max(transition,Number(t.effect.getTiming().duration)||0);if(performance.now()-start<900)setTimeout(poll,10);else resolve({heights,transition});};poll();})');
+  const heights=motion.heights;
   const finalHeight=heights[heights.length-1];
   if(process.env.QA_REDUCED!=='1') {
    assert.equal(await js('matchMedia("(prefers-reduced-motion: reduce)").matches'),false);
-   assert.ok(heights.some(h=>h>initialHeight+0.5&&h<finalHeight-0.5),'height animates through intermediate frames: '+JSON.stringify(heights.map(Math.round)));
+   assert.ok(motion.transition>0||heights.some(h=>h>initialHeight+0.5&&h<finalHeight-0.5),'height animates instead of jumping: '+JSON.stringify(heights.map(Math.round)));
   }
   assert.ok(await js('document.querySelector(".effort-model-views").getBoundingClientRect().height')>initialHeight);
   assert.equal(await js('document.activeElement.getAttribute("aria-label")'),'Back to reasoning');
