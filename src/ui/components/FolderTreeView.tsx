@@ -1262,12 +1262,6 @@ function SessionItem({
                   </span>
                 </div>
               ) : null}
-              {inWorktree ? (
-                <div className="pl-[22px] text-[11px] leading-4 text-[var(--text-muted)]">
-                  Runs on an isolated branch — changes stay here until you apply them back to the
-                  project.
-                </div>
-              ) : null}
               {followUpParentId ? (
                 <div className="flex min-w-0 items-center gap-2">
                   <GitFork className="h-3.5 w-3.5 flex-shrink-0 text-[var(--accent)]" />
