@@ -273,6 +273,11 @@ export interface RunnerHandle {
    */
   stopTask?: (taskId: string) => Promise<void>;
   /**
+   * The end of a running background command's output, or null when the task
+   * isn't a command whose output file this runner knows. Claude runner only.
+   */
+  readTaskOutput?: (taskId: string) => Promise<import('../shared/background-task-output').BackgroundTaskOutput | null>;
+  /**
    * Rewind checkpointed files to their state at a specific SDK user message.
    * Only available while the underlying SDK query is alive (Claude runner with
    * file checkpointing enabled); absent on other providers.

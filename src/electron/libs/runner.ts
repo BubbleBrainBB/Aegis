@@ -44,6 +44,7 @@ import { setBrowserUseSessionFullAccess } from './browser-use-consent';
 import { isBrowserUseEnabled } from './browser-use-permissions';
 import { browserManager } from '../browserManager';
 import { ClaudeBackgroundTasks, type BackgroundTaskEvent } from './claude-background-tasks';
+import { readBackgroundOutputTail } from './background-task-output-file';
 import { shouldExtractMemory, hasMemoryWritesInTurn, extractMemories } from './memory-extractor';
 import {
   AEGIS_BLOCKED_BROWSER_OPEN_MESSAGE,
@@ -1631,6 +1632,10 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
         throw new Error('Session is not active.');
       }
       await activeQuery.stopTask(taskId);
+    },
+    readTaskOutput: async (taskId: string) => {
+      const file = backgroundTasks.outputFile(taskId);
+      return file ? readBackgroundOutputTail(file) : null;
     },
     cancelPendingPrompts: () => {
       // Everything issued so far that has not settled is dropped before it

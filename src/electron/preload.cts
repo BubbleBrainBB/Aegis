@@ -223,6 +223,10 @@ contextBridge.exposeInMainWorld('electron', {
     return ipcRenderer.invoke('rename-session', sessionId, title);
   },
 
+  readBackgroundTaskOutput: (sessionId: string, taskId: string) => {
+    return ipcRenderer.invoke('session-background-task-output', sessionId, taskId);
+  },
+
   startBackgroundSession: (payload: SessionStartPayload) => {
     return ipcRenderer.invoke('session-start-background', payload);
   },
