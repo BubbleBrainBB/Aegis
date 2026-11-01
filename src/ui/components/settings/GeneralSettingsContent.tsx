@@ -5,6 +5,7 @@ import * as DropdownMenu from '../ui/dropdown-menu';
 import type { AppPreferences } from '../../../shared/app-preferences';
 import { useAppPreferences, saveAppPreferences, subscribeAppPreferences, refreshAppPreferences } from '../../store/useAppPreferences';
 import { useAppStore } from '../../store/useAppStore';
+import { useChatsFolder } from '../../hooks/useChatsFolder';
 import { SettingsGroup, SettingsRow, SettingsToggle } from './SettingsPrimitives';
 import { ApplicationDestinationSelect, type ApplicationDestinationOption } from './ApplicationDestinationSelect';
 
@@ -43,6 +44,7 @@ export function GeneralSettingsContent() {
   const [saving, setSaving] = useState(false);
   const [checking, setChecking] = useState(false);
   const updateStatus = useAppStore(s => s.updateStatus);
+  const chatsFolder = useChatsFolder();
   useEffect(subscribeAppPreferences, []);
   useEffect(() => {
     let alive = true;
@@ -83,6 +85,12 @@ export function GeneralSettingsContent() {
         <PreferenceSelect label="Terminal shell" value={preferences.terminalShell} options={shells} disabled={disabled} onChange={value => void save({ terminalShell: value })} />
       </SettingsRow>
       <SettingsRow variant="card" label="Prevent sleep while running" description="Keep your computer awake while Aegis runs a task.">{toggle('preventSleep', 'Prevent sleep while running')}</SettingsRow>
+      <SettingsRow variant="card" label="Chats folder" description={chatsFolder.display}>
+        <button className={selectClass} disabled={disabled} onClick={async () => {
+          const dir = await window.electron.selectDirectory();
+          if (dir) await save({ chatsFolder: dir });
+        }}>Change…</button>
+      </SettingsRow>
     </SettingsGroup>
     <SettingsGroup title="Composer">
       <SettingsRow variant="card" label="Plain text input" description="Keep links and Markdown as literal text while writing messages.">{toggle('plainTextComposer', 'Plain text input')}</SettingsRow>

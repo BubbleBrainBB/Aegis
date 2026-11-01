@@ -177,6 +177,7 @@ declare global {
     getSystemFonts: () => Promise<string[]>;
     getSystemFontFamilies: () => Promise<import('./shared/system-fonts').SystemFontFamily[]>;
     getTerminalShellOptions: () => Promise<{ value: string; label: string }[]>;
+    getChatsFolder: () => Promise<{ path: string; display: string }>;
     onAppPreferencesChanged: (callback: (preferences: import('./shared/app-preferences').AppPreferences) => void) => () => void;
     getNotificationSettings: () => Promise<{ enabled: boolean; onlyWhenUnfocused: boolean; inputRequired?: boolean; approvalRequired?: boolean }>;
     setNotificationSettings: (next: {

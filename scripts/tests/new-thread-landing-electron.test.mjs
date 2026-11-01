@@ -15,6 +15,8 @@ import {Toaster} from 'sonner';
 import {NewSessionView} from '/src/ui/components/NewSessionView';
 import {ChatPane} from '/src/ui/components/ChatPane';
 import {useAppStore} from '/src/ui/store/useAppStore';
+import {startLeaseFor} from '/src/ui/utils/start-lease.ts';
+import {useSessionGoalStore} from '/src/ui/hooks/useSessionGoal.ts';
 import '/src/ui/index.css';
 localStorage.setItem('cowork.preferredProvider','deepseek');
 localStorage.setItem('cowork.preferredDeepseekModel','deepseek-flash');
@@ -22,7 +24,7 @@ const Alpha='/projects/My Personal Digital Garden';
 const Beta='/projects/Beta';
 const Notes='/projects/Notes';
 const Long='/projects/A very long project name that should wrap naturally without truncating the destination or moving the composer away from the bottom';
-window.qa={calls:[],Alpha,Beta,Notes,Long,store:useAppStore,browseResult:null};
+window.qa={calls:[],Alpha,Beta,Notes,Long,store:useAppStore,browseResult:null,startLeaseFor,goals:useSessionGoalStore};
 window.electron={
  getRecentCwds:async()=>[Alpha,Beta,Notes,Long],selectDirectory:async()=>qa.browseResult,
  getSessionUserPrompts:async()=>[],sendClientEvent:e=>qa.calls.push(e),
@@ -41,10 +43,11 @@ const a=useAppStore.getState();a.setProjectCwd(Alpha);a.setShowNewSession(true);
 a.setActiveChannelForProject(Beta,'beta-channel');
 function Harness(){
  const [draft,setDraft]=useState(false);qa.setDraft=()=>{const id=a.createDraftSession(Alpha);qa.draftId=id;setDraft(true);};
+ const [hidden,setHidden]=useState(false);qa.setLandingHidden=setHidden;
  const id=useAppStore(s=>s.activeSessionId);
  return <Tooltip.Provider><div style={{height:'100vh',display:'flex',flexDirection:'column',background:'var(--bg-primary)',color:'var(--text-primary)'}}>
  <header style={{height:48,flexShrink:0,padding:'14px 24px',fontSize:13}}>New task</header>
- {draft?<ChatPane paneId="primary" sessionId={id} isActive onActivate={()=>{}} codexModelConfig={{}} showHeader={false}/>:<NewSessionView/>}
+ {draft?<ChatPane paneId="primary" sessionId={id} isActive onActivate={()=>{}} codexModelConfig={{}} showHeader={false}/>:hidden?<main>Settings</main>:<NewSessionView/>}
  <Toaster/>
  </div></Tooltip.Provider>;
 }
@@ -149,8 +152,112 @@ const win=new BrowserWindow({width:1124,height:879,show:true,webPreferences:{bac
   await js('const landing=document.querySelector(".aegis-new-thread-landing");landing.scrollTop=landing.scrollHeight');
   await delay(100);assert((await rect('.aegis-new-thread-composer')).bottom<=420);
   await shot('new-task-short');
+  // "No project" in the picker turns the task into a chat that gets its own folder.
+  win.setContentSize(1124,879);await delay(180);
+  const pickNoProject=async(entrance,name)=>{await click(entrance);if(name)await shot(name);await js('Array.from(document.querySelectorAll("[cmdk-item]")).find(x=>x.textContent.startsWith("No project")).click()');await delay(250);};
+  await pickNoProject('[aria-label^="Switch project:"]','picker-no-project');
+  assert.equal(await js('document.querySelector("h1").textContent'),'What should we work on?');
+  assert.equal(await js('document.querySelector("[aria-label=\\"Project folder\\"]").textContent'),'No project');
+  assert.equal(await js('document.querySelector(".aegis-new-thread-chat-folder-note").textContent'),'Files go to a new folder in ~/Documents/Aegis');
+  assert.equal(await js('!!document.querySelector("button[title=\\"Switch branch\\"]")'),false,'a chat has no branch');
+  assert.equal(await js('qa.store.getState().projectCwd'),await js('qa.Long'),'the last project stays the default');
+  await shot('new-task-no-project');
+  const text=()=>js('document.querySelector("[role=textbox]").innerText');
+  const chips=()=>js('document.querySelectorAll("[aria-label=\\"Remove attachment\\"]").length');
+  const editable=()=>js('document.querySelector("[role=textbox]").getAttribute("contenteditable")');
+  const starts=()=>js('qa.calls.filter(e=>e.type==="session.start").length');
+  const fail=id=>js('qa.store.getState().handleServerEvent({type:"runner.error",payload:{message:"Could not create a folder for this chat."'+(id?',startId:'+JSON.stringify(id):'')+'}})').then(()=>delay(250));
+  const lastStart=()=>js('qa.calls.filter(e=>e.type==="session.start").at(-1).payload.startId');
+  // Two clicks in the same instant start one conversation: Send takes the
+  // composer's lease before it prepares the message.
+  await js('{const b=document.querySelector("[aria-label=\\"Send\\"]");b.click();b.click()}');
+  await until('qa.calls.some(e=>e.type==="session.start")','chat start');await delay(200);
+  assert.equal(await starts(),1,'one start for a double click');
+  assert.deepEqual(await js('(({cwd,chat,createIsolatedWorkspace})=>({cwd:cwd??null,chat,createIsolatedWorkspace:createIsolatedWorkspace??null}))(qa.calls.find(e=>e.type==="session.start").payload)'),{cwd:null,chat:true,createIsolatedWorkspace:null});
+  const sentStart=await lastStart();
+  assert.ok(sentStart,'a composer start carries its id');
+  // The message stays in the composer, locked, until its conversation exists.
+  assert.match(await text(),/Keep this draft while switching projects/);
+  assert.equal(await chips(),1);
+  assert.equal(await editable(),'false','locked while starting');
+  // An error that is not this start's (it clears the app-wide pending flag) leaves it locked.
+  await fail(null);
+  assert.equal(await editable(),'false','an unrelated error keeps it locked');
+  await js('document.querySelector("[aria-label=\\"Send\\"]").click()');await delay(200);
+  assert.equal(await starts(),1,'still no second start');
+  // Its own failure unlocks it with the text untouched.
+  await fail(sentStart);
+  assert.equal(await editable(),'true','its own failure unlocks it');
+  assert.equal((await text()).match(/Keep this draft/g).length,1,'the text is there once');
+  assert.equal(await chips(),1);
+  assert.equal(await js('qa.store.getState().pendingStart'),false);
+  // Off screen when the start fails: the text is back when the page is.
+  await click('[aria-label="Send"]');
+  await until('qa.calls.filter(e=>e.type==="session.start").length===2','second chat start');
+  const awayStart=await lastStart();
+  assert.notEqual(awayStart,sentStart,'each start has its own id');
+  await js('qa.setLandingHidden(true)');await delay(200);
+  await fail(awayStart);
+  await js('qa.setLandingHidden(false)');
+  await until('!!document.querySelector("[role=textbox]") && document.querySelector("[role=textbox]").innerText.includes("Keep this draft")','text back after returning');
+  assert.equal(await editable(),'true');
+  assert.equal(await chips(),1);
+  assert.equal(await js('qa.startLeaseFor("new-session")??null'),null,'shown, so nothing waits any more');
+  // It comes back going where it was going: No project, not the last project.
+  assert.equal(await js('document.querySelector("h1").textContent'),'What should we work on?');
+  assert.equal(await js('document.querySelector("[aria-label=\\"Project folder\\"]").textContent'),'No project');
+  // Back on screen while still starting: shown and locked; success clears it.
+  await js('qa.goals.getState().setDraft("__new_session__",true)');
+  await click('[aria-label="Send"]');
+  await until('qa.calls.filter(e=>e.type==="session.start").length===3','third chat start');
+  const liveStart=await lastStart();
+  await js('qa.setLandingHidden(true)');await delay(200);
+  await js('qa.setLandingHidden(false)');
+  await until('!!document.querySelector("[role=textbox]") && document.querySelector("[role=textbox]").innerText.includes("Keep this draft")','pending text shown again');
+  assert.equal(await js('qa.goals.getState().drafts.__new_session__'),true,'goal mode stays while starting');
+  assert.equal(await editable(),'false','still locked while starting');
+  await js('qa.store.getState().handleServerEvent({type:"session.status",payload:{sessionId:"chat-created",status:"running",startId:'+JSON.stringify(liveStart)+',title:"Chat",cwd:"/tmp/chats/2026-10-31/keep-this-draft",projectCwd:"/tmp/chats/2026-10-31/keep-this-draft",isChat:true,provider:"deepseek"}})');
+  await until('document.querySelector("[role=textbox]").innerText.trim()===""','cleared once the conversation exists');
+  assert.equal(await editable(),'true');
+  assert.equal(await chips(),0);
+  // A late error for a start that succeeded brings nothing back.
+  await fail(liveStart);
+  assert.equal((await text()).trim(),'','nothing comes back after success');
+  await js('qa.store.getState().clearGlobalError()');
+  // Goal mode ends with a successful start even when the page was away then.
+  await js('qa.goals.getState().setDraft("__new_session__",true)');
+  await js('{const t=document.querySelector("[role=textbox]");t.focus();document.execCommand("insertText",false,"Reach the goal")}');await delay(150);
+  await click('[aria-label="Send"]');
+  await until('qa.calls.filter(e=>e.type==="session.start").length===4','goal start');
+  const goalStart=await lastStart();
+  await js('qa.setLandingHidden(true)');await delay(200);
+  await js('qa.store.getState().handleServerEvent({type:"session.status",payload:{sessionId:"chat-goal",status:"running",startId:'+JSON.stringify(goalStart)+',title:"Goal",cwd:"/tmp/chats/2026-10-31/reach-the-goal",projectCwd:"/tmp/chats/2026-10-31/reach-the-goal",isChat:true,provider:"deepseek"}})');await delay(150);
+  assert.equal(await js('qa.goals.getState().drafts.__new_session__'),false,'goal mode ended while the page was away');
+  await js('qa.setLandingHidden(false)');
+  await until('!!document.querySelector("[role=textbox]")','landing back');
+  assert.equal((await text()).trim(),'','a new page after success is empty');
+  // A failed project start comes back to that project, even if the last
+  // project changed meanwhile; sending again goes there.
+  await select('[aria-label="Project folder"]','Beta');
+  await js('{const t=document.querySelector("[role=textbox]");t.focus();document.execCommand("insertText",false,"Fix the Beta build")}');await delay(150);
+  await click('[aria-label="Send"]');
+  await until('qa.calls.filter(e=>e.type==="session.start").length===5','project start');
+  const projectStart=await lastStart();
+  assert.equal(await js('qa.calls.filter(e=>e.type==="session.start").at(-1).payload.cwd'),await js('qa.Beta'));
+  await js('qa.setLandingHidden(true)');await delay(200);
+  await js('qa.store.getState().setProjectCwd(qa.Alpha)');
+  await fail(projectStart);
+  await js('qa.setLandingHidden(false)');
+  await until('!!document.querySelector("[role=textbox]") && document.querySelector("[role=textbox]").innerText.includes("Fix the Beta build")','project text back');
+  await until('document.querySelector("h1").innerText.includes("Beta")','the Beta heading is back');
+  await click('[aria-label="Send"]');
+  await until('qa.calls.filter(e=>e.type==="session.start").length===6','project resend');
+  assert.deepEqual(await js('(({cwd,chat})=>({cwd,chat:chat??null}))(qa.calls.filter(e=>e.type==="session.start").at(-1).payload)'),{cwd:await js('qa.Beta'),chat:null},'the resend goes to Beta');
+  assert.equal(await js('qa.store.getState().projectCwd'),await js('qa.Alpha'),'the last project is left alone');
+  await fail(await lastStart());
+  await js('qa.store.getState().clearGlobalError()');
   // The real ChatPane draft entrance must preserve the session and its inputs.
-  win.setContentSize(1124,879);await js('qa.store.getState().setTheme("light");qa.setDraft()');
+  await js('qa.store.getState().setTheme("light");qa.setDraft()');
   await until('!!document.querySelector("h1") && document.querySelector("h1").innerText.includes("Garden")','draft entrance');
   await js('document.querySelector("[role=textbox]").focus();document.execCommand("insertText",false,"Draft session text")');
   await click('[aria-label="Add files or photos"]');await delay(150);
@@ -165,11 +272,57 @@ const win=new BrowserWindow({width:1124,height:879,show:true,webPreferences:{bac
   await checkContextTray();
   assert.equal(await js('document.querySelectorAll(".aegis-new-thread-logo").length'),1,'draft entry uses the same home logo');
   const draft=await measure();assert(Math.abs(draft.height-draft.composer.bottom-16)<2);
-  // Clearing the folder restores the projectless heading and leaves a chooser.
-  await js('qa.store.setState(s=>({sessions:{...s.sessions,[qa.draftId]:{...s.sessions[qa.draftId],cwd:"",projectCwd:""}}}))');await delay(150);
-  assert.equal(await js('document.querySelector("h1").textContent'),'What should we build?');
-  assert.equal(await js('document.querySelector("[aria-label=\\"Project folder\\"]").textContent'),'Choose project');
+  // "No project" on a draft keeps its text and starts it as a chat.
+  await pickNoProject('[aria-label="Project folder"]');
+  assert.equal(await js('qa.store.getState().activeSessionId===qa.draftId'),true);
+  assert.equal(await js('qa.store.getState().sessions[qa.draftId].cwd'),'');
+  assert.equal(await js('document.querySelector("h1").textContent'),'What should we work on?');
+  assert.equal(await js('document.querySelector("[aria-label=\\"Project folder\\"]").textContent'),'No project');
+  assert(await js('!!document.querySelector(".aegis-new-thread-chat-folder-note")'),'draft shows where files go');
+  assert((await js('document.querySelector("[role=textbox]").textContent')).includes('Draft session text'));
   await shot('projectless');
+  // Sending the draft starts a chat: one start for a double click, and the
+  // text stays, locked, until the conversation exists or the start fails.
+  await js('qa.calls.length=0');
+  await js('{const b=document.querySelector("[aria-label=\\"Send\\"]");b.click();b.click()}');
+  await until('qa.calls.some(e=>e.type==="session.start")','draft chat start');await delay(200);
+  assert.equal(await starts(),1,'one draft start for a double click');
+  assert.deepEqual(await js('(({cwd,chat,projectCwd,draftSessionId})=>({cwd:cwd??null,chat,projectCwd,draft:draftSessionId===qa.draftId}))(qa.calls.find(e=>e.type==="session.start").payload)'),{cwd:null,chat:true,projectCwd:null,draft:true});
+  assert.equal(await editable(),'false','the draft editor is locked while starting');
+  assert.ok((await text()).includes('Draft session text'));
+  await fail(null);
+  assert.equal(await editable(),'false','an unrelated error keeps the draft locked');
+  await fail(await lastStart());
+  assert.equal(await editable(),'true');
+  assert.equal((await text()).match(/Draft session text/g).length,1,'draft text there once');
+  assert.equal(await chips(),1,'draft attachment kept');
+  await js('qa.store.getState().clearGlobalError()');
+  // Each draft keeps its own unsent message: switching to another draft and
+  // back brings it back, and it never shows up in the other draft.
+  const draftB=await js('qa.store.getState().createDraftSession(qa.Beta)');
+  await until('document.querySelector("h1") && document.querySelector("h1").innerText.includes("Beta")','draft B shown');
+  assert.equal((await text()).trim(),'','draft B starts empty');
+  assert.equal(await chips(),0);
+  await js('{const t=document.querySelector("[role=textbox]");t.focus();document.execCommand("insertText",false,"Only in draft B")}');await delay(150);
+  await js('qa.store.getState().setActiveSession(qa.draftId)');
+  await until('document.querySelector("[role=textbox]") && document.querySelector("[role=textbox]").innerText.includes("Draft session text")','draft A text back');
+  assert.equal((await text()).includes('Only in draft B'),false,'B text stays in B');
+  assert.equal(await chips(),1,'draft A attachment back');
+  await js('qa.store.getState().setActiveSession('+JSON.stringify(draftB)+')');
+  await until('document.querySelector("[role=textbox]") && document.querySelector("[role=textbox]").innerText.includes("Only in draft B")','draft B text back');
+  assert.equal((await text()).includes('Draft session text'),false);
+  await js('qa.store.getState().setActiveSession(qa.draftId)');
+  await until('document.querySelector("[role=textbox]") && document.querySelector("[role=textbox]").innerText.includes("Draft session text")','back on draft A');
+  // Picking a project again brings the project heading back.
+  await select('[aria-label="Project folder"]','Beta');
+  await until('document.querySelector("h1").innerText.includes("Beta")','project again');
+  assert.equal(await js('!!document.querySelector(".aegis-new-thread-chat-folder-note")'),false);
+  // Two drafts starting at once: a start's result replaces only the draft it came from.
+  const twoDrafts=await js('(()=>{const s=qa.store.getState();const a=s.createDraftSession(qa.Alpha);const b=s.createDraftSession(qa.Beta);qa.store.setState({pendingDraftSessionId:b});s.handleServerEvent({type:"session.status",payload:{sessionId:"chat-from-a",status:"running",startId:"start-a",draftSessionId:a,title:"A",cwd:qa.Alpha,projectCwd:qa.Alpha,provider:"deepseek"}});const st=qa.store.getState();return {aGone:!st.sessions[a],bKept:!!st.sessions[b]?.isDraft,pending:st.pendingDraftSessionId===b,created:!!st.sessions["chat-from-a"]};})()');
+  assert.deepEqual(twoDrafts,{aGone:true,bKept:true,pending:true,created:true},'only draft A is promoted; B keeps its claim');
+  // A landing start (no draft) never takes a draft that is starting meanwhile.
+  const landingWithDraft=await js('(()=>{const s=qa.store.getState();const b=s.createDraftSession(qa.Beta);qa.store.setState({pendingDraftSessionId:b});s.handleServerEvent({type:"session.status",payload:{sessionId:"chat-from-landing",status:"running",startId:"start-landing",title:"L",cwd:qa.Alpha,projectCwd:qa.Alpha,provider:"deepseek"}});const st=qa.store.getState();return {bKept:!!st.sessions[b]?.isDraft,pending:st.pendingDraftSessionId===b};})()');
+  assert.deepEqual(landingWithDraft,{bKept:true,pending:true});
   assert.deepEqual(errors,[]);
   console.log(JSON.stringify({ok:true,initial,tall,narrow,draft,captures:process.env.QA_CAPTURE}));app.exit(0);
  }catch(e){console.error(e);await shot('failure');app.exit(1);}

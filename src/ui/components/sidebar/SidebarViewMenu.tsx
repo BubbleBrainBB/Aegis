@@ -94,7 +94,8 @@ export function SidebarViewMenu() {
   const projects = useMemo(() => {
     const latest = new Map<string, number>();
     for (const session of Object.values(sessions)) {
-      if (session.hiddenFromThreads || session.scope === 'dm') continue;
+      // A chat's own folder is not a project.
+      if (session.hiddenFromThreads || session.scope === 'dm' || session.isChat) continue;
       const path = (session.projectCwd || session.cwd)?.trim();
       if (!path) continue;
       latest.set(path, Math.max(latest.get(path) ?? 0, session.updatedAt));

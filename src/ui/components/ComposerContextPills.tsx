@@ -20,6 +20,7 @@ export function ComposerContextPills({
   hasSelectedCwd,
   disabled,
   onSelectRecent,
+  onSelectNoProject,
   sessionId,
   startMode,
   onStartModeChange,
@@ -29,6 +30,8 @@ export function ComposerContextPills({
   hasSelectedCwd: boolean;
   disabled?: boolean;
   onSelectRecent: (dir: string) => void;
+  /** Offers "No project" in the picker. */
+  onSelectNoProject?: () => void;
   /** Draft session id (if any) — passed to checkout so a running session is guarded. */
   sessionId?: string | null;
   /** 启动模式：local（项目工作区）或 worktree（提交时新建隔离 worktree）。 */
@@ -113,7 +116,7 @@ export function ComposerContextPills({
 
   return (
     <div className="aegis-composer-context-row">
-      <ComposerProjectPicker cwd={cwd || ''} projectName={projectName} disabled={disabled} onSelect={onSelectRecent} />
+      <ComposerProjectPicker cwd={cwd || ''} projectName={projectName} disabled={disabled} onSelect={onSelectRecent} onSelectNoProject={onSelectNoProject} />
       {hasSelectedCwd && isRepo && onStartModeChange ? (
         <DropdownMenu.Root>
           <DropdownMenu.Trigger asChild>

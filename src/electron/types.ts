@@ -52,6 +52,7 @@ export interface SessionRow {
   status: string;
   cwd: string | null;
   project_cwd: string | null;
+  is_chat?: number | null;
   env_mode: import('../shared/types').ThreadEnvironmentMode | null;
   worktree_path: string | null;
   associated_worktree_path: string | null;

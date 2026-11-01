@@ -39,6 +39,7 @@ import { deleteSessionDesigns, markDesignCommentSent, moveSessionDesigns, settle
 import { sanitizeDesignPromptRef } from '../shared/design-comment';
 import { sanitizeDesignSelectionRef } from '../shared/design-selection';
 import { designContextText } from './design/focus';
+import { chatFolderInstructions, chatsFolderInfo, createChatFolder, noteChatFolderInstructionsDelivered, takeChatFolderInstructions } from './libs/chat-folders';
 import { setDesignProjectRoot } from './design/styles';
 import { setDesignAgentNamer, setDesignPromptSource } from './design/tools';
 import { setDesignFollowUp } from './design/project/tools';
@@ -4106,6 +4107,7 @@ function broadcastSessionWorkspace(mainWindow: BrowserWindow, sessionId: string)
       status: (row.status || 'idle') as SessionStatus,
       cwd: row.cwd || undefined,
       projectCwd: row.project_cwd || row.cwd || null,
+      isChat: row.is_chat === 1,
       envMode: row.env_mode === 'worktree' ? 'worktree' : 'local',
       worktreePath: row.worktree_path || null,
       associatedWorktreePath: row.associated_worktree_path || null,
@@ -5641,6 +5643,7 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
   ipcMainHandle('get-app-preferences', () => getAppPreferences());
   ipcMainHandle('set-app-preferences', (_, patch) => setAppPreferences(patch));
   ipcMainHandle('get-terminal-shell-options', () => getTerminalShellOptions());
+  ipcMainHandle('get-chats-folder', () => chatsFolderInfo());
   ipcMainHandle('get-system-fonts', () => getSystemFonts());
   ipcMainHandle('get-system-font-families', () => getSystemFontFamilies());
 
@@ -5826,6 +5829,8 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
       title: `${source.title} (fork)`,
       cwd: source.cwd || undefined,
       projectCwd: source.project_cwd ?? source.cwd ?? null,
+      // From the captured source: the chat may be moved into a project meanwhile.
+      isChat: source.is_chat === 1,
       envMode: source.env_mode === 'worktree' ? 'worktree' : 'local',
       worktreePath: source.worktree_path ?? null,
       associatedWorktreePath: source.associated_worktree_path ?? null,
@@ -5924,6 +5929,8 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
         title: `${source.title} (fork)`,
         cwd: source.cwd || undefined,
         projectCwd: source.project_cwd ?? source.cwd ?? null,
+        // From the captured source: the chat may be moved into a project meanwhile.
+        isChat: source.is_chat === 1,
         envMode: source.env_mode === 'worktree' ? 'worktree' : 'local',
         worktreePath: source.worktree_path ?? null,
         associatedWorktreePath: source.associated_worktree_path ?? null,
@@ -6003,6 +6010,8 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
           title: source.title,
           cwd: source.cwd || undefined,
           projectCwd: source.project_cwd ?? source.cwd ?? null,
+          // From the captured source: the chat may be moved into a project meanwhile.
+          isChat: source.is_chat === 1,
           envMode: source.env_mode === 'worktree' ? 'worktree' : 'local',
           worktreePath: source.worktree_path ?? null,
           associatedWorktreePath: source.associated_worktree_path ?? null,
@@ -9572,6 +9581,7 @@ function buildSessionInfoFromRow(
     readOnly: row.session_origin === 'claude_remote',
     cwd: row.cwd || undefined,
     projectCwd: row.project_cwd || row.cwd || null,
+    ...(row.is_chat === 1 ? { isChat: true } : {}),
     envMode: row.env_mode === 'worktree' ? 'worktree' : 'local',
     worktreePath: row.worktree_path || null,
     associatedWorktreePath: row.associated_worktree_path || null,
@@ -9646,6 +9656,27 @@ async function handleSessionStart(
   payload: SessionStartPayload,
   onCreated?: (sessionId: string) => void
 ): Promise<string | null> {
+  // A composer's start (it sends a startId) must hear about any failure, so it
+  // can give the user's message back. Once the session's status carried the
+  // startId the composer has let the message go, and this error only reports.
+  if (!payload.startId) return startSession(mainWindow, payload, onCreated);
+  try {
+    return await startSession(mainWindow, payload, onCreated);
+  } catch (error) {
+    console.error('[Session Start] failed:', error);
+    broadcast(mainWindow, {
+      type: 'runner.error',
+      payload: { message: error instanceof Error ? error.message : String(error), startId: payload.startId },
+    });
+    return null;
+  }
+}
+
+async function startSession(
+  mainWindow: BrowserWindow,
+  payload: SessionStartPayload,
+  onCreated?: (sessionId: string) => void
+): Promise<string | null> {
   const {
     title,
     prompt,
@@ -9699,14 +9730,29 @@ async function handleSessionStart(
     hiddenFromThreads,
     channelId,
     createIsolatedWorkspace,
+    chat,
   } = payload;
   const sessionScope = normalizeSessionScope(scope);
   const sessionAgentId = sessionScope === 'dm' ? agentId?.trim() || null : null;
-  const sessionCwd = cwd?.trim() || undefined;
+  let sessionCwd = cwd?.trim() || undefined;
+  // No project: the chat gets a folder of its own before anything runs.
+  const startsChat = sessionScope !== 'dm' && !sessionCwd && chat === true;
+  if (startsChat) {
+    try {
+      sessionCwd = createChatFolder(prompt);
+    } catch (error) {
+      broadcast(mainWindow, {
+        type: 'runner.error',
+        payload: { message: `Could not create a folder for this chat. ${error instanceof Error ? error.message : String(error)}`, startId: payload.startId },
+      });
+      return null;
+    }
+  }
+  const isChat = startsChat || Boolean(sessionCwd && sessions.isChatFolder(sessionCwd));
   if (sessionScope !== 'dm' && !sessionCwd) {
     broadcast(mainWindow, {
       type: 'runner.error',
-      payload: { message: 'Select a project folder before starting a task.' },
+      payload: { message: 'Select a project folder before starting a task.', startId: payload.startId },
     });
     return null;
   }
@@ -9743,6 +9789,7 @@ async function handleSessionStart(
           message: `Could not create a worktree — this needs a git repository with at least one commit. ${
             error instanceof Error ? error.message : String(error)
           }`,
+          startId: payload.startId,
         },
       });
       return null;
@@ -9755,11 +9802,15 @@ async function handleSessionStart(
   const startGoal = parseGoalInput(sourcePrompt, false);
   // A Kimi goal starts with its own `/goal -- <objective>` command, sent as is
   // (the composer's raw text lacks `/goal` when the objective was drafted).
+  const sendsGoalAsIs = (chosenProvider === 'claude' && startGoal.isGoal)
+    || (chosenProvider === 'kimi' && startGoal.isGoal && Boolean(startGoal.objective));
+  // A goal command goes out verbatim, so a chat's folder note waits for the next message.
+  const sendsChatNote = isChat && Boolean(sessionCwd) && !sendsGoalAsIs;
   const runnerPrompt = chosenProvider === 'claude' && startGoal.isGoal ? sourcePrompt
     : chosenProvider === 'kimi' && startGoal.isGoal && startGoal.objective
       ? kimiGoalStartPrompt(startGoal.objective)
       : augmentPromptForLiveWidgetProtocol(
-    await buildRunnerPromptWithMemory(chosenProvider, effectiveRunnerPrompt + referenceContext + (payload.draftSessionId ? designContextText(payload.draftSessionId, designSelection) : '') + sessions.buildProjectSourcesContext(normalizedProjectCwd, isolated?.worktreePath || normalizedWorktreePath || sessionCwd, Boolean(isolated) || normalizedEnvMode === 'worktree'), sessionCwd),
+    await buildRunnerPromptWithMemory(chosenProvider, effectiveRunnerPrompt + referenceContext + (payload.draftSessionId ? designContextText(payload.draftSessionId, designSelection) : '') + sessions.buildProjectSourcesContext(normalizedProjectCwd, isolated?.worktreePath || normalizedWorktreePath || sessionCwd, Boolean(isolated) || normalizedEnvMode === 'worktree') + (sendsChatNote && sessionCwd ? `\n\n${chatFolderInstructions(sessionCwd)}` : ''), sessionCwd),
   );
   const selectedModel = normalizeProviderModel(chosenProvider, model);
   const selectedBetas = chosenProvider === 'claude' ? normalizeBetas(betas) : undefined;
@@ -9865,6 +9916,7 @@ async function handleSessionStart(
     channelId: normalizeWorkspaceChannelId(channelId),
     teamMode: normalizedTeamMode,
     teamId: normalizedTeamId,
+    isChat,
   });
   onCreated?.(session.id);
   // Pages opened while it was a draft now belong to the real chat.
@@ -9886,11 +9938,14 @@ async function handleSessionStart(
       sessionId: session.id,
       status: 'running',
       ...(payload.background ? { background: true } : {}),
+      ...(payload.startId ? { startId: payload.startId } : {}),
+      ...(payload.startId && payload.draftSessionId ? { draftSessionId: payload.draftSessionId } : {}),
       title: session.title,
       scope: normalizeSessionScope(session.conversation_scope),
       agentId: session.agent_id || null,
       cwd: session.cwd || undefined,
       projectCwd: session.project_cwd || session.cwd || null,
+      ...(session.is_chat === 1 ? { isChat: true } : {}),
       envMode: session.env_mode === 'worktree' ? 'worktree' : 'local',
       worktreePath: session.worktree_path || null,
       associatedWorktreePath: session.associated_worktree_path || null,
@@ -10115,6 +10170,9 @@ async function handleSessionStart(
     });
   }
 
+  // The folder note is in this first message; a start that stopped earlier
+  // (runtime not ready) leaves it for the next one.
+  if (sendsChatNote) noteChatFolderInstructionsDelivered(session.id);
   // 启动 Runner
   startRunner(
     mainWindow,
@@ -10377,7 +10435,7 @@ async function handleSessionContinueImpl(
   // Goal commands reach the agent verbatim: Claude's, and Kimi's `/goal --`
   // start prompt (context appended would become part of the objective).
   const runnerPrompt = (nextProvider === 'claude' || nextProvider === 'kimi') && parseGoalInput(prompt, false).isGoal ? prompt.trim() : augmentPromptForLiveWidgetProtocol(
-    await buildRunnerPromptWithMemory(nextProvider, effectiveRunnerPrompt + referenceContext + designContextText(sessionId, designSelection) + sessions.buildProjectSourcesContext(session.project_cwd || session.cwd, session.cwd, session.env_mode === 'worktree' && Boolean(session.worktree_path)), session.cwd || undefined),
+    await buildRunnerPromptWithMemory(nextProvider, effectiveRunnerPrompt + referenceContext + designContextText(sessionId, designSelection) + sessions.buildProjectSourcesContext(session.project_cwd || session.cwd, session.cwd, session.env_mode === 'worktree' && Boolean(session.worktree_path)) + takeChatFolderInstructions(sessionId, session.cwd, session.is_chat === 1), session.cwd || undefined),
     historyBeforeContinue
   );
   const previousOpenCodePermissionMode = normalizeOpenCodePermissionMode(session.opencode_permission_mode);
@@ -10610,6 +10668,7 @@ async function handleSessionContinueImpl(
       agentId: session.agent_id || null,
       cwd: session.cwd || undefined,
       projectCwd: session.project_cwd || session.cwd || null,
+      ...(session.is_chat === 1 ? { isChat: true } : {}),
       envMode: session.env_mode === 'worktree' ? 'worktree' : 'local',
       worktreePath: session.worktree_path || null,
       associatedWorktreePath: session.associated_worktree_path || null,

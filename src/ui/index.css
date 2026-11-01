@@ -3622,6 +3622,18 @@ button.aegis-mdx-metadata-key:hover {
   .aegis-new-thread-composer-tray { corner-shape: superellipse(1.5); }
 }
 
+.aegis-new-thread-chat-folder-note {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  margin-top: 10px;
+  font-size: 11.5px;
+  line-height: 16px;
+  color: var(--text-muted);
+}
+
 .aegis-composer-context-row {
   display: flex;
   min-width: 0;

@@ -349,6 +349,8 @@ export interface SessionView {
   agentId?: string | null;
   cwd?: string;
   projectCwd?: string | null;
+  /** Started with no project: cwd is a folder Aegis made for this chat. */
+  isChat?: boolean;
   envMode?: import('../shared/types').ThreadEnvironmentMode;
   worktreePath?: string | null;
   associatedWorktreePath?: string | null;

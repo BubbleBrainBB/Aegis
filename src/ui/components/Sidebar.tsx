@@ -128,7 +128,8 @@ export function Sidebar() {
   const startXRef = useRef(0);
   const startWidthRef = useRef(sidebarWidth);
   const activeSession = activeSessionId ? sessions[activeSessionId] : null;
-  const newThreadCwd = activeSession?.cwd || projectCwd;
+  // A chat's folder is not a project: New Task from a chat keeps the last project.
+  const newThreadCwd = (activeSession?.isChat ? null : activeSession?.cwd) || projectCwd;
   const getActiveChannelIdForProject = (cwd?: string | null) => {
     const key = cwd?.trim() || '__no_project__';
     return activeChannelByProject[key] || DEFAULT_WORKSPACE_CHANNEL_ID;
@@ -266,7 +267,7 @@ export function Sidebar() {
     const map = new Map<string, PaletteProject>();
     for (const session of visibleSessions) {
       const cwd = session.cwd?.trim();
-      if (!cwd) continue;
+      if (!cwd || session.isChat) continue;
       const existing = map.get(cwd);
       if (existing) {
         existing.sessionCount += 1;

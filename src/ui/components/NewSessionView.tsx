@@ -41,7 +41,7 @@ import {
 import { ClaudePlanModePill } from './ClaudePlanModePill';
 import { DeepseekAgentPresetPicker } from './DeepseekAgentPresetPicker';
 import { NewThreadLanding } from './NewThreadLanding';
-import { NewThreadProjectHeading } from './NewThreadProjectHeading';
+import { ChatFolderNote, NewThreadProjectHeading } from './NewThreadProjectHeading';
 import { ComposerContextPills } from './ComposerContextPills';
 import { useComposerAgentSelection } from '../hooks/useComposerAgentSelection';
 import { useComposerCapabilityMenu } from '../hooks/useClaudeSkillAutocomplete';
@@ -51,6 +51,9 @@ import { buildCodexReferencePayload } from '../utils/codex-composer';
 import { insertProjectFileMention } from '../utils/project-file-mentions';
 import { buildPromptWithProjectFileMentions } from '../utils/project-file-mention-context';
 import { removeSelectedSlashCommandPrompt } from '../utils/claude-slash';
+import { acquireStart, isStartLocked, markStartSent, releaseUnsentStart, useStartLease } from '../utils/start-lease';
+
+const NEW_SESSION_COMPOSER = 'new-session';
 
 function isImeComposingEvent(
   event: ReactKeyboardEvent,
@@ -66,12 +69,11 @@ function isImeComposingEvent(
 export function NewSessionView() {
   const enterBehavior = useAppPreferences(s => s.enterBehavior);
   const {
-    pendingStart,
+    pendingStart: startPending,
     projectCwd,
     activeChannelByProject,
     setPendingStart,
     setProjectCwd,
-    setActiveChannelForProject,
     setShowSettings,
     setActiveSettingsTab,
   } = useAppStore();
@@ -79,11 +81,36 @@ export function NewSessionView() {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   // 启动模式 pill：worktree = 提交时先建隔离 worktree
   const [startMode, setStartMode] = useState<'local' | 'worktree'>('local');
-  const [showCwdHint, setShowCwdHint] = useState(false);
+  // "No project" holds only while this page is open; New Task keeps the last project.
+  const [noProject, setNoProject] = useState(false);
+  // A message shown again after a failed start keeps the folder it was going
+  // to, without changing the last project for new messages.
+  const [cwdOverride, setCwdOverride] = useState<string | null>(null);
   const [cursorIndex, setCursorIndex] = useState(0);
   const editorRef = useRef<ComposerPromptEditorHandle | null>(null);
   const isComposingRef = useRef(false);
-  const cwd = projectCwd || '';
+  // The message stays here, locked, until its conversation exists; a failed
+  // start just unlocks it. Shown again if this page was away meanwhile.
+  const startLocked = useStartLease(NEW_SESSION_COMPOSER, {
+    show: (sent) => {
+      setPrompt(sent.prompt);
+      setCursorIndex(sent.prompt.length);
+      setAttachments(sent.attachments);
+      if (sent.goal) sessionGoal.setDraft(true);
+      if (sent.destination) {
+        setNoProject(!sent.destination.cwd);
+        setCwdOverride(sent.destination.cwd);
+        setStartMode(sent.destination.startMode);
+      }
+    },
+    onCreated: () => {
+      setPrompt('');
+      setCursorIndex(0);
+      setAttachments([]);
+    },
+  });
+  const pendingStart = startPending || startLocked;
+  const cwd = noProject ? '' : cwdOverride || projectCwd || '';
   const attachmentImport = useAttachmentImport(cwd, pendingStart, (created) => {
     setAttachments(previous => {
       const paths = new Set(previous.map(attachment => attachment.path));
@@ -142,11 +169,6 @@ export function NewSessionView() {
     prompt,
     cursorIndex,
   });
-  useEffect(() => {
-    if (!showCwdHint) return;
-    const timer = window.setTimeout(() => setShowCwdHint(false), 1800);
-    return () => window.clearTimeout(timer);
-  }, [showCwdHint]);
 
   const buildDispatchPrompt = async (dispatchCwd = cwd): Promise<string | null> => {
     const selectedSkillPrompt =
@@ -161,22 +183,6 @@ export function NewSessionView() {
     });
   };
 
-  const handleSelectProjectFolder = useCallback(async (): Promise<string | null> => {
-    if (pendingStart) {
-      return null;
-    }
-
-    const selected = await window.electron.selectDirectory();
-    if (!selected) {
-      return null;
-    }
-
-    setProjectCwd(selected);
-    setActiveChannelForProject(selected, DEFAULT_WORKSPACE_CHANNEL_ID);
-    setShowCwdHint(false);
-    window.requestAnimationFrame(() => editorRef.current?.focus());
-    return selected;
-  }, [pendingStart, setActiveChannelForProject, setProjectCwd]);
 
   const openModelSetup = useCallback(() => {
     const setup = agentSelection.modelSetup;
@@ -188,6 +194,7 @@ export function NewSessionView() {
   }, [agentSelection.modelSetup, setActiveSettingsTab, setShowSettings]);
 
   const handleStart = async () => {
+    if (isStartLocked(NEW_SESSION_COMPOSER)) return;
     const goalInput = parseGoalInput(prompt, sessionGoal.drafting);
     const isGoal = supportsGoalUI(agentSelection.provider) && goalInput.isGoal;
     if (isGoal && (agentSelection.provider === 'claude' || agentSelection.provider === 'kimi') && isClaudeGoalClearObjective(goalInput.objective) && attachments.length === 0) {
@@ -217,16 +224,34 @@ export function NewSessionView() {
       openModelSetup();
       return;
     }
-    let dispatchCwd = cwd.trim();
-    if (!dispatchCwd) {
-      setShowCwdHint(true);
-      const selected = await handleSelectProjectFolder();
-      if (!selected) {
-        return;
-      }
-      dispatchCwd = selected;
+    // No project: the main process makes the chat a folder of its own.
+    const dispatchCwd = cwd.trim();
+    // Taken before any await, so a second Send cannot start another conversation.
+    const startId = acquireStart(
+      NEW_SESSION_COMPOSER,
+      {
+        prompt,
+        attachments,
+        goal: isGoal && sessionGoal.drafting,
+        destination: { cwd: dispatchCwd || null, startMode: dispatchCwd ? startMode : 'local' },
+      },
+      // Goal mode is kept outside this page: end it on success even if the page is gone.
+      { onSucceeded: () => sessionGoal.setDraft(false) },
+    );
+    if (!startId) return;
+    try {
+      await dispatchStart(startId, dispatchCwd, isGoal, goalInput);
+    } finally {
+      releaseUnsentStart(startId);
     }
+  };
 
+  const dispatchStart = async (
+    startId: string,
+    dispatchCwd: string,
+    isGoal: boolean,
+    goalInput: ReturnType<typeof parseGoalInput>,
+  ) => {
     setPendingStart(true);
 
     const displayPrompt = isGoal ? goalInput.objective : prompt.trim();
@@ -246,17 +271,19 @@ export function NewSessionView() {
     const tempTitle = tempTitleSource.slice(0, 30) + (tempTitleSource.length > 30 ? '...' : '');
     const channelId = activeChannelByProject[dispatchCwd] || DEFAULT_WORKSPACE_CHANNEL_ID;
 
-    if (isGoal) sessionGoal.setDraft(false);
+    markStartSent(startId);
     sendEvent({
       type: 'session.start',
       payload: {
+        startId,
         title: tempTitle,
         codexGoal: isGoal && agentSelection.provider === 'codex' ? { type: 'set', status: 'active', objective: buildGoalObjective(parseGoalInput(normalizedPrompt, true).objective, outgoingAttachments) } : undefined,
         prompt: isGoal ? (agentSelection.provider === 'claude' ? `/goal ${buildGoalObjective(parseGoalInput(normalizedPrompt, true).objective, outgoingAttachments)}` : `/goal ${outgoingPrompt}`) : outgoingPrompt,
         effectivePrompt: outgoingEffectivePrompt,
         cwd: dispatchCwd || undefined,
+        chat: !dispatchCwd || undefined,
         channelId,
-        createIsolatedWorkspace: startMode === 'worktree' || undefined,
+        createIsolatedWorkspace: (dispatchCwd && startMode === 'worktree') || undefined,
         attachments: outgoingAttachments.length > 0 ? outgoingAttachments : undefined,
         provider: agentSelection.provider,
         model: agentSelection.model || undefined,
@@ -357,15 +384,21 @@ export function NewSessionView() {
         teamId: null,
       },
     });
-
-    setPrompt('');
-    setAttachments([]);
   };
 
+
   const handleCwdChange = (next: string) => {
-    if (useAppStore.getState().pendingStart) return;
+    if (useAppStore.getState().pendingStart || isStartLocked(NEW_SESSION_COMPOSER)) return;
     setStartMode('local');
+    setNoProject(false);
+    setCwdOverride(null);
     setProjectCwd(next || null);
+  };
+  const handleNoProject = () => {
+    if (useAppStore.getState().pendingStart || isStartLocked(NEW_SESSION_COMPOSER)) return;
+    setStartMode('local');
+    setNoProject(true);
+    setCwdOverride(null);
   };
 
   const handleAddAttachments = () => attachmentImport.choose();
@@ -511,7 +544,7 @@ export function NewSessionView() {
 
   return (
     <div className="flex-1 min-h-0 min-w-0 flex flex-col">
-      <NewThreadLanding heading={<NewThreadProjectHeading cwd={cwd} disabled={pendingStart} onSelectProject={handleCwdChange} />}>
+      <NewThreadLanding heading={<NewThreadProjectHeading cwd={cwd} disabled={pendingStart} onSelectProject={handleCwdChange} onSelectNoProject={handleNoProject} />}>
             <div className="group relative aegis-new-thread-composer-tray">
               {projectFileMentions.hasMentionQuery ? (
                 <div className="absolute inset-x-0 bottom-full z-40 mb-1">
@@ -547,6 +580,7 @@ export function NewSessionView() {
                 hasSelectedCwd={hasSelectedCwd}
                 disabled={pendingStart}
                 onSelectRecent={handleCwdChange}
+                onSelectNoProject={handleNoProject}
                 startMode={startMode}
                 onStartModeChange={setStartMode}
               />
@@ -566,6 +600,7 @@ export function NewSessionView() {
 
                 <ComposerPromptEditor
                   ref={editorRef}
+                  disabled={startLocked}
                   value={capabilityMenu.displayPrompt}
                   cursorIndex={cursorIndex}
                   slashContext={capabilityMenu.slashContext}
@@ -779,8 +814,8 @@ export function NewSessionView() {
                     />
                     <button
                       type="button"
-                      // Always the send action; without a project it asks for
-                      // one first. "Choose project" above is the place to pick it.
+                      // Always the send action; without a project it starts a
+                      // chat in a folder of its own.
                       aria-label="Send"
                       title="Send"
                       onClick={handleStart}
@@ -796,6 +831,7 @@ export function NewSessionView() {
                   </div>
                 </div>
               </div>
+              {!cwd ? <ChatFolderNote /> : null}
             </div>
       </NewThreadLanding>
     </div>
