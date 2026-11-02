@@ -5,6 +5,7 @@
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import type { FollowUpProposalView } from '../../../shared/follow-up';
+import { turnReportNeedsUser, type TurnReport } from '../../../shared/turn-report';
 import { useAppStore } from '../../store/useAppStore';
 import { findProposalForToolUse, useFollowUpStore } from '../../store/useFollowUpStore';
 import { cn } from '../../utils/cn';
@@ -73,13 +74,15 @@ const DOT: Record<Exclude<Tone, 'none'>, string> = {
 /** How the session is doing, from its own status and what it last reported. */
 function sessionState(
   proposal: FollowUpProposalView,
-  child: { status: string; permissionRequests?: unknown[] } | undefined,
+  child: { status: string; permissionRequests?: unknown[]; turnReport?: TurnReport | null } | undefined,
 ): { tone: Tone; label: string } {
   if (proposal.status === 'starting') return { tone: 'working', label: 'Starting' };
   if (proposal.status === 'start_failed') return { tone: 'danger', label: 'Could not start' };
   if (proposal.detachedAt !== null) return { tone: 'none', label: 'Detached' };
   if (child?.permissionRequests?.length) return { tone: 'warning', label: 'Needs you' };
   if (child?.status === 'running') return { tone: 'working', label: 'Running' };
+  // Its own report that a question or a blocker waits on the user.
+  if (turnReportNeedsUser(child?.turnReport)) return { tone: 'warning', label: 'Needs you' };
   const latest = proposal.reports.at(-1);
   if (latest?.turnStatus === 'error' || child?.status === 'error') return { tone: 'danger', label: 'Failed' };
   if (latest?.turnStatus === 'stopped') return { tone: 'none', label: 'Stopped' };

@@ -112,6 +112,10 @@ app.whenReady().then(async()=>{
   assert.equal(await hint('[data-sub-session=f2]'),'Done · aegis/iso/usage-settings-tests');
   assert.equal(await js('document.querySelector("[data-sub-session=f1] [data-sub-session-mark]").dataset.subSessionMark'),'working','a running session pulses');
   assert.equal(await js('!!document.querySelector("[data-sub-session=f2] [data-sub-session-mark]")'),false,'a finished session has no mark');
+  await js('qa.app.setState(s=>({sessions:{...s.sessions,c2:{...s.sessions.c2,turnReport:{outcome:"question",summary:"Which name?",question:"Which name?",reportedAt:1}}}}))');await delay(150);
+  assert.equal(await js('document.querySelector("[data-sub-session=f2] [data-sub-session-mark]").dataset.subSessionMark'),'warning','a question it reported waits on you');
+  assert.equal(await label('[data-sub-session=f2]'),'Add ClaudeUsageSettings tests · Needs you');
+  await js('qa.app.setState(s=>({sessions:{...s.sessions,c2:{...s.sessions.c2,turnReport:null}}}))');await delay(150);
   assert.match(await text('[data-sub-session=f5]'),/no folder to share[\\s\\S]*Retry/);
   await click('document.querySelector("[data-sub-session=f2]")');
   assert.equal(await js('qa.app.getState().activeSessionId'),'c2','the row opens the session');
