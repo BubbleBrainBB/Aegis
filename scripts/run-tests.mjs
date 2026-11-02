@@ -8,17 +8,53 @@ import { readFileSync } from 'node:fs';
 // 0 locally by default): the Electron UI suites sometimes miss a frame on
 // slow runners. A suite that only passed on its retry is reported, so a
 // flaky test stays visible. All suites run; every failure is listed at the end.
+//
+// AEGIS_TEST_SHARD=i/n runs only shard i of n, so CI can split the suites across
+// machines. Suites go to the lightest shard, longest first, by the typical
+// durations in test-suite-seconds.json; a suite without a duration counts as
+// DEFAULT_SUITE_SECONDS. Every suite lands in exactly one shard. Shard 1 starts
+// BUILD_SECONDS heavier because CI also runs the build there.
+// `node scripts/run-tests.mjs --list` prints the selected suites and exits.
 
 const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
-const suites = pkg.testSuites;
-if (!Array.isArray(suites) || suites.length === 0) {
+const allSuites = pkg.testSuites;
+if (!Array.isArray(allSuites) || allSuites.length === 0) {
   console.error('[test] package.json has no "testSuites".');
   process.exit(1);
 }
-const missing = suites.filter((name) => !pkg.scripts?.[name]);
+const missing = allSuites.filter((name) => !pkg.scripts?.[name]);
 if (missing.length) {
   console.error(`[test] "testSuites" names scripts that do not exist: ${missing.join(', ')}`);
   process.exit(1);
+}
+
+const DEFAULT_SUITE_SECONDS = 10;
+const BUILD_SECONDS = 70;
+
+function selectShard(names, spec) {
+  if (!spec) return names;
+  const match = /^(\d+)\/(\d+)$/.exec(spec);
+  const [index, count] = match ? [Number(match[1]), Number(match[2])] : [0, 0];
+  if (index < 1 || index > count) {
+    console.error(`[test] AEGIS_TEST_SHARD must look like 1/3, got "${spec}".`);
+    process.exit(1);
+  }
+  const durations = JSON.parse(readFileSync(new URL('./test-suite-seconds.json', import.meta.url), 'utf8'));
+  const seconds = (name) => durations[name] ?? DEFAULT_SUITE_SECONDS;
+  const shards = Array.from({ length: count }, (_, shard) => ({ total: shard === 0 ? BUILD_SECONDS : 0, names: new Set() }));
+  const longestFirst = [...names].sort((a, b) => seconds(b) - seconds(a) || a.localeCompare(b));
+  for (const name of longestFirst) {
+    const lightest = shards.reduce((best, shard) => (shard.total < best.total ? shard : best));
+    lightest.total += seconds(name);
+    lightest.names.add(name);
+  }
+  return names.filter((name) => shards[index - 1].names.has(name));
+}
+
+const suites = selectShard(allSuites, process.env.AEGIS_TEST_SHARD);
+if (process.argv.includes('--list')) {
+  console.log(suites.join('\n'));
+  process.exit(0);
 }
 
 const onCI = Boolean(process.env.CI);
@@ -32,6 +68,12 @@ const seconds = (since) => `${Math.round((Date.now() - since) / 1000)}s`;
 const started = Date.now();
 if (!run('transpile:electron', process.env)) {
   console.error('[test] transpile:electron failed.');
+  process.exit(1);
+}
+// Electron-hosted suites load native modules built for Electron's ABI. This used
+// to happen only inside validate:terminal, which a shard may not contain.
+if (spawnSync('node', ['scripts/prepare-electron-native-deps.mjs'], { stdio: 'inherit' }).status !== 0) {
+  console.error('[test] preparing native dependencies failed.');
   process.exit(1);
 }
 const env = { ...process.env, AEGIS_TRANSPILED: '1' };
