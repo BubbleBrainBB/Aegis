@@ -369,7 +369,6 @@ test('a task names its project: a worktree there, with the permission settings o
   assert.equal(payload.claudeAccessMode, 'acceptEdits', 'keeps the permission mode of the conversation in any project');
   assert.match(payload.effectivePrompt ?? '', /git worktree of `\/projects\/my-coding-agent`/);
   const view = t.broadcasts.filter((item) => item.id === inOther.proposalId).at(-1)!;
-  assert.equal(view.projectCwd, '/projects/my-coding-agent');
   assert.equal(view.place, 'worktree');
 
   // Not a git repository: it works in the project folder itself, and the folder is its own.

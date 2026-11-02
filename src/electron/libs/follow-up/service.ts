@@ -678,7 +678,6 @@ export class FollowUpService {
       status: row.status as FollowUpStatus,
       childSessionId: row.child_session_id,
       place: (row.place ?? 'worktree') as FollowUpPlace,
-      projectCwd: row.project_cwd,
       worktreeBranch: row.worktree_branch,
       baseRef: row.base_ref,
       lastError: row.last_error,

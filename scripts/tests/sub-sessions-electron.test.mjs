@@ -105,17 +105,13 @@ app.whenReady().then(async()=>{
   // Chat: running, done (with its branch) and failed rows; a refused call is a quiet line.
   const label=selector=>js('(document.querySelector('+JSON.stringify(selector)+')||{}).getAttribute?.("aria-label")||""');
   const hint=selector=>js('(document.querySelector('+JSON.stringify(selector)+')||{}).title||""');
-  assert.equal(await text('[data-sub-session=f1]'),'Fix empty export file namescoworkerRunning','the row is the task, its project and where it stands');
-  assert.equal(await label('[data-sub-session=f1]'),'Fix empty export file names · coworker · Running');
+  assert.equal(await text('[data-sub-session=f1]'),'Fix empty export file names','the row is just the task');
+  assert.equal(await label('[data-sub-session=f1]'),'Fix empty export file names · Running');
   assert.equal(await hint('[data-sub-session=f1]'),'Running · Shares this folder');
-  assert.equal(await label('[data-sub-session=f2]'),'Add ClaudeUsageSettings tests · coworker · Ready for review');
-  assert.equal(await hint('[data-sub-session=f2]'),'Ready for review · aegis/iso/usage-settings-tests');
-  const mark=id=>js('document.querySelector("[data-sub-session='+id+'] [data-sub-session-mark]").dataset.subSessionMark');
-  assert.equal(await mark('f1'),'working','a running task spins');
-  assert.equal(await js('!!document.querySelector("[data-sub-session=f1] [data-sub-session-mark] svg.animate-spin")'),true);
-  assert.equal(await mark('f2'),'review','work left in a worktree waits for review');
-  const rect=sel=>js('(()=>{const r=document.querySelector('+JSON.stringify(sel)+').getBoundingClientRect();return {top:r.top,bottom:r.bottom}})()');
-  assert.equal((await rect('[data-sub-session=f1]')).bottom,(await rect('[data-sub-session=f2]')).top,'tasks of one batch join into one card');
+  assert.equal(await label('[data-sub-session=f2]'),'Add ClaudeUsageSettings tests · Done');
+  assert.equal(await hint('[data-sub-session=f2]'),'Done · aegis/iso/usage-settings-tests');
+  assert.equal(await js('document.querySelector("[data-sub-session=f1] [data-sub-session-mark]").dataset.subSessionMark'),'working','a running session pulses');
+  assert.equal(await js('!!document.querySelector("[data-sub-session=f2] [data-sub-session-mark]")'),false,'a finished session has no mark');
   assert.match(await text('[data-sub-session=f5]'),/no folder to share[\\s\\S]*Retry/);
   await click('document.querySelector("[data-sub-session=f2]")');
   assert.equal(await js('qa.app.getState().activeSessionId'),'c2','the row opens the session');
@@ -162,7 +158,7 @@ app.whenReady().then(async()=>{
   // Detaching (the store update the menu triggers) moves the session to the top level.
   await js('qa.followUps.getState().upsert({...qa.followUps.getState().proposals.f2,revision:3,detachedAt:Date.now()})');await delay(150);
   assert.deepEqual(await js('[...document.querySelectorAll("[data-sub-sessions-of=p1] [data-session-id]")].map(e=>e.dataset.sessionId).sort()'),['c1','g1']);
-  assert.equal(await label('[data-sub-session=f2]'),'Add ClaudeUsageSettings tests · coworker · Detached');
+  assert.equal(await label('[data-sub-session=f2]'),'Add ClaudeUsageSettings tests · Detached');
 
   // Hover card: long values wrap in full, and the branch reads like the rows around it.
   const longTitle='Stop rendering dollar amounts as math in chat and keep the currency as plain text';

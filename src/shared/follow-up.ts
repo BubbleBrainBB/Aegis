@@ -70,8 +70,6 @@ export interface FollowUpProposalView {
   status: FollowUpStatus;
   childSessionId: string | null;
   place: FollowUpPlace;
-  /** The folder the task was started for: its project, or the folder it shares. */
-  projectCwd: string;
   worktreeBranch: string | null;
   baseRef: string | null;
   lastError: string | null;
