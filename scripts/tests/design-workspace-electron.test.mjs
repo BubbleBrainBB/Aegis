@@ -308,6 +308,18 @@ app.whenReady().then(async()=>{
   await js('qa.app.setState(s=>({sessions:{...s.sessions,s9:{...s.sessions.s9,status:"idle"}}}))');
   await until('(qa.design.getState().library??[]).some(d=>d.id==='+JSON.stringify(created.id)+')','listed');
 
+  // This chat touched another design too: a board link for it moves the section there and selects the board.
+  const other=await call('s9','design_create',{title:'Checkout',operationId:'c11',separate:true});
+  const otherWrite=await call('s9','design_update',{documentId:other.id,operationId:'u11',operations:[{type:'add',name:'Cart',width:1440,height:900,html:page('Your cart','#eef1f6')}]});
+  const backToPricing='qa.design.getState().setSection({sessionId:"s9",documentId:'+JSON.stringify(created.id)+'})';
+  await js(backToPricing);
+  await until('document.querySelectorAll("[data-design-section] .design-board").length===2','back on the Pricing canvas');
+  await js('qa.design.getState().requestFocus({sessionId:"s9",documentId:'+JSON.stringify(other.id)+',boardId:'+JSON.stringify(otherWrite.boards[0].id)+'})');
+  await until('qa.design.getState().section.documentId==='+JSON.stringify(other.id),'the section moves to the other design');
+  await until('!!document.querySelector(\'[data-design-section] [data-board-id="'+otherWrite.boards[0].id+'"].is-selected\')','the other design\'s board selected');
+  await js(backToPricing);
+  await until('document.querySelectorAll("[data-design-section] .design-board").length===2','Pricing canvas again');
+
   // A design has several chats: each keeps its conversation and works on the same canvas.
   const designRepo=()=>require(path.join(root,'dist-electron/electron/design/service.js')).getDesignRepository();
   await goHome();await click(card(atlas.id));

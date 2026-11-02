@@ -60,7 +60,7 @@ export const useDesignStore = create<{
   focusRequest: DesignFocusRequest | null;
   requestFocus: (request: Omit<DesignFocusRequest, "nonce">) => void;
   consumeFocus: (nonce: number) => void;
-}>((set) => ({
+}>((set, get) => ({
   titles: {},
   composer: {},
   setComposerChoice: (sessionId, choice) => {
@@ -96,6 +96,11 @@ export const useDesignStore = create<{
     ),
   focusRequest: null,
   requestFocus: (request) => {
+    // The Design section shows one design: a chat there may ask for another it touched.
+    const { section } = get();
+    if (section && section.documentId !== request.documentId && useAppStore.getState().activeWorkspace === "design") {
+      set({ section: { sessionId: request.sessionId, documentId: request.documentId } });
+    }
     set({ focusRequest: { ...request, nonce: Date.now() + Math.random() } });
     useAppStore
       .getState()
