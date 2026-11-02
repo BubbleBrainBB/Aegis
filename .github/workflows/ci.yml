@@ -11,11 +11,15 @@ concurrency:
 
 jobs:
   test:
-    name: Test & Build (macOS)
+    name: Test & Build (macOS, shard ${{ matrix.shard }}/3)
     runs-on: macos-15
-    # A run takes ~20 min; a hung Electron test should fail fast, not hold the
+    # A shard takes ~8 min; a hung Electron test should fail fast, not hold the
     # runner for GitHub's 6-hour default.
-    timeout-minutes: 45
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
 
     steps:
       - name: Checkout
@@ -44,6 +48,10 @@ jobs:
 
       - name: Test
         run: npm test
+        env:
+          AEGIS_TEST_SHARD: ${{ matrix.shard }}/3
 
+      # Only one shard needs this; scripts/run-tests.mjs gives it fewer suites to match.
       - name: Build (Vite + TS)
+        if: matrix.shard == 1
         run: npm run build
