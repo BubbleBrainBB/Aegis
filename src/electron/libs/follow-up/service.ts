@@ -212,9 +212,16 @@ export class FollowUpService {
     const title = args.title?.trim() ?? '';
     const prompt = args.prompt?.trim() ?? '';
     // A retried call gets the session it already started, whatever happened since.
+    const retried = toolUseId ? this.store.findByToolUse(callerSessionId, toolUseId) : null;
+    if (retried) return this.startSessionOutcome(retried);
+    const callerProject = session.projectCwd || session.cwd;
+    const named = args.project?.trim() ? findProject(this.host.listProjects(), args.project) : null;
+    if (named && 'error' in named) return { ok: false, error: named.error };
+    const targetProject = named?.path ?? null;
+    // Without an id, the same task in another project is another task.
     const existing = toolUseId
-      ? this.store.findByToolUse(callerSessionId, toolUseId)
-      : this.store.findRecentSession(callerSessionId, title, prompt, RETRY_WINDOW_MS);
+      ? null
+      : this.store.findRecentSession(callerSessionId, title, prompt, RETRY_WINDOW_MS, targetProject ? [targetProject] : [callerProject, session.cwd]);
     if (existing) return this.startSessionOutcome(existing);
     // Only words the user typed start sessions: never a turn that a report,
     // a workflow or the starting session's brief began.
@@ -230,13 +237,9 @@ export class FollowUpService {
     if (!prompt) return { ok: false, error: '"prompt" is required.' };
     if (title.length > SUB_SESSION_LIMITS.title) return { ok: false, error: `"title" is longer than ${SUB_SESSION_LIMITS.title} characters.` };
     if (prompt.length > SUB_SESSION_LIMITS.prompt) return { ok: false, error: `"prompt" is longer than ${SUB_SESSION_LIMITS.prompt} characters.` };
-    const callerProject = session.projectCwd || session.cwd;
-    const named = args.project?.trim() ? findProject(this.host.listProjects(), args.project) : null;
-    if (named && 'error' in named) return { ok: false, error: named.error };
-    const targetProject = named?.path ?? null;
     const project = targetProject ?? callerProject;
     const place = await this.chooseSubSessionPlace(session, project, targetProject !== null && targetProject !== callerProject, args.use_worktree);
-    const { row } = this.store.insert({
+    const { row, created } = this.store.insert({
       id: randomUUID(),
       kind: 'session',
       status: 'starting',
@@ -254,7 +257,8 @@ export class FollowUpService {
       permission_mode: this.host.permissionMode(callerSessionId),
     });
     this.publish(row.id);
-    if (row.status === 'starting' && !row.child_session_id) await this.runStart(row.id);
+    // A call that lost the race to insert this tool_use leaves the start to the winner.
+    if (created && row.status === 'starting' && !row.child_session_id) await this.runStart(row.id);
     return this.startSessionOutcome(this.store.get(row.id) ?? row);
   }
 

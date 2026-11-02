@@ -181,17 +181,22 @@ export class FollowUpStore {
   }
 
   /** The same session started from the same conversation within `withinMs`: a retry whose tool_use id was lost. */
-  findRecentSession(parentSessionId: string, title: string, plan: string, withinMs: number): FollowUpRow | null {
-    return (
-      (this.db
-        .prepare(
-          `SELECT * FROM follow_up_proposals
-           WHERE parent_session_id = ? AND kind = 'session' AND status IN ('starting', 'started')
-             AND title = ? AND plan = ? AND created_at >= ?
-           ORDER BY created_at DESC LIMIT 1`,
-        )
-        .get(parentSessionId, title, plan, this.now() - withinMs) as FollowUpRow | undefined) ?? null
-    );
+  findRecentSession(
+    parentSessionId: string,
+    title: string,
+    plan: string,
+    withinMs: number,
+    projects: ReadonlyArray<string | null>,
+  ): FollowUpRow | null {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM follow_up_proposals
+         WHERE parent_session_id = ? AND kind = 'session' AND status IN ('starting', 'started')
+           AND title = ? AND plan = ? AND created_at >= ?
+         ORDER BY created_at DESC`,
+      )
+      .all(parentSessionId, title, plan, this.now() - withinMs) as unknown as FollowUpRow[];
+    return rows.find((row) => projects.includes(row.project_cwd)) ?? null;
   }
 
   findByChild(childSessionId: string): FollowUpRow | null {

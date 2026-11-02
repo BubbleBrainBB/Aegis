@@ -398,6 +398,29 @@ test('a task can only name a project the user has', async () => {
   assert.equal(t.store.list().length, 0, 'a refused call leaves no record');
 });
 
+test('two requests for one tool call start one session', async () => {
+  const t = setup();
+  const [first, second] = await Promise.all([
+    t.service.startSession('parent', 'toolu_r1', sessionArgs),
+    t.service.startSession('parent', 'toolu_r1', sessionArgs),
+  ]);
+  assert.equal(first.ok && second.ok, true);
+  assert.equal(t.provisions(), 1);
+  assert.equal(t.starts.length, 1);
+  assert.equal(t.store.list().length, 1);
+});
+
+test('without a tool call id, the same task in another project is another task', async () => {
+  const t = setup();
+  startedSession(await t.service.startSession('parent', null, { ...sessionArgs, project: 'my-coding-agent' }));
+  startedSession(await t.service.startSession('parent', null, { ...sessionArgs, project: 'my-coding-agent/' }));
+  assert.equal(t.starts.length, 1, 'a retry of the same project gets its session');
+  startedSession(await t.service.startSession('parent', null, { ...sessionArgs, project: '/repo' }));
+  assert.equal(t.starts.length, 2, 'another project starts its own');
+  startedSession(await t.service.startSession('parent', null, sessionArgs));
+  assert.equal(t.starts.length, 2, 'naming no project is the same as naming its own');
+});
+
 test('a workflow member or a planning session cannot start a task', async () => {
   const t = setup();
   t.sessions.set('member', { title: 'Member', cwd: '/repo', provider: 'codex', model: null, status: 'running', workflowMember: true });
