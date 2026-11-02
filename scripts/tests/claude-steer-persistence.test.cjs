@@ -121,7 +121,7 @@ app.whenReady().then(() => {
     assert.equal(afterRewrite.find((m) => m.type === 'user_prompt' && m.promptId === 'pC').createdAt, deferredSend, 'timestamps untouched by the rewrite');
     console.log('claude-steer-persistence: stored where taken, R3 race order, withdrawal, rewind anchors, same-millisecond reload, rewrite + fork order passed');
     sessions.close();
-    fs.rmSync(scratch, { recursive: true, force: true });
+    try { fs.rmSync(scratch, { recursive: true, force: true }); } catch {}
     app.exit(0);
   } catch (error) {
     console.error(error);

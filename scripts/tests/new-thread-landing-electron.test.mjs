@@ -80,7 +80,7 @@ const win=new BrowserWindow({width:1124,height:879,show:true,webPreferences:{bac
   assert.equal(row.bottom-surface.top,12,'input overlaps the tray');
   assert(await js('Array.from(document.querySelectorAll(".aegis-composer-context-row button")).every(b=>b.getBoundingClientRect().bottom<=document.querySelector(".aegis-new-thread-composer-surface").getBoundingClientRect().top)'),'input does not cover environment controls');
  };
- const select=async(entrance,destination)=>{await click(entrance);assert.equal(await js('document.activeElement.getAttribute("aria-label")'),'Search projects');await js('Array.from(document.querySelectorAll("[cmdk-item][title]")).find(x=>x.title===qa.'+destination+').click()');await delay(250);};
+ const select=async(entrance,destination)=>{await click(entrance);await until('document.activeElement?.getAttribute("aria-label")==="Search projects"','project search takes focus');await js('Array.from(document.querySelectorAll("[cmdk-item][title]")).find(x=>x.title===qa.'+destination+').click()');await delay(250);};
  try{
   await win.loadURL(process.env.QA_URL);await until('!!window.qa && !!document.querySelector("[role=textbox]")','initial composer');
   await until('document.querySelector("h1").innerText.includes("build in")','git heading');

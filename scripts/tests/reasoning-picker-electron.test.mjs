@@ -91,9 +91,12 @@ app.whenReady().then(async()=>{
  // "drag release commits: 'xhigh' !== 'low'"), so the moves are sent again while the preview lags.
  const dragPreview=async(from,to,expected,message)=>{
   const start=await sliderPoint(from),end=await sliderPoint(to);
+  const startText=await js(sliderText);
   await js('qaEvents=[]');
   mouse('mouseDown',start);
   for(let attempt=0;attempt<3&&await js(sliderText)!==expected;attempt++){
+   // No preview at all: the slider dropped the drag (a late re-render or blur cancels it), so press again.
+   if(attempt>0&&await js(sliderText)===startText){mouse('mouseUp',start);mouse('mouseDown',start);}
    for(let step=1;step<=4;step++){mouse('mouseMove',{x:Math.round(start.x+(end.x-start.x)*step/4),y:end.y},{modifiers:['leftButtonDown']});await delay(30);}
    for(let i=0;i<20&&await js(sliderText)!==expected;i++)await delay(50);
   }
@@ -137,7 +140,7 @@ app.whenReady().then(async()=>{
   await settle('document.querySelector('+JSON.stringify(slider)+').getAttribute("aria-valuetext")','Extra High');
   // Real mouse drag previews while held and commits on release.
   let dragEnd=await dragPreview(1,0,'Low','drag previews the tier under the pointer');
-  assert.equal(await js('qa.efforts.codex'),'xhigh','drag preview does not write configuration');
+  assert.equal(await js('qa.efforts.codex'),'xhigh','drag preview does not write configuration'+await sliderEvents());
   mouse('mouseUp',dragEnd);
   await settle('qa.efforts.codex','low',async()=>'drag release commits'+await sliderEvents());
   await press('End','qa.efforts.codex','xhigh','keyboard remains on slider after dragging',false);
@@ -149,6 +152,15 @@ app.whenReady().then(async()=>{
   await settle('qa.efforts.codex','high','pointer cancel discards preview');
   await settle('document.querySelector('+JSON.stringify(slider)+').getAttribute("aria-valuetext")','High');
   mouse('mouseUp',dragEnd);await delay(100);
+  // A drag cancelled while the pointer is held writes nothing, during the moves or on release.
+  const heldStart=await sliderPoint(1),heldEnd=await sliderPoint(0);
+  mouse('mouseDown',heldStart);await delay(100);
+  await js('document.querySelector('+JSON.stringify(slider)+').dispatchEvent(new PointerEvent("lostpointercapture",{bubbles:true}))');await delay(100);
+  for(let step=1;step<=4;step++){mouse('mouseMove',{x:Math.round(heldStart.x+(heldEnd.x-heldStart.x)*step/4),y:heldEnd.y},{modifiers:['leftButtonDown']});await delay(30);}
+  await delay(200);
+  assert.equal(await js('qa.efforts.codex'),'high','moves after a cancelled drag do not write configuration');
+  mouse('mouseUp',heldEnd);await delay(150);
+  assert.equal(await js('qa.efforts.codex'),'high','releasing a cancelled drag does not write configuration');
   await click(slider);await focusSlider();await press('Home','qa.efforts.codex','low');
   await clickUntil('[aria-label="Reset reasoning to default"]','qa.efforts.codex','high','reset returns to the default effort');
   await clickUntil('[aria-label="Fast mode"]','qa.fast',true,'fast mode turns on');
@@ -166,7 +178,7 @@ app.whenReady().then(async()=>{
    assert.ok(motion.transition>0||heights.some(h=>h>initialHeight+0.5&&h<finalHeight-0.5),'height animates instead of jumping: '+JSON.stringify(heights.map(Math.round)));
   }
   assert.ok(await js('document.querySelector(".effort-model-views").getBoundingClientRect().height')>initialHeight);
-  assert.equal(await js('document.activeElement.getAttribute("aria-label")'),'Back to reasoning');
+  await settle('document.activeElement.getAttribute("aria-label")','Back to reasoning','focus moves to Back to reasoning');
   assert.equal(await js('document.querySelector(".effort-model-view[data-view=compact]").inert'),true);
   // Search remains usable inside the menu; select a model with fewer efforts.
   await click('input[placeholder="Search models"]');await js('document.execCommand("insertText",false,"model 1")');await delay(150);
@@ -175,10 +187,10 @@ app.whenReady().then(async()=>{
   await assertStable(closedTrigger);
   assert.equal(await js('document.querySelector('+JSON.stringify(slider)+').max'),'1');
   assert.equal(await js('!!document.querySelector("[aria-label=\\"Fast mode\\"]")'),false,'unsupported Fast mode hidden');
-  assert.equal(await js('document.activeElement.getAttribute("aria-label")'),'Choose model');
+  await settle('document.activeElement.getAttribute("aria-label")','Choose model','focus moves to Choose model');
   await click(slider);await focusSlider();await press('Home','qa.efforts.codex','low');
   await close();
-  assert.equal(await js('document.activeElement.getAttribute("aria-label")'),'Select agent and model');
+  await settle('document.activeElement.getAttribute("aria-label")','Select agent and model','focus moves to Select agent and model');
   assert.match((await triggerRect()).text,/codex1 Low/,'closing restores the latest model and effort');
   for (const [name,id,max] of [['Claude Code','claude','max'],['Grok Build','grok','high'],['Kimi Code','kimi','max'],['DeepSeek Harness','deepseek','max'],['Bubble','bubble','high']]) {
    await open(name);const providerTrigger=await triggerRect();await click(slider);await focusSlider();await press('End','qa.efforts.'+id,max,name);await assertStable(providerTrigger);

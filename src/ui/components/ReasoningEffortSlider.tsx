@@ -37,6 +37,9 @@ export function ReasoningEffortSlider<T extends string>({
   const [hovered, setHovered] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   const drag = useRef<{ pointer: number; index: number } | null>(null);
+  // The native range keeps following a held pointer after a cancel (blur, lost
+  // capture), so its moves must be dropped until the pointer is released.
+  const held = useRef(false);
   const wheel = useRef({ delta: 0, time: 0 });
   const index = Math.max(0, Math.min(tiers.length - 1, preview ?? selected));
   const percent = tiers.length > 1 ? (index / (tiers.length - 1)) * 100 : 0;
@@ -57,6 +60,17 @@ export function ReasoningEffortSlider<T extends string>({
     setPreview(null);
   }
   useEffect(cancel, [signature, value, inactive]);
+  useEffect(() => {
+    const release = () => {
+      held.current = false;
+    };
+    window.addEventListener('pointerup', release, true);
+    window.addEventListener('pointercancel', release, true);
+    return () => {
+      window.removeEventListener('pointerup', release, true);
+      window.removeEventListener('pointercancel', release, true);
+    };
+  }, []);
 
   function commit(next: number) {
     const tier = tiers[Math.max(0, Math.min(tiers.length - 1, next))];
@@ -203,6 +217,7 @@ export function ReasoningEffortSlider<T extends string>({
                 event.currentTarget.focus();
                 event.currentTarget.setPointerCapture(event.pointerId);
                 drag.current = { pointer: event.pointerId, index };
+                held.current = true;
                 setPressed(true);
               }}
               onChange={(event) => {
@@ -210,7 +225,7 @@ export function ReasoningEffortSlider<T extends string>({
                 if (drag.current) {
                   drag.current.index = next;
                   setPreview(next);
-                } else commit(next);
+                } else if (!held.current) commit(next);
               }}
               onPointerUp={(event) => {
                 if (drag.current?.pointer !== event.pointerId) return;

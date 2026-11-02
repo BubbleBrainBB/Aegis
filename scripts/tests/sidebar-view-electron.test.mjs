@@ -107,7 +107,10 @@ app.whenReady().then(async()=>{
   await screenshot('1-project');
 
   // The menu drives the same store; Group by -> State from the submenu.
+  // The runner sometimes loses a synthetic press: open the menu again if it never appeared.
+  const menuOpen=async()=>{for(let i=0;i<40;i++){if(await js(byText('Show PR status')+'!==undefined'))return true;await delay(50)}return false};
   await click('document.querySelector("[aria-label^=\\\\"View options\\\\"]")');
+  if(!await menuOpen()){await click('document.querySelector("[aria-label^=\\\\"View options\\\\"]")');await menuOpen();}
   for(const label of ['Status','Project','Last activity','Group by','Sort by','Show PR status'])assert.equal(await js(byText(label)+'!==undefined'),true,'menu row '+label);
   await hover(byText('Group by'));
   await screenshot('2-menu');

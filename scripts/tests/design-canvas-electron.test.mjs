@@ -274,7 +274,7 @@ assert(blocked.isError&&blocked.content.includes('already has a design')&&blocke
 assert.equal(repo.list(a).length,1,'nothing created without separate');
 const separate=await call('design_create',{title:'Pricing page',operationId:'second-design',separate:true});
 assert.equal(repo.list(a).length,2,'separate: true creates a second design');
-let ctx2='';for(let i=0;i<40&&!ctx2.includes('Pricing page');i++){await delay(50);ctx2=designContextText(a)}
+let ctx2='';for(let i=0;i<40&&!ctx2.includes('Open: "Pricing page"');i++){await delay(50);ctx2=designContextText(a)}
 assert(ctx2.includes('Open: "Pricing page" (documentId '+separate.id)&&ctx2.includes('Other designs in this conversation: "Fieldnotes"'),ctx2);
 const retried=await tools.find(t=>t.name==='design_create').execute({title:'Pricing page',operationId:'second-design'},{});assert(!retried.isError&&JSON.parse(retried.content).id===separate.id,'a retried create returns the same design: '+retried.content);
 const boardsBefore=repo.read(a,d.id).boards.length;abort.abort();const stopped=await tools.find(t=>t.name==='design_update').execute({documentId:d.id,operationId:'cancelled',operations:[{type:'add',name:'Late'}]},{abortSignal:abort.signal});assert(stopped.isError);assert.equal(repo.read(a,d.id).boards.length,boardsBefore,'a stopped turn adds no board');

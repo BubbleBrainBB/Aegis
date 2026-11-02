@@ -128,11 +128,11 @@ app.whenReady().then(async()=>{
   assert.equal(await js('!!document.querySelector("[data-settings-label=\\"UI Font Override\\"]")'),false);
   await click('[aria-label="Import Light Theme"]');
   await js('var area=document.querySelector("textarea[aria-label=\\"Theme configuration\\"]");Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,"value").set.call(area,"invalid");area.dispatchEvent(new Event("input",{bubbles:true}))');
-  await js('Array.from(document.querySelectorAll("[role=dialog] button")).find(el=>el.textContent==="Import").click()');await delay(100);
-  assert(await js('!!document.querySelector("[role=dialog] [role=alert]")'),'invalid import stays open with error');
+  await js('Array.from(document.querySelectorAll("[role=dialog] button")).find(el=>el.textContent==="Import").click()');
+  await until('!!document.querySelector("[role=dialog] [role=alert]")','invalid import stays open with error');
   await js('var area=document.querySelector("textarea[aria-label=\\"Theme configuration\\"]");Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,"value").set.call(area,qa.share());area.dispatchEvent(new Event("input",{bubbles:true}))');
-  await js('Array.from(document.querySelectorAll("[role=dialog] button")).find(el=>el.textContent==="Import").click()');await delay(100);
-  assert.equal(await js('!!document.querySelector("[role=dialog]")'),false);
+  await js('Array.from(document.querySelectorAll("[role=dialog] button")).find(el=>el.textContent==="Import").click()');
+  await until('!document.querySelector("[role=dialog]")','valid import closes the dialog');
   await click('[aria-label="Light Theme UI font"]');
   await text('[aria-label="Search fonts"]','Menlo');await shot('appearance-font-menu');
   await key();

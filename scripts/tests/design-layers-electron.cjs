@@ -192,26 +192,35 @@ exports.run = async ({ w, js, repo, sessionId, documentId, screenshotDir }) => {
   // being replaced: click again until the inspector shows the text color.
   const pickerShown = () =>
     js('!!document.querySelector(\'[aria-label="Color color picker"]\')');
-  for (let attempt = 0; attempt < 3 && !(await pickerShown()); attempt++) {
+  for (let attempt = 0; attempt < 12 && !(await pickerShown()); attempt++) {
     await js(
       '[...document.querySelectorAll(".design-layer-name")].find(b=>b.title==="Hero title")?.click()',
     );
-    for (let i = 0; i < 40 && !(await pickerShown()); i++) await delay(50);
+    for (let i = 0; i < 20 && !(await pickerShown()); i++) await delay(50);
   }
-  await until(pickerShown, "color picker beside the text color");
+  assert(
+    await pickerShown(),
+    "color picker beside the text color; layers: " +
+      (await js(
+        'JSON.stringify([...document.querySelectorAll(".design-layer-name")].map(b=>b.title))+" inspector: "+document.querySelector(".design-inspector")?.innerText.slice(0,300)',
+      )),
+  );
   fs.writeFileSync(
     path.join(screenshotDir, "design-layers.png"),
     (await w.webContents.capturePage()).toPNG(),
   );
   // The tree lives in the Properties panel now: hide the panel to get it out of the way.
   await click('[aria-label="Hide inspector"]');
-  await js('document.querySelector(".design-viewport").focus()');
-  w.webContents.sendInputEvent({ type: "keyDown", keyCode: "Return" });
-  w.webContents.sendInputEvent({ type: "keyUp", keyCode: "Return" });
-  await until(
-    () => js('!!document.querySelector(".design-inline-text")'),
-    "Enter edits the selected text in place",
-  );
+  // Enter can be lost while the panel closes: press again until the editor opens.
+  const editing = () => js('!!document.querySelector(".design-inline-text")');
+  for (let attempt = 0; attempt < 5 && !(await editing()); attempt++) {
+    w.focus();
+    await js('document.querySelector(".design-viewport").focus()');
+    w.webContents.sendInputEvent({ type: "keyDown", keyCode: "Return" });
+    w.webContents.sendInputEvent({ type: "keyUp", keyCode: "Return" });
+    for (let i = 0; i < 20 && !(await editing()); i++) await delay(50);
+  }
+  await until(editing, "Enter edits the selected text in place");
   assert.equal(
     await js('document.querySelector(".design-inline-text").textContent'),
     "A layer you can edit",

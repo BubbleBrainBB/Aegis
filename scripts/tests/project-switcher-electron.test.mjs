@@ -57,15 +57,17 @@ app.whenReady().then(async()=>{
  const js = async code => {try {return await win.webContents.executeJavaScript(code,true);}catch(e){throw new Error(code+' :: '+e.message);}};
  win.webContents.on('console-message',event=>{if(event.level==='error')console.error(event.message);});
  const click = async selector => {await js('document.querySelector('+JSON.stringify(selector)+').click()');await delay(160);};
+ const until = async (code,label) => {for(let i=0;i<100;i++){if(await js(code))return;await delay(50);}throw new Error('Timed out: '+label);};
+ const searchFocused = () => until('document.activeElement?.getAttribute("aria-label")==="Search projects"','project search takes focus');
  try {
   await win.loadURL(process.env.QA_URL);
   for(let i=0;i<150;i++){if(await js('!!window.qa && !!document.querySelector("h1")'))break;await delay(100);}
   // Collapse destination first: selecting it must reveal its New chat again.
   await js('Array.from(document.querySelectorAll("button")).find(b=>b.textContent.trim()==="Beta").click()');
   await click('[aria-label="Switch project: Alpha"]');
-  assert.equal(await js('document.activeElement.getAttribute("aria-label")'),'Search projects');
-  await win.webContents.insertText('Beta'); await delay(150);
-  assert.equal(await js('document.querySelectorAll("[cmdk-item][title]").length'),1);
+  await searchFocused();
+  await win.webContents.insertText('Beta');
+  await until('document.querySelectorAll("[cmdk-item][title]").length===1','search filters to one project');
   await win.webContents.sendInputEvent({type:'keyDown',keyCode:'Enter'});await win.webContents.sendInputEvent({type:'keyUp',keyCode:'Enter'});await delay(250);
   const beta=await js('qa.snapshot()');
   assert.equal(beta.cwd,'/projects/Beta');assert.equal(beta.active.channelId,'beta-channel');assert.equal(beta.selected,undefined,'an unsent chat has no row');assert.equal(beta.draftCount,1);assert.equal(beta.oldExists,true);
@@ -79,10 +81,11 @@ app.whenReady().then(async()=>{
   const alpha=await js('qa.snapshot()');assert.equal(alpha.active.channelId,'alpha-channel');assert.equal(alpha.draftCount,1);assert.equal(alpha.oldExists,true);assert.equal(alpha.selected,undefined,'an unsent chat has no row');
   // Escape closes, no-match state works, cancelling browse preserves selection.
   await click('[aria-label="Switch project: Alpha"]');
-  await win.webContents.insertText('missing-project');await delay(100);
-  assert.equal(await js('document.body.textContent.includes("No projects found")'),true);
-  await win.webContents.sendInputEvent({type:'keyDown',keyCode:'Escape'});await delay(150);
-  assert.equal(await js('!!document.querySelector("[aria-label^=Search]")'),false);
+  await searchFocused();
+  await win.webContents.insertText('missing-project');
+  await until('document.body.textContent.includes("No projects found")','no-match state');
+  await win.webContents.sendInputEvent({type:'keyDown',keyCode:'Escape'});
+  await until('!document.querySelector("[aria-label^=Search]")','Escape closes the picker');
   await click('[aria-label="Switch project: Alpha"]');
   await js('window.browseResult=null');await click('[cmdk-item][data-value="__browse_project__"]');
   assert.equal((await js('qa.snapshot()')).active.id,alpha.active.id);

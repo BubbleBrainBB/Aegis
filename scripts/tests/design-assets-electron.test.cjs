@@ -125,7 +125,7 @@ app.whenReady().then(async () => {
     console.error(error);
     code = 1;
   } finally {
-    fs.rmSync(temp, { recursive: true, force: true });
+    try { fs.rmSync(temp, { recursive: true, force: true }); } catch {}
     app.exit(code);
   }
 });
