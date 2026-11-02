@@ -51,6 +51,7 @@ import { ComputerUseGrantBadge, ComputerUseLiveHud } from './ComputerUseLiveHud'
 import { ErrorBoundary } from './ErrorBoundary';
 import { TurnChangesCard } from './TurnChangesCard';
 import { DesignChatCard } from './design/DesignChatCard';
+import { DesignBoardLinksContext, DesignLinkSessionContext, designBoardLinksOf } from '../utils/design-board-links';
 import { designChangesInMessages, type DesignTurnChange } from '../utils/design-entries';
 import { followUpCallsInMessages, type FollowUpCall } from '../utils/follow-up-entries';
 import { findProposalForChild, useFollowUpStore } from '../store/useFollowUpStore';
@@ -1414,10 +1415,22 @@ export function ChatPane({
         session.messages.slice(turn.firstMessageIndex, turn.lastMessageIndex + 1),
         toolResultsMap
       );
-      if (changes.length) map.set(index, changes);
+      if (!changes.length) continue;
+      // The row leads the turn's answer, which may be followed by its result message.
+      let at = index;
+      for (let i = index; i >= 0; i -= 1) {
+        const item = timelineItems[i];
+        if (item.type !== 'message') continue;
+        if (item.originalIndex < turn.firstMessageIndex) break;
+        if (item.assistantPresentation === 'answer') {
+          at = i;
+          break;
+        }
+      }
+      map.set(at, changes);
     }
     return map;
-  }, [turnEndByTimelineIndex, session?.messages, toolResultsMap]);
+  }, [turnEndByTimelineIndex, timelineItems, session?.messages, toolResultsMap]);
 
   // Follow-up tasks a finished turn proposed: shown after its answer, not where the call was made.
   const followUpCardsByTimelineIndex = useMemo(() => {
@@ -1916,6 +1929,7 @@ export function ChatPane({
   };
 
   return (
+    <DesignLinkSessionContext.Provider value={sessionId}>
     <div
       className={`relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden transition-colors ${
         isActive ? 'bg-[var(--chat-pane-surface)]' : 'bg-[var(--chat-pane-surface-muted)]'
@@ -2210,6 +2224,11 @@ export function ChatPane({
                     : '';
                   const hideAssistantCopyBar = copyPlacementByTimelineIndex.hiddenMessageIndices.has(idx);
                   const showTurnChangesCard = Boolean(turnCard) && !item.inlineWorkGroup;
+                  // The design row leads the answer, which links the boards it names.
+                  const answerFollowsDesign = item.assistantPresentation === 'answer';
+                  const designBoardLinks = answerFollowsDesign && designChanges?.length
+                    ? JSON.stringify(designBoardLinksOf(designChanges))
+                    : '';
                   return (
                     <div key={`message-${item.originalIndex}`} className={copyActionText ? 'group' : undefined}>
                       <div
@@ -2227,7 +2246,9 @@ export function ChatPane({
                             : undefined
                         }
                       >
+                        {answerFollowsDesign ? designCards : null}
                         {turnMediaGallery}
+                        <DesignBoardLinksContext.Provider value={designBoardLinks}>
                         <MessageCard
                           sessionId={sessionId}
                           message={item.message}
@@ -2305,6 +2326,7 @@ export function ChatPane({
                               : undefined
                           }
                         />
+                        </DesignBoardLinksContext.Provider>
                         {item.inlineWorkGroup ? (
                           <div className="-mt-1 pl-1">
                             <ToolExecutionBatch
@@ -2320,7 +2342,7 @@ export function ChatPane({
                           </div>
                         ) : null}
                       </div>
-                      {designCards}
+                      {answerFollowsDesign ? null : designCards}
                       {showTurnChangesCard && turnCard ? <TurnChangesCard summary={turnCard} /> : null}
                       {followUpCards}
                       {copyActionText ? <AssistantCopyAction text={copyActionText} /> : null}
@@ -2441,6 +2463,7 @@ export function ChatPane({
         </>
       )}
     </div>
+    </DesignLinkSessionContext.Provider>
   );
 }
 

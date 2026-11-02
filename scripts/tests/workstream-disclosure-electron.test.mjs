@@ -25,7 +25,7 @@ window.electron = {
  getSessionGoal:async()=>({goal:null,supported:false,revision:0}),onSessionGoalChanged:()=>()=>{},
  getBubbleProvidersConfig:async()=>({providers:[]}),
  getProjectFolders:async()=>[],getModels:async()=>[],
- design:{read:async({documentId})=>({id:documentId,title:'Lift log',revision:3,boards:[{id:'b-home',name:'Home · today',x:0,y:0,width:390,height:844,html:'<main>Home</main>',contentRevision:2,placementRevision:1},{id:'b-new',name:'Workout · in progress',x:480,y:0,width:390,height:844,html:'<main>Workout</main>',contentRevision:1,placementRevision:1}]}),onChanged:()=>()=>{}},
+ design:{read:async({sessionId,documentId})=>(window.lastDesignRead=sessionId,{id:documentId,title:'Lift log',revision:3,boards:[{id:'b-home',name:'Home · today',x:0,y:0,width:390,height:844,html:'<main>Home</main>',contentRevision:2,placementRevision:1},{id:'b-new',name:'Workout · in progress',x:480,y:0,width:390,height:844,html:'<main>Workout</main>',contentRevision:1,placementRevision:1}]}),onChanged:()=>()=>{}},
  readProjectFilePreview:async()=>{const c=document.createElement('canvas');c.width=320;c.height=240;const x=c.getContext('2d');x.fillStyle='#c5d2bf';x.fillRect(0,0,320,240);return {kind:'image',dataUrl:c.toDataURL()}},
 };
 for(const p of ['Claude','Kimi','Grok','Opencode','Pi','Bubble','Qoder','Deepseek','Devin','Mimo','Minimax','Codex'])window.electron['get'+p+'ModelConfig']=async()=>({defaultModel:null,options:[],availableModels:[]});
@@ -56,6 +56,15 @@ function App(){
  const [n,setN]=useState(10),[running,setRunning]=useState(true),[turn,setTurn]=useState(1),[states,setStates]=useState(false),[chat,setChat]=useState(false),[label,setLabel]=useState('Reading first.ts'),[labelActive,setLabelActive]=useState(true),[shellDone,setShellDone]=useState(false);
  window.qa={emit,
   designFocus:()=>{const f=useDesignStore.getState().focusRequest;return f?f.documentId+':'+f.boardId:null},
+  clearDesignFocus:()=>useDesignStore.setState({focusRequest:null}),
+  designFocusSession:()=>useDesignStore.getState().focusRequest?.sessionId===chatId,
+  designReadSession:()=>window.lastDesignRead===chatId,
+  streamBoardLink:()=>{
+   store.setState(s=>({sessions:{...s.sessions,[chatId]:{...s.sessions[chatId],provider:'claude',status:'running',messages:[{...prompt,createdAt:1007}],streaming:{isStreaming:false,text:'',thinking:''}}}}));
+   emit({type:'stream_event',event:{type:'content_block_start',index:0,content_block:{type:'text',text:''}}});
+   emit({type:'stream_event',event:{type:'content_block_delta',index:0,delta:{type:'text_delta',text:'Now on [Workout](aegis://designs/doc-1/b-new) next.'}}});
+  },
+  activateOtherSession:(other)=>{const a=store.getState().activeSessionId;store.setState({activeSessionId:other?'some-other-session':chatId});return a},
   persistedRetryTurn:()=>{retryTracker.reset();retryHistory=[];store.setState(s=>({sessions:{...s.sessions,[chatId]:{...s.sessions[chatId],provider:'claude',status:'running',messages:[],streaming:{isStreaming:false,text:'',thinking:''}}}}));emitTracked({...prompt,createdAt:Date.now()});emitTracked({...thought,createdAt:Date.now(),agentId:'qa-profile',agentRunId:'qa-run'});emitTracked({type:'stream_event',event:{type:'content_block_delta',index:0,delta:{type:'thinking_delta',thinking:'Durable reasoning before retry'}}});emitTracked({type:'system',subtype:'api_retry',uuid:'durable-retry',session_id:chatId,attempt:1,maxRetries:10,delayMs:500,errorStatus:null})},
   reloadRetryHistory:(status='running')=>store.getState().handleServerEvent({type:'session.history',payload:{sessionId:chatId,status,messages:JSON.parse(JSON.stringify(retryHistory))}}),
   resumeTracked:()=>emitTracked({type:'stream_event',event:{type:'content_block_delta',index:0,delta:{type:'thinking_delta',thinking:'Recovered reasoning'}}}),
@@ -71,13 +80,14 @@ function App(){
    const messages=[{...prompt,createdAt:provider==='grok'?1001:1002},{...thought,uuid:provider+'-image-thought'},imageTool,imageResult,...(stage==='generated'?[]:[reply]),...(stage==='completed'?[{type:'result',subtype:'success',duration_ms:19000,total_cost_usd:0,usage:{input_tokens:1,output_tokens:1}}]:[])];
    store.setState(s=>({sessions:{...s.sessions,[chatId]:{...s.sessions[chatId],provider,status:stage==='completed'?'completed':'running',messages}}}));
   },
-  designTurn:(provider,stage)=>{
-   const update={type:'assistant',uuid:'design-tool',createdAt:1200,message:{content:[{type:'tool_use',id:'design-edit',name:'mcp__aegis-sessions__design_update',input:{documentId:'doc-1',operationId:'op',operations:[{type:'content',boardId:'b-home',expectedRevision:1,html:'<main>Home</main>'},{type:'add',name:'Workout · in progress',html:'<main>Workout</main>'}]}}]}};
-   const json='{"id":"doc-1","boards":[{"id":"b-home"},{"id":"b-new"}]}';
+  designTurn:(provider,stage,onlyHome=false)=>{
+   const edit={type:'content',boardId:'b-home',expectedRevision:1,html:'<main>Home</main>'};
+   const update={type:'assistant',uuid:'design-tool',createdAt:1200,message:{content:[{type:'tool_use',id:'design-edit',name:'mcp__aegis-sessions__design_update',input:{documentId:'doc-1',operationId:'op',operations:onlyHome?[edit]:[edit,{type:'add',name:'Workout · in progress',html:'<main>Workout</main>'}]}}]}};
+   const json='{"id":"doc-1","boards":[{"id":"b-home","name":"Home · today"},{"id":"b-new","name":"Workout · in progress"}]}';
    // Claude-style agents return content parts; others a plain string.
    const done={type:'user',uuid:'design-result',createdAt:1400,message:{content:[{type:'tool_result',tool_use_id:'design-edit',content:provider==='grok'?[{type:'text',text:json}]:json}]}};
-   const reply={type:'assistant',uuid:'design-reply',createdAt:1800,...(provider==='codex'?{phase:'final_answer'}:{}),message:{content:[{type:'text',text:'The home board is ready.'}]}};
-   const messages=[{...prompt,createdAt:provider==='grok'?1005:1006},{...thought,uuid:provider+'-design-thought'},update,done,...(stage==='running'?[]:[reply])];
+   const reply={type:'assistant',uuid:'design-reply',createdAt:1800,...(provider==='codex'?{phase:'final_answer'}:{}),message:{content:[{type:'text',text:'The home board is ready. **Workout · in progress** is new, \`Home · today\` is code, Home · today changed, Home · today again. See [Gone](aegis://designs/doc-1/b-gone).'}]}};
+   const messages=[{...prompt,createdAt:provider==='grok'?1005:1006},{...thought,uuid:provider+'-design-thought'},update,done,...(stage==='running'?[]:[reply]),...(stage==='completed'?[{type:'result',subtype:'success',duration_ms:19000,total_cost_usd:0,usage:{input_tokens:1,output_tokens:1}}]:[])];
    store.setState(s=>({sessions:{...s.sessions,[chatId]:{...s.sessions[chatId],provider,status:stage==='completed'?'completed':'running',messages}}}));
   },
   readingTurn:(resolved=false)=>store.setState(s=>({sessions:{...s.sessions,[chatId]:{...s.sessions[chatId],provider:'codex',status:'running',messages:[{...prompt,createdAt:1003},thought,read,...(resolved?[result]:[])]}}})),
@@ -267,16 +277,37 @@ app.whenReady().then(async()=>{
    assert.equal(await js('!!document.querySelector("#real-chat [data-design-card]")'),false,provider+': no design card while the turn runs');
    await js('qa.designTurn('+JSON.stringify(provider)+',"completed")');
    await until('document.querySelector("#real-chat [data-design-card=doc-1]")?.textContent.includes("Lift log")','design card when the turn ends');
-   assert(await js('document.querySelector("#real-chat [data-design-card=doc-1]").textContent.startsWith("Added 1 board · Updated 1 · Lift log")'),provider+': the card sums up what the turn did');
-   assert.deepEqual(await js('[...document.querySelectorAll("#real-chat [data-design-board-chip]")].map(c=>c.dataset.designBoardChip)'),['b-new','b-home'],provider+': a chip per touched board, added first');
-   await click('#real-chat [data-design-board-chip=b-new]');
-   assert.equal(await js('qa.designFocus()'),'doc-1:b-new',provider+': a chip asks the canvas to show that board');
+   assert.equal(await js('document.querySelector("#real-chat [data-design-card=doc-1]").textContent'),'Lift logPublished',provider+': several boards: the row names the design');
+   assert.equal(await js('document.querySelectorAll("#real-chat [data-design-card=doc-1] button").length'),1,provider+': one row per design');
+   assert.deepEqual(await js('[...document.querySelectorAll("#real-chat .md-design-link")].map(a=>a.getAttribute("href").split("/").pop()+":"+a.textContent)'),['b-new:Workout · in progress','b-home:Home · today','b-gone:Gone'],provider+': the first mention of each touched board becomes a link; code stays as written');
+   await js('qa.clearDesignFocus()');
+   await click('#real-chat .md-design-link[href$="/b-gone"]');await delay(100);
+   assert.equal(await js('qa.designFocus()'),null,provider+': a link to a deleted board shows nothing');
+   // The Design dock shows a chat without activating its session.
+   await js('qa.activateOtherSession(true)');
+   await click('#real-chat .md-design-link[href$="/b-new"]');
+   await until('qa.designFocus()==="doc-1:b-new"',provider+': a board link in the reply asks the canvas to show that board');
+   assert.equal(await js('qa.designFocusSession()'),true,provider+': a board link belongs to the chat it is shown in, not the active session');
+   await js('qa.activateOtherSession(false)');
+   await shot('design-link-'+provider);
    assert.equal(await js('document.querySelector("#real-chat .workstream-toggle-row button")?.getAttribute("aria-expanded")'),'false',provider+': completed design turn collapses its trace');
-   assert(await js('(()=>{const card=document.querySelector("#real-chat [data-design-card]"),reply=[...document.querySelectorAll("#real-chat p")].find(p=>p.textContent.startsWith("The home board is ready."));const r=card.getBoundingClientRect();return !!reply&&r.height>0&&r.top>=reply.getBoundingClientRect().bottom})()'),provider+': design card shows after the reply, outside the collapsed trace');
+   assert(await js('(()=>{const card=document.querySelector("#real-chat [data-design-card]"),reply=[...document.querySelectorAll("#real-chat p")].find(p=>p.textContent.startsWith("The home board is ready."));const r=card.getBoundingClientRect();return !!reply&&r.height>0&&r.bottom<=reply.getBoundingClientRect().top})()'),provider+': the design row leads the reply, outside the collapsed trace');
    await click('#real-chat .workstream-toggle-row button');
    assert.equal(await js('document.querySelectorAll("#real-chat [data-design-card]").length'),1,provider+': opening the trace does not duplicate the card');
    await shot('design-card-'+provider);
+   await js('qa.clearDesignFocus();qa.designTurn('+JSON.stringify(provider)+',"completed",true)');
+   await until('document.querySelector("#real-chat [data-design-card=doc-1]")?.textContent==="Home · todayPublished"',provider+': one touched board names that board');
+   await click('#real-chat [data-design-card=doc-1] button');
+   assert.equal(await js('qa.designFocus()'),'doc-1:b-home',provider+': the row shows the one board it names');
   }
+  // A reply still streaming in renders outside the timeline: its links belong to this chat too.
+  await js('qa.clearDesignFocus();qa.activateOtherSession(true);window.lastDesignRead=null;qa.streamBoardLink()');
+  await until('!!document.querySelector("#real-chat .streaming-content .md-design-link")','a board link in the streaming reply');
+  await click('#real-chat .streaming-content .md-design-link');
+  await until('qa.designFocus()==="doc-1:b-new"','a streaming board link asks the canvas to show that board');
+  assert.equal(await js('qa.designReadSession()'),true,'a streaming board link reads through the chat it is shown in');
+  assert.equal(await js('qa.designFocusSession()'),true,'a streaming board link focuses for the chat it is shown in');
+  await js('qa.activateOtherSession(false)');
   assert.deepEqual(errors,[],'renderer console errors');
   // Real ChatPane + real store: trace visibility must never suppress retry status.
   for(const withTools of [false,true]){

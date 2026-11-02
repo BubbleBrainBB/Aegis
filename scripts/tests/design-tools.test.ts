@@ -6,6 +6,9 @@ import { designGuideText } from '../../src/electron/design/guide';
 import { DESIGN_STARTER_KINDS, designStarter, designStarterText } from '../../src/electron/design/starters';
 import { looksEscapedMarkup, sanitizeDesignHtml } from '../../src/shared/design-html';
 import { readDesignLayers, type DesignLayer } from '../../src/shared/design-layers';
+import { parseDesignLink } from '../../src/shared/design-links';
+import { designBoardLinksOf, remarkDesignBoardLinks } from '../../src/ui/utils/design-board-links';
+import { designChangesInMessages } from '../../src/ui/utils/design-entries';
 import type { StreamMessage } from '../../src/shared/types';
 
 // Names: bare or namespaced by Aegis's own servers; another server's look-alike is not ours.
@@ -119,5 +122,44 @@ assert.match(all, /whole-page directions; a question about one part of a screen 
 assert.match(all, /on an option sheet, matching cards and letter ids are its structure/);
 assert.match(starterText, /Leave the board itself white/);
 assert.doesNotMatch(starterText, /quiet backdrop|soft neutral/);
+
+// Board links: the whole value is the link; nothing else in it gets read.
+assert.deepEqual(parseDesignLink('aegis://designs/des_1-a/brd_2'), { documentId: 'des_1-a', boardId: 'brd_2' });
+for (const link of ['aegis://designs/des_1', 'aegis://designs/des_1/brd_2/x', 'aegis://designs/des_1/brd_2?x=1', 'aegis://sessions/des_1/brd_2', 'https://designs/des_1/brd_2']) {
+  assert.equal(parseDesignLink(link), null, link);
+}
+assert.match(all, /\[Board name\]\(aegis:\/\/designs\/<documentId>\/<boardId>\)/);
+
+// A turn's boards in its answer: first mention only, whole words, longest name first, Chinese without spaces.
+const linkBoards = (value: string, names: string[]) => {
+  const tree = { type: 'root', children: [{ type: 'text', value }] };
+  remarkDesignBoardLinks(names.map((name, i) => ({ name, documentId: 'd', boardId: `b${i}` })))(tree);
+  return tree.children.map((node: { type: string; value?: string; url?: string }) => (node.type === 'link' ? `<${node.url!.split('/').pop()}>` : node.value)).join('');
+};
+assert.equal(linkBoards('Home and Home again', ['Home']), '<b0> and Home again');
+assert.equal(linkBoards('Homepage, then Home', ['Home']), 'Homepage, then <b0>');
+assert.equal(linkBoards('Home · today, Home', ['Home', 'Home · today']), '<b1>, <b0>');
+assert.equal(linkBoards('画好了，在画布里叫任务行提示。', ['任务行提示']), '画好了，在画布里叫<b0>。');
+assert.equal(linkBoards('A board is ready', ['A']), 'A board is ready');
+
+// Which boards may be linked by name: never one of two with the same name, or one removed since.
+const designCall = (id: string, operations: unknown[]) => [
+  { type: 'assistant', message: { content: [{ type: 'tool_use', id, name: 'design_update', input: { documentId: 'd', operations } }] } },
+] as unknown as StreamMessage[];
+const designResults = (entries: Array<[string, Array<{ id: string; name: string }>]>) =>
+  new Map(entries.map(([id, boards]) => [id, { type: 'tool_result', tool_use_id: id, content: JSON.stringify({ boards }) }])) as never;
+const twins = [{ id: 'desktop', name: 'Home' }, { id: 'mobile', name: 'Home' }, { id: 'cart', name: 'Cart' }];
+assert.deepEqual(
+  designBoardLinksOf(designChangesInMessages(designCall('c1', [{ type: 'patch', boardId: 'desktop' }, { type: 'patch', boardId: 'cart' }]), designResults([['c1', twins]]))),
+  [{ name: 'Cart', documentId: 'd', boardId: 'cart' }],
+);
+const recreated = [
+  ...designCall('c1', [{ type: 'add', name: 'Home' }]),
+  ...designCall('c2', [{ type: 'remove', boardId: 'old' }, { type: 'add', name: 'Home' }]),
+];
+assert.deepEqual(
+  designBoardLinksOf(designChangesInMessages(recreated, designResults([['c1', [{ id: 'old', name: 'Home' }]], ['c2', [{ id: 'new', name: 'Home' }]]]))),
+  [{ name: 'Home', documentId: 'd', boardId: 'new' }],
+);
 
 console.log('design-tools: names, attribution matching, trace wording, guide, starter frames and escaped markup passed');

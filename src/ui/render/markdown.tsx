@@ -2,6 +2,7 @@ import { ImageStudioSessionContext, openImageStudio } from '../lib/image-studio'
 import { isValidElement, memo, useContext, useEffect, useMemo, useState, type MouseEvent, type ReactNode } from 'react';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import { parseSessionLink } from '../../shared/session-links';
+import { parseDesignLink } from '../../shared/design-links';
 import rehypeRaw from 'rehype-raw';
 import rehypeKatex from 'rehype-katex';
 import rehypeSanitize from 'rehype-sanitize';
@@ -18,8 +19,9 @@ import { ErrorBoundary } from '../components/ErrorBoundary';
 import { FileTypeIcon } from '../components/FileTypeIcon';
 import { HighlightedCode } from '../components/HighlightedCode';
 import { useAppStore } from '../store/useAppStore';
+import { openDesignLink } from '../store/useDesignStore';
 import { isHtmlFilePath, openHtmlFileInBrowserTab } from '../utils/html-preview';
-import { Globe } from '../components/icons';
+import { Globe, Palette } from '../components/icons';
 import { faviconUrlForHostname, isFaviconPlaceholder } from '../utils/link-favicons';
 import { resolveProjectFileReference } from '../utils/project-file-navigation';
 import { pickProjectFileMatch } from '../components/ProjectFileMatchDialog';
@@ -30,6 +32,7 @@ import {
   stripGeneratedMediaEmbeds,
 } from '../utils/generated-media';
 import { markdownRemarkPlugins } from '../utils/markdown-math';
+import { DesignBoardLinksContext, DesignLinkSessionContext, remarkDesignBoardLinks } from '../utils/design-board-links';
 
 async function statProjectFile(cwd: string, relativePath: string): Promise<string | null> {
   try {
@@ -564,6 +567,7 @@ function MarkdownAnchor({
 }) {
   const { cwd, roots, openProjectFile } = useProjectFileNavigation();
   const projectFile = getProjectFileLink(href, roots);
+  const chatSessionId = useContext(DesignLinkSessionContext);
 
   const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
     if (!projectFile || (!cwd && !projectFile.external)) return;
@@ -580,6 +584,15 @@ function MarkdownAnchor({
         if (!result.ok) toast.error(result.message || 'Could not open conversation');
       }).catch(() => toast.error('Could not open conversation'));
     }}><span className="md-link-label">{children}</span></a>;
+  }
+
+  const designLink = href ? parseDesignLink(href) : null;
+  if (designLink) {
+    return <a href={href} className="md-app-link md-design-link" onClick={event => {
+      event.preventDefault();
+      const sessionId = chatSessionId ?? useAppStore.getState().activeSessionId;
+      if (sessionId) void openDesignLink(sessionId, designLink.documentId, designLink.boardId);
+    }}><Palette className="md-file-link-icon" aria-hidden="true" /><span className="md-link-label">{children}</span></a>;
   }
 
   if (projectFile) {
@@ -868,6 +881,13 @@ function MDContentImpl({ content, className = '', allowHtml = false }: MDContent
     [content, generatedMedia]
   );
   const disallowedElements = ['script', 'style', 'iframe', 'object', 'embed', 'link', 'meta', 'base'];
+  const designBoardLinks = useContext(DesignBoardLinksContext);
+  const remarkPlugins = useMemo(
+    () => designBoardLinks
+      ? [...markdownRemarkPlugins, [remarkDesignBoardLinks, JSON.parse(designBoardLinks)] as never]
+      : markdownRemarkPlugins,
+    [designBoardLinks]
+  );
 
   const rehypePlugins = useMemo(() => {
     const plugins: Parameters<typeof ReactMarkdown>[0]['rehypePlugins'] = allowHtml
@@ -891,8 +911,8 @@ function MDContentImpl({ content, className = '', allowHtml = false }: MDContent
     <div className={`markdown-content ${className}`}>
       <ErrorBoundary fallback={fallback} resetKey={renderedContent}>
         <ReactMarkdown
-          urlTransform={url => parseSessionLink(url) ? url : defaultUrlTransform(url)}
-          remarkPlugins={markdownRemarkPlugins}
+          urlTransform={url => parseSessionLink(url) || parseDesignLink(url) ? url : defaultUrlTransform(url)}
+          remarkPlugins={remarkPlugins}
           rehypePlugins={rehypePlugins}
           disallowedElements={disallowedElements}
           unwrapDisallowed={true}

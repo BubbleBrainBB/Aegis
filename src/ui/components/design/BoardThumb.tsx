@@ -9,7 +9,7 @@ import type { DesignBoard } from "../../../shared/design-types";
  * A board drawn small and inert, scaled to fit, in a script-free frame: a
  * design component is drawn from its props without running any of its code
  * (thumbnails are everywhere; board logic runs only on the canvas and in Play).
- * For library rows and chat cards, never editing.
+ * For library rows, never editing.
  */
 export const BoardThumb = memo(function BoardThumb({
   board,
