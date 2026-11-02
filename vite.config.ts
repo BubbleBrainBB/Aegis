@@ -14,7 +14,9 @@ export default defineConfig({
       // server must not react to those files (they have their own server).
       // Isolated-copy threads check a full worktree out under .worktrees/ —
       // its tsconfig.json alone makes Vite force a full-reload of the app.
-      ignored: ['**/dev-fixtures/**', '**/.worktrees/**'],
+      // Only this checkout's own: when the app runs from inside a worktree, its
+      // absolute path holds .worktrees too, and every source file would be ignored.
+      ignored: ['**/dev-fixtures/**', `${process.cwd()}/.worktrees/**`],
     },
   },
   optimizeDeps: {
