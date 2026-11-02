@@ -1,3 +1,4 @@
+import { START_SESSION_TOOL } from '../../shared/follow-up';
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'http';
 import { createHmac, randomUUID, timingSafeEqual } from 'crypto';
 import { buildSessionMcpServer, SESSION_MCP_SERVER_NAME, type SessionMetaResolver } from './session-mcp';
@@ -148,7 +149,7 @@ export async function getSessionReaderHttpConfig(scope: { sessionId?: string; re
  */
 export async function writeKimiWidgetEntry(): Promise<void> {
   const info = await ensureSessionHttpServer();
-  kimiWidgetUrl = `${info.url}?tools=${[SHOW_WIDGET_TOOL, WIDGET_GUIDE_TOOL, ...DESIGN_TOOL_NAMES].join(',')}`;
+  kimiWidgetUrl = `${info.url}?tools=${[SHOW_WIDGET_TOOL, WIDGET_GUIDE_TOOL, START_SESSION_TOOL, ...DESIGN_TOOL_NAMES].join(',')}`;
   upsertKimiMcpServerRaw(KIMI_WIDGET_SERVER_NAME, { url: kimiWidgetUrl, bearerTokenEnvVar: SESSION_TOKEN_ENV_VAR });
 }
 

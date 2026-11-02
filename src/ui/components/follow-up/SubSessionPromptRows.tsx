@@ -4,6 +4,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useAppStore } from '../../store/useAppStore';
+import { PROVIDERS } from '../../utils/provider';
 import { findProposalForChild, useFollowUpStore } from '../../store/useFollowUpStore';
 import { Check, ChevronDown } from '../icons';
 import { StructuredResponse } from '../StructuredResponse';
@@ -63,13 +64,14 @@ export function SubSessionBriefCard({ text, sessionId, createdAt }: { text: stri
     if (body && !expanded) setOverflows(body.scrollHeight > body.clientHeight + 1);
   }, [text, open, expanded]);
   const when = timeAgo(createdAt);
+  const agent = PROVIDERS.find((entry) => entry.id === (link?.provider ?? 'claude'))?.label ?? link?.provider ?? 'Claude';
   const openParent = () => {
     if (link) useAppStore.getState().setActiveSession(link.parentSessionId);
   };
   return (
     <div className="my-3 flex flex-col gap-2" data-sub-session-brief>
       <div className="flex min-w-0 items-center gap-1.5 text-[13px] text-[var(--text-muted)]">
-        <span className="flex-shrink-0">Started by Claude from</span>
+        <span className="flex-shrink-0">Started by {agent} from</span>
         {link ? (
           <button
             type="button"

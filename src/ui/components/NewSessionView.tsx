@@ -41,7 +41,7 @@ import {
 import { ClaudePlanModePill } from './ClaudePlanModePill';
 import { DeepseekAgentPresetPicker } from './DeepseekAgentPresetPicker';
 import { NewThreadLanding } from './NewThreadLanding';
-import { ChatFolderNote, NewThreadProjectHeading } from './NewThreadProjectHeading';
+import { NewThreadProjectHeading } from './NewThreadProjectHeading';
 import { ComposerContextPills } from './ComposerContextPills';
 import { useComposerAgentSelection } from '../hooks/useComposerAgentSelection';
 import { useComposerCapabilityMenu } from '../hooks/useClaudeSkillAutocomplete';
@@ -831,7 +831,6 @@ export function NewSessionView() {
                   </div>
                 </div>
               </div>
-              {!cwd ? <ChatFolderNote /> : null}
             </div>
       </NewThreadLanding>
     </div>

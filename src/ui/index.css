@@ -3378,6 +3378,33 @@ button.aegis-mdx-metadata-key:hover {
   background-color: var(--accent);
 }
 
+/* A task started by a conversation; neighbouring tasks join into one card. */
+.sub-session-row {
+  margin: 8px 0;
+  display: flex;
+  width: 100%;
+  max-width: 660px;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-primary);
+  padding: 10px 12px;
+}
+
+.sub-session-row:has(+ .sub-session-row) {
+  margin-bottom: 0;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.sub-session-row + .sub-session-row {
+  margin-top: 0;
+  border-top: 0;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
 .status-dot.error {
   background-color: var(--error);
 }
@@ -3620,18 +3647,6 @@ button.aegis-mdx-metadata-key:hover {
 @supports (corner-shape: superellipse(1.5)) {
   .aegis-new-thread-composer-surface,
   .aegis-new-thread-composer-tray { corner-shape: superellipse(1.5); }
-}
-
-.aegis-new-thread-chat-folder-note {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  margin-top: 10px;
-  font-size: 11.5px;
-  line-height: 16px;
-  color: var(--text-muted);
 }
 
 .aegis-composer-context-row {

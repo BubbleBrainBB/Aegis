@@ -38,7 +38,7 @@ export function openProjectNewChat(cwd: string, sourceSessionId?: string | null)
   state.setProjectCwd(dir);
   state.setChatSidebarView('threads');
   state.setSidebarSearchQuery('');
-  const draftId = state.createDraftSession(dir, null, { projectCwd: dir });
+  const draftId = state.openDraftSession(dir, null, { projectCwd: dir });
   return draftId;
 }
 

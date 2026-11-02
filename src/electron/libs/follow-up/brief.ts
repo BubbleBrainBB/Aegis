@@ -64,8 +64,12 @@ export interface SubSessionBriefInput {
   prompt: string;
   parentSessionId: string;
   parentTitle: string | null;
-  /** Null when the session shares the starting session's folder. */
+  /** Null when the session works in an existing folder. */
   worktree: { branch: string; baseRef: string } | null;
+  /** The project folder it works in directly, when that is not the starting session's. */
+  projectFolder?: string | null;
+  /** The repository a worktree belongs to. */
+  repoRoot?: string | null;
 }
 
 /**
@@ -86,10 +90,16 @@ export function buildSubSessionBrief(input: SubSessionBriefInput): string {
     input.worktree
       ? [
           '## Workspace',
-          `You are in a new git worktree on branch \`${input.worktree.branch}\`, created from commit \`${input.worktree.baseRef}\`.`,
+          `You are in a new git worktree${input.repoRoot ? ` of \`${input.repoRoot}\`` : ''} on branch \`${input.worktree.branch}\`, created from commit \`${input.worktree.baseRef}\`.`,
           'Uncommitted changes in the starting session are not here. Files that are not committed to git (dependencies, .env files, build output) may be missing; report what is missing rather than assuming the project runs.',
         ].join('\n')
-      : [
+      : input.projectFolder
+        ? [
+            '## Workspace',
+            `You work directly in the project folder \`${input.projectFolder}\`, not in a worktree. Other sessions may be editing here too.`,
+            'Commit only files you changed, and only if your task says to; never stash, reset or switch branches.',
+          ].join('\n')
+        : [
           '## Workspace',
           'You share this folder with the session that started you and possibly other sessions, which may be editing too.',
           'Commit only files you changed, and only if your task says to; never stash, reset or switch branches.',

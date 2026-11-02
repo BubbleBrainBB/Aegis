@@ -206,6 +206,15 @@ function extractGrokToolName(update: GrokSessionUpdate): string {
   return getString(update.title) || 'GrokTool';
 }
 
+/**
+ * Grok loads MCP tools on demand and calls them through `use_tool`; the chat
+ * should see the tool it actually called, with that tool's own input.
+ */
+export function unwrapGrokToolCall(name: string, input: Record<string, unknown>): { name: string; input: Record<string, unknown> } {
+  const inner = name === 'use_tool' ? getString(input.tool_name).trim() : '';
+  return inner ? { name: inner, input: getRecord(input.tool_input) || {} } : { name, input };
+}
+
 function extractTextContent(content: unknown): string {
   if (typeof content === 'string') return content;
   const record = getRecord(content);
@@ -1365,8 +1374,7 @@ export class GrokAcpAdapter implements ProviderAdapter {
     const session = this.sessions.get(threadId);
     if (!session) return;
     const id = getString(update.toolCallId) || uuidv4();
-    const name = extractGrokToolName(update);
-    const rawInput = getRecord(update.rawInput) || {};
+    const { name, input: rawInput } = unwrapGrokToolCall(extractGrokToolName(update), getRecord(update.rawInput) || {});
     const existing = session.toolCalls.get(id);
     // A new tool call closes the current text/thinking block: Grok narrates
     // between calls, and one buffer per turn would stamp the whole turn's
@@ -1409,10 +1417,10 @@ export class GrokAcpAdapter implements ProviderAdapter {
     const id = getString(update.toolCallId);
     if (!id) return;
     const text = this.extractToolOutput(update);
-    const parsedInput = text ? parseJsonRecord(text) : null;
-    if (!parsedInput) return;
+    const parsed = text ? parseJsonRecord(text) : null;
+    if (!parsed) return;
     const existing = session.toolCalls.get(id);
-    const name = existing?.name || extractGrokToolName(update);
+    const { name, input: parsedInput } = unwrapGrokToolCall(existing?.name || extractGrokToolName(update), parsed);
     const createdAt = existing?.createdAt || Date.now();
     session.toolCalls.set(id, {
       name,

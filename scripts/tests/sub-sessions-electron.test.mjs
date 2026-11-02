@@ -22,6 +22,7 @@ import {SubSessionBriefCard, SubSessionsFinishedRow} from '/src/ui/components/fo
 import {SessionTitleActions} from '/src/ui/components/SessionTitleActions.tsx';
 import {useAppStore} from '/src/ui/store/useAppStore.ts';
 import {useFollowUpStore} from '/src/ui/store/useFollowUpStore.ts';
+import {useSidebarViewStore} from '/src/ui/store/useSidebarViewStore.ts';
 import '/src/ui/index.css';
 const a=useAppStore.getState();const draft=a.createDraftSession('/projects/coworker');const base=useAppStore.getState().sessions[draft];
 const now=Date.now();const min=60000;
@@ -44,7 +45,8 @@ const proposals=[
  view('f5',{title:'Bump the relay',status:'start_failed',lastError:'The starting session has no folder to share.'}),
 ];
 useFollowUpStore.setState({loaded:true,proposals:Object.fromEntries(proposals.map(p=>[p.id,p]))});
-window.qa={app:useAppStore,followUps:useFollowUpStore};
+useSidebarViewStore.setState({groupBy:'project'});
+window.qa={app:useAppStore,followUps:useFollowUpStore,view:useSidebarViewStore};
 const ok=id=>JSON.stringify({proposalId:id});
 function Harness(){
  const s=useAppStore();
@@ -103,19 +105,23 @@ app.whenReady().then(async()=>{
   // Chat: running, done (with its branch) and failed rows; a refused call is a quiet line.
   const label=selector=>js('(document.querySelector('+JSON.stringify(selector)+')||{}).getAttribute?.("aria-label")||""');
   const hint=selector=>js('(document.querySelector('+JSON.stringify(selector)+')||{}).title||""');
-  assert.equal(await text('[data-sub-session=f1]'),'Fix empty export file names','the row is just the task');
-  assert.equal(await label('[data-sub-session=f1]'),'Fix empty export file names · Running');
+  assert.equal(await text('[data-sub-session=f1]'),'Fix empty export file namescoworkerRunning','the row is the task, its project and where it stands');
+  assert.equal(await label('[data-sub-session=f1]'),'Fix empty export file names · coworker · Running');
   assert.equal(await hint('[data-sub-session=f1]'),'Running · Shares this folder');
-  assert.equal(await label('[data-sub-session=f2]'),'Add ClaudeUsageSettings tests · Done');
-  assert.equal(await hint('[data-sub-session=f2]'),'Done · aegis/iso/usage-settings-tests');
-  assert.equal(await js('document.querySelector("[data-sub-session=f1] [data-sub-session-mark]").dataset.subSessionMark'),'working','a running session pulses');
-  assert.equal(await js('!!document.querySelector("[data-sub-session=f2] [data-sub-session-mark]")'),false,'a finished session has no mark');
+  assert.equal(await label('[data-sub-session=f2]'),'Add ClaudeUsageSettings tests · coworker · Ready for review');
+  assert.equal(await hint('[data-sub-session=f2]'),'Ready for review · aegis/iso/usage-settings-tests');
+  const mark=id=>js('document.querySelector("[data-sub-session='+id+'] [data-sub-session-mark]").dataset.subSessionMark');
+  assert.equal(await mark('f1'),'working','a running task spins');
+  assert.equal(await js('!!document.querySelector("[data-sub-session=f1] [data-sub-session-mark] svg.animate-spin")'),true);
+  assert.equal(await mark('f2'),'review','work left in a worktree waits for review');
+  const rect=sel=>js('(()=>{const r=document.querySelector('+JSON.stringify(sel)+').getBoundingClientRect();return {top:r.top,bottom:r.bottom}})()');
+  assert.equal((await rect('[data-sub-session=f1]')).bottom,(await rect('[data-sub-session=f2]')).top,'tasks of one batch join into one card');
   assert.match(await text('[data-sub-session=f5]'),/no folder to share[\\s\\S]*Retry/);
   await click('document.querySelector("[data-sub-session=f2]")');
   assert.equal(await js('qa.app.getState().activeSessionId'),'c2','the row opens the session');
   assert.ok((await js('document.querySelector("main").textContent')).includes('Session not started: Only the user can ask'),'a refused start reads as a line');
   assert.match(await text('[data-sub-sessions-finished]'),/^2 sub-sessions finished$/);
-  assert.match(await text('[data-sub-session-brief]'),/Started by Claude from[\\s\\S]*Usage settings redesign[\\s\\S]*Task[\\s\\S]*Fix empty export file names[\\s\\S]*Untitled · date/);
+  assert.match(await text('[data-sub-session-brief]'),/Started by Claude Code from[\\s\\S]*Usage settings redesign[\\s\\S]*Task[\\s\\S]*Fix empty export file names[\\s\\S]*Untitled · date/);
   assert.equal(await text('[data-session-parent-crumb]'),'Usage settings redesign','the breadcrumb names the parent');
   await screenshot('1-expanded');
 
@@ -125,9 +131,29 @@ app.whenReady().then(async()=>{
   assert.equal(await js('document.querySelector("[data-session-id=p1] [title=\\\\"2 of 3 sub-sessions running\\\\"]").textContent'),'1/3');
   await screenshot('2-folded');
 
-  // A sub-session that needs you turns the folded mark amber.
+  // A task that needs you unfolds its conversation; folded over that wait, the mark turns amber.
   await js('qa.app.setState(s=>({sessions:{...s.sessions,g1:{...s.sessions.g1,permissionRequests:[{toolUseId:"t",toolName:"Bash",input:{}}]}}}))');await delay(150);
+  assert.equal(await js('!!document.querySelector("[data-sub-sessions-of=p1]")'),true,'a wait unfolds it');
+  await click('document.querySelector("[data-session-id=p1] [aria-label=\\\\"Hide sub-sessions\\\\"]")');
+  assert.equal(await js('!!document.querySelector("[data-sub-sessions-of=p1]")'),false,'it can be folded over that wait');
   assert.equal(await js('!!document.querySelector("[data-session-id=p1] [aria-label=\\\\"A sub-session needs you\\\\"]")'),true);
+  // ...until another task needs you.
+  await js('qa.app.setState(s=>({sessions:{...s.sessions,c1:{...s.sessions.c1,permissionRequests:[{toolUseId:"u",toolName:"Bash",input:{}}]}}}))');await delay(150);
+  assert.equal(await js('!!document.querySelector("[data-sub-sessions-of=p1]")'),true,'a new wait unfolds it again');
+  await js('qa.app.setState(s=>({sessions:{...s.sessions,c1:{...s.sessions.c1,permissionRequests:[]}}}))');await delay(150);
+  assert.equal(await js('!!document.querySelector("[data-sub-sessions-of=p1]")'),false,'that wait over, the fold is back');
+
+  // By state: the conversation sits with its most urgent task, its tasks under it.
+  await js('qa.view.setState({groupBy:"state"})');await delay(200);
+  const inState=state=>js('[...document.querySelectorAll("[data-sidebar-state='+state+'] [data-session-id]")].map(e=>e.dataset.sessionId)');
+  assert.deepEqual(await inState('needs-input'),['p1'],'g1 waits, so p1 stands in Needs input, folded');
+  assert.equal(await js('!!document.querySelector("[data-sidebar-state=needs-input] [data-sub-sessions-of=p1]")'),false,'that fold is kept across views');
+  await click('document.querySelector("[data-session-id=p1] [aria-label=\\\\"Show sub-sessions\\\\"]")');
+  assert.deepEqual((await inState('needs-input')).sort(),['c1','c2','g1','p1'],'its tasks nest under it there, whatever their own state');
+  await screenshot('2-state-view');
+  await js('qa.app.setState(s=>({sessions:{...s.sessions,g1:{...s.sessions.g1,permissionRequests:[]}}}))');await delay(150);
+  assert.deepEqual((await inState('running')).includes('p1'),true,'the wait over, it moves to its next most urgent group');
+  await js('qa.view.setState({groupBy:"project"})');await delay(200);
 
   // The breadcrumb opens the parent.
   await click('document.querySelector("[data-session-parent-crumb]")');
@@ -135,9 +161,8 @@ app.whenReady().then(async()=>{
 
   // Detaching (the store update the menu triggers) moves the session to the top level.
   await js('qa.followUps.getState().upsert({...qa.followUps.getState().proposals.f2,revision:3,detachedAt:Date.now()})');await delay(150);
-  await click('document.querySelector("[data-session-id=p1] [aria-label=\\\\"Show sub-sessions\\\\"]")');
   assert.deepEqual(await js('[...document.querySelectorAll("[data-sub-sessions-of=p1] [data-session-id]")].map(e=>e.dataset.sessionId).sort()'),['c1','g1']);
-  assert.equal(await label('[data-sub-session=f2]'),'Add ClaudeUsageSettings tests · Detached');
+  assert.equal(await label('[data-sub-session=f2]'),'Add ClaudeUsageSettings tests · coworker · Detached');
 
   assert.deepEqual(errors.filter(e=>!/No handler registered|Unable to load preload|ENOENT/.test(e)),[]);
   console.log(JSON.stringify({ok:true}));

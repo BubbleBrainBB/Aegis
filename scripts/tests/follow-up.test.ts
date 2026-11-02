@@ -21,7 +21,7 @@ type Session = {
   inWorktree?: boolean;
 };
 
-function setup(options: { startResult?: 'ok' | 'null-after-create' | 'throw'; provisionFails?: boolean } = {}) {
+function setup(options: { startResult?: 'ok' | 'null-after-create' | 'throw'; provisionFails?: boolean; notGit?: string[] } = {}) {
   const db = new DatabaseSync(':memory:') as unknown as FollowUpDb;
   let clock = 1_000;
   const store = new FollowUpStore(db, () => ++clock);
@@ -70,6 +70,8 @@ function setup(options: { startResult?: 'ok' | 'null-after-create' | 'throw'; pr
       return { repoRoot: projectCwd, worktreePath, branch: `aegis/iso/${label.toLowerCase().replace(/\W+/g, '-')}`, baseRef: 'abc123' };
     },
     worktreeExists: (path) => worktrees.has(path),
+    listProjects: () => ['/repo', '/projects/my-coding-agent', '/projects/notes', '/elsewhere/notes-2', '/a/twin', '/b/twin'],
+    isGitRepo: async (cwd) => !options.notGit?.includes(cwd),
     uncommitted: async () => [' M src/export.ts'],
     broadcast: (view) => broadcasts.push(view),
   };
@@ -333,12 +335,12 @@ function startedSession(outcome: { ok: boolean }) {
   return JSON.parse((outcome as { text: string }).text) as { sessionId: string; proposalId: string; status: string };
 }
 
-test('start_session starts at once in the parent folder, with the brief the agent wrote', async () => {
-  const t = setup();
+test('start_session starts at once in the parent folder where git has no worktree to give, with the brief the agent wrote', async () => {
+  const t = setup({ notGit: ['/repo'] });
   const started = startedSession(await t.service.startSession('parent', 'toolu_s1', sessionArgs));
   assert.equal(started.status, 'started');
   assert.equal(started.sessionId, 'child-1');
-  assert.equal(t.provisions(), 0, 'no worktree for a parent in a plain folder');
+  assert.equal(t.provisions(), 0, 'no worktree where git cannot make one');
   assert.equal(t.starts.length, 1);
   const payload = t.starts[0];
   assert.equal(payload.cwd, '/repo');
@@ -354,6 +356,120 @@ test('start_session starts at once in the parent folder, with the brief the agen
   assert.equal(t.service.isFollowUpSession('child-1'), true);
 });
 
+test('a task names its project: a worktree there, with the permission settings of the conversation', async () => {
+  const t = setup({ notGit: ['/projects/notes'] });
+  t.sessions.set('chat', { title: 'This week', cwd: '/chats/this-week', projectCwd: null, provider: 'claude', model: null, status: 'running', isChat: true });
+  t.histories.set('chat', [typed('fix these in my-coding-agent and notes')]);
+
+  const inOther = startedSession(await t.service.startSession('chat', 'toolu_p1', { ...sessionArgs, project: 'My-Coding-Agent' }));
+  const payload = t.starts[0];
+  assert.match(payload.cwd ?? '', /^\/projects\/my-coding-agent\/\.worktrees\//, 'matched by folder name, either case');
+  assert.equal(payload.projectCwd, '/projects/my-coding-agent');
+  assert.equal(payload.envMode, 'worktree');
+  assert.equal(payload.claudeAccessMode, 'acceptEdits', 'keeps the permission mode of the conversation in any project');
+  assert.match(payload.effectivePrompt ?? '', /git worktree of `\/projects\/my-coding-agent`/);
+  const view = t.broadcasts.filter((item) => item.id === inOther.proposalId).at(-1)!;
+  assert.equal(view.projectCwd, '/projects/my-coding-agent');
+  assert.equal(view.place, 'worktree');
+
+  // Not a git repository: it works in the project folder itself, and the folder is its own.
+  const inPlain = startedSession(await t.service.startSession('chat', 'toolu_p2', { ...sessionArgs, title: 'Notes', project: '/projects/notes/' }));
+  assert.equal(t.starts[1].cwd, '/projects/notes');
+  assert.equal(t.starts[1].projectCwd, '/projects/notes');
+  assert.equal(t.starts[1].envMode, 'local');
+  assert.match(t.starts[1].effectivePrompt ?? '', /directly in the project folder `\/projects\/notes`/);
+  assert.equal(t.store.get(inPlain.proposalId)!.place, 'project');
+  assert.equal(t.service.sharedWorkspaceOwner(inPlain.sessionId as string), null, 'the chat does not own that folder');
+
+  // Naming no project: a chat has no repository to branch from.
+  startedSession(await t.service.startSession('chat', 'toolu_p3', { ...sessionArgs, title: 'Research' }));
+  assert.equal(t.starts[2].cwd, '/chats/this-week');
+  assert.equal(t.provisions(), 1);
+});
+
+test('a task can only name a project the user has', async () => {
+  const t = setup();
+  const unknown = await t.service.startSession('parent', 'toolu_p4', { ...sessionArgs, project: '/etc' });
+  assert.equal(unknown.ok, false);
+  assert.match(unknown.ok ? '' : unknown.error, /no project "\/etc"\. Their projects: \/repo, /);
+  const ambiguous = await t.service.startSession('parent', 'toolu_p5', { ...sessionArgs, project: 'twin' });
+  assert.match(ambiguous.ok ? '' : ambiguous.error, /several projects.*\/a\/twin, \/b\/twin/);
+  assert.equal(t.starts.length, 0);
+  assert.equal(t.store.list().length, 0, 'a refused call leaves no record');
+});
+
+test('a workflow member or a planning session cannot start a task', async () => {
+  const t = setup();
+  t.sessions.set('member', { title: 'Member', cwd: '/repo', provider: 'codex', model: null, status: 'running', workflowMember: true });
+  t.histories.set('member', [typed('fix it in a new session')]);
+  const member = await t.service.startSession('member', 'toolu_m1', sessionArgs);
+  assert.match(member.ok ? '' : member.error, /workflow member/);
+  t.sessions.set('planner', { title: 'Plan', cwd: '/repo', provider: 'codex', model: null, status: 'running', planning: true });
+  t.histories.set('planner', [typed('fix it in a new session')]);
+  const planner = await t.service.startSession('planner', 'toolu_m2', sessionArgs);
+  assert.match(planner.ok ? '' : planner.error, /plan mode/);
+  assert.equal(t.starts.length, 0);
+});
+
+test('a task keeps the agent of the conversation that started it', async () => {
+  const t = setup();
+  t.sessions.set('codex-chat', { title: 'Codex', cwd: '/repo', provider: 'codex', model: 'gpt', status: 'running' });
+  t.histories.set('codex-chat', [typed('fix it in a new session')]);
+  const started = startedSession(await t.service.startSession('codex-chat', 'toolu_m3', { ...sessionArgs, project: 'my-coding-agent' }));
+  const row = t.store.get(started.proposalId)!;
+  assert.equal(row.provider, 'codex');
+  assert.equal(row.model, 'gpt');
+});
+
+test('start_session reaches other agents only with a caller the runtime names', async () => {
+  const { buildSessionMcpServer } = await import('../../src/electron/libs/session-mcp');
+  const { setWorkflowSessionPolicy, clearWorkflowSessionPolicy } = await import('../../src/electron/libs/workflow/session-hooks');
+  const tools = (options: Parameters<typeof buildSessionMcpServer>[0]) =>
+    Object.keys((buildSessionMcpServer(options) as { _registeredTools: Record<string, unknown> })._registeredTools);
+  assert.equal(tools({ callerSessionId: 'codex-chat' }).includes('start_session'), true, 'a signed caller');
+  assert.equal(tools({ resolveFromMeta: async () => 'opencode-chat' }).includes('start_session'), true, 'a caller named in the request');
+  assert.equal(tools({ only: new Set(['start_session']) }).includes('start_session'), true, "Kimi's narrowed entry");
+  assert.equal(tools({}).includes('start_session'), false, 'nobody to start it for');
+  assert.equal(tools({ only: new Set(['show_widget']) }).includes('start_session'), false);
+  assert.equal(tools({ callerSessionId: 'codex-chat' }).includes('propose_follow_up'), false, 'proposals stay in-process');
+  setWorkflowSessionPolicy('member', { readOnly: false } as never);
+  assert.equal(tools({ callerSessionId: 'member' }).includes('start_session'), false, 'a workflow member does not see it');
+  clearWorkflowSessionPolicy('member');
+});
+
+test('native tools carry their session and report refusals as errors', async () => {
+  const { createNativeStartSession, createPiStartSession, START_SESSION_JSON_SCHEMA } = await import('../../src/electron/libs/follow-up/tool');
+  const native = createNativeStartSession('s1');
+  assert.equal(native.name, 'start_session');
+  assert.equal(native.requiresApproval, true, 'it follows the permission mode of the session');
+  assert.equal(native.readOnly, false);
+  assert.deepEqual(START_SESSION_JSON_SCHEMA.required, ['title', 'prompt']);
+  assert.ok(START_SESSION_JSON_SCHEMA.properties.project.description);
+  const result = await native.execute({ title: 't', prompt: 'p' });
+  assert.equal(result.isError, true, 'no service wired here');
+  await assert.rejects(createPiStartSession('s1').execute('call', { title: 't', prompt: 'p' }));
+});
+
+test('Grok tools called through use_tool show as the tool itself', async () => {
+  const { unwrapGrokToolCall } = await import('../../src/electron/libs/provider/grok-acp-adapter');
+  assert.deepEqual(
+    unwrapGrokToolCall('use_tool', { tool_name: 'aegis-sessions__start_session', tool_input: { title: 't', project: 'alpha' } }),
+    { name: 'aegis-sessions__start_session', input: { title: 't', project: 'alpha' } },
+  );
+  assert.deepEqual(unwrapGrokToolCall('use_tool', {}), { name: 'use_tool', input: {} }, 'still being written');
+  assert.deepEqual(unwrapGrokToolCall('bash', { tool_name: 'x' }), { name: 'bash', input: { tool_name: 'x' } });
+});
+
+test('use_worktree false keeps a task out of a worktree in any project', async () => {
+  const t = setup();
+  startedSession(await t.service.startSession('parent', 'toolu_p6', { ...sessionArgs, project: 'my-coding-agent', use_worktree: false }));
+  assert.equal(t.starts[0].cwd, '/projects/my-coding-agent');
+  assert.equal(t.provisions(), 0);
+  startedSession(await t.service.startSession('parent', 'toolu_p7', { ...sessionArgs, title: 'Here', project: '/repo', use_worktree: false }));
+  assert.equal(t.starts[1].cwd, '/repo', 'naming its own project is the same as naming none');
+  assert.equal(t.store.list().find((row) => row.title === 'Here')!.place, 'shared');
+});
+
 test('start_session makes a worktree when the parent is in one, or when asked', async () => {
   const t = setup();
   t.sessions.set('wt-parent', { title: 'In a worktree', cwd: '/repo/.worktrees/a', projectCwd: '/repo', provider: 'claude', model: null, status: 'running', inWorktree: true });
@@ -362,7 +478,7 @@ test('start_session makes a worktree when the parent is in one, or when asked', 
   assert.equal(t.provisions(), 1);
   assert.match(t.starts[0].cwd ?? '', /^\/repo\/\.worktrees\//);
   assert.equal(t.starts[0].envMode, 'worktree');
-  assert.match(t.starts[0].effectivePrompt ?? '', /new git worktree on branch/);
+  assert.match(t.starts[0].effectivePrompt ?? '', /new git worktree of `\/repo` on branch/);
   startedSession(await t.service.startSession('parent', 'toolu_w2', { ...sessionArgs, use_worktree: true }));
   assert.equal(t.provisions(), 2);
   startedSession(await t.service.startSession('wt-parent', 'toolu_w3', { ...sessionArgs, use_worktree: false }));
@@ -482,7 +598,7 @@ test('detaching the sibling everyone waited on sends the held results', async ()
 
 test('a sub-session in its parent\'s folder names the parent as the owner of that worktree', async () => {
   const t = setup();
-  startedSession(await t.service.startSession('parent', 'toolu_s1', sessionArgs));
+  startedSession(await t.service.startSession('parent', 'toolu_s1', { ...sessionArgs, use_worktree: false }));
   startedSession(await t.service.startSession('parent', 'toolu_s2', { ...sessionArgs, title: 'Own one', use_worktree: true }));
   assert.deepEqual(t.service.sharedWorkspaceOwner('child-1'), { sessionId: 'parent', title: 'Export work' });
   assert.equal(t.service.sharedWorkspaceOwner('child-2'), null, 'its own worktree is its own');

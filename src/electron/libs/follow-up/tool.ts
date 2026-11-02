@@ -3,7 +3,7 @@
 // closure, never taken from the model's input or guessed across sessions.
 
 import { z } from 'zod';
-import { isProposeFollowUpToolName, isStartSessionToolName } from '../../../shared/follow-up';
+import { isProposeFollowUpToolName, isStartSessionToolName, START_SESSION_TOOL } from '../../../shared/follow-up';
 import type { StreamMessage } from '../../types';
 import { findPendingToolUse } from '../tool-caller-attribution';
 import { FOLLOW_UP_LIMITS, SUB_SESSION_LIMITS } from './brief';
@@ -22,12 +22,13 @@ export const WITHDRAW_FOLLOW_UP_DESCRIPTION =
   'Withdraw a follow-up task you proposed in this conversation that the user has not acted on yet, for example because your current task ended up fixing it.';
 
 export const START_SESSION_DESCRIPTION = [
-  'Start a separate Claude session for the user, nested under this one in their sidebar, that works on one task in parallel with you.',
+  'Start a separate session for the user, with the same agent, nested under this one in their sidebar, that works on one task in parallel with you.',
   'Use it only when the user asked in their own words for a separate, parallel or background session ("open a new session to fix X",',
-  '"start another one for the tests"); one call per independent task they named. For work the user did not ask to split off, use',
-  'propose_follow_up instead, and for parts of your own task use subagents. By default the new session shares this folder;',
-  'it gets its own git worktree when this session is in one, or when use_worktree is true (set it when the user asks for a',
-  'worktree or the two of you would edit the same files). Write the prompt for someone who has not seen this conversation:',
+  '"start another one for the tests"; "fix these three"); one call per independent task they named. For work the user did not ask to split off, use',
+  'propose_follow_up instead, and for parts of your own task use subagents. A task can work in any project the user has: pass project',
+  'when it belongs in another one than this session\'s. By default the new session gets its own git worktree, so tasks can run side by',
+  'side; it stays in the folder only when git cannot give it one, or in a conversation with no project when you name none. Leave use_worktree',
+  'out unless the user asks otherwise or the task needs this session\'s uncommitted changes. Write the prompt for someone who has not seen this conversation:',
   'the task, the files or area, what done looks like. The session starts at once and runs on its own; each time it finishes a',
   'turn its reply comes back to you as a message, after every session you started has finished. Do not wait for it.',
 ].join(' ');
@@ -39,10 +40,15 @@ export const startSessionSchema = {
     .min(1)
     .max(SUB_SESSION_LIMITS.prompt)
     .describe('The brief: the task, the files or area, constraints from this conversation, and what done looks like.'),
+  project: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('The project to work in, by folder name or full path, when it is not this session\'s. It must be one the user already has in Aegis; an unknown name returns the list. Omit for this session\'s project.'),
   use_worktree: z
     .boolean()
     .optional()
-    .describe('true: its own git worktree. false: this folder. Omit to follow this session (a worktree only if this session is in one).'),
+    .describe('Leave this out: the session gets a worktree wherever git allows one, and small tasks are no exception. Set false only when the user asks for no worktree or the task needs this session\'s uncommitted changes; true only when the user asks for a worktree in a folder that would not get one.'),
 };
 
 export const proposeFollowUpSchema = {
@@ -58,6 +64,19 @@ export const proposeFollowUpSchema = {
 
 export const withdrawFollowUpSchema = {
   proposal_id: z.string().min(1).describe('The proposalId the propose_follow_up call returned.'),
+};
+
+/** For the native host tools (Bubble, Pi), which take JSON Schema. */
+export const START_SESSION_JSON_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['title', 'prompt'],
+  properties: {
+    title: { type: 'string', maxLength: SUB_SESSION_LIMITS.title, description: startSessionSchema.title.description },
+    prompt: { type: 'string', maxLength: SUB_SESSION_LIMITS.prompt, description: startSessionSchema.prompt.description },
+    project: { type: 'string', description: startSessionSchema.project.description },
+    use_worktree: { type: 'boolean', description: startSessionSchema.use_worktree.description },
+  },
 };
 
 export interface FollowUpToolEntry {
@@ -132,4 +151,34 @@ export async function withdrawFollowUpTool(callerSessionId: string, args: { prop
   } catch (error) {
     return text({ ok: false, error: error instanceof Error ? error.message : String(error) });
   }
+}
+
+/**
+ * Bubble host tool: tools are turn-scoped, so each carries its session. It
+ * starts work, so it follows the session's permission mode and stays out of Plan.
+ */
+export function createNativeStartSession(sessionId: string) {
+  return {
+    name: START_SESSION_TOOL, description: START_SESSION_DESCRIPTION,
+    parameters: START_SESSION_JSON_SCHEMA, readOnly: false, effect: 'unknown' as const, requiresApproval: true,
+    async execute(args: StartSessionArgs) {
+      const result = await startSessionTool(sessionId, args);
+      return { content: result.content.map((item) => item.text).join('\n'), isError: result.isError === true };
+    },
+  };
+}
+
+/** Pi custom tools are created per session, so the caller is known. */
+export function createPiStartSession(sessionId: string) {
+  return {
+    name: START_SESSION_TOOL, label: 'Start session',
+    description: START_SESSION_DESCRIPTION,
+    promptSnippet: 'Start a separate session, in any project, when the user asks for work to run on its own.',
+    parameters: START_SESSION_JSON_SCHEMA,
+    async execute(_callId: string, args: StartSessionArgs) {
+      const result = await startSessionTool(sessionId, args);
+      if (result.isError) throw new Error(result.content[0].text);
+      return { content: result.content, details: {} };
+    },
+  };
 }

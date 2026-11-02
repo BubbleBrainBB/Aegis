@@ -158,7 +158,7 @@ const win=new BrowserWindow({width:1124,height:879,show:true,webPreferences:{bac
   await pickNoProject('[aria-label^="Switch project:"]','picker-no-project');
   assert.equal(await js('document.querySelector("h1").textContent'),'What should we work on?');
   assert.equal(await js('document.querySelector("[aria-label=\\"Project folder\\"]").textContent'),'No project');
-  assert.equal(await js('document.querySelector(".aegis-new-thread-chat-folder-note").textContent'),'Files go to a new folder in ~/Documents/Aegis');
+  assert.equal(await js('document.body.textContent.includes("Files go to")'),false,'no note about where files go');
   assert.equal(await js('!!document.querySelector("button[title=\\"Switch branch\\"]")'),false,'a chat has no branch');
   assert.equal(await js('qa.store.getState().projectCwd'),await js('qa.Long'),'the last project stays the default');
   await shot('new-task-no-project');
@@ -278,7 +278,6 @@ const win=new BrowserWindow({width:1124,height:879,show:true,webPreferences:{bac
   assert.equal(await js('qa.store.getState().sessions[qa.draftId].cwd'),'');
   assert.equal(await js('document.querySelector("h1").textContent'),'What should we work on?');
   assert.equal(await js('document.querySelector("[aria-label=\\"Project folder\\"]").textContent'),'No project');
-  assert(await js('!!document.querySelector(".aegis-new-thread-chat-folder-note")'),'draft shows where files go');
   assert((await js('document.querySelector("[role=textbox]").textContent')).includes('Draft session text'));
   await shot('projectless');
   // Sending the draft starts a chat: one start for a double click, and the
@@ -316,7 +315,6 @@ const win=new BrowserWindow({width:1124,height:879,show:true,webPreferences:{bac
   // Picking a project again brings the project heading back.
   await select('[aria-label="Project folder"]','Beta');
   await until('document.querySelector("h1").innerText.includes("Beta")','project again');
-  assert.equal(await js('!!document.querySelector(".aegis-new-thread-chat-folder-note")'),false);
   // Two drafts starting at once: a start's result replaces only the draft it came from.
   const twoDrafts=await js('(()=>{const s=qa.store.getState();const a=s.createDraftSession(qa.Alpha);const b=s.createDraftSession(qa.Beta);qa.store.setState({pendingDraftSessionId:b});s.handleServerEvent({type:"session.status",payload:{sessionId:"chat-from-a",status:"running",startId:"start-a",draftSessionId:a,title:"A",cwd:qa.Alpha,projectCwd:qa.Alpha,provider:"deepseek"}});const st=qa.store.getState();return {aGone:!st.sessions[a],bKept:!!st.sessions[b]?.isDraft,pending:st.pendingDraftSessionId===b,created:!!st.sessions["chat-from-a"]};})()');
   assert.deepEqual(twoDrafts,{aGone:true,bKept:true,pending:true,created:true},'only draft A is promoted; B keeps its claim');

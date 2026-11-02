@@ -389,6 +389,8 @@ export interface SessionView {
   source?: import('../shared/types').SessionSource;
   readOnly?: boolean;
   isDraft?: boolean;
+  /** A draft another view owns (the Design section's chat): New Task never goes back to it. */
+  detachedDraft?: boolean;
   draftTitleEdited?: boolean;
   handoffSourceProvider?: AgentProvider | null;
   latestClaudeModelUsage?: import('../shared/types').LatestClaudeModelUsage;
@@ -675,6 +677,12 @@ export interface AppActions {
   clearGlobalError: () => void;
   setPendingStart: (pending: boolean) => void;
   /** A draft chat that no pane shows yet; returns its id. */
+  /** Go back to this folder's unsent chat, or start one: empty chats don't pile up. */
+  openDraftSession: (
+    cwd?: string | null,
+    channelId?: string | null,
+    workspace?: { projectCwd?: string | null }
+  ) => string;
   createDetachedDraftSession: (cwd?: string | null, title?: string) => string;
   createDraftSession: (
     cwd?: string | null,

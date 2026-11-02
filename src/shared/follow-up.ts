@@ -29,8 +29,8 @@ export const isStartSessionToolName = (name: unknown) => matchesTool(name, START
 /** A proposal the user accepts on a card, or a sub-session started because the user asked. */
 export type FollowUpKind = 'proposal' | 'session';
 
-/** Where a sub-session works: the starting session's own folder, or a new git worktree. */
-export type FollowUpPlace = 'shared' | 'worktree';
+/** Where a sub-session works: the starting session's own folder, a new git worktree, or another project's own folder. */
+export type FollowUpPlace = 'shared' | 'worktree' | 'project';
 
 export type FollowUpStatus =
   | 'proposed'
@@ -70,6 +70,8 @@ export interface FollowUpProposalView {
   status: FollowUpStatus;
   childSessionId: string | null;
   place: FollowUpPlace;
+  /** The folder the task was started for: its project, or the folder it shares. */
+  projectCwd: string;
   worktreeBranch: string | null;
   baseRef: string | null;
   lastError: string | null;

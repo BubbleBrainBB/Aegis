@@ -4,6 +4,7 @@ import { createBubbleBrowserUseTool } from './bubble-browser-use-tool';
 import { isBrowserUseEnabled } from './browser-use-permissions';
 import { createNativeDesignTools } from '../design/tools';
 import { createNativeReportStatus } from './turn-report-tool';
+import { createNativeStartSession } from './follow-up/tool';
 import type { BubbleContentPart } from './provider/bubble-sdk-loader';
 
 export const BUBBLE_SESSION_TOOL = 'read_session';
@@ -20,6 +21,8 @@ export function bubbleHostTools(sessionId?: string): object[] {
   // Design tools act on this session's designs.
   if (sessionId) tools.push(...createNativeDesignTools(sessionId));
   if (sessionId) tools.push(createNativeReportStatus(sessionId));
+  // Workflow members are refused at call time.
+  if (sessionId) tools.push(createNativeStartSession(sessionId));
   return tools;
 }
 

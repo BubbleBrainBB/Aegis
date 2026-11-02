@@ -364,6 +364,7 @@ import {
   dropStash,
   getCurrentBranch,
   getGitTopLevel,
+  assertGitRepo,
   getShortStatus,
   listBranches as listGitBranches,
   removeWorktree,
@@ -5104,6 +5105,64 @@ function setupWorkflows(mainWindow: BrowserWindow): void {
 
 let followUps: FollowUpService | null = null;
 
+type RunnerSettings = Pick<
+  NonNullable<ReturnType<typeof runnerHandles.get>>,
+  | 'kimiPermissionMode' | 'kimiThinking' | 'grokPermissionMode' | 'grokReasoningEffort'
+  | 'deepseekPermissionMode' | 'deepseekReasoningEffort' | 'devinPermissionMode' | 'devinThoughtLevel'
+  | 'mimoPermissionMode' | 'mimoReasoningEffort' | 'minimaxPermissionMode' | 'minimaxThinkingEffort'
+  | 'qoderPermissionMode' | 'bubblePermissionMode'
+>;
+
+/**
+ * What a task keeps from the session that started it, for agents other than
+ * Claude: the settings stored on the session, and what its runner holds of the
+ * rest (the composer sends those with each message).
+ */
+function providerSettingsOf(
+  row: import('./types').SessionRow,
+  provider: AgentProvider,
+  runner: RunnerSettings | undefined,
+): Partial<SessionStartPayload> {
+  switch (provider) {
+    case 'codex':
+      return {
+        codexExecutionMode: normalizeCodexExecutionMode(row.codex_execution_mode),
+        codexPermissionMode: normalizeCodexPermissionMode(row.codex_permission_mode),
+        codexReasoningEffort: normalizeCodexReasoningEffort(row.codex_reasoning_effort),
+        codexFastMode: normalizeCodexFastMode(row.codex_fast_mode),
+      };
+    case 'opencode':
+      return { opencodePermissionMode: normalizeOpenCodePermissionMode(row.opencode_permission_mode) };
+    case 'kimi':
+      return { kimiPermissionMode: runner?.kimiPermissionMode, kimiThinking: runner?.kimiThinking };
+    case 'grok':
+      return { grokPermissionMode: runner?.grokPermissionMode, grokReasoningEffort: runner?.grokReasoningEffort };
+    case 'deepseek':
+      return {
+        deepseekPermissionMode: runner?.deepseekPermissionMode,
+        deepseekAgentPreset: row.deepseek_agent_preset ?? undefined,
+        deepseekReasoningEffort: runner?.deepseekReasoningEffort,
+      };
+    case 'devin':
+      return { devinPermissionMode: runner?.devinPermissionMode, devinThoughtLevel: runner?.devinThoughtLevel };
+    case 'mimo':
+      return { mimoPermissionMode: runner?.mimoPermissionMode, mimoReasoningEffort: runner?.mimoReasoningEffort };
+    case 'minimax':
+      return { minimaxPermissionMode: runner?.minimaxPermissionMode, minimaxThinkingEffort: runner?.minimaxThinkingEffort };
+    case 'qoder':
+      return { qoderPermissionMode: runner?.qoderPermissionMode };
+    case 'bubble':
+      return { bubblePermissionMode: runner?.bubblePermissionMode };
+    default:
+      return {};
+  }
+}
+
+function isPlanningSession(row: import('./types').SessionRow, runner: RunnerSettings | undefined): boolean {
+  if (row.provider === 'codex') return row.codex_execution_mode === 'plan';
+  return Object.values(providerSettingsOf(row, (row.provider || 'claude') as AgentProvider, runner)).includes('plan');
+}
+
 /**
  * A sub-session in the folder of the session that started it does not own
  * that worktree: applying or discarding it would take the parent's work too.
@@ -5154,6 +5213,9 @@ function setupFollowUps(mainWindow: BrowserWindow): void {
             status: row.status,
             projectCwd: row.project_cwd ?? null,
             inWorktree: row.env_mode === 'worktree' && Boolean(row.worktree_path),
+            isChat: Boolean(row.is_chat),
+            workflowMember: Boolean(getWorkflowSessionPolicy(sessionId)),
+            planning: isPlanningSession(row, runnerHandles.get(sessionId)),
           }
         : null;
     },
@@ -5177,11 +5239,17 @@ function setupFollowUps(mainWindow: BrowserWindow): void {
               claudeReasoningEffort: normalizeClaudeReasoningEffort(row.claude_reasoning_effort),
             }
           : {}),
+        ...providerSettingsOf(row, provider, runnerHandles.get(parentSessionId)),
       };
     },
     permissionMode: (parentSessionId) => {
       const row = sessions.getSession(parentSessionId);
-      return row?.provider === 'claude' || !row?.provider ? row?.claude_access_mode ?? null : null;
+      if (!row) return null;
+      const provider = (row.provider || 'claude') as AgentProvider;
+      if (provider === 'claude') return row.claude_access_mode ?? null;
+      const settings = providerSettingsOf(row, provider, runnerHandles.get(parentSessionId));
+      const mode = Object.entries(settings).find(([key]) => key.endsWith('PermissionMode'))?.[1];
+      return typeof mode === 'string' ? mode : null;
     },
     sharedWorkspace: (parentSessionId) => {
       const row = sessions.getSession(parentSessionId);
@@ -5203,6 +5271,8 @@ function setupFollowUps(mainWindow: BrowserWindow): void {
     },
     provision: (projectCwd, label) => provisionIsolatedWorkspace(projectCwd, label),
     worktreeExists: (worktreePath) => existsSync(worktreePath),
+    listProjects: () => sessions.listProjects().filter((project) => existsSync(project)),
+    isGitRepo: (cwd) => assertGitRepo(cwd).then(() => true, () => false),
     uncommitted: (cwd) => getShortStatus(cwd),
     broadcast: (view) => broadcast(mainWindow, { type: 'follow-up.updated', payload: view }),
   });

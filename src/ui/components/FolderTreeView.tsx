@@ -36,6 +36,7 @@ import { PULL_REQUEST_STATUS, pullRequestRepo, pullRequestStatus, type PullReque
 import {
   deriveSidebarSessionState,
   isWithinActivityWindow,
+  mostUrgentSidebarState,
   sessionSortTime,
   SIDEBAR_STATE_LABELS,
   SIDEBAR_STATE_ORDER,
@@ -154,6 +155,24 @@ function isChatSession(session: SessionView): boolean {
   return Boolean(session.isChat) || !getSessionProjectPath(session);
 }
 
+type SidebarOrganization = ReturnType<typeof useSessionOrganization>;
+
+function sidebarStateOf(
+  session: SessionView,
+  organization: SidebarOrganization,
+  prsBySession: Record<string, GitPullRequestSummary[] | null | undefined>
+): SidebarSessionState | null {
+  return deriveSidebarSessionState(session, {
+    unread: organization.sessions[session.id]?.unread,
+    pullRequest: primaryPullRequest(prsBySession[session.id]),
+  });
+}
+
+/** One wait of a task on the user; a later wait of the same task comes after new activity. */
+function subSessionWaitMark(session: SessionView): string {
+  return `${session.id}:${session.updatedAt}`;
+}
+
 function getSessionBranchCwd(session: SessionView): string | null {
   return session.worktreePath?.trim() || session.cwd?.trim() || session.projectCwd?.trim() || null;
 }
@@ -248,6 +267,8 @@ export function FolderTreeView({
   const prsBySession = useSidebarPullRequests(view.showPullRequests || view.groupBy === 'state');
   const collapsedGroups = useSidebarViewStore((state) => state.collapsedGroups);
   const toggleGroupExpanded = useSidebarViewStore((state) => state.toggleGroupCollapsed);
+  const dismissedWaits = useSidebarViewStore((state) => state.dismissedWaits);
+  const foldSubSessions = useSidebarViewStore((state) => state.foldSubSessions);
   const revealDraftProject = useSidebarViewStore((state) => state.revealDraftProject);
   const expandedSessionGroups = useSidebarViewStore((state) => state.expandedSessionGroups);
   const toggleSessionListExpanded = useSidebarViewStore((state) => state.toggleSessionListExpanded);
@@ -283,7 +304,6 @@ export function FolderTreeView({
     projectGroups,
     chatSessions,
     flatSessions,
-    draftSessions,
     stateGroups,
     timeGroups,
     sectionGroups,
@@ -295,8 +315,10 @@ export function FolderTreeView({
     const searching = Boolean(sidebarSearchQuery.trim());
     const byTime = (left: SessionView, right: SessionView) =>
       sessionSortTime(right, view.sortBy) - sessionSortTime(left, view.sortBy);
+    // A chat nothing has been sent from is not a task yet: it shows on screen,
+    // not in any list. New Task goes back to it (openDraftSession).
     const allSessions = Object.values(sessions).filter(
-      (session) => !session.hiddenFromThreads && session.scope !== 'dm'
+      (session) => !session.hiddenFromThreads && session.scope !== 'dm' && !session.isDraft
     );
     let sessionList = allSessions;
     if (searching) {
@@ -314,24 +336,29 @@ export function FolderTreeView({
       if (status === 'active' && archived) return false;
       if (status === 'archived' && !archived) return false;
       if (view.project && getSessionProjectPath(session) !== view.project) return false;
-      return session.isDraft || isWithinActivityWindow(session, view.activity, now);
+      return isWithinActivityWindow(session, view.activity, now);
     });
     const hasHiddenSessions = !searching && sessionList.length < allSessions.length;
     const archivedCount = allSessions.filter((session) => organization.sessions[session.id]?.archived).length;
 
     // Sub-sessions sit one level under the top session that started them, when
-    // it is listed too. State and date views are triage: everything stays flat.
+    // it is listed too, in the order they started so rows don't jump. By
+    // project, one that runs in another project is listed under that project
+    // instead. The date view is a plain timeline: everything stays flat.
     const subSessionsByRoot = new Map<string, SessionView[]>();
-    if (view.groupBy === 'project' || view.groupBy === 'none') {
+    if (view.groupBy !== 'date') {
       const listed = new Set(sessionList.map((session) => session.id));
       const nested = new Set<string>();
       for (const session of sessionList) {
         const root = rootSessionOf(subSessionParentMap, session.id);
         if (!root || !listed.has(root)) continue;
+        if (view.groupBy === 'project' && getSessionProjectPath(session) !== getSessionProjectPath(sessions[root])) continue;
         nested.add(session.id);
         subSessionsByRoot.set(root, [...(subSessionsByRoot.get(root) ?? []), session]);
       }
-      for (const children of subSessionsByRoot.values()) children.sort(byTime);
+      for (const children of subSessionsByRoot.values()) {
+        children.sort((left, right) => (left.createdAt ?? left.updatedAt) - (right.createdAt ?? right.updatedAt));
+      }
       sessionList = sessionList.filter((session) => !nested.has(session.id));
     }
 
@@ -402,26 +429,22 @@ export function FolderTreeView({
     const flatSessions = view.groupBy === 'none' ? [...regularSessions].sort(byTime) : [];
 
     const stateGroups: { state: SidebarSessionState; sessions: SessionView[] }[] = [];
-    // New tasks nothing has been sent from yet sit above the state groups, in none of them.
-    const draftSessions: SessionView[] = [];
     if (view.groupBy === 'state') {
       const byState = new Map<SidebarSessionState, SessionView[]>();
       for (const session of regularSessions) {
-        const state = deriveSidebarSessionState(session, {
-          unread: organization.sessions[session.id]?.unread,
-          pullRequest: primaryPullRequest(prsBySession[session.id]),
-        });
-        if (!state) {
-          draftSessions.push(session);
-          continue;
-        }
+        const own = sidebarStateOf(session, organization, prsBySession);
+        if (!own) continue;
+        // A conversation stands where the most urgent of its tasks does.
+        const state = mostUrgentSidebarState(
+          own,
+          (subSessionsByRoot.get(session.id) ?? []).map((task) => sidebarStateOf(task, organization, prsBySession))
+        );
         byState.set(state, [...(byState.get(state) ?? []), session]);
       }
       for (const state of SIDEBAR_STATE_ORDER) {
         const members = byState.get(state);
         if (members?.length) stateGroups.push({ state, sessions: members.sort(byTime) });
       }
-      draftSessions.sort(byTime);
     }
 
     const timeGroups: { label: string; sessions: SessionView[] }[] = [];
@@ -446,7 +469,6 @@ export function FolderTreeView({
       projectGroups,
       chatSessions,
       flatSessions,
-      draftSessions,
       stateGroups,
       timeGroups,
       sectionGroups,
@@ -550,15 +572,29 @@ export function FolderTreeView({
   ) => {
     const children = subSessionsByRoot.get(session.id);
     if (!children?.length) return <Fragment key={key}>{renderRow(session, depth)}</Fragment>;
-    // Parents whose sub-sessions are folded away; all start open.
+    const childStates = children.map((child) => sidebarStateOf(child, organization, prsBySession));
+    const waits = children
+      .filter((_, index) => childStates[index] === 'needs-input')
+      .map(subSessionWaitMark);
+    const ownState = sidebarStateOf(session, organization, prsBySession);
+    const allDone = view.groupBy === 'state' && ownState !== null && mostUrgentSidebarState(ownState, childStates) === 'completed';
+    // Finished work starts folded and is opened by hand. Everything else starts
+    // open, and a fold holds until another task needs the user.
+    const openKey = `sub-sessions-open:${session.id}`;
     const foldKey = `sub-sessions:${session.id}`;
-    const expanded = !collapsedGroups.has(foldKey);
+    const expanded = allDone
+      ? collapsedGroups.has(openKey)
+      : !collapsedGroups.has(foldKey) || waits.some((wait) => !dismissedWaits.has(wait));
     const nest: SubSessionNest = {
       count: children.length,
       running: children.filter((child) => child.status === 'running').length,
-      waiting: children.some((child) => child.permissionRequests.length > 0),
+      waiting: waits.length > 0,
       expanded,
-      onToggle: () => toggleGroupExpanded(foldKey),
+      onToggle: () => {
+        if (allDone) toggleGroupExpanded(openKey);
+        else if (expanded) foldSubSessions(foldKey, waits);
+        else toggleGroupExpanded(foldKey);
+      },
     };
     return (
       <Fragment key={key}>
@@ -631,11 +667,6 @@ export function FolderTreeView({
           {isExpanded(group.id) && (group.sessions.length ? group.sessions.map((session) => renderFlatSession(session, 'section')) : <div className="px-2 py-1 text-[12px] text-[var(--text-muted)]">No threads yet</div>)}
         </section>
       ))}
-      {draftSessions.length > 0 && (
-        <section className="mb-4" data-sidebar-state="draft">
-          {draftSessions.map((session) => renderFlatSession(session, 'state'))}
-        </section>
-      )}
       {stateGroups.map((group) => {
         const key = `state:${group.state}`;
         const expanded = isExpanded(key);
@@ -856,9 +887,9 @@ export function FolderTreeView({
       })}
 
       {chatSessions.length > 0 && (
-        <section className="mb-4 mt-1" aria-label="Chats">
+        <section className="mb-4 mt-1" aria-label="No project">
           <div className="mb-1 flex items-center px-1">
-            <div className="rounded-md px-1 text-[13px] text-[var(--text-muted)]">Chats</div>
+            <div className="rounded-md px-1 text-[13px] text-[var(--text-muted)]">No project</div>
           </div>
           {(expandedSessionGroups.has(CHATS_GROUP_KEY)
             ? chatSessions
@@ -878,7 +909,6 @@ export function FolderTreeView({
         chatSessions.length === 0 &&
         pinnedSessions.length === 0 &&
         flatSessions.length === 0 &&
-        draftSessions.length === 0 &&
         stateGroups.length === 0 &&
         timeGroups.length === 0 && (
           <div className="py-8 text-center text-[13px] text-[var(--text-muted)]">
@@ -1074,13 +1104,6 @@ function SessionItem({
   const startedBySession = useFollowUpStore(s => findProposalForChild(s.proposals, session.id)?.kind === 'session');
   const followUpParentTitle = useAppStore(s => (followUpParentId ? s.sessions[followUpParentId]?.title : undefined));
   const rowRef = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    if (!isActive || !session.isDraft) return;
-    const frame = window.requestAnimationFrame(() => {
-      rowRef.current?.scrollIntoView({ block: 'nearest' });
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [isActive, session.id, session.isDraft]);
   const { openMenu, menuOpen, worktreeAction } = useSessionActionsMenu(session);
   // The PR list replaces the session preview while it is open.
   const [pullRequestsOpen, setPullRequestsOpen] = useState(false);
@@ -1092,7 +1115,7 @@ function SessionItem({
   } | null>(null);
   const inWorktree = session.envMode === 'worktree' && Boolean(session.worktreePath);
   const projectPath = getSessionProjectPath(session);
-  const projectLabel = session.isChat ? 'Chat' : getProjectLabel(projectPath);
+  const projectLabel = session.isChat ? 'No project' : getProjectLabel(projectPath);
   // A chat's folder has no branch to look up.
   const branchCwd = session.isChat ? null : getSessionBranchCwd(session);
   const storedWorktreeBranch = session.associatedWorktreeBranch?.trim() || null;

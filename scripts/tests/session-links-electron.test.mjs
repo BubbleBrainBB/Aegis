@@ -19,11 +19,13 @@ import {SessionTitleActions} from '/src/ui/components/SessionTitleActions.tsx';
 import {FolderTreeView} from '/src/ui/components/FolderTreeView.tsx';
 import {ComposerPromptEditor} from '/src/ui/components/ComposerPromptEditor.tsx';
 import {useAppStore} from '/src/ui/store/useAppStore.ts';
+import { useSidebarViewStore } from '/src/ui/store/useSidebarViewStore.ts';
 import '/src/ui/index.css';
 const ids=new URLSearchParams(location.search).get('ids').split(',');
 const a=useAppStore.getState();const draft=a.createDraftSession('/projects/test');const base=useAppStore.getState().sessions[draft];
 useAppStore.setState({sessions:Object.fromEntries(ids.map((id,i)=>[id,{...base,id,isDraft:false,title:i?'Target conversation':'Source conversation',cwd:'/projects/test',status:'idle',messages:[]}]))});
 a.setActiveSession(ids[1]);window.electron.onServerEvent(e=>a.handleServerEvent(e));
+useSidebarViewStore.setState({groupBy:'project'});
 window.qa={store:useAppStore,ids};
 function Harness(){
  const s=useAppStore();const active=s.sessions[s.activeSessionId];

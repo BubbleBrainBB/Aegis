@@ -2,7 +2,8 @@ import { z } from 'zod';
 import { READ_SESSION_DESCRIPTION, readSessionTool } from './session-reference';
 import { START_WORKFLOW_DESCRIPTION, startWorkflowSchema, startWorkflowTool, type StartWorkflowArgs } from './workflow/chat-entry';
 import { START_WORKFLOW_TOOL } from '../../shared/workflow';
-import { PROPOSE_FOLLOW_UP_TOOL, START_SESSION_TOOL, WITHDRAW_FOLLOW_UP_TOOL } from '../../shared/follow-up';
+import { isStartSessionToolName, PROPOSE_FOLLOW_UP_TOOL, START_SESSION_TOOL, WITHDRAW_FOLLOW_UP_TOOL } from '../../shared/follow-up';
+import { getWorkflowSessionPolicy } from './workflow/session-hooks';
 import {
   PROPOSE_FOLLOW_UP_DESCRIPTION, proposeFollowUpSchema, proposeFollowUpTool,
   WITHDRAW_FOLLOW_UP_DESCRIPTION, withdrawFollowUpSchema, withdrawFollowUpTool,
@@ -105,6 +106,24 @@ export function buildSessionMcpServer(options: {
       return reportStatus(sessionId, args);
     });
   }
+  // Only for a caller the runtime names, as with report_status, or for Kimi's
+  // entry (`only`), whose calls are matched to the session holding the call. A
+  // workflow member never sees it: its workflow owns its work.
+  const startSessionCaller = options.callerSessionId && getWorkflowSessionPolicy(options.callerSessionId) ? null : options;
+  if (offers(START_SESSION_TOOL) && startSessionCaller && (options.callerSessionId || options.resolveFromMeta || options.only)) {
+    server.registerTool(START_SESSION_TOOL, {
+      description: START_SESSION_DESCRIPTION, inputSchema: startSessionSchema, annotations: workflowAnnotations,
+    }, async (args: StartSessionArgs, context?: { signal?: AbortSignal; _meta?: Record<string, unknown> }) => {
+      const sessionId = options.callerSessionId
+        // Direct: only the conversation's main agent starts sessions.
+        ?? await options.resolveFromMeta?.(context?._meta, { direct: true }).catch(() => null)
+        ?? (options.only ? await findToolCallerSessionId(isStartSessionToolName, args, context?.signal) : null);
+      if (!sessionId) {
+        return { content: [{ type: 'text', text: 'Only the main agent of an Aegis conversation can start a session.' }], isError: true };
+      }
+      return startSessionTool(sessionId, args, context);
+    });
+  }
   for (const spec of DESIGN_TOOL_SPECS) {
     if (!offers(spec.name)) continue;
     server.registerTool(spec.name, {
@@ -132,7 +151,7 @@ export function buildSessionMcpServer(options: {
  * start_session, report_status and the design tools; workflow members get none of the
  * first four, and follow-up sessions no proposal tools (they may still
  * start a session when their user asks). HTTP servers never offer the
- * follow-up tools: their caller is not bound to the session.
+ * proposal tools: their caller is not bound to the session.
  */
 export async function createSessionSdkMcpServer(
   options: { callerSessionId?: string; workflows?: boolean; followUps?: boolean; subSessions?: boolean; turnReports?: boolean } = {},
