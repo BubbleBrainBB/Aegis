@@ -66,4 +66,4 @@ try {
   assert.match(designContextText('qa'),/No design is open/); assert.doesNotMatch(designContextText('qa'),/Visible boards:/);
   console.log('Design focus: sent selections (single, multi, layer, changed, gone, other design), visibility, coordinates, legacy callers, access and close passed.');
 } catch(e) {console.error(e);process.exitCode=1;}
-finally {repo?.close();rmSync(root,{recursive:true,force:true});app.exit(process.exitCode||0);}
+finally {repo?.close();try { rmSync(root,{recursive:true,force:true}); } catch {}app.exit(process.exitCode||0);}

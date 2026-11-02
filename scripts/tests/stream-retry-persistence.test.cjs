@@ -43,12 +43,12 @@ app.whenReady().then(() => {
     assert(!history.some(m => m.type === 'stream_event'));
     console.log('retry persistence: SQLite reopen, external payload, agent attribution and recovery marker passed');
     sessions.close();
-    fs.rmSync(scratch, { recursive: true, force: true });
+    try { fs.rmSync(scratch, { recursive: true, force: true }); } catch {}
     app.exit(0);
   } catch (error) {
     console.error(error);
     sessions.close();
-    fs.rmSync(scratch, { recursive: true, force: true });
+    try { fs.rmSync(scratch, { recursive: true, force: true }); } catch {}
     app.exit(1);
   }
 });

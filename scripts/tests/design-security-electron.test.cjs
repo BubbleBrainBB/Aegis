@@ -90,7 +90,7 @@ app.whenReady().then(async () => {
     code = 1;
   } finally {
     server?.close();
-    fs.rmSync(temp, { recursive: true, force: true });
+    try { fs.rmSync(temp, { recursive: true, force: true }); } catch {}
     app.exit(code);
   }
 });

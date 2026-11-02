@@ -629,6 +629,6 @@ try {
   process.exitCode = 1;
 } finally {
   repo?.close();
-  rmSync(root, { recursive: true, force: true });
+  try { rmSync(root, { recursive: true, force: true }); } catch {}
   app.exit(process.exitCode || 0);
 }
