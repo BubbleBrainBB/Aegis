@@ -36,11 +36,12 @@ function designIdOfCall(toolName: string, input: unknown, resultContent: unknown
   return null;
 }
 
-/** What a turn did to one design: boards it added and boards it rewrote. */
+/** What a turn did to one design: boards it added and boards it rewrote, and the names of the design's boards at its last write. */
 export interface DesignTurnChange {
   documentId: string;
   added: string[];
   changed: string[];
+  names: Record<string, string>;
 }
 
 function resultBoardIds(resultContent: unknown): string[] {
@@ -48,6 +49,16 @@ function resultBoardIds(resultContent: unknown): string[] {
   return Array.isArray(boards)
     ? boards.map((board) => (board as { id?: unknown })?.id).filter((id): id is string => typeof id === 'string')
     : [];
+}
+
+function resultBoardNames(resultContent: unknown): Record<string, string> | null {
+  const boards = resultJson(resultContent)?.boards;
+  if (!Array.isArray(boards)) return null;
+  const names: Record<string, string> = {};
+  for (const board of boards as Array<{ id?: unknown; name?: unknown }>) {
+    if (typeof board?.id === 'string' && typeof board.name === 'string') names[board.id] = board.name;
+  }
+  return names;
 }
 
 function boardChangesOfCall(toolName: string, input: unknown, resultContent: unknown): { added: string[]; changed: string[] } {
@@ -85,12 +96,14 @@ export function designChangesInMessages(
       const id = designIdOfCall(use.name, use.input, result.content);
       if (!id) continue;
       const at = order.findIndex((entry) => entry.documentId === id);
-      const entry = at >= 0 ? order.splice(at, 1)[0] : { documentId: id, added: [], changed: [] };
+      const entry = at >= 0 ? order.splice(at, 1)[0] : { documentId: id, added: [], changed: [], names: {} };
       const calls = boardChangesOfCall(use.name, use.input, result.content);
       for (const boardId of calls.added) if (!entry.added.includes(boardId)) entry.added.push(boardId);
       for (const boardId of calls.changed) {
         if (!entry.added.includes(boardId) && !entry.changed.includes(boardId)) entry.changed.push(boardId);
       }
+      // The result lists the whole design, so boards removed since drop out.
+      entry.names = resultBoardNames(result.content) ?? entry.names;
       order.push(entry);
     }
   }

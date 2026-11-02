@@ -5,6 +5,7 @@ import { useDesignDraftStore } from "./useDesignDraftStore";
 import type { DesignSummary } from "../../shared/design-types";
 import type { DesignSelectionRef } from "../../shared/types";
 import { sameDesignSelection } from "../../shared/design-selection";
+import { toast } from "sonner";
 
 /** A request from outside the canvas (e.g. chat "View thread") to focus a target. */
 export interface DesignFocusRequest {
@@ -59,7 +60,7 @@ export const useDesignStore = create<{
   focusRequest: DesignFocusRequest | null;
   requestFocus: (request: Omit<DesignFocusRequest, "nonce">) => void;
   consumeFocus: (nonce: number) => void;
-}>((set) => ({
+}>((set, get) => ({
   titles: {},
   composer: {},
   setComposerChoice: (sessionId, choice) => {
@@ -95,6 +96,11 @@ export const useDesignStore = create<{
     ),
   focusRequest: null,
   requestFocus: (request) => {
+    // The Design section shows one design: a chat there may ask for another it touched.
+    const { section } = get();
+    if (section && section.documentId !== request.documentId && useAppStore.getState().activeWorkspace === "design") {
+      set({ section: { sessionId: request.sessionId, documentId: request.documentId } });
+    }
     set({ focusRequest: { ...request, nonce: Date.now() + Math.random() } });
     useAppStore
       .getState()
@@ -121,6 +127,16 @@ export function openDesign(target: { sessionId: string; documentId: string; wher
   if (app.activeSessionId !== target.sessionId) app.setActiveSession(target.sessionId);
   // After the session switch restores that chat's own right pane.
   queueMicrotask(() => useAppStore.getState().setActiveRightUtilityTab(`design:${target.documentId}`));
+}
+
+/** A board link in an agent's reply: shows that board on the canvas beside the chat. */
+export async function openDesignLink(sessionId: string, documentId: string, boardId: string) {
+  const doc = await window.electron.design?.read({ sessionId, documentId }).catch(() => null);
+  if (!doc?.boards.some((board) => board.id === boardId)) {
+    toast.error("That board no longer exists.");
+    return;
+  }
+  useDesignStore.getState().requestFocus({ sessionId, documentId, boardId });
 }
 
 const EMPTY_LIBRARY: DesignSummary[] = [];

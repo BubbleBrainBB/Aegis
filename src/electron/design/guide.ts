@@ -159,7 +159,7 @@ With a built-in style, design_resources has an "examples" template: side-by-side
 After each board, preview it once. The preview lists what it measured (text over other text, text cut off by a clipping box, an empty page, content wider or taller than the board, images that failed): treat these as leads, then look at the screenshot yourself for what geometry can't see: misaligned edges in repeated items, low contrast, an empty or stretched area, weak hierarchy, and anything from "Avoid the generated look". Fix the cause in one pass (not by shrinking text or hiding content), then move on. Don't loop on previews; the user reviews and comments on the canvas.
 
 ## When you finish
-Call design_verify once the request's boards are drawn and previewed: it runs the checks and a separate visual review. Fix what it reports and verify again (at most twice). Then say what you made, the decisions that matter, what you checked (previews, warnings fixed) and what you did not verify. Only call something checked if you actually checked it.`,
+Call design_verify once the request's boards are drawn and previewed: it runs the checks and a separate visual review. Fix what it reports and verify again (at most twice). Then say what you made, the decisions that matter, what you checked (previews, warnings fixed) and what you did not verify. Only call something checked if you actually checked it. Name each board as a link the user can click: [Board name](aegis://designs/<documentId>/<boardId>).`,
 };
 
 export const DESIGN_GUIDE_DESCRIPTION =
