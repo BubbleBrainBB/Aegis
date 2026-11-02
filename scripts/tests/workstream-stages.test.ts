@@ -4,8 +4,11 @@ import { buildTurnChangeContext } from '../../src/ui/utils/turn-change-records';
 import {
   formatWorkstreamStageSummary,
   getStageChangeRecords,
+  getWorkstreamStepCommand,
+  getWorkstreamStepLabel,
   summarizeWorkstreamEntries,
 } from '../../src/ui/utils/workstream-stages';
+import { getLiveTraceSummary, getLiveTraceVisibleEntries, getTurnActivity } from '../../src/ui/utils/live-trace';
 import type { StreamMessage } from '../../src/shared/types';
 import type { WorkstreamEntry } from '../../src/ui/utils/workstream';
 
@@ -747,4 +750,49 @@ assert.equal(repeatedMcp[0].entries.length, 2);
 assert.equal(formatWorkstreamStageSummary(repeatedMcp), 'Used GitHub');
 const differentMcp = summarizeWorkstreamEntries([github, { ...github, id: 'github-3', block: { ...github.block, input: { number: 43 } } }]);
 assert.equal(differentMcp.length, 2, 'different tool targets retain distinct rows');
+// Running turn: step labels, folded trace, status line activity.
+const describedShell = toolEntry('typecheck', 'Bash', 'command_execution', 'Running npm run typecheck', { command: 'npm run typecheck', description: 'Run typecheck and lint' }, 'pending');
+assert.equal(getWorkstreamStepLabel(describedShell), 'Run typecheck and lint', 'a step reads as the agent described it');
+assert.equal(getWorkstreamStepCommand(describedShell), 'npm run typecheck');
+assert.equal(getWorkstreamStepLabel(runningRead), 'Reading active.ts', 'a step without a description falls back to its stage title');
+const describedRun = toolEntry('sed-run', 'Bash', 'command_execution', 'Ran sed', { command: "sed -i '' -e 's|a|b|' cart.js && npm test", description: 'Fix rounding and run tests' });
+const describedStage = summarizeWorkstreamEntries([describedRun])[0];
+assert.equal(describedStage.title, 'Fix rounding and run tests', 'a command row reads as its description, not the command line');
+assert.equal(describedStage.commands[0].command, "sed -i '' -e 's|a|b|' cart.js && npm test", 'the command line stays in the details');
+
+const earlierNote: WorkstreamEntry = { id: 'note-1', type: 'note', summary: 'Looking around', detail: 'Looking around' };
+const latestNote: WorkstreamEntry = { id: 'note-2', type: 'note', summary: 'Tests pass. Typecheck next.', detail: 'Tests pass. Typecheck next.' };
+const waitingApproval: WorkstreamEntry = { id: 'approval-1', type: 'approval', summary: 'Allow git push', state: 'waiting' };
+const liveEntries: WorkstreamEntry[] = [
+  earlierNote,
+  toolEntry('read-a', 'Read', 'file_read', 'Read a.ts', { file_path: '/src/a.ts' }),
+  toolEntry('test-run', 'Bash', 'command_execution', 'Ran npm test', { command: 'npm test' }),
+  latestNote,
+  describedShell,
+];
+const liveVisible = getLiveTraceVisibleEntries(liveEntries);
+assert.deepEqual(liveVisible.map((entry) => entry.id), ['note-2'], 'a folded running trace keeps only the latest note in view');
+assert.deepEqual(
+  getLiveTraceVisibleEntries([...liveEntries, waitingApproval]).map((entry) => entry.id),
+  ['note-2', 'approval-1'],
+  'anything waiting on the user stays in view'
+);
+assert.equal(
+  getLiveTraceSummary(liveEntries, liveVisible),
+  'Explored 1 file and ran 1 command',
+  'the folded row summarizes finished steps; the running one belongs to the status line'
+);
+assert.equal(getLiveTraceSummary([latestNote], [latestNote]), null, 'nothing folded, no row');
+const reasoning: WorkstreamEntry = { id: 'thought-1', type: 'thinking', summary: 'Plan', detail: 'Plan', state: 'completed' };
+assert.equal(getLiveTraceSummary([reasoning, describedShell], []), 'Reasoning', 'only reasoning folded reads as reasoning');
+
+const stepActivity = getTurnActivity(liveEntries);
+assert.equal(stepActivity.kind, 'step');
+assert.equal(stepActivity.label, 'Run typecheck and lint');
+assert.equal(getTurnActivity([...liveEntries, waitingApproval]).label, 'Waiting for approval');
+assert.equal(getTurnActivity([latestNote]).label, 'Thinking…');
+assert.equal(getTurnActivity([{ ...latestNote, state: 'streaming' }]).label, 'Writing…');
+const agentTask = (id: string): WorkstreamEntry => ({ ...toolEntry(id, 'Task', 'subagent', 'Explore', { description: 'Explore' }, 'pending'), type: 'task' });
+assert.equal(getTurnActivity([agentTask('agent-1'), agentTask('agent-2')]).label, 'Running 2 agents');
+
 console.log('workstream stage verification passed');

@@ -380,6 +380,13 @@ function buildCommandTitle(commands: WorkstreamStageCommand[], entries: Workstre
   const command = commands.find(command => command.status === 'pending') ?? commands[0];
   if (!command) return `${aggregateStatus(entries) === 'pending' ? 'Running' : 'Ran'} ${plural(entries.length, 'command')}`;
   const execution = command.execution;
+  // The agent's description reads better than a long command line; the line itself stays in the details.
+  const entry = entries.find(candidate => 'block' in candidate && candidate.block.id === command.id);
+  const description = entry ? getString(getToolInputRecord(entry).description)?.trim() : null;
+  if (description) {
+    if (execution?.status === 'declined') return `Denied: ${description}`;
+    return command.status === 'pending' && execution?.background ? `${description} (background)` : description;
+  }
   const verb = command.status === 'pending' ? execution?.background ? 'Running in background' : 'Running'
     : command.status === 'interrupted' ? 'Stopped'
     : execution?.status === 'declined' ? 'Denied'
@@ -539,6 +546,17 @@ export function summarizeWorkstreamEntries(
   flush();
 
   return stages;
+}
+
+/** What a step is doing, in the agent's own words (Bash `description`) when it gave them. */
+export function getWorkstreamStepLabel(entry: WorkstreamEntry): string {
+  const description = getString(getToolInputRecord(entry).description);
+  if (description) return description.trim();
+  return summarizeWorkstreamEntries([entry])[0]?.title ?? entry.summary;
+}
+
+export function getWorkstreamStepCommand(entry: WorkstreamEntry): string | null {
+  return getCommand(getToolInputRecord(entry));
 }
 
 export function getStageChangeRecords(stage: WorkstreamStage): ChangeRecord[] {

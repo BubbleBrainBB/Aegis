@@ -4169,6 +4169,8 @@ button.aegis-mdx-metadata-key:hover {
   25%, 100% { background-position: -80% 0; opacity: 0; }
 }
 .workstream-scroll-area { max-height: 14rem; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; }
+/* An opened step scrolls its own output; the list around it grows, so only one layer scrolls. */
+.workstream-scroll-area:has([data-workstream-stage-open]) { max-height: none; overflow-y: visible; mask-image: none; }
 .workstream-scroll-area[data-fade-top="true"] {
   mask-image: linear-gradient(to bottom, transparent, black 1.5rem);
 }
@@ -4244,6 +4246,68 @@ button.trace-line:hover .trace-line-title { color: var(--text-primary); }
   padding-inline-start: 14.5px;
   border-inline-start: 1px solid color-mix(in srgb, var(--text-primary) 10%, transparent);
 }
+/* TurnStatusLine: a running turn's current activity, at the end of its trace. */
+.turn-status { margin-block: 6px 8px; }
+.turn-status-line {
+  display: flex;
+  max-width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  padding-block: 2px;
+  font-size: calc(12px * var(--ui-font-scale, 1));
+  line-height: 1.667;
+  text-align: start;
+  color: var(--text-secondary);
+}
+button.turn-status-line:disabled { opacity: 1; cursor: default; }
+.turn-status-line[data-tone="waiting"] { color: var(--warning); }
+.turn-status-icon { display: inline-flex; width: 13px; height: 13px; flex-shrink: 0; }
+.turn-status-icon > * { width: 100%; height: 100%; }
+.turn-status-meta { flex-shrink: 0; white-space: nowrap; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.turn-status-caret { width: 12px; height: 12px; flex-shrink: 0; color: var(--text-muted); transition: transform .15s; }
+.turn-step-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-block-end: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.turn-step-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  font-size: calc(12px * var(--ui-font-scale, 1));
+  line-height: 1.667;
+  color: var(--text-secondary);
+}
+.turn-step-title { flex-shrink: 0; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); }
+.turn-step-command {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace);
+  font-size: calc(11.5px * var(--ui-font-scale, 1));
+  color: var(--text-muted);
+}
+.turn-step-elapsed { margin-inline-start: auto; flex-shrink: 0; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.turn-step-output {
+  margin: 0;
+  overflow: hidden;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace);
+  font-size: calc(11.5px * var(--ui-font-scale, 1));
+  line-height: 1.565;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+}
 .workstream-output-panel {
   min-width: 0;
   overflow: clip;
@@ -4253,7 +4317,7 @@ button.trace-line:hover .trace-line-title { color: var(--text-primary); }
 }
 .workstream-output-heading {
   padding: 4px 8px;
-  font-size: calc(13px * var(--ui-font-scale, 1));
+  font-size: calc(12px * var(--ui-font-scale, 1));
   line-height: 20px;
   user-select: none;
 }
@@ -4264,8 +4328,8 @@ button.trace-line:hover .trace-line-title { color: var(--text-primary); }
   padding: 8px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font-size: calc(14px * var(--ui-font-scale, 1));
-  line-height: 1.6;
+  font-size: calc(12px * var(--ui-font-scale, 1));
+  line-height: 1.667;
 }
 .workstream-output-text { font-family: inherit; }
 .workstream-code { font-family: var(--font-mono, monospace); font-size: var(--code-font-size, 12px); }

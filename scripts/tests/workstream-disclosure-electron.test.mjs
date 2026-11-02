@@ -140,8 +140,8 @@ app.whenReady().then(async()=>{
   assert.equal(await js('document.querySelector("#cadence").textContent'),'Read 2 files','completed summary bypasses the hold');
   assert.equal(await expanded('#completed'),'false');
   assert(await js('document.querySelector("#completed [data-workstream-divider]").getBoundingClientRect().top >= document.querySelector("#completed .workstream-toggle-row button").getBoundingClientRect().bottom'),'divider sits below Worked for');
-  assert.equal(await js('document.querySelector("#completed .workstream-toggle-row button").textContent'),'Worked for 44s');
-  assert.equal(await js('document.querySelector("#mcp .workstream-toggle-row button").textContent'),'1 previous message','unknown duration never uses Date.now');
+  assert.equal(await js('document.querySelector("#completed [data-workstream-duration]").textContent'),'Worked for 44s');
+  assert.equal(await js('document.querySelector("#mcp [data-workstream-duration]").textContent'),'1 previous message','unknown duration never uses Date.now');
   assert.equal(await js('document.querySelectorAll("#thinking .workstream-toggle-row").length'),0,'running trace has no whole-turn collapse');
   await click('#thinking [aria-expanded="false"]');
   assert((await js('document.querySelector("#thinking").innerText')).includes('Visible reasoning summary'));
@@ -158,6 +158,12 @@ app.whenReady().then(async()=>{
   await js('document.querySelector("#reset .workstream-scroll-area").scrollTop=0');await delay(100);
   await js('qa.advance()');await delay(200);
   assert.equal(await js('document.querySelector("#reset .workstream-scroll-area").scrollTop'),0,'reader scrolling into history is respected');
+  await click('#reset [data-workstream-stage] > button');await delay(350);
+  assert.equal(await js('getComputedStyle(document.querySelector("#reset .workstream-scroll-area")).maxHeight'),'none','an opened step lifts the list cap');
+  assert.equal(await js('(()=>{const a=document.querySelector("#reset .workstream-scroll-area");return a.scrollHeight<=a.clientHeight+1})()'),true,'only the step output scrolls, not the list around it');
+  await shot('step-open-one-scroll');
+  await click('#reset [data-workstream-stage] > button');await delay(350);
+  assert.notEqual(await js('getComputedStyle(document.querySelector("#reset .workstream-scroll-area")).maxHeight'),'none','closing the step restores the list cap');
   await click('#reset [data-workstream-group]');
   await js('qa.advance()');await delay(200);
   assert.equal(await js('document.querySelector("#reset [data-workstream-group]").getAttribute("aria-expanded")'),'false','new messages preserve group collapse');
@@ -232,7 +238,7 @@ app.whenReady().then(async()=>{
   assert.equal(await js('document.querySelector("#real-chat .workstream-toggle-row button").getAttribute("aria-expanded")'),'false','native final-answer signal collapses in the actual ChatPane');
   assert((await js('document.querySelector("#real-chat").innerText')).includes('The project is ready.'));
   await js('qa.complete()');await delay(350);
-  assert.equal(await js('document.querySelector("#real-chat .workstream-toggle-row button").textContent'),'Worked for 44s');
+  assert.equal(await js('document.querySelector("#real-chat [data-workstream-duration]").textContent'),'Worked for 44s');
   await click('#real-chat .workstream-toggle-row button');await shot('chat-expanded-dark');
   await js('qa.store.getState().setTheme("light")');await delay(150);await shot('chat-expanded-light');
   w.setContentSize(390,850);await delay(200);await shot('chat-narrow');
@@ -248,6 +254,12 @@ app.whenReady().then(async()=>{
   assert.equal(await js('qa.store.getState().sessions[qa.chatId].lastTurnError'),undefined);
   w.setContentSize(1000,850);
   await js('qa.readingTurn()');await delay(200);
+  assert.equal(await js('document.querySelector("#real-chat [data-workstream-stage]")'),null,'a running turn folds its steps');
+  assert((await js('document.querySelector("#real-chat [data-turn-status]").innerText')).includes('Reading package.json'),'the status line names the running step');
+  await shot('chat-running-folded');
+  await click('#real-chat [data-live-trace-toggle]');await delay(200);
+  await shot('chat-running-open');
+  assert.equal(await js('document.querySelector("#real-chat [data-live-trace-toggle]").getAttribute("aria-expanded")'),'true','the folded row opens every step');
   await click('#real-chat [data-workstream-stage] > button');
   assert.equal(await js('document.querySelector("#real-chat [data-workstream-stage] > button").getAttribute("aria-expanded")'),'true');
   await js('qa.readingTurn(true)');await delay(200);
@@ -312,6 +324,7 @@ app.whenReady().then(async()=>{
   // Real ChatPane + real store: trace visibility must never suppress retry status.
   for(const withTools of [false,true]){
    await js('qa.retryTurn('+withTools+')');await delay(200);
+   await js('(()=>{const t=document.querySelector("#real-chat [data-live-trace-toggle]");if(t?.getAttribute("aria-expanded")==="false")t.click()})()');await delay(200);
    await js('(()=>{const b=[...document.querySelectorAll("#real-chat button[aria-expanded]")].find(b=>b.textContent==="Thinking");if(b?.getAttribute("aria-expanded")==="false")b.click()})()');await delay(320);
    await js('window.frozenReasoning=[...document.querySelectorAll("#real-chat .trace-text")].find(e=>e.textContent==="Original reasoning before connection loss")');
    assert(await js('!!window.frozenReasoning'),'reasoning is expanded');

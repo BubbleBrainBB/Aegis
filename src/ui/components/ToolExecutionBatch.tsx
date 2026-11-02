@@ -1,4 +1,7 @@
 import { getWorkstreamDeniedActionIds } from '../utils/workstream-stages';
+import { getLiveTraceSummary, getLiveTraceVisibleEntries } from '../utils/live-trace';
+import { useTurnDiffContext } from './TurnDiffContext';
+import { TurnStatusLine } from './TurnStatusLine';
 import { useEffect, useMemo, useRef, useState, useLayoutEffect } from 'react';
 import { ChevronRight } from './icons';
 import type { ContentBlock, PermissionRequestPayload, ToolStatus, StreamMessage } from '../types';
@@ -57,6 +60,8 @@ interface ToolExecutionBatchProps {
   onRevealSettled?: (nonce: number) => void;
   /** Earlier names of this turn's disclosure scope whose choices still apply. */
   disclosureAliases?: readonly string[];
+  /** While running, fold the trace into one row and report progress in a status line below it. */
+  foldWhileRunning?: boolean;
 }
 
 export type WorkstreamReveal = { toolUseId: string; nonce: number };
@@ -94,6 +99,7 @@ export function ToolExecutionBatch({
   reveal,
   onRevealSettled,
   disclosureAliases,
+  foldWhileRunning,
 }: ToolExecutionBatchProps) {
   const batchIsRunning = isSessionRunning && isLastBatch;
   const model = useMemo(
@@ -129,6 +135,7 @@ export function ToolExecutionBatch({
       reveal={reveal}
       onRevealSettled={onRevealSettled}
       disclosureAliases={disclosureAliases}
+      foldWhileRunning={foldWhileRunning}
     />
   );
 }
@@ -153,6 +160,7 @@ interface WorkstreamDisclosureProps {
   reveal?: WorkstreamReveal | null;
   onRevealSettled?: (nonce: number) => void;
   disclosureAliases?: readonly string[];
+  foldWhileRunning?: boolean;
 }
 
 function WorkstreamDisclosureBody({
@@ -167,8 +175,10 @@ function WorkstreamDisclosureBody({
   mediaCwd,
   reveal,
   onRevealSettled,
+  foldWhileRunning = false,
 }: WorkstreamDisclosureProps) {
   const bodyRef = useRef<HTMLDivElement>(null);
+  const { changeRecordsByToolUseId } = useTurnDiffContext();
   const setDetailChoice = useWorkstreamDisclosureActions();
   const [navigation, setNavigation] = useState(0);
   // A finished turn folds down to its answer even if a step was opened while it ran.
@@ -179,8 +189,22 @@ function WorkstreamDisclosureBody({
   const compactionOnly = model.entries.length === 1 && model.entries[0].type === 'compaction';
   const canCollapse = allowCollapse && !isRunning && !stopped && !compactionOnly;
   const resolvedExpanded = !canCollapse || (typeof expanded === 'boolean' ? expanded : choice);
+  // A running turn opens its folded trace under its own key, so the turn still folds when it ends.
+  const liveFold = foldWhileRunning && isRunning && !stopped && !compactionOnly;
+  const [liveOpen, setLiveOpen] = useWorkstreamDisclosure('live', false);
+  const liveVisibleEntries = useMemo(() => getLiveTraceVisibleEntries(model.entries), [model.entries]);
+  const liveSummary = useMemo(
+    () => (liveFold ? getLiveTraceSummary(model.entries, liveVisibleEntries, changeRecordsByToolUseId) : null),
+    [changeRecordsByToolUseId, liveFold, liveVisibleEntries, model.entries]
+  );
+  const liveFolded = liveFold && !liveOpen;
+  const traceModel = useMemo(
+    () => (liveFolded ? { ...model, entries: liveVisibleEntries } : model),
+    [liveFolded, liveVisibleEntries, model]
+  );
   const setExpanded = (nextExpanded: boolean) => {
     setChoice(nextExpanded);
+    if (liveFold) setLiveOpen(nextExpanded);
     onExpandedChange?.(nextExpanded);
   };
   // Reply text between a finished turn's widgets shows with them, outside the trace.
@@ -298,7 +322,10 @@ function WorkstreamDisclosureBody({
 
 
   if (model.entries.length === 0 && model.todoProgress) {
-    return <TodoProgressCard state={model.todoProgress} className="my-2" />;
+    return <>
+      <TodoProgressCard state={model.todoProgress} className="my-2" />
+      {liveFold ? <TurnStatusLine model={model} /> : null}
+    </>;
   }
 
   if (model.entries.length === 0) {
@@ -314,6 +341,13 @@ function WorkstreamDisclosureBody({
         deniedCount={deniedCount}
         onRevealDenied={revealDenied}
       />}
+      {liveFold && liveSummary ? <LiveTraceToggle
+        expanded={liveOpen}
+        summary={liveSummary}
+        onToggle={() => setLiveOpen(!liveOpen)}
+      /> : null}
+      {/* Media from folded steps sits with them, above the note written after it. */}
+      {liveFolded && generatedMedia?.length ? <GeneratedMediaGallery items={generatedMedia} cwd={mediaCwd ?? null} /> : null}
       {stopped && <div className="workstream-text my-2 text-[var(--text-muted)]" data-workstream-stopped>
         {stoppedDuration != null ? `You stopped after ${formatWorkstreamElapsed(stoppedDuration)}` : 'You stopped'}
         <div className="mt-2 w-full border-t border-[var(--border)]" />
@@ -324,9 +358,10 @@ function WorkstreamDisclosureBody({
         <WorkflowBoardsOutsideProvider value={canCollapse}>
           <PinnedNoteIdsProvider value={pinnedNoteIds}>
             <AssistantWorkstream
-              model={model}
+              model={traceModel}
               live={isRunning}
-              generatedMedia={canCollapse ? undefined : generatedMedia}
+              statusOutside={liveFold}
+              generatedMedia={canCollapse || liveFolded ? undefined : generatedMedia}
               mediaCwd={mediaCwd}
             />
           </PinnedNoteIdsProvider>
@@ -334,7 +369,19 @@ function WorkstreamDisclosureBody({
       </WorkstreamCollapse>
       {canCollapse ? <TurnWorkflowBoards entries={model.entries} /> : null}
       {canCollapse && generatedMedia?.length ? <GeneratedMediaGallery items={generatedMedia} cwd={mediaCwd ?? null} /> : null}
+      {liveFold ? <TurnStatusLine model={model} /> : null}
     </div>
+  );
+}
+
+/** A running turn's folded trace: what its earlier steps did; opens onto every step. */
+function LiveTraceToggle({ expanded, summary, onToggle }: { expanded: boolean; summary: string; onToggle: () => void }) {
+  return (
+    <button type="button" onClick={onToggle} aria-expanded={expanded} data-live-trace-toggle
+      className="workstream-text group my-2 flex min-w-0 max-w-full items-center gap-1.5 py-0.5 text-left text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]">
+      <span className="min-w-0 truncate">{summary}</span>
+      <ChevronRight className={`h-3.5 w-3.5 shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`} />
+    </button>
   );
 }
 
@@ -363,7 +410,7 @@ function WorkstreamToggle({
       <button type="button" onClick={onToggle}
         className="workstream-text group flex min-w-0 items-center gap-1.5 py-0.5 text-left text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
         aria-expanded={expanded}>
-        <span className="min-w-0 truncate">{label}</span>
+        <span className="min-w-0 truncate" data-workstream-duration>{label}</span>
         <ChevronRight className={`h-3.5 w-3.5 shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`} />
       </button>
       {deniedCount > 0 && <button type="button" onClick={onRevealDenied} className="workstream-text ml-auto text-[var(--text-muted)] hover:text-[var(--text-primary)]" data-denied-action-count>

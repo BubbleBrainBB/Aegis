@@ -89,6 +89,8 @@ interface AssistantWorkstreamProps {
   mediaCwd?: string | null;
   /** The running turn's trace: also draws show_widget calls still being written. */
   live?: boolean;
+  /** A status line below the trace says what the turn is doing, so the trace draws no working footer. */
+  statusOutside?: boolean;
 }
 
 const MAX_TRACE_TEXT_CHARS = 20_000;
@@ -100,6 +102,7 @@ export function AssistantWorkstream({
   generatedMedia,
   mediaCwd,
   live = false,
+  statusOutside = false,
 }: AssistantWorkstreamProps) {
   // Hooks must run in the same order every render — keep useMemo above any
   // conditional early return.
@@ -161,6 +164,7 @@ export function AssistantWorkstream({
             key={groupKey}
             entries={group.entries}
             isLatestRunning={idx === groups.length - 1 && model.state === 'running' && !model.retrying}
+            statusOutside={statusOutside}
           />
         );
         if (idx !== lastMediaGroupIndex || !generatedMedia?.length) {
@@ -173,7 +177,7 @@ export function AssistantWorkstream({
           </div>
         );
       })}
-      {model.state === 'running' && !model.retrying && groups.at(-1)?.kind !== 'compact' && drafts.length === 0 && !model.entries.some((entry) =>
+      {!statusOutside && model.state === 'running' && !model.retrying && groups.at(-1)?.kind !== 'compact' && drafts.length === 0 && !model.entries.some((entry) =>
         entry.type === 'compaction' ? entry.state === 'inProgress'
           : entry.type === 'thinking' ? entry.state === 'active'
           : entry.type === 'approval' ? entry.state === 'waiting'
@@ -297,9 +301,11 @@ function TextSegment({
 function CompactGroup({
   entries,
   isLatestRunning,
+  statusOutside,
 }: {
   entries: WorkstreamEntry[];
   isLatestRunning: boolean;
+  statusOutside: boolean;
 }) {
   const { changeRecordsByToolUseId, onOpenDiff } = useTurnDiffContext();
   const stages = useMemo(
@@ -338,7 +344,7 @@ function CompactGroup({
       <WorkstreamCollapse open={!showGroup || expanded}>
         {showGroup ? <TraceNest>{stageRows}</TraceNest> : stageRows}
       </WorkstreamCollapse>
-      {!showGroup && thinking && <WorkingFooter label="Thinking" />}
+      {!showGroup && thinking && !statusOutside && <WorkingFooter label="Thinking" />}
     </div>
   );
 }
@@ -389,6 +395,7 @@ function StageRow({
       data-workstream-stage={stage.id}
       data-workstream-tool-ids={stage.entries.map((entry) => entry.id).join(' ')}
       data-denied-action={denied || undefined}
+      data-workstream-stage-open={(expanded && canExpand) || undefined}
       tabIndex={-1}
     >
       <TraceLine
@@ -396,7 +403,7 @@ function StageRow({
         disabled={!canExpand}
         aria-expanded={canExpand ? expanded : undefined}
         tone={tone}
-        hint={stage.files.length === 1 ? stage.files[0].filePath : undefined}
+        hint={stage.files.length === 1 ? stage.files[0].filePath : stage.commands.length === 1 ? stage.commands[0].command : undefined}
         icon={<StageKindIcon stage={stage} />}
         title={<WorkstreamActivityLabel active={isPending}>{stage.title}</WorkstreamActivityLabel>}
         meta={<>

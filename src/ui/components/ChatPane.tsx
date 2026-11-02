@@ -1292,6 +1292,14 @@ export function ChatPane({
     }
     return scopes;
   }, [session?.messages, sessionId, timelineItems]);
+  // The turn's trace before any of its messages land shares the scope it gets once they do,
+  // so a fold the reader opened stays open.
+  const streamingDisclosureScope = useMemo(
+    () => (session?.messages && lastUserPromptIndex >= 0
+      ? workDisclosureScope(sessionId, session.messages, [lastUserPromptIndex]).scope
+      : `${sessionId}:${lastUserPromptIndex}`),
+    [lastUserPromptIndex, session?.messages, sessionId]
+  );
   const activeTimelineWorkId = useMemo(() => {
     for (let index = timelineItems.length - 1; index >= 0; index -= 1) {
       const item = timelineItems[index];
@@ -2208,6 +2216,7 @@ export function ChatPane({
                             mediaCwd={session.cwd ?? null}
                             reveal={workReveal && workRevealGroupId === item.group.id ? workReveal : null}
                             onRevealSettled={settleWorkReveal}
+                            foldWhileRunning
                           />
                         </div>
                         {designCards}
@@ -2358,7 +2367,8 @@ export function ChatPane({
                       model={streamingWorkstreamModel}
                       isRunning={turnPhase !== 'complete'}
                       defaultExpanded={turnPhase !== 'complete'}
-                      resetKey={`${sessionId}:${session.messages[lastUserPromptIndex]?.createdAt ?? lastUserPromptIndex}`}
+                      resetKey={streamingDisclosureScope}
+                      foldWhileRunning
                     />
                   ) : null}
                   {shouldRenderStandalonePartial ? (
