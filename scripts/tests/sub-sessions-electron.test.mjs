@@ -164,6 +164,21 @@ app.whenReady().then(async()=>{
   assert.deepEqual(await js('[...document.querySelectorAll("[data-sub-sessions-of=p1] [data-session-id]")].map(e=>e.dataset.sessionId).sort()'),['c1','g1']);
   assert.equal(await label('[data-sub-session=f2]'),'Add ClaudeUsageSettings tests · coworker · Detached');
 
+  // Hover card: long values wrap in full, and the branch reads like the rows around it.
+  const longTitle='Stop rendering dollar amounts as math in chat and keep the currency as plain text';
+  await js('qa.app.setState(s=>({sessions:{...s.sessions,c2:{...s.sessions.c2,title:'+JSON.stringify(longTitle)+',associatedWorktreeBranch:"aegis/iso/stop-rendering-dollar-amounts-as-math-in-chat"}}}))');await delay(150);
+  const hoverPoint=await point('document.querySelector("[data-session-id=c2]")');
+  win.webContents.sendInputEvent({type:'mouseMove',...hoverPoint});
+  const card='document.querySelector("[data-session-hover-card]")';
+  await point(card);await delay(250);
+  const cardFacts=await js('(()=>{const c='+card+';const r=c.getBoundingClientRect();const parts=[...c.querySelectorAll("span,div")].filter(e=>!e.children.length&&e.textContent);const branch=parts.find(e=>e.textContent.startsWith("aegis/iso/"));const project=parts.find(e=>e.textContent==="coworker");return{width:r.width,text:c.textContent,clipped:parts.filter(e=>e.scrollWidth>e.clientWidth+1).length,branchFont:branch&&getComputedStyle(branch).fontFamily,projectFont:project&&getComputedStyle(project).fontFamily,branchSize:branch&&getComputedStyle(branch).fontSize,projectSize:project&&getComputedStyle(project).fontSize}})()');
+  assert.ok(cardFacts.text.includes(longTitle),'the full title shows');
+  assert.equal(cardFacts.clipped,0,'nothing is cut off');
+  assert.ok(cardFacts.width>224&&cardFacts.width<=400,'wider than before, capped: '+cardFacts.width);
+  assert.equal(cardFacts.branchFont,cardFacts.projectFont,'branch uses the same font');
+  assert.equal(cardFacts.branchSize,cardFacts.projectSize,'branch uses the same size');
+  await screenshot('4-hover-card');
+
   assert.deepEqual(errors.filter(e=>!/No handler registered|Unable to load preload|ENOENT/.test(e)),[]);
   console.log(JSON.stringify({ok:true}));
   app.exit(0);
