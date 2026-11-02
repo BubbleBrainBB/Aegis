@@ -41,7 +41,7 @@ import { StructuredResponse } from './StructuredResponse';
 import { LiveWidgetDrafts, WorkingFooter } from './AssistantWorkstream';
 import { PromptInput } from './PromptInput';
 import { NewThreadLanding } from './NewThreadLanding';
-import { ChatFolderNote, NewThreadProjectHeading } from './NewThreadProjectHeading';
+import { NewThreadProjectHeading } from './NewThreadProjectHeading';
 import { openNoProjectChat, openProjectNewChat } from '../utils/project-new-chat';
 import { SessionHandoffProviderRoute } from './SessionHandoffIndicator';
 import { ComposerContextPills } from './ComposerContextPills';
@@ -2004,7 +2004,6 @@ export function ChatPane({
                     />
                   }
                 />
-                {!threadStarterCwd ? <ChatFolderNote /> : null}
               </div>
             </NewThreadLanding>
           ) : (

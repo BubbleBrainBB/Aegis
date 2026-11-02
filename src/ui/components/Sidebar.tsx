@@ -118,7 +118,7 @@ export function Sidebar() {
     setActiveWorkspace,
     setShowNewSession,
     setShowSettings,
-    createDraftSession,
+    openDraftSession,
     searchPaletteOpen,
     setSearchPaletteOpen,
   } = useAppStore();
@@ -189,7 +189,7 @@ export function Sidebar() {
     setProjectCwd(selected);
     setActiveChannelForProject(selected, DEFAULT_WORKSPACE_CHANNEL_ID);
     setShowSettings(false);
-    createDraftSession(selected, DEFAULT_WORKSPACE_CHANNEL_ID);
+    openDraftSession(selected, DEFAULT_WORKSPACE_CHANNEL_ID);
   };
 
   const shortcuts = useAppPreferences(state => state.keyboardShortcuts);
@@ -331,7 +331,7 @@ export function Sidebar() {
     switch (actionId) {
       case 'new-thread':
         setShowSettings(false);
-        createDraftSession(newThreadCwd, getActiveChannelIdForProject(newThreadCwd));
+        openDraftSession(newThreadCwd, getActiveChannelIdForProject(newThreadCwd));
         break;
       case 'open-project':
         void handleProjectFolderSelect();
@@ -453,7 +453,7 @@ export function Sidebar() {
                   label="New Task"
                   onClick={() => {
                     goToWorkspace('chat');
-                    createDraftSession(newThreadCwd, getActiveChannelIdForProject(newThreadCwd));
+                    openDraftSession(newThreadCwd, getActiveChannelIdForProject(newThreadCwd));
                   }}
                 />
               </div>
@@ -484,7 +484,7 @@ export function Sidebar() {
                         setActiveChannelForProject(nextCwd, nextChannelId);
                         setShowSettings(false);
                         setChatSidebarView('threads');
-                        createDraftSession(nextCwd, nextChannelId);
+                        openDraftSession(nextCwd, nextChannelId);
                       }}
                     />
                   </div>

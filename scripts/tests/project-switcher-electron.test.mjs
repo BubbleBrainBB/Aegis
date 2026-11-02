@@ -16,6 +16,7 @@ import { NewThreadLanding } from '/src/ui/components/NewThreadLanding.tsx';
 import { NewThreadProjectHeading } from '/src/ui/components/NewThreadProjectHeading.tsx';
 import { FolderTreeView } from '/src/ui/components/FolderTreeView.tsx';
 import { useAppStore } from '/src/ui/store/useAppStore.ts';
+import { useSidebarViewStore } from '/src/ui/store/useSidebarViewStore.ts';
 import { openProjectNewChat } from '/src/ui/utils/project-new-chat.ts';
 import '/src/ui/index.css';
 window.electron = { getRecentCwds: async () => ['/projects/Alpha', '/projects/Beta', '/projects/RecentOnly'], selectDirectory: async () => window.browseResult, gitBranch: async () => null, followUps: { list: async () => [] } };
@@ -26,6 +27,7 @@ a.setProjectCwd('/projects/Alpha');
 a.setShowNewSession(true);
 a.setActiveChannelForProject('/projects/Alpha', 'alpha-channel');
 a.setActiveChannelForProject('/projects/Beta', 'beta-channel');
+useSidebarViewStore.setState({groupBy:'project'});
 window.qa = { store: useAppStore, openProjectNewChat, old, snapshot: () => {
  const s = useAppStore.getState(); const active = s.sessions[s.activeSessionId];
  const row = document.querySelector('[data-session-id="'+s.activeSessionId+'"]');
@@ -66,7 +68,7 @@ app.whenReady().then(async()=>{
   assert.equal(await js('document.querySelectorAll("[cmdk-item][title]").length'),1);
   await win.webContents.sendInputEvent({type:'keyDown',keyCode:'Enter'});await win.webContents.sendInputEvent({type:'keyUp',keyCode:'Enter'});await delay(250);
   const beta=await js('qa.snapshot()');
-  assert.equal(beta.cwd,'/projects/Beta');assert.equal(beta.active.channelId,'beta-channel');assert.equal(beta.selected,'page');assert.equal(beta.visible,true);assert.equal(beta.draftCount,1);assert.equal(beta.oldExists,true);
+  assert.equal(beta.cwd,'/projects/Beta');assert.equal(beta.active.channelId,'beta-channel');assert.equal(beta.selected,undefined,'an unsent chat has no row');assert.equal(beta.draftCount,1);assert.equal(beta.oldExists,true);
   // Current project is checked and selecting it is a no-op.
   await click('[aria-label="Switch project: Beta"]');
   assert.equal(await js('!!document.querySelector("[aria-label^=Current]")'),true);
@@ -74,7 +76,7 @@ app.whenReady().then(async()=>{
   assert.equal((await js('qa.snapshot()')).active.id,beta.active.id);
   await click('[aria-label="Switch project: Beta"]');
   await click('[cmdk-item][title="/projects/Alpha"]');
-  const alpha=await js('qa.snapshot()');assert.equal(alpha.active.channelId,'alpha-channel');assert.equal(alpha.draftCount,1);assert.equal(alpha.oldExists,true);assert.equal(alpha.selected,'page');
+  const alpha=await js('qa.snapshot()');assert.equal(alpha.active.channelId,'alpha-channel');assert.equal(alpha.draftCount,1);assert.equal(alpha.oldExists,true);assert.equal(alpha.selected,undefined,'an unsent chat has no row');
   // Escape closes, no-match state works, cancelling browse preserves selection.
   await click('[aria-label="Switch project: Alpha"]');
   await win.webContents.insertText('missing-project');await delay(100);

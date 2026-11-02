@@ -82,8 +82,12 @@ app.whenReady().then(async()=>{
   await win.loadURL(process.env.QA_URL);
   await js('new Promise(r=>{const t=()=>document.querySelector("[data-session-id]")?r():setTimeout(t,50);t()})');await delay(400);
 
-  // Group by Project (default): pinned on top, archived hidden behind the entry at the bottom.
   assert.equal(await js('document.querySelector("[aria-label=\\\\"View options\\\\"]")!==null'),true,'default options leave the trigger untinted');
+  assert.equal(await js('qa.view.getState().groupBy'),'state','Group by State is the default');
+
+  // Group by Project: pinned on top, archived hidden behind the entry at the bottom.
+  await js('qa.view.setState({groupBy:"project"})');await delay(200);
+  assert.equal(await js('document.querySelector("[aria-label=\\\\"View options (customized)\\\\"]")!==null'),true,'changed options tint the trigger');
   const projectRows=await rowIds();
   assert.equal(projectRows[0],'s10','pinned threads lead');
   assert.equal(projectRows.includes('s11'),false,'archived threads stay out of Active');
@@ -103,7 +107,7 @@ app.whenReady().then(async()=>{
   await screenshot('1-project');
 
   // The menu drives the same store; Group by -> State from the submenu.
-  await click('document.querySelector("[aria-label=\\\\"View options\\\\"]")');
+  await click('document.querySelector("[aria-label^=\\\\"View options\\\\"]")');
   for(const label of ['Status','Project','Last activity','Group by','Sort by','Show PR status'])assert.equal(await js(byText(label)+'!==undefined'),true,'menu row '+label);
   await hover(byText('Group by'));
   await screenshot('2-menu');
@@ -119,7 +123,7 @@ app.whenReady().then(async()=>{
   assert.deepEqual(await members('running'),['s3','s4']);
   assert.deepEqual(await members('review'),['s5','s6','s7'],'unseen result, open PR and live worktree wait on review');
   assert.deepEqual(await members('completed'),['s10','s12','s8','s9'].sort(),'Completed starts open; a merged PR lands in it');
-  assert.equal(await js('document.querySelector("[aria-label=\\\\"View options (customized)\\\\"]")!==null'),true,'changed options tint the trigger');
+  assert.equal(await js('document.querySelector("[aria-label=\\\\"View options\\\\"]")!==null'),true,'back on the default, the trigger is untinted again');
   assert.equal(await js('document.querySelector("[data-session-id=s5]").textContent.includes("coworker")'),false,'rows show the session only, not its project');
   await screenshot('3-state');
 
@@ -156,11 +160,19 @@ app.whenReady().then(async()=>{
   assert.equal((await members('completed')).length,5,'unfolding keeps the group short');
   await js('(()=>{const {c1,c2,c3,...s}=qa.app.getState().sessions;qa.app.setState({sessions:s})})()');await delay(200);
 
-  // A new task nothing was sent from yet sits above the groups, in none of them.
+  // A new task nothing was sent from yet is in no list at all, and New Task goes back to it.
   await js('(()=>{const s=qa.app.getState().sessions;qa.app.setState({sessions:{...s,d1:{...s.s8,id:"d1",title:"New Chat",isDraft:true,status:"idle",updatedAt:Date.now()}}})})()');await delay(200);
-  assert.deepEqual(await members('draft'),['d1']);
-  for(const state of ['needs-input','running','review','completed'])assert.equal((await members(state)).includes('d1'),false,'a draft is not '+state);
+  assert.equal((await rowIds()).includes('d1'),false,'a draft is not listed');
+  assert.equal(await js('!!document.querySelector("[data-sidebar-state=draft]")'),false);
   await js('(()=>{const {d1,...s}=qa.app.getState().sessions;qa.app.setState({sessions:s})})()');await delay(200);
+
+  const opened=await js('(()=>{const a=qa.app.getState();const first=a.openDraftSession("/projects/reuse");const again=qa.app.getState().openDraftSession("/projects/reuse");const other=qa.app.getState().openDraftSession("/projects/other");const detached=qa.app.getState().createDetachedDraftSession("/projects/design","New chat");const notDetached=qa.app.getState().openDraftSession("/projects/design");const s=qa.app.getState().sessions;const counts=Object.values(s).filter(x=>x.isDraft&&x.cwd==="/projects/reuse").length;const res={first,again,other,detached,notDetached,counts,active:qa.app.getState().activeSessionId};const rest=Object.fromEntries(Object.entries(s).filter(([id])=>![first,other,detached,notDetached].includes(id)));qa.app.setState({sessions:rest});return res})()');await delay(200);
+  assert.equal(opened.again,opened.first,'New Task goes back to the unsent chat of that folder');
+  assert.equal(opened.counts,1,'empty chats do not pile up');
+  assert.notEqual(opened.other,opened.first,'another folder has its own');
+  assert.notEqual(opened.notDetached,opened.detached,'a draft another view owns is left alone');
+  assert.equal(opened.active,opened.notDetached);
+  await js('qa.app.getState().setActiveSession("s3")');await delay(150);
 
   // Going to a draft reveals its project, but a fold made after that outlives Settings.
   await setView({groupBy:'project'});

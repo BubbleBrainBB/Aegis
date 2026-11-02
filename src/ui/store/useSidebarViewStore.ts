@@ -21,6 +21,12 @@ interface SidebarViewStore extends SidebarViewOptions {
   collapsedGroups: ReadonlySet<string>;
   expandedSessionGroups: ReadonlySet<string>;
   toggleGroupCollapsed: (key: string) => void;
+  /**
+   * Waits the user folded a conversation over (see subSessionWaitMark): only a
+   * new one unfolds it again. Not persisted.
+   */
+  dismissedWaits: ReadonlySet<string>;
+  foldSubSessions: (key: string, waits: readonly string[]) => void;
   /** The draft whose project was last unfolded for it, so a remount does not undo a later fold. */
   revealedDraft: { sessionId: string; project: string } | null;
   /** Unfold the project when going to a draft; pass null while no draft is active. */
@@ -45,11 +51,17 @@ export const useSidebarViewStore = create<SidebarViewStore>()(
   persist(
     (set) => ({
       ...DEFAULT_SIDEBAR_VIEW,
-      previousGroupBy: DEFAULT_SIDEBAR_VIEW.groupBy,
+      previousGroupBy: 'project',
       collapsedGroups: new Set<string>(),
       expandedSessionGroups: new Set<string>(),
       toggleGroupCollapsed: (key) =>
         set((state) => ({ collapsedGroups: withToggled(state.collapsedGroups, key) })),
+      dismissedWaits: new Set<string>(),
+      foldSubSessions: (key, waits) =>
+        set((state) => ({
+          collapsedGroups: new Set(state.collapsedGroups).add(key),
+          dismissedWaits: new Set([...state.dismissedWaits, ...waits]),
+        })),
       revealedDraft: null,
       revealDraftProject: (draft) =>
         set((state) => {
@@ -69,7 +81,7 @@ export const useSidebarViewStore = create<SidebarViewStore>()(
       toggleStateView: () =>
         set((state) =>
           state.groupBy === 'state'
-            ? { groupBy: state.previousGroupBy === 'state' ? DEFAULT_SIDEBAR_VIEW.groupBy : state.previousGroupBy }
+            ? { groupBy: state.previousGroupBy === 'state' ? 'project' : state.previousGroupBy }
             : { groupBy: 'state', previousGroupBy: state.groupBy }
         ),
       reset: () => set({ ...DEFAULT_SIDEBAR_VIEW }),
@@ -77,7 +89,14 @@ export const useSidebarViewStore = create<SidebarViewStore>()(
     {
       name: 'cowork-sidebar-view',
       storage: createJSONStorage(() => rendererStateStorage),
-      version: 1,
+      version: 2,
+      // Version 2 made Group by State the default, and it replaces the old default once.
+      migrate: (persisted, version) => {
+        const saved = (persisted ?? {}) as Partial<SidebarViewStore>;
+        return version < 2 && saved.groupBy === 'project'
+          ? { ...saved, groupBy: 'state' as const, previousGroupBy: 'project' as const }
+          : saved;
+      },
       partialize: ({ status, project, activity, groupBy, sortBy, showPullRequests, previousGroupBy }) => ({
         status, project, activity, groupBy, sortBy, showPullRequests, previousGroupBy,
       }),

@@ -4236,6 +4236,20 @@ export function listRecentCwds(limit: number = 8): string[] {
   return rows.map((row) => row.cwd);
 }
 
+/** Every project folder the user has: never a chat's folder, a worktree or a hidden run's copy. */
+export function listProjects(): string[] {
+  const rows = getDb().prepare(`
+    SELECT COALESCE(NULLIF(project_cwd, ''), cwd) AS folder, MAX(updated_at) AS latest FROM sessions
+    WHERE COALESCE(NULLIF(project_cwd, ''), cwd) IS NOT NULL
+      AND COALESCE(NULLIF(project_cwd, ''), cwd) != ''
+      AND COALESCE(is_chat, 0) = 0
+      AND COALESCE(hidden_from_threads, 0) = 0
+    GROUP BY folder
+    ORDER BY latest DESC
+  `).all() as { folder: string }[];
+  return rows.map((row) => row.folder).filter((folder) => !folder.includes('/.worktrees/'));
+}
+
 // 关闭数据库
 export function close(): void {
   if (db) {

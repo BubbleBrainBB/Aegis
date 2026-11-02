@@ -7,6 +7,7 @@
 
 import { opensTurn } from '../../../shared/turn-boundary';
 import { randomUUID } from 'node:crypto';
+import { basename } from 'node:path';
 import type { SessionContinuePayload, SessionStartPayload } from '../../../shared/types';
 import type {
   FollowUpAction,
@@ -35,6 +36,20 @@ export const MAX_OPEN_FOLLOW_UPS = 5;
 const RETRY_WINDOW_MS = 2 * 60_000;
 const REPORT_MAX_CHARS = 6_000;
 
+/** The project a start_session call names: one the user has, by full path or folder name. */
+function findProject(projects: string[], name: string): { path: string } | { error: string } {
+  const wanted = name.trim().replace(/\/+$/, '');
+  if (projects.includes(wanted)) return { path: wanted };
+  const matches = projects.filter((project) => basename(project).toLowerCase() === wanted.toLowerCase());
+  if (matches.length === 1) return { path: matches[0] };
+  if (matches.length > 1) return { error: `"${name}" matches several projects. Pass the full path of one: ${matches.join(', ')}.` };
+  return {
+    error: projects.length
+      ? `The user has no project "${name}". Their projects: ${projects.join(', ')}. Ask them if none of these is meant.`
+      : `The user has no project "${name}" in Aegis yet. Ask them to add it first.`,
+  };
+}
+
 export interface FollowUpSessionInfo {
   title: string;
   cwd: string | null;
@@ -45,6 +60,12 @@ export interface FollowUpSessionInfo {
   projectCwd?: string | null;
   /** True when the session runs in a git worktree of its own. */
   inWorktree?: boolean;
+  /** True for a conversation with no project: its folder is its own. */
+  isChat?: boolean;
+  /** True for a session a workflow runs: its workflow owns its work. */
+  workflowMember?: boolean;
+  /** True while the session may only plan, whichever agent runs it. */
+  planning?: boolean;
 }
 
 /** The folder a session works in, as start fields a sub-session sharing it copies. */
@@ -74,6 +95,9 @@ export interface FollowUpHost {
   sharedWorkspace(parentSessionId: string): FollowUpSharedWorkspace | null;
   provision(projectCwd: string, label: string): Promise<FollowUpWorkspace>;
   worktreeExists(worktreePath: string): boolean;
+  /** The project folders the user has in Aegis. */
+  listProjects(): string[];
+  isGitRepo(cwd: string): Promise<boolean>;
   /** `git status --short` of a folder; null when unknown. */
   uncommitted(cwd: string): Promise<string[] | null>;
   broadcast(view: FollowUpProposalView): void;
@@ -89,7 +113,9 @@ export interface ProposeArgs {
 export interface StartSessionArgs {
   title: string;
   prompt: string;
-  /** true: a new worktree; false: the caller's folder; omitted: follow the caller. */
+  /** The project to work in, by folder name or full path; omitted: the caller's. */
+  project?: string;
+  /** true: a new worktree; false: no worktree; omitted: a worktree wherever git allows one. */
   use_worktree?: boolean;
 }
 
@@ -181,12 +207,21 @@ export class FollowUpService {
     const session = this.host.getSession(callerSessionId);
     if (!session) return { ok: false, error: 'This conversation could not be found.' };
     if (!session.cwd) return { ok: false, error: 'This conversation has no project folder, so a new session has nowhere to run.' };
+    if (session.workflowMember) return { ok: false, error: 'A workflow member cannot start sessions. Mention the work in your reply instead.' };
+    if (session.planning) return { ok: false, error: 'This session is in plan mode. Start the session once the plan is approved.' };
     const title = args.title?.trim() ?? '';
     const prompt = args.prompt?.trim() ?? '';
     // A retried call gets the session it already started, whatever happened since.
+    const retried = toolUseId ? this.store.findByToolUse(callerSessionId, toolUseId) : null;
+    if (retried) return this.startSessionOutcome(retried);
+    const callerProject = session.projectCwd || session.cwd;
+    const named = args.project?.trim() ? findProject(this.host.listProjects(), args.project) : null;
+    if (named && 'error' in named) return { ok: false, error: named.error };
+    const targetProject = named?.path ?? null;
+    // Without an id, the same task in another project is another task.
     const existing = toolUseId
-      ? this.store.findByToolUse(callerSessionId, toolUseId)
-      : this.store.findRecentSession(callerSessionId, title, prompt, RETRY_WINDOW_MS);
+      ? null
+      : this.store.findRecentSession(callerSessionId, title, prompt, RETRY_WINDOW_MS, targetProject ? [targetProject] : [callerProject, session.cwd]);
     if (existing) return this.startSessionOutcome(existing);
     // Only words the user typed start sessions: never a turn that a report,
     // a workflow or the starting session's brief began.
@@ -202,8 +237,9 @@ export class FollowUpService {
     if (!prompt) return { ok: false, error: '"prompt" is required.' };
     if (title.length > SUB_SESSION_LIMITS.title) return { ok: false, error: `"title" is longer than ${SUB_SESSION_LIMITS.title} characters.` };
     if (prompt.length > SUB_SESSION_LIMITS.prompt) return { ok: false, error: `"prompt" is longer than ${SUB_SESSION_LIMITS.prompt} characters.` };
-    const place: FollowUpPlace = args.use_worktree === true ? 'worktree' : args.use_worktree === false ? 'shared' : session.inWorktree ? 'worktree' : 'shared';
-    const { row } = this.store.insert({
+    const project = targetProject ?? callerProject;
+    const place = await this.chooseSubSessionPlace(session, project, targetProject !== null && targetProject !== callerProject, args.use_worktree);
+    const { row, created } = this.store.insert({
       id: randomUUID(),
       kind: 'session',
       status: 'starting',
@@ -215,14 +251,34 @@ export class FollowUpService {
       plan: prompt,
       acceptance_criteria: '',
       // A worktree comes from the project, not from the parent's own worktree.
-      project_cwd: place === 'worktree' ? session.projectCwd || session.cwd : session.cwd,
+      project_cwd: place === 'shared' ? session.cwd : project,
       provider: session.provider,
       model: session.model,
       permission_mode: this.host.permissionMode(callerSessionId),
     });
     this.publish(row.id);
-    if (row.status === 'starting' && !row.child_session_id) await this.runStart(row.id);
+    // A call that lost the race to insert this tool_use leaves the start to the winner.
+    if (created && row.status === 'starting' && !row.child_session_id) await this.runStart(row.id);
     return this.startSessionOutcome(this.store.get(row.id) ?? row);
+  }
+
+  /**
+   * A task gets its own worktree so that it can run beside the others, unless
+   * git can't give it one or it was asked to stay. A chat's folder holds no
+   * repository to branch from, so a task that names no project stays there.
+   */
+  private async chooseSubSessionPlace(
+    session: FollowUpSessionInfo,
+    project: string,
+    otherProject: boolean,
+    useWorktree: boolean | undefined,
+  ): Promise<FollowUpPlace> {
+    if (useWorktree === true) return 'worktree';
+    const stay: FollowUpPlace = otherProject ? 'project' : 'shared';
+    if (useWorktree === false) return stay;
+    if (session.inWorktree) return otherProject && !(await this.host.isGitRepo(project)) ? stay : 'worktree';
+    if (session.isChat && !otherProject) return stay;
+    return (await this.host.isGitRepo(project)) ? 'worktree' : stay;
   }
 
   /** Take a session out from under the one that started it: it stops reporting back. */
@@ -442,6 +498,14 @@ export class FollowUpService {
         return;
       }
       if (row.place === 'shared') return await this.startShared(row);
+      if (row.place === 'project') {
+        return await this.launch(row, {
+          ...(await this.subSessionPrompt(row, null)),
+          cwd: row.project_cwd,
+          projectCwd: row.project_cwd,
+          envMode: 'local',
+        });
+      }
       if (!row.worktree_path || !this.host.worktreeExists(row.worktree_path)) {
         let workspace: FollowUpWorkspace;
         try {
@@ -511,6 +575,8 @@ export class FollowUpService {
         parentSessionId: row.parent_session_id,
         parentTitle: parent?.title ?? null,
         worktree,
+        projectFolder: row.place === 'project' ? row.project_cwd : null,
+        repoRoot: worktree ? row.repo_root : null,
       }),
       workflowPrompt: 'sub-session',
     };
@@ -553,7 +619,7 @@ export class FollowUpService {
     if (row.status === 'start_failed') {
       return { ok: false, error: `The session could not start: ${row.last_error ?? 'unknown error'}` };
     }
-    const where = row.place === 'shared' ? 'in this folder, shared with you' : row.worktree_branch ? `in its own worktree on branch ${row.worktree_branch}` : 'in its own worktree';
+    const where = row.place === 'shared' ? 'in this folder, shared with you' : row.place === 'project' ? `directly in ${row.project_cwd}` : row.worktree_branch ? `in its own worktree on branch ${row.worktree_branch}` : 'in its own worktree';
     return {
       ok: true,
       text: JSON.stringify({
@@ -612,6 +678,7 @@ export class FollowUpService {
       status: row.status as FollowUpStatus,
       childSessionId: row.child_session_id,
       place: (row.place ?? 'worktree') as FollowUpPlace,
+      projectCwd: row.project_cwd,
       worktreeBranch: row.worktree_branch,
       baseRef: row.base_ref,
       lastError: row.last_error,

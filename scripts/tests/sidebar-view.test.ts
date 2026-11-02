@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   DEFAULT_SIDEBAR_VIEW,
+  mostUrgentSidebarState,
   deriveSidebarSessionState,
   isDefaultSidebarView,
   isWithinActivityWindow,
@@ -94,8 +95,16 @@ assert.equal(sessionSortTime({ updatedAt: 20, createdAt: 10 }, 'created'), 10);
 assert.equal(sessionSortTime({ updatedAt: 20 }, 'created'), 20, 'sessions without a creation time fall back');
 
 assert.equal(isDefaultSidebarView(DEFAULT_SIDEBAR_VIEW), true);
-assert.equal(isDefaultSidebarView({ ...DEFAULT_SIDEBAR_VIEW, groupBy: 'state' }), false);
+assert.equal(DEFAULT_SIDEBAR_VIEW.groupBy, 'state');
+assert.equal(isDefaultSidebarView({ ...DEFAULT_SIDEBAR_VIEW, groupBy: 'project' }), false);
 assert.equal(isDefaultSidebarView({ ...DEFAULT_SIDEBAR_VIEW, project: '/p' }), false);
+
+// A conversation stands where the most urgent of its tasks does.
+assert.equal(mostUrgentSidebarState('completed', ['review', 'running', 'completed']), 'running');
+assert.equal(mostUrgentSidebarState('running', ['needs-input']), 'needs-input');
+assert.equal(mostUrgentSidebarState('needs-input', ['completed']), 'needs-input', 'its own wait counts too');
+assert.equal(mostUrgentSidebarState('review', [null, 'completed']), 'review', 'a task still a draft does not count');
+assert.equal(mostUrgentSidebarState('completed', ['completed']), 'completed', 'done only when all of it is');
 
 // --- store ------------------------------------------------------------------
 
@@ -108,11 +117,31 @@ async function main() {
   assert.equal(store.getState().groupBy, 'state', 'the shortcut switches to Group by State');
   store.getState().toggleStateView();
   assert.equal(store.getState().groupBy, 'date', 'pressing it again restores the previous grouping');
+  store.getState().setOption('groupBy', 'state');
+  useSidebarViewStore.setState({ previousGroupBy: 'state' });
+  store.getState().toggleStateView();
+  assert.equal(store.getState().groupBy, 'project', 'from a state view with nothing to return to, the shortcut still leaves it');
 
   store.getState().setOption('status', 'archived');
   store.getState().reset();
   assert.equal(store.getState().status, 'active');
-  assert.equal(store.getState().groupBy, 'project');
+  assert.equal(store.getState().groupBy, 'state');
+
+  // Group by Project was the default before: move saved views off it once, then respect the choice.
+  const migrate = store.persist.getOptions().migrate!;
+  const moved = (await migrate({ groupBy: 'project', status: 'all' }, 1)) as Partial<ReturnType<typeof store.getState>>;
+  assert.equal(moved.groupBy, 'state');
+  assert.equal(moved.previousGroupBy, 'project', 'the shortcut still goes back to projects');
+  assert.equal(moved.status, 'all', 'other choices stay');
+  assert.equal(((await migrate({ groupBy: 'date' }, 1)) as { groupBy: string }).groupBy, 'date');
+  assert.equal(store.persist.getOptions().version, 2);
+
+  // A fold made over a wait holds until another wait.
+  store.getState().foldSubSessions('sub-sessions:p', ['c1:10']);
+  assert.equal(store.getState().collapsedGroups.has('sub-sessions:p'), true);
+  assert.equal(store.getState().dismissedWaits.has('c1:10'), true);
+  store.getState().foldSubSessions('sub-sessions:p', []);
+  assert.equal(store.getState().collapsedGroups.has('sub-sessions:p'), true, 'folding again keeps it folded');
 
   // Unknown or stale persisted values fall back instead of breaking the list.
   const merge = store.persist.getOptions().merge!;

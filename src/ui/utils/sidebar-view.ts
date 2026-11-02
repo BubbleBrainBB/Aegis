@@ -20,7 +20,7 @@ export const DEFAULT_SIDEBAR_VIEW: SidebarViewOptions = {
   status: 'active',
   project: null,
   activity: 'all',
-  groupBy: 'project',
+  groupBy: 'state',
   sortBy: 'updated',
   showPullRequests: true,
 };
@@ -89,6 +89,14 @@ export const SIDEBAR_STATE_LABELS: Record<SidebarSessionState, string> = {
   review: 'Ready for review',
   completed: 'Completed',
 };
+
+/** Where a conversation stands with the tasks it started: the most urgent of them all. */
+export function mostUrgentSidebarState(
+  own: SidebarSessionState,
+  tasks: readonly (SidebarSessionState | null)[]
+): SidebarSessionState {
+  return SIDEBAR_STATE_ORDER.find((state) => state === own || tasks.includes(state)) ?? own;
+}
 
 /** Null while the session is still a draft: nothing has been sent, so there is no state yet. */
 export function deriveSidebarSessionState(

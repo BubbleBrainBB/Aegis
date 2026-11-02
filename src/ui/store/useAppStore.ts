@@ -2520,12 +2520,32 @@ export const useAppStore = create<Store>()(
     return draft.id;
   },
 
+  openDraftSession: (cwd, channelId, workspace) => {
+    const state = get();
+    const folder = (cwd ?? state.projectCwd ?? '').trim();
+    const unsent = Object.values(state.sessions)
+      .filter(
+        (session) =>
+          session.isDraft &&
+          !session.hiddenFromThreads &&
+          !session.detachedDraft &&
+          session.messages.length === 0 &&
+          session.id !== state.pendingDraftSessionId &&
+          !session.worktreePath &&
+          (session.cwd ?? '').trim() === folder
+      )
+      .sort((left, right) => right.updatedAt - left.updatedAt)[0];
+    if (!unsent) return get().createDraftSession(cwd, channelId, workspace);
+    get().setActiveSession(unsent.id);
+    return unsent.id;
+  },
+
   createDetachedDraftSession: (cwd, title) => {
     const draft = createDraftSessionView(cwd ?? get().projectCwd, resolveActiveChannelIdForProject(get().activeChannelByProject, cwd ?? get().projectCwd), { title });
     // Not placed in a chat pane and not made active: the view that asked for
     // it (the Design section) shows it on its own.
     set((state) => ({
-      sessions: { ...state.sessions, [draft.id]: draft },
+      sessions: { ...state.sessions, [draft.id]: { ...draft, detachedDraft: true } },
       rightPanelBySessionId: { ...state.rightPanelBySessionId, [draft.id]: emptyRightPanelSnapshot() },
     }));
     return draft.id;

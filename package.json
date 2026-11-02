@@ -36,6 +36,7 @@
     "verify:follow-up": "npx tsx scripts/tests/follow-up.test.ts",
     "verify:turn-report": "npm run transpile:electron && node scripts/tests/turn-report.test.cjs",
     "verify:sub-sessions": "node scripts/tests/sub-sessions-electron.test.mjs",
+    "probe:task-first-e2e": "npm run transpile:electron && node scripts/tests/task-first-e2e-electron.mjs",
     "verify:workflow-engine": "tsc -p src/workflow-engine/tsconfig.json && npx tsx scripts/tests/workflow-engine.test.ts && npx tsx scripts/tests/workflow-engine-run.test.ts && npx tsx scripts/tests/workflow-host-units.test.ts",
     "verify:screenshot": "npx tsx scripts/tests/screenshot-layout.test.ts",
     "verify:theme-variables": "node scripts/verify-theme-variables.mjs",

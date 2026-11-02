@@ -8,6 +8,8 @@ import { DESIGN_TOOL_NAMES } from '../../../shared/design-tools';
 import { getWorkflowSessionPolicy } from '../workflow/session-hooks';
 import { WidgetDraftTracker } from '../widget-draft';
 import { START_WORKFLOW_TOOL } from '../../../shared/workflow';
+import { START_SESSION_TOOL } from '../../../shared/follow-up';
+import { createPiStartSession } from '../follow-up/tool';
 import { SHOW_WIDGET_TOOL, WIDGET_GUIDE_TOOL } from '../../../shared/widget';
 import { EventEmitter } from 'events';
 import { readFile } from 'fs/promises';
@@ -355,8 +357,8 @@ export class PiSdkAdapter implements ProviderAdapter {
       sessionManager,
       // Workflow members do not get the workflow entry (no nested workflows)
       // or status reports (their workflow reads their turns).
-      tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls', 'read_session', SHOW_WIDGET_TOOL, WIDGET_GUIDE_TOOL, ...DESIGN_TOOL_NAMES, ...(offersWorkflows ? [START_WORKFLOW_TOOL, REPORT_STATUS_TOOL] : [])],
-      customTools: [createPiSessionReader(), createPiShowWidget(), createPiWidgetGuide(), ...createPiDesignTools(input.threadId), ...(offersWorkflows ? [createPiStartWorkflow(input.threadId), createPiReportStatus(input.threadId)] : [])],
+      tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls', 'read_session', SHOW_WIDGET_TOOL, WIDGET_GUIDE_TOOL, ...DESIGN_TOOL_NAMES, ...(offersWorkflows ? [START_WORKFLOW_TOOL, REPORT_STATUS_TOOL, START_SESSION_TOOL] : [])],
+      customTools: [createPiSessionReader(), createPiShowWidget(), createPiWidgetGuide(), ...createPiDesignTools(input.threadId), ...(offersWorkflows ? [createPiStartSession(input.threadId), createPiStartWorkflow(input.threadId), createPiReportStatus(input.threadId)] : [])],
       ...(selectedModel ? { model: selectedModel } : {}),
     });
 
