@@ -28,7 +28,7 @@ async function applyTargets(worktreePath: string, projectCwd: string | null): Pr
 export async function worktreeHoldsWork(worktreePath: string, projectCwd: string | null): Promise<boolean> {
   if (!existsSync(worktreePath)) return false;
   try {
-    if (await git(worktreePath, ['status', '--porcelain'])) return true;
+    if (await git(worktreePath, ['status', '--porcelain', '--untracked-files=normal'])) return true;
     for (const target of await applyTargets(worktreePath, projectCwd)) {
       const contained = await git(worktreePath, ['merge-base', '--is-ancestor', 'HEAD', target]).then(() => true, () => false);
       if (contained) return false;

@@ -21,6 +21,9 @@ try {
   assert.equal(await worktreeHoldsWork(worktree, project), false, 'a fresh worktree has no work');
   writeFileSync(join(worktree, 'draft.txt'), 'draft');
   assert.equal(await worktreeHoldsWork(worktree, project), true, 'an untracked file is work');
+  git(project, 'config', 'status.showUntrackedFiles', 'no');
+  assert.equal(await worktreeHoldsWork(worktree, project), true, 'an untracked file is work even when git status is set to hide them');
+  git(project, 'config', '--unset', 'status.showUntrackedFiles');
   git(worktree, 'add', 'draft.txt'); git(worktree, 'commit', '-qm', 'draft');
   assert.equal(await worktreeHoldsWork(worktree, project), true, 'an unmerged commit is work');
   git(project, 'merge', '-q', '--ff-only', 'task');
