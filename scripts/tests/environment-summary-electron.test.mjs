@@ -135,8 +135,9 @@ app.whenReady().then(async()=>{
  await click('Cancel');await delay(450);assert.deepEqual(await js('qa.calls'),[]);
  await click('feature/card');assert.equal(await js('!!document.querySelector("[data-environment-hub-layer]")'),true);
  win.webContents.sendInputEvent({type:'keyDown',keyCode:'Escape'});win.webContents.sendInputEvent({type:'keyUp',keyCode:'Escape'});await delay(200);
- await mode('running');assert.match(await visible(),/active task is running/);
+ await mode('running');assert.doesNotMatch(await visible(),/active task is running/);
  assert.equal(await js('[...document.querySelectorAll("button")].find(e=>e.textContent.trim()==="Commit or push").disabled'),true);
+ assert.match(await js('[...document.querySelectorAll("button")].find(e=>e.textContent.trim()==="Commit or push").title'),/active task is running/);await snap('running');
  await mode('unknown');assert.match(await visible(),/Pull request status unavailable/);assert.doesNotMatch(await visible(),/PR unknown|Create pull request/);await snap('pr-unavailable');
  const refreshBefore=await js('qa.refreshes');await click('Pull request status unavailable');assert.equal(await js('qa.refreshes'),refreshBefore+1);
  await mode('pr-loading');assert.doesNotMatch(await visible(),/Checking pull request|status unavailable|Create pull request/);await snap('silent-pr-check');
