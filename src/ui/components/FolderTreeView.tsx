@@ -776,8 +776,8 @@ export function FolderTreeView({
                 <button
                   type="button"
                   className="flex h-7 w-7 flex-shrink-0 items-center justify-center text-[var(--text-muted)] opacity-0 transition-all duration-150 hover:text-[var(--text-primary)] group-hover/project:opacity-100"
-                  title={`New thread in ${group.label}`}
-                  aria-label={`New thread in ${group.label}`}
+                  title={`New task in ${group.label}`}
+                  aria-label={`New task in ${group.label}`}
                   onClick={(event) => {
                     event.stopPropagation();
                     onNewSessionForProject(group.fullPath!, DEFAULT_WORKSPACE_CHANNEL_ID);
@@ -855,8 +855,8 @@ export function FolderTreeView({
                                 <button
                                   type="button"
                                   className="flex h-5 w-5 flex-shrink-0 items-center justify-center opacity-0 transition-all duration-150 hover:text-[var(--text-primary)] focus:opacity-100 group-hover/worktree:opacity-100"
-                                  title={`New thread in ${branch}`}
-                                  aria-label={`New thread in worktree ${branch}`}
+                                  title={`New task in ${branch}`}
+                                  aria-label={`New task in worktree ${branch}`}
                                   onClick={(event) => {
                                     event.stopPropagation();
                                     createDraftSessionInWorktree(worktreePath, branch, sample);
