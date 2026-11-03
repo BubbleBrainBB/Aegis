@@ -154,7 +154,7 @@ const win=new BrowserWindow({width:1124,height:879,show:true,webPreferences:{bac
   await shot('new-task-short');
   // "No project" in the picker turns the task into a chat that gets its own folder.
   win.setContentSize(1124,879);await delay(180);
-  const pickNoProject=async(entrance,name)=>{await click(entrance);if(name)await shot(name);await js('Array.from(document.querySelectorAll("[cmdk-item]")).find(x=>x.textContent.startsWith("No project")).click()');await delay(250);};
+  const pickNoProject=async(entrance,name)=>{await click(entrance);if(name)await shot(name);assert.deepEqual(await js('Array.from(document.querySelectorAll("[cmdk-item]")).slice(-2).map(x=>x.textContent)'),['New project',"Don't work in a project"],'actions sit below the projects');await js('document.querySelector("[cmdk-item][data-value=__no_project__]").click()');await delay(250);};
   await pickNoProject('[aria-label^="Switch project:"]','picker-no-project');
   assert.equal(await js('document.querySelector("h1").textContent'),'What should we work on?');
   assert.equal(await js('document.querySelector("[aria-label=\\"Project folder\\"]").textContent'),'No project');
@@ -162,6 +162,9 @@ const win=new BrowserWindow({width:1124,height:879,show:true,webPreferences:{bac
   assert.equal(await js('!!document.querySelector("button[title=\\"Switch branch\\"]")'),false,'a chat has no branch');
   assert.equal(await js('qa.store.getState().projectCwd'),await js('qa.Long'),'the last project stays the default');
   await shot('new-task-no-project');
+  await click('[aria-label="Project folder"]');
+  assert.deepEqual(await js('Array.from(document.querySelectorAll("[cmdk-item][data-current],[cmdk-item][data-selected=true]")).map(x=>x.getAttribute("data-value"))'),['__no_project__'],'only the current choice is highlighted');
+  await shot('picker-no-project-current');await key('Escape');
   const text=()=>js('document.querySelector("[role=textbox]").innerText');
   const chips=()=>js('document.querySelectorAll("[aria-label=\\"Remove attachment\\"]").length');
   const editable=()=>js('document.querySelector("[role=textbox]").getAttribute("contenteditable")');
