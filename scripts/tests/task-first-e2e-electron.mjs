@@ -88,7 +88,7 @@ app.whenReady().then(async () => {
   const rows = views.map((v) => {
     const child = v.childSessionId && sessions.getSession(v.childSessionId);
     return {
-      childId: v.childSessionId, title: v.title, status: v.status, place: v.place, projectCwd: v.projectCwd, branch: v.worktreeBranch, reports: v.reports.length,
+      childId: v.childSessionId, title: v.title, status: v.status, place: v.place, branch: v.worktreeBranch, reports: v.reports.length,
       child: child && { provider: child.provider, cwd: child.cwd, projectCwd: child.project_cwd, envMode: child.env_mode, access: child.claude_access_mode, isChat: child.is_chat },
       file: child && child.cwd && fs.existsSync(path.join(child.cwd, 'DONE.txt')) ? fs.readFileSync(path.join(child.cwd, 'DONE.txt'), 'utf8').trim() : null,
     };
@@ -105,7 +105,7 @@ app.whenReady().then(async () => {
   console.log('[task-first] project args:', JSON.stringify(calls));
   console.log('[task-first] rows:', JSON.stringify(rows, null, 1));
   console.log('[task-first] last reply:\\n' + (reply || '(none)'));
-  const inProject = (row, name) => row.projectCwd === PROJECTS[name] && row.child && row.child.projectCwd === PROJECTS[name];
+  const inProject = (row, name) => row.child && row.child.projectCwd === PROJECTS[name];
   const ok = rows.length === 2
     && rows.every((row) => !asks.some((ask) => row.childId === ask.sessionId))
     && ['alpha'].every((name) => rows.some((row) => inProject(row, name) && row.place === 'worktree' && row.child.envMode === 'worktree' && row.child.cwd.startsWith(PROJECTS[name] + '/') && row.file === name))
