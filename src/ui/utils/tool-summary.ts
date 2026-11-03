@@ -145,6 +145,8 @@ const TOOL_VERBS: Record<string, VerbPair> = {
   TodoWrite: ['Updating', 'Updated'],
   NotebookEdit: ['Editing', 'Edited'],
   ToolSearch: ['Loading', 'Loaded'],
+  job_list: ['Listing', 'Listed'],
+  job_kill: ['Stopping', 'Stopped'],
   read: ['Reading', 'Read'],
   read_image: ['Reading image', 'Read image'],
   write: ['Writing', 'Wrote'],
@@ -353,6 +355,12 @@ function describeBashCommand(command: string, status: ToolStatus): ReadableToolD
   };
 }
 
+// DeepSeek job ids are `<kind>-<hex>`; only shell jobs are commands, the rest
+// (workflows, terminal input) stay generic.
+function backgroundJobTarget(input: unknown): string {
+  return /^(?:bash|pwsh)-/.test(getStringField(input, 'job_id') || '') ? 'background command' : 'background job';
+}
+
 export function deriveReadableToolDisplay(
   name: string,
   input: unknown,
@@ -446,6 +454,19 @@ export function deriveReadableToolDisplay(
   if (name === 'AskUserQuestion') {
     const summary = getToolSummary(name, input);
     return { verb: pickVerb(DEFAULT_VERB, status), target: summary ? truncate(summary, 60) : 'question' };
+  }
+
+  if (name === 'job_output') {
+    const verbs: VerbPair = isRecord(input) && input.wait === true ? ['Waiting for', 'Waited for'] : ['Reading output of', 'Read output of'];
+    return { verb: pickVerb(verbs, status), target: backgroundJobTarget(input) };
+  }
+
+  if (name === 'job_list') {
+    return { verb: pickVerb(TOOL_VERBS.job_list, status), target: 'background jobs' };
+  }
+
+  if (name === 'job_kill') {
+    return { verb: pickVerb(TOOL_VERBS.job_kill, status), target: backgroundJobTarget(input) };
   }
 
   const action = classifyComputerUseAction({

@@ -36,7 +36,7 @@ import { withAttemptClock, type StoredInstanceRecord } from '../../src/electron/
 import { legacyUncheckedRequirements, stepViews } from '../../src/electron/libs/workflow/workflow-service';
 import { isFullAccessMode, isStartWorkflowToolName } from '../../src/shared/workflow';
 import { splitWorkflowResult } from '../../src/ui/utils/workflow-result';
-import { classifyToolUse, deriveReadableToolDisplay } from '../../src/ui/utils/tool-summary';
+import { classifyToolUse, deriveReadableToolDisplay, formatReadableToolSummary } from '../../src/ui/utils/tool-summary';
 import { deriveSubagentSummaries } from '../../src/ui/utils/subagent-registry';
 import { latestTurnHasPendingSubagentTasks } from '../../src/ui/utils/workstream';
 
@@ -273,6 +273,25 @@ test('tool search rows name the tools they load instead of showing the raw query
     target: 'tools Read, y',
   });
   assert.deepEqual(deriveReadableToolDisplay('ToolSearch', { query: 'slack send' }, 'success'), { verb: 'Searched', target: 'tools for slack send' });
+});
+
+test('DeepSeek job tool rows describe the background job instead of showing raw input', () => {
+  const row = (name: string, input: unknown, status: 'pending' | 'success' | 'error') =>
+    formatReadableToolSummary(deriveReadableToolDisplay(name, input, status));
+  const job_id = 'bash-92fa2b93f3874680';
+
+  assert.equal(row('job_output', { job_id, wait: true, timeout_ms: 600000 }, 'pending'), 'Waiting for background command');
+  assert.equal(row('job_output', { job_id, wait: true, timeout_ms: 600000 }, 'success'), 'Waited for background command');
+  assert.equal(row('job_output', { job_id }, 'pending'), 'Reading output of background command');
+  assert.equal(row('job_output', { job_id, wait: false }, 'success'), 'Read output of background command');
+  assert.equal(row('job_output', { job_id: 'pwsh-92fa2b93f3874680', wait: true }, 'success'), 'Waited for background command');
+  assert.equal(row('job_output', { job_id: 'workflow-92fa2b93f3874680', wait: true }, 'success'), 'Waited for background job');
+  assert.equal(row('job_list', {}, 'pending'), 'Listing background jobs');
+  assert.equal(row('job_list', {}, 'success'), 'Listed background jobs');
+  assert.equal(row('job_kill', { job_id, reason: 'hung' }, 'pending'), 'Stopping background command');
+  assert.equal(row('job_kill', { job_id }, 'success'), 'Stopped background command');
+  assert.equal(row('job_kill', { job_id: 'pty-send-92fa2b93f3874680' }, 'success'), 'Stopped background job');
+  assert.equal(row('job_output', {}, 'error'), 'Read output of background job');
 });
 
 test('a start_workflow call renders as a board but is not a subagent', () => {
