@@ -61,6 +61,16 @@ runtime entry and native-resume shim are unchanged. The runtime changes are:
 Local mocks share `scripts/fixtures/deepseek-messages-mock.cjs`, which speaks
 the Messages SSE stream and the Files API.
 
+## Exit when the client goes away
+
+Upstream's `dsh-sdk-app` binds stdin EOF to shutdown, but Aegis boots its own
+composition through `runtime-bin.mjs` and does not mount that app. A client that
+died without `shutdown` left the runtime alive once a session had kept its event
+loop busy. `runtime-bin.mjs` now disposes the root context on EOF, which also
+stops a running turn and its commands, and exits after 10 seconds at the latest.
+`verify:deepseek-runtime-exit` covers an idle runtime and one in the middle of a
+turn.
+
 ## Live streaming
 
 The SDK wire carries only durable session events (no `assistant/chunk` since

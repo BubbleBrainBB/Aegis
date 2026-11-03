@@ -31,10 +31,21 @@ if ((values.profile && values.profile !== 'sdk') ||
     (values.patch?.length && positionals.length)) {
   throw new Error('Aegis runtime requires one SDK composition config');
 }
-await boot(
+const root = await boot(
   NAME,
   resolveConfigPath(values.patch?.[0] ?? positionals[0] ?? './cordis.yml', undefined),
   undefined,
   undefined,
   new URL('./', import.meta.url).href,
 );
+
+// A client that dies without `shutdown` (Aegis crashed, a script called
+// process.exit) leaves only stdin EOF. Upstream's sdk-app binds EOF to shutdown,
+// but this bin does not mount it, and a live session keeps the event loop alive.
+const EOF_SHUTDOWN_LIMIT_MS = 10_000;
+function shutDownOnEof() {
+  setTimeout(() => process.exit(1), EOF_SHUTDOWN_LIMIT_MS).unref();
+  void root.fiber.dispose().finally(() => process.exit(0));
+}
+if (process.stdin.readableEnded) shutDownOnEof();
+else process.stdin.once('end', shutDownOnEof);

@@ -50,6 +50,7 @@
   "verify:deepseek-runtime-upgrade": 3,
   "verify:deepseek-images": 4,
   "verify:deepseek-streaming": 6,
+  "verify:deepseek-runtime-exit": 25,
   "verify:deepseek-packaging": 2,
   "verify:deepseek-key-source": 2,
   "verify:devin-acp-adapter": 13,
