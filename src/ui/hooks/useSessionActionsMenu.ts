@@ -215,7 +215,7 @@ export function useSessionActionsMenu(session: SessionView) {
     { id: 'open-window', label: 'Open in new window', icon: 'window', enabled: editable },
     // A chat's folder is not a repository: no worktrees.
     ...(session.isChat ? [] : [{ label: 'Worktree', icon: 'worktree', submenu: inWorktree ? [
-      { id: 'new-worktree-thread', label: 'New thread in this worktree', icon: 'worktree', enabled: !worktreeAction },
+      { id: 'new-worktree-thread', label: 'New task in this worktree', icon: 'worktree', enabled: !worktreeAction },
       { id: 'apply-worktree', label: 'Squash-merge back into project', icon: 'apply', enabled: canChangeWorktree && !sharesParentWorktree },
       { id: 'discard-worktree', label: 'Discard worktree…', icon: 'trash', enabled: canChangeWorktree && !sharesParentWorktree },
     ] : [
