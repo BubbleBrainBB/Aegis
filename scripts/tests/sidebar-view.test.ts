@@ -51,6 +51,9 @@ const worktree: StateInput = { ...idle, envMode: 'worktree', worktreePath: '/p/.
 assert.equal(deriveSidebarSessionState(worktree, {}), 'review', 'a live worktree holds work not applied back yet');
 assert.equal(deriveSidebarSessionState(worktree, { pullRequest: pr('merged') }), 'completed', 'a merged PR closes the loop');
 assert.equal(deriveSidebarSessionState(worktree, { pullRequest: pr('closed') }), 'completed');
+assert.equal(deriveSidebarSessionState(worktree, { worktreeSettled: true }), 'completed', 'a worktree with nothing left to apply is done');
+assert.equal(deriveSidebarSessionState({ ...worktree, runtimeNotice: 'completed' }, { worktreeSettled: true }), 'review', 'a result you have not seen still waits on you');
+assert.equal(deriveSidebarSessionState(worktree, { worktreeSettled: true, pullRequest: pr('open') }), 'review', 'an open PR still waits on you');
 assert.equal(deriveSidebarSessionState({ ...worktree, worktreePath: null }, {}), 'completed',
   'applying or discarding the worktree clears it');
 

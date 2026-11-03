@@ -1175,6 +1175,7 @@ contextBridge.exposeInMainWorld('electron', {
 
   listSessionPullRequests: (sessionId: string, refresh?: boolean) => ipcRenderer.invoke('list-session-pull-requests', sessionId, refresh),
   listSidebarPullRequests: (refresh?: boolean) => ipcRenderer.invoke('list-sidebar-pull-requests', refresh),
+  listSettledWorktreeSessions: () => ipcRenderer.invoke('list-settled-worktree-sessions'),
   attachSessionPullRequest: (input: import('../shared/types').AttachSessionPullRequestInput) => ipcRenderer.invoke('attach-session-pull-request', input),
   detachSessionPullRequest: (sessionId: string, url: string, attachedAt: number) => ipcRenderer.invoke('detach-session-pull-request', sessionId, url, attachedAt),
   onSessionPullRequestsChanged: (callback: (sessionId: string) => void) => {

@@ -9,15 +9,29 @@ import type { GitPullRequestSummary } from '../../shared/types';
  */
 interface SidebarPullRequestStore {
   bySession: Record<string, GitPullRequestSummary[]>;
+  /** Sessions whose worktree had nothing left to apply back at `settledCheckedAt`. */
+  settledWorktrees: ReadonlySet<string>;
+  settledCheckedAt: number;
   load: (refresh: boolean) => Promise<void>;
 }
 
 const REFRESH_INTERVAL_MS = 2 * 60_000;
 let sequence = 0;
+let settledSequence = 0;
 
 export const useSidebarPullRequestStore = create<SidebarPullRequestStore>()((set) => ({
   bySession: {},
+  settledWorktrees: new Set(),
+  settledCheckedAt: 0,
   load: async (refresh) => {
+    // Independent of gh: a worktree's git state is known without GitHub.
+    if (typeof window.electron?.listSettledWorktreeSessions === 'function') {
+      const request = ++settledSequence;
+      const checkedAt = Date.now();
+      void window.electron.listSettledWorktreeSessions().then((sessionIds) => {
+        if (request === settledSequence) set({ settledWorktrees: new Set(sessionIds), settledCheckedAt: checkedAt });
+      }).catch(() => {});
+    }
     // Renderer hot-reloaded against an older main process: no bridge yet.
     if (typeof window.electron?.listSidebarPullRequests !== 'function') return;
     const request = ++sequence;
@@ -59,4 +73,12 @@ export function useSidebarPullRequests(enabled: boolean): Record<string, GitPull
 export function primaryPullRequest(prs: GitPullRequestSummary[] | null | undefined): GitPullRequestSummary | null {
   if (!prs?.length) return null;
   return [...prs].reverse().find((pr) => pr.state === 'open') ?? prs[prs.length - 1];
+}
+
+/** A session active since the last check may have new work, so that answer no longer speaks for it. */
+export function isWorktreeSettled(
+  session: { id: string; updatedAt: number },
+  settled: Pick<SidebarPullRequestStore, 'settledWorktrees' | 'settledCheckedAt'>
+): boolean {
+  return settled.settledWorktrees.has(session.id) && session.updatedAt <= settled.settledCheckedAt;
 }

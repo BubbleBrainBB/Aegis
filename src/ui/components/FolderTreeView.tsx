@@ -31,7 +31,7 @@ import { allLeaves } from '../store/layout-tree';
 import { sendEvent } from '../hooks/useIPC';
 import { DEFAULT_WORKSPACE_CHANNEL_ID, type GitPullRequestSummary } from '../../shared/types';
 import { useSidebarViewOptions, useSidebarViewStore } from '../store/useSidebarViewStore';
-import { primaryPullRequest, useSidebarPullRequests } from '../store/useSidebarPullRequests';
+import { isWorktreeSettled, primaryPullRequest, useSidebarPullRequests, useSidebarPullRequestStore } from '../store/useSidebarPullRequests';
 import { PULL_REQUEST_STATUS, pullRequestRepo, pullRequestStatus, type PullRequestStatus } from './pull-request-status';
 import {
   deriveSidebarSessionState,
@@ -156,15 +156,18 @@ function isChatSession(session: SessionView): boolean {
 }
 
 type SidebarOrganization = ReturnType<typeof useSessionOrganization>;
+type SettledWorktrees = Parameters<typeof isWorktreeSettled>[1];
 
 function sidebarStateOf(
   session: SessionView,
   organization: SidebarOrganization,
-  prsBySession: Record<string, GitPullRequestSummary[] | null | undefined>
+  prsBySession: Record<string, GitPullRequestSummary[] | null | undefined>,
+  worktrees: SettledWorktrees
 ): SidebarSessionState | null {
   return deriveSidebarSessionState(session, {
     unread: organization.sessions[session.id]?.unread,
     pullRequest: primaryPullRequest(prsBySession[session.id]),
+    worktreeSettled: isWorktreeSettled(session, worktrees),
   });
 }
 
@@ -265,6 +268,9 @@ export function FolderTreeView({
   const view = useSidebarViewOptions();
   const setViewOption = useSidebarViewStore((state) => state.setOption);
   const prsBySession = useSidebarPullRequests(view.showPullRequests || view.groupBy === 'state');
+  const settledWorktrees = useSidebarPullRequestStore((state) => state.settledWorktrees);
+  const settledCheckedAt = useSidebarPullRequestStore((state) => state.settledCheckedAt);
+  const worktrees = useMemo(() => ({ settledWorktrees, settledCheckedAt }), [settledWorktrees, settledCheckedAt]);
   const collapsedGroups = useSidebarViewStore((state) => state.collapsedGroups);
   const toggleGroupExpanded = useSidebarViewStore((state) => state.toggleGroupCollapsed);
   const dismissedWaits = useSidebarViewStore((state) => state.dismissedWaits);
@@ -432,12 +438,12 @@ export function FolderTreeView({
     if (view.groupBy === 'state') {
       const byState = new Map<SidebarSessionState, SessionView[]>();
       for (const session of regularSessions) {
-        const own = sidebarStateOf(session, organization, prsBySession);
+        const own = sidebarStateOf(session, organization, prsBySession, worktrees);
         if (!own) continue;
         // A conversation stands where the most urgent of its tasks does.
         const state = mostUrgentSidebarState(
           own,
-          (subSessionsByRoot.get(session.id) ?? []).map((task) => sidebarStateOf(task, organization, prsBySession))
+          (subSessionsByRoot.get(session.id) ?? []).map((task) => sidebarStateOf(task, organization, prsBySession, worktrees))
         );
         byState.set(state, [...(byState.get(state) ?? []), session]);
       }
@@ -483,6 +489,7 @@ export function FolderTreeView({
     sidebarSearchQuery,
     organization,
     prsBySession,
+    worktrees,
     view.status,
     view.project,
     view.activity,
@@ -572,11 +579,11 @@ export function FolderTreeView({
   ) => {
     const children = subSessionsByRoot.get(session.id);
     if (!children?.length) return <Fragment key={key}>{renderRow(session, depth)}</Fragment>;
-    const childStates = children.map((child) => sidebarStateOf(child, organization, prsBySession));
+    const childStates = children.map((child) => sidebarStateOf(child, organization, prsBySession, worktrees));
     const waits = children
       .filter((_, index) => childStates[index] === 'needs-input')
       .map(subSessionWaitMark);
-    const ownState = sidebarStateOf(session, organization, prsBySession);
+    const ownState = sidebarStateOf(session, organization, prsBySession, worktrees);
     const allDone = view.groupBy === 'state' && ownState !== null && mostUrgentSidebarState(ownState, childStates) === 'completed';
     // Finished work starts folded and is opened by hand. Everything else starts
     // open, and a fold holds until another task needs the user.
