@@ -64,7 +64,7 @@ const runtimeBin = read('dev-fixtures/deepseek-harness/runtime-bin.mjs');
 const resumeShim = read('dev-fixtures/deepseek-harness/runtime-resume-shim.mjs');
 assert.ok(
   runtimeBin.includes('installDeepseekSdkResumeShim') &&
-    resumeShim.includes('server.ctx.agents.resume') &&
+    resumeShim.includes('createSession.call(server, sessionId, true)') &&
     resumeShim.includes('AEGIS_DSH_RESUME_SESSION_ID') &&
     resumeShim.includes('AEGIS_DSH_RESUME_CWD_MISMATCH'),
   'runtime must resume stored same-cwd sessions and reject unsafe fallback cases explicitly'
@@ -855,63 +855,55 @@ const {
   RESUME_NOT_FOUND_CODE,
 } = await import('../dev-fixtures/deepseek-harness/runtime-resume-shim.mjs');
 const sessionId = (value) => value;
-const makeServer = (headers) => {
-  const resumed = [];
-  const server = {
-    cwd: '/workspace',
-    provider: 'deepseek-official',
-    model: 'deepseek-v4-pro',
-    sessions: new Map(),
-    ctx: {
-      get: (name) => name === 'sessionPersistence' ? { stat: async (id) => { const header = headers.find((value) => value.id === id); return header ? { header, revision: 'test' } : undefined; } } : undefined,
-      agents: {
-        resume: async (options) => {
-          resumed.push(options);
-          return { agent: { id: options.resumeSessionId } };
-        },
-      },
-    },
-  };
-  return { server, resumed };
+const makeServer = (headers) => ({
+  cwd: '/workspace',
+  ctx: {
+    get: (name) => name === 'sessionPersistence' ? { stat: async (id) => { const header = headers.find((value) => value.id === id); return header ? { header, revision: 'test' } : undefined; } } : undefined,
+  },
+});
+const recordCreations = () => {
+  const calls = [];
+  return { calls, createSession: async (id, resume) => { calls.push([id, resume]); return { id, resume }; } };
 };
 
 {
-  const { server, resumed } = makeServer([{ id: 'stored', cwd: '/workspace' }]);
+  const server = makeServer([{ id: 'stored', cwd: '/workspace' }]);
+  const { calls, createSession } = recordCreations();
   const record = await openSessionWithNativeResume({
     server,
     sessionId: 'stored',
     SessionId: sessionId,
-    createFresh: () => assert.fail('stored session must not be recreated'),
+    createSession,
     expectedResumeSessionId: 'stored',
   });
-  assert.equal(record.handle.agent.id, 'stored');
-  assert.equal(resumed.length, 1);
-  assert.equal(server.sessions.get('stored'), record);
+  assert.deepEqual(record, { id: 'stored', resume: true });
+  assert.deepEqual(calls, [['stored', true]], 'stored session must take the server resume path');
 }
 
 {
-  const { server } = makeServer([]);
+  const server = makeServer([]);
+  const { calls, createSession } = recordCreations();
   const created = await openSessionWithNativeResume({
     server,
     sessionId: 'fresh',
     SessionId: sessionId,
-    createFresh: async () => ({ fresh: true }),
+    createSession,
     expectedResumeSessionId: undefined,
   });
-  assert.deepEqual(created, { fresh: true });
+  assert.deepEqual(created, { id: 'fresh', resume: false });
+  assert.deepEqual(calls, [['fresh', false]]);
 }
 
 for (const testCase of [
   { headers: [], expected: RESUME_NOT_FOUND_CODE },
   { headers: [{ id: 'stored', cwd: '/other' }], expected: RESUME_CWD_MISMATCH_CODE },
 ]) {
-  const { server } = makeServer(testCase.headers);
   await assert.rejects(
     openSessionWithNativeResume({
-      server,
+      server: makeServer(testCase.headers),
       sessionId: 'stored',
       SessionId: sessionId,
-      createFresh: () => assert.fail('unsafe resume must fail loudly'),
+      createSession: () => assert.fail('unsafe resume must fail loudly'),
       expectedResumeSessionId: 'stored',
     }),
     (error) => error instanceof Error && error.message.includes(testCase.expected)

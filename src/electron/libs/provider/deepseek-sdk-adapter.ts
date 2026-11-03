@@ -80,11 +80,11 @@ import { WidgetDraftTracker } from '../widget-draft';
  * so the profile's runtime-stream-shim forwards text/reasoning deltas as
  * `aegis.assistant.stream` notifications on the same subscription.
  *
- * Contract notes (pre-release wire, pinned 0.2.0-rc.2):
+ * Contract notes (pre-release wire, pinned 0.2.1-rc.5):
  * - No mid-turn cancel on the wire: stop = close the runtime (EOF → SIGTERM →
- *   SIGKILL ladder inside the SDK client). The JSON-RPC server still omits its
- *   core agents.resume() path, so the Aegis runtime bin installs a narrow
- *   create-or-resume shim before boot. Same-cwd restarts restore the complete
+ *   SIGKILL ladder inside the SDK client). session/prompt still creates a
+ *   fresh agent for an id the process has not opened, so the Aegis runtime
+ *   bin installs a narrow create-or-resume shim before boot. Same-cwd restarts restore the complete
  *   persisted DSH log; missing or wrong-cwd logs fail loudly instead of
  *   silently creating a context-disconnected replacement.
  * - No approval channel: sandbox escalations fail closed (profile pins

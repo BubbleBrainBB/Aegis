@@ -11,33 +11,26 @@ function resumeError(code, message) {
   return error;
 }
 
-function agentOptions(server) {
-  return {
-    provider: server.provider,
-    model: server.model,
-    ...(server.reasoningEffort === undefined ? {} : { reasoningEffort: server.reasoningEffort }),
-    ...(server.maxTokens === undefined ? {} : { maxTokens: server.maxTokens }),
-  };
-}
-
 /**
  * Open one SDK session with the same create-or-resume policy as the Harness
- * Web host. The JSON-RPC server only checks its process-local map and
- * always calls agents.create() after a restart; this shim checks the durable
- * store first and uses agents.resume() when the requested identity exists.
+ * Web host. The JSON-RPC server only checks its process-local map and creates
+ * a fresh Agent on the first prompt after a restart; this shim checks the
+ * durable store first and routes a stored same-cwd identity through the
+ * server's own resume path (`createSession(id, true)` → agents.resume()).
+ * Native `session/resume` restores the stored directory without checking it,
+ * so the same cwd guard applies to both entry points.
  */
 export async function openSessionWithNativeResume({
   server,
   sessionId,
   SessionId,
-  createFresh,
+  createSession,
   expectedResumeSessionId = process.env.AEGIS_DSH_RESUME_SESSION_ID,
 }) {
-  const id = SessionId(sessionId);
   const persistence = server.ctx.get('sessionPersistence');
   const stored = persistence === undefined
     ? undefined
-    : (await persistence.stat(id))?.header;
+    : (await persistence.stat(SessionId(sessionId)))?.header;
 
   if (stored === undefined) {
     if (expectedResumeSessionId === sessionId) {
@@ -46,7 +39,7 @@ export async function openSessionWithNativeResume({
         `persisted session "${sessionId}" was not found; start a fresh session instead`,
       );
     }
-    return createFresh.call(server, sessionId);
+    return createSession.call(server, sessionId, false);
   }
 
   const storedCwd = stored.cwd === undefined ? undefined : resolve(stored.cwd);
@@ -56,14 +49,7 @@ export async function openSessionWithNativeResume({
       `session "${sessionId}" belongs to "${stored.cwd ?? '<no cwd>'}", not "${server.cwd}"`,
     );
   }
-
-  const handle = await server.ctx.agents.resume({
-    resumeSessionId: id,
-    agentOptions: agentOptions(server),
-  });
-  const record = { handle };
-  server.sessions.set(sessionId, record);
-  return record;
+  return createSession.call(server, sessionId, true);
 }
 
 /** Patch the exported JSON-RPC server class before Cordis boots its plugin. */
@@ -71,14 +57,16 @@ export function installDeepseekSdkResumeShim({ HarnessSdkJsonRpcServer, SessionI
   const prototype = HarnessSdkJsonRpcServer.prototype;
   if (prototype[PATCH_MARKER]) return;
 
-  const createFresh = prototype.createSession;
+  const createSession = prototype.createSession;
   Object.defineProperty(prototype, PATCH_MARKER, { value: true });
-  prototype.createSession = function createOrResumeSession(sessionId) {
+  prototype.createSession = function createOrResumeSession(sessionId, resume) {
     return openSessionWithNativeResume({
       server: this,
       sessionId,
       SessionId,
-      createFresh,
+      createSession,
+      // Native session/resume must never fall back to a fresh session.
+      ...(resume ? { expectedResumeSessionId: sessionId } : {}),
     });
   };
 }

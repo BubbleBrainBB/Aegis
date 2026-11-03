@@ -1,8 +1,38 @@
-# DeepSeek Harness 0.2.0-rc.2
+# DeepSeek Harness 0.2.1-rc.5
 
-Aegis pins its SDK client and bundled runtime to `0.2.0-rc.2` (upstream `next`
-prerelease, published September 29, 2026):
+Aegis pins its SDK client and bundled runtime to `0.2.1-rc.5` (upstream `next`
+prerelease, published October 29, 2026):
 https://github.com/deepseek-ai/deepseek-harness/releases
+
+## 0.2.1-rc.5 upgrade
+
+The wire gains `session/resume`, `session/wait` and
+`session/working-directory/{get,set}`; there is still no cancel or approval
+request, so stop and sandbox behavior are unchanged. Runtime changes:
+
+- The invariant plugins are gone: `dsh-invariants` and the `invariant` exports
+  of `dsh-session`, `dsh-agent`, `dsh-scope` and `dsh-agent-loop` are removed
+  from the profile. `dsh-subagent-in-process-driver` no longer exists.
+- `dsh-working-directory` provides the new required `workingDirectory` service
+  (SDK server, fs/bash/skill tools, agent instructions, subagents). It supplies
+  the current directory to the model as context, and the loop no longer
+  registers a `{{cwd}}` prompt variable, so the persona prefixes drop their
+  "Your working directory is {{cwd}}." clause. The model-facing
+  `dsh-tool-working-directory` is not composed: an Aegis session stays bound to
+  its project directory.
+- The resume shim keeps the stored-session lookup and same-cwd guard but hands
+  creation to the server's own `createSession(id, resume)`, the path native
+  `session/resume` uses, so the server builds its own session record. Native
+  resume restores the stored directory without checking it; the guard applies
+  to both entry points, and an explicit resume of a missing id fails instead of
+  creating a session. The stream shim forwards the new `resume` argument.
+- Cordis family pins move to `cordis` 4.0.5, `cordis-plugin-group` 1.0.5,
+  `cosmokit` 1.8.6, `schemastery` 3.18.5 and `cordis-plugin-timer` 1.1.7.
+- `dsh-mcp-client` now pulls `@modelcontextprotocol/client` 2.2.0, which clears
+  GHSA-6qxp-vccf-f47h for that package. The CLI's `pi-ai` requirement moved to
+  `^1.1.0`, so the root tree shares one `@earendil-works/pi-ai` with the Pi
+  provider. The lockfile holds it and `pi-telemetry` at 1.2.0, the versions Pi
+  already used, so this upgrade does not change the Pi provider.
 
 ## 0.2.0-rc.2 upgrade
 
@@ -102,8 +132,9 @@ images but keeps its original two-tool surface. Native session recovery retains
 uploaded image references after the original attachment file is removed.
 
 The upstream JSON-RPC server still creates a new agent for an unknown process-local
-session ID. Aegis checks `sessionPersistence.stat(id).header` and resumes an existing
-same-directory session through `agents.resume()`. Missing logs or a different
+session ID on `session/prompt`. Aegis checks `sessionPersistence.stat(id).header` and
+resumes an existing same-directory session through the server's resume path
+(`agents.resume()`). Missing logs or a different
 directory fail explicitly instead of silently starting an empty conversation.
 Native persistence owns migration and write locks. Existing logs remain immutable;
 continuation writes a V4 successor. An old Harness cannot resume the newer successor.

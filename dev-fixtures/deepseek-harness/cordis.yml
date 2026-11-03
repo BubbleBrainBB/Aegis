@@ -99,6 +99,12 @@
 - id: session-projection
   name: '@deepseek-ai/dsh-session-projection'
 
+# 0.2.1: per-Session effective cwd service, required by the SDK server,
+# tools and subagents. The model-facing cd tool (dsh-tool-working-directory)
+# is left out: an Aegis session stays bound to its project directory.
+- id: working-directory
+  name: '@deepseek-ai/dsh-working-directory'
+
 - id: deepseek-llm-api-extensions
   name: '@deepseek-ai/dsh-deepseek-llm-api-extensions'
 
@@ -117,21 +123,6 @@
 - id: jobs-local
   name: '@deepseek-ai/dsh-jobs-local'
 
-- id: invariants
-  name: '@deepseek-ai/dsh-invariants'
-
-- id: session-invariant
-  name: '@deepseek-ai/dsh-session/invariant'
-
-- id: agent-invariant
-  name: '@deepseek-ai/dsh-agent/invariant'
-
-- id: scope-invariant
-  name: '@deepseek-ai/dsh-scope/invariant'
-
-- id: agent-loop-invariant
-  name: '@deepseek-ai/dsh-agent-loop/invariant'
-
 - id: session-title
   name: '@deepseek-ai/dsh-session-title'
   config:
@@ -144,7 +135,7 @@
   config:
     includeHarnessIdentity: !!js "(process.env.AEGIS_DSH_AGENT_PRESET ?? 'standard') !== 'minimal'"
     includeRuntimeContext: !!js "(process.env.AEGIS_DSH_AGENT_PRESET ?? 'standard') !== 'minimal'"
-    personaPrefix: !!js "(process.env.AEGIS_DSH_AGENT_PRESET ?? 'standard') === 'minimal' ? 'You are a helpful software engineer assistant.' : (process.env.AEGIS_DSH_AGENT_PRESET ?? 'standard') === 'cordis' ? 'You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}. You can inspect the live Cordis runtime (services, events and the plugin tree) to help design custom agent compositions. Verify your work and keep answers factual.' : 'You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}. Your bash tool runs under a file sandbox — a `[sandbox: file access denied …]` result is policy, not a command bug. Verify your work by running the code or tests. Keep answers brief and factual.'"
+    personaPrefix: !!js "(process.env.AEGIS_DSH_AGENT_PRESET ?? 'standard') === 'minimal' ? 'You are a helpful software engineer assistant.' : (process.env.AEGIS_DSH_AGENT_PRESET ?? 'standard') === 'cordis' ? 'You are a coding agent powered by the {{model}} model. You can inspect the live Cordis runtime (services, events and the plugin tree) to help design custom agent compositions. Verify your work and keep answers factual.' : 'You are a coding agent powered by the {{model}} model. Your bash tool runs under a file sandbox — a `[sandbox: file access denied …]` result is policy, not a command bug. Verify your work by running the code or tests. Keep answers brief and factual.'"
 
 - id: tools
   name: '@deepseek-ai/dsh-tools'

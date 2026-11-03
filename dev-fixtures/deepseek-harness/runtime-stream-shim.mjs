@@ -50,7 +50,7 @@ export function installDeepseekSdkStreamShim({ HarnessSdkJsonRpcServer }) {
   // can run before a session exists. Server disposal releases the listener.
   const listening = new WeakSet();
   const createSession = prototype.createSession;
-  prototype.createSession = function createSessionWithAssistantStream(sessionId) {
+  prototype.createSession = function createSessionWithAssistantStream(sessionId, resume) {
     if (!listening.has(this)) {
       listening.add(this);
       this.disposers.push(this.ctx.on('agent/assistant-stream', ({ agent, frame }) => {
@@ -58,6 +58,6 @@ export function installDeepseekSdkStreamShim({ HarnessSdkJsonRpcServer }) {
         if (payload) this.transport.notify(ASSISTANT_STREAM_METHOD, payload);
       }, { global: true }));
     }
-    return createSession.call(this, sessionId);
+    return createSession.call(this, sessionId, resume);
   };
 }
