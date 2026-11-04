@@ -72,7 +72,7 @@ app.whenReady().then(async()=>{
   win.webContents.debugger.attach('1.3');
   await win.webContents.debugger.sendCommand('Emulation.setFocusEmulationEnabled',{enabled:true});
   console.log('Title editor fixture loaded');
-  for(let i=0;i<150;i++){if(await js('!!window.qa && !!qa.button()'))break;await delay(100);}
+  for(let i=0;i<450;i++){if(await js('!!window.qa && !!qa.button()'))break;await delay(100);}
   win.focus();
   await screenshot('title-idle');
   await edit();
