@@ -149,7 +149,7 @@ const runtimeNoticeClearTimers = new Map<string, number>();
 let projectFileOpenRequestCounter = 0;
 
 type RightPanelFullscreen = Store['rightPanelFullscreen'];
-const FULLSCREEN_TAB_KINDS = new Set<string>(['browser', 'files', 'review', 'images', 'terminal']);
+const FULLSCREEN_TAB_KINDS = new Set<string>(['browser', 'files', 'review', 'images', 'design', 'terminal']);
 
 /**
  * Fullscreen belongs to the right panel, not to one tab: opening or switching
@@ -2337,8 +2337,8 @@ export const useAppStore = create<Store>()(
   },
 
   setRightPanelFullscreen: (target) => {
-    // Images, a design, review and a terminal just take the whole window; the panel stays shown.
-    if (target === 'images' || target === 'design' || target === 'review' || target === 'terminal') {
+    // These just take the whole window; the panel stays shown.
+    if (target === 'images' || target === 'design' || target === 'review' || target === 'terminal' || target === 'launcher') {
       set({
         rightPanelFullscreen: target,
         rightPanelFullscreenChat: false,

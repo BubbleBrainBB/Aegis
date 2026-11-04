@@ -3,7 +3,7 @@ import { Popover } from '@base-ui-components/react/popover';
 import { Command } from 'cmdk';
 import { toast } from 'sonner';
 import { useAppStore } from '../store/useAppStore';
-import { Folder, MessageCircle, Plus, Search } from './icons';
+import { Folder, Plus, Search, X } from './icons';
 
 export function ComposerProjectPicker({ cwd, onSelect, onSelectNoProject, disabled = false, variant = 'control', projectName: label }: {
   cwd: string;
@@ -71,35 +71,22 @@ export function ComposerProjectPicker({ cwd, onSelect, onSelectNoProject, disabl
           title={cwd || (noProject ? 'No project' : 'Choose project')}
           className={variant === 'hero' ? 'aegis-new-thread-project-link' : 'aegis-composer-context-pill aegis-composer-project-control'}
         >
-          {variant === 'hero' ? `${projectName}?` : noProject ? <>
-            <MessageCircle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-            <span className="min-w-0 truncate">No project</span>
-          </> : <>
+          {variant === 'hero' ? `${projectName}?` : <>
             <Folder className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-            <span className="min-w-0 truncate">{projectName || 'Choose project'}</span>
+            <span className="min-w-0 truncate">{noProject ? 'No project' : projectName || 'Choose project'}</span>
           </>}
         </Popover.Trigger>
         <Popover.Portal>
           <Popover.Positioner side="top" align="start" sideOffset={8} className="z-[9999]">
             <Popover.Popup initialFocus={searchRef} aria-label="Switch project" className="popover-surface aegis-composer-project-menu w-[264px] max-w-[calc(100vw-32px)] p-1 text-left font-normal tracking-normal">
-              <Command shouldFilter={false} label="Projects">
+              <Command shouldFilter={false} label="Projects" defaultValue={noProject ? '__no_project__' : undefined}>
                 <div className="flex items-center gap-2 border-b border-[var(--border)] px-2.5 pb-2 pt-1.5">
                   <Search className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]" />
                   <Command.Input ref={searchRef} value={query} onValueChange={setQuery} aria-label="Search projects" placeholder="Search projects" className="min-w-0 w-full bg-transparent text-[12.5px] leading-[18px] text-[var(--text-primary)] outline-none placeholder:text-[var(--text-muted)]" />
                 </div>
                 <Command.List>
-                  {onSelectNoProject ? (
-                    <div className="border-b border-[var(--border)] py-1">
-                      <Command.Item value="__no_project__" onSelect={selectNoProject} data-current={noProject || undefined} className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-[5px] text-[12.5px] leading-[18px] text-[var(--text-primary)] data-[current]:bg-[var(--bg-tertiary)] data-[selected=true]:bg-[var(--bg-tertiary)]">
-                        <MessageCircle aria-hidden="true" className={`h-3.5 w-3.5 shrink-0 ${noProject ? 'text-[var(--accent)]' : 'text-[var(--text-secondary)]'}`} />
-                        <span className="min-w-0 flex-1 truncate">No project</span>
-                        <span className="shrink-0 text-[11px] text-[var(--text-muted)]">chat</span>
-                      </Command.Item>
-                    </div>
-                  ) : null}
-                  {/* Only the projects scroll; New project stays pinned below them. */}
+                  {/* Only the projects scroll; the actions stay pinned below them. */}
                   <div className="max-h-[min(232px,45vh)] overflow-y-auto py-1">
-                    {onSelectNoProject ? <div className="px-2 pb-0.5 pt-1 text-[11px] text-[var(--text-muted)]">Projects</div> : null}
                     {filteredProjects.length === 0 && <div className="px-2 py-2 text-[12.5px] leading-[18px] text-[var(--text-muted)]">No projects found</div>}
                     {filteredProjects.map((dir) => {
                       const current = dir === cwd;
@@ -118,6 +105,12 @@ export function ComposerProjectPicker({ cwd, onSelect, onSelectNoProject, disabl
                       <Plus className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                       New project
                     </Command.Item>
+                    {onSelectNoProject ? (
+                      <Command.Item value="__no_project__" onSelect={selectNoProject} data-current={noProject || undefined} className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-[5px] text-[12.5px] leading-[18px] text-[var(--text-secondary)] data-[current]:bg-[var(--bg-tertiary)] data-[current]:text-[var(--text-primary)] data-[selected=true]:bg-[var(--bg-tertiary)] data-[selected=true]:text-[var(--text-primary)]">
+                        <X className={`h-3.5 w-3.5 shrink-0 ${noProject ? 'text-[var(--accent)]' : ''}`} aria-hidden="true" />
+                        Don't work in a project
+                      </Command.Item>
+                    ) : null}
                   </div>
                 </Command.List>
               </Command>

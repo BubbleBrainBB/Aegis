@@ -384,21 +384,6 @@ declare global {
     importAttachments: (paths: string[]) => Promise<import('./shared/attachment-policy').AttachmentImportResult>;
     chooseAttachments: () => Promise<import('./shared/attachment-policy').AttachmentImportResult>;
     createFileAttachment: (name: string, data: Uint8Array) => Promise<Attachment>;
-    captureScreenshot: (mode: import('./shared/screenshot').ScreenshotMode) => Promise<import('./shared/screenshot').ScreenshotCaptureResult>;
-    completeScreenshotSelection: (id: string, rect: import('./shared/screenshot').ScreenshotRect | null) => Promise<void>;
-    onScreenshotSelectArea: (callback: (id: string) => void) => () => void;
-    openLastScreenshot: () => Promise<import('./shared/screenshot').ScreenshotCaptureResult>;
-    requestScreenRecordingPermission: () => Promise<void>;
-    loadScreenshotEditor: () => Promise<import('./shared/screenshot').ScreenshotEditorPayload | null>;
-    exportScreenshot: (
-      action: import('./shared/screenshot').ScreenshotExportAction,
-      data: Uint8Array,
-      name?: string
-    ) => Promise<import('./shared/screenshot').ScreenshotExportResult>;
-    closeScreenshotEditor: () => Promise<void>;
-    retakeScreenshot: () => Promise<import('./shared/screenshot').ScreenshotCaptureResult>;
-    onScreenshotAttach: (callback: (attachment: Attachment) => void) => () => void;
-    onScreenshotEditorUpdated: (callback: () => void) => () => void;
     selectAttachments: () => Promise<Attachment[]>;
     readAttachmentPreview: (filePath: string) => Promise<string | null>;
     readComputerUseArtifact: (sessionId: string, sha256: string) => Promise<string | null>;

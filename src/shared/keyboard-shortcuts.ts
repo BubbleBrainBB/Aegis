@@ -6,9 +6,10 @@ export const SHORTCUT_COMMANDS = [
   { id: 'back', title: 'Go back', group: 'Navigation', defaults: ['Mod+BracketLeft'] },
   { id: 'forward', title: 'Go forward', group: 'Navigation', defaults: ['Mod+BracketRight'] },
   { id: 'settings', title: 'Open settings', group: 'Navigation', defaults: ['Mod+Comma'] },
+  { id: 'rightPanel', title: 'Toggle right panel', group: 'Navigation', defaults: ['Mod+Shift+KeyB'] },
+  { id: 'rightPanelFullView', title: 'New tab in full view', group: 'Navigation', defaults: ['Mod+Shift+KeyF'] },
   { id: 'newTask', title: 'New task', group: 'Conversation', defaults: ['Mod+KeyN'] },
   { id: 'find', title: 'Find in conversation', group: 'Conversation', defaults: ['Mod+KeyF'] },
-  { id: 'screenshot', title: 'Capture screenshot', group: 'Conversation', defaults: ['Mod+Shift+Digit2'] },
 ] as const;
 export type ShortcutOverrides = Record<string, string[]>;
 export type ShortcutKeyEvent = Pick<KeyboardEvent, 'key' | 'code' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey' | 'isComposing'>;

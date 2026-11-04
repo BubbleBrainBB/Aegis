@@ -3,17 +3,18 @@ import { useAppStore } from '../store/useAppStore';
 import { useTabsStore } from '../store/useTabsStore';
 import { useSidebarViewStore } from '../store/useSidebarViewStore';
 import { useAppPreferences } from '../store/useAppPreferences';
-import { startScreenshotCapture } from '../components/screenshot/ScreenshotHost';
 import { matchesShortcut, SHORTCUT_COMMANDS, shortcutBindings, shortcutConflict } from '../../shared/keyboard-shortcuts';
 
 /** One dispatcher for the keymap shown in Settings. Local editors handle keys first. */
-export function useKeyboardShortcuts() {
+export function useKeyboardShortcuts(actions: { toggleRightPanel: () => void; toggleFullViewNewTab: () => void }) {
   const sidebarSearchRef = useRef<HTMLInputElement>(null);
+  const actionsRef = useRef(actions);
+  actionsRef.current = actions;
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.repeat) return;
       const target = event.target instanceof Element ? event.target : null;
-      if (target?.closest('[data-shortcut-capture], .xterm, .cm-editor') || document.querySelector('[role="dialog"], [role="alertdialog"], [role="menu"], [data-shortcut-recording]')) return;
+      if (target?.closest('[data-shortcut-capture], .xterm, .cm-editor') || document.querySelector('[role="dialog"], [role="alertdialog"], [role="menu"]:not([data-hover-menu]), [data-shortcut-recording]')) return;
       const state = useAppStore.getState();
       if (event.key === 'Escape') {
         if (state.searchPaletteOpen) state.setSearchPaletteOpen(false);
@@ -30,6 +31,7 @@ export function useKeyboardShortcuts() {
       const editing = target?.closest('input, textarea, [contenteditable="true"], [role="textbox"]');
       if (editing && ['sidebar', 'activity', 'back', 'forward'].includes(id)) return;
       if (id === 'find' && (state.activeWorkspace !== 'chat' || !state.activeSessionId)) return;
+      if ((id === 'rightPanel' || id === 'rightPanelFullView') && state.activeWorkspace !== 'chat') return;
       const tabs = useTabsStore.getState();
       event.preventDefault();
       switch (id) {
@@ -41,7 +43,8 @@ export function useKeyboardShortcuts() {
         case 'settings': state.setShowSettings(true); break;
         case 'newTask': state.setShowNewSession(true); break;
         case 'find': state.openInSessionSearch(); break;
-        case 'screenshot': void startScreenshotCapture('area'); break;
+        case 'rightPanel': actionsRef.current.toggleRightPanel(); break;
+        case 'rightPanelFullView': actionsRef.current.toggleFullViewNewTab(); break;
       }
     };
     // Bubble on window: React controls and document-level local handlers get priority.

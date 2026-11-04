@@ -323,7 +323,7 @@ export type SessionRightPanelSnapshot = {
   tabs: ProjectUtilityPanelTarget[];
   activeTab: ProjectUtilityPanelTarget | null;
   hidden: boolean;
-  fullscreen: 'browser' | 'files' | 'review' | 'images' | 'design' | 'terminal' | null;
+  fullscreen: 'browser' | 'files' | 'review' | 'images' | 'design' | 'terminal' | 'launcher' | null;
   fileTabsByUtilityTab: Record<string, SessionRightPanelFileState>;
   reviewDiffSelection: ReviewDiffSelection | null;
 };
@@ -332,7 +332,7 @@ export type SessionRightPanelLiveFields = {
   rightUtilityTabs: ProjectUtilityPanelTarget[];
   activeRightUtilityTab: ProjectUtilityPanelTarget | null;
   rightUtilityPanelHidden: boolean;
-  rightPanelFullscreen: 'browser' | 'files' | 'review' | 'images' | 'design' | 'terminal' | null;
+  rightPanelFullscreen: 'browser' | 'files' | 'review' | 'images' | 'design' | 'terminal' | 'launcher' | null;
   projectTreeCollapsed: boolean;
   projectPanelView: ProjectPanelView;
   browserPanelOpen: boolean;
@@ -490,7 +490,7 @@ export interface AppState {
   clearRightUtilityInstantReveal: () => void;
   reviewDiffSelection: ReviewDiffSelection | null;
   browserPanelOpen: boolean;
-  rightPanelFullscreen: 'browser' | 'files' | 'review' | 'images' | 'design' | 'terminal' | null;
+  rightPanelFullscreen: 'browser' | 'files' | 'review' | 'images' | 'design' | 'terminal' | 'launcher' | null;
   /**
    * While the right panel is fullscreen, the main session is its first tab:
    * true when that tab is the one showing. Any panel tab taking focus clears it.
@@ -671,7 +671,7 @@ export interface AppActions {
     fileState: SessionRightPanelFileState
   ) => void;
   setBrowserPanelOpen: (open: boolean) => void;
-  setRightPanelFullscreen: (target: 'browser' | 'files' | 'review' | 'images' | 'design' | 'terminal' | null) => void;
+  setRightPanelFullscreen: (target: 'browser' | 'files' | 'review' | 'images' | 'design' | 'terminal' | 'launcher' | null) => void;
   setRightPanelFullscreenChat: (active: boolean) => void;
   applyUiResumeState: (state: import('../shared/types').UiResumeState | null) => void;
   clearGlobalError: () => void;

@@ -47,14 +47,17 @@ app.whenReady().then(async()=>{
  win.webContents.on('console-message',event=>{if(event.level==='error'){errors.push(event.message);console.error(event.message);}});
  const js=async code=>{try{return await win.webContents.executeJavaScript(code,true);}catch(e){throw new Error(code+' :: '+e.message);}};
  const snapshot=()=>js('qa.snapshot()');
- const jump=async()=>{await js('document.querySelector("[aria-label^=Scroll]").click()');await delay(200);};
+ const until=async(check,label)=>{let last;for(let i=0;i<100;i++){last=await snapshot();if(await check(last))return;await delay(50);}throw new Error('Timed out: '+label+' '+JSON.stringify(last));};
+ const jump=async()=>{await js('document.querySelector("[aria-label^=Scroll]").click()');await until(s=>s.gap<2&&!s.visible,'jump to latest');await delay(200);};
+ // The pane remembers its position in the scroll event, which a busy page can fire late.
+ const scrollUp=px=>js('new Promise(done=>{const el=qa.scroll();el.addEventListener("scroll",()=>done(0),{once:true});el.scrollTop-='+px+';})');
  try {
   await win.loadURL(process.env.QA_URL);
   console.log('Loaded chat fixture');
   for(let i=0;i<150;i++){if(await js('!!window.qa && !!qa.scroll()'))break;await delay(100);}
   await delay(400);
   assert.equal((await snapshot()).visible,false,'hidden on initial bottom');
-  await js('qa.scroll().scrollTop -= 650');await delay(200);
+  await scrollUp(650);await delay(200);
   const scrolled=await snapshot();assert.equal(scrolled.visible,true);
   assert.ok(scrolled.buttonBottom < scrolled.composerTop,'button sits above the composer');
   assert.ok(scrolled.scrollBottom-scrolled.buttonBottom<=20,'button stays near the transcript bottom');
@@ -66,12 +69,12 @@ app.whenReady().then(async()=>{
   await js('qa.append()');await delay(200);
   assert.ok((await snapshot()).gap<2,'explicit jump restores following');
   // Restore a scrolled session after visiting a short conversation.
-  await js('qa.scroll().scrollTop -= 450');await delay(150);
+  await scrollUp(450);await delay(150);
   const saved=await snapshot();
   await js('qa.store.getState().setActiveSession(qa.second)');await delay(250);
   assert.equal((await snapshot()).visible,false,'short transcript has no jump button');
-  await js('qa.store.getState().setActiveSession(qa.first)');await delay(250);
-  assert.equal((await snapshot()).visible,true);assert.ok(Math.abs((await snapshot()).top-saved.top)<2);
+  await js('qa.store.getState().setActiveSession(qa.first)');
+  await until(s=>s.visible&&Math.abs(s.top-saved.top)<2,'restore saved position');
   await jump();
   // Jumping from the oldest loaded message also reaches the bottom.
   await js('qa.scroll().scrollTop=0');await delay(150);
@@ -81,7 +84,7 @@ app.whenReady().then(async()=>{
   await js('qa.scroll().scrollTop=qa.scroll().scrollHeight');await delay(150);
   assert.equal((await snapshot()).visible,false,'manual bottom scroll hides button');
   // Idle sessions show the arrow; while the agent works the button shows live dots instead.
-  await js('qa.scroll().scrollTop -= 650');await delay(200);
+  await scrollUp(650);await delay(200);
   let idle=await snapshot();
   assert.equal(idle.visible,true);assert.equal(idle.arrow,true,'idle: arrow');assert.equal(idle.working,false);
   await js('qa.setStatus("running")');await delay(200);
@@ -90,7 +93,7 @@ app.whenReady().then(async()=>{
   assert.equal(await js('getComputedStyle(document.querySelector(".aegis-jump-working-dots > span")).animationName'),'aegis-jump-working-dot','dots animate');
   if(output)fs.writeFileSync(path.join(output,'jump-to-latest-working.png'),(await win.webContents.capturePage()).toPNG());
   await jump();assert.ok((await snapshot()).gap<2,'working button jumps to the live position');
-  await js('qa.setStatus("completed")');await js('qa.scroll().scrollTop -= 650');await delay(200);
+  await js('qa.setStatus("completed")');await scrollUp(650);await delay(200);
   idle=await snapshot();
   assert.equal(idle.arrow,true,'back to the arrow once the agent stops');assert.equal(idle.working,false);
   assert.deepEqual(errors,[]);
