@@ -101,6 +101,7 @@
   "verify:generated-media": 2,
   "verify:project-tree-visibility": 2,
   "verify:file-preview-readonly": 9,
+  "verify:project-file-navigation": 15,
   "verify:grok-session-files": 2,
   "verify:grok-permissions": 1,
   "verify:agent-onboarding": 10,

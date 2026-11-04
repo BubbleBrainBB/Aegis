@@ -239,6 +239,8 @@ async function main() {
     server = await createServer({
       root: projectRoot,
       configFile: path.join(projectRoot, 'vite.config.ts'),
+      // Own dep cache: sharing node_modules/.vite breaks a running dev server.
+      cacheDir: path.join(tmpDir, 'vite-cache'),
       server: { host: '127.0.0.1', port: 0, strictPort: false },
     });
     await server.listen();

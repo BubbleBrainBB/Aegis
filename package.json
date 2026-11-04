@@ -285,6 +285,7 @@
     "verify:generated-media",
     "verify:project-tree-visibility",
     "verify:file-preview-readonly",
+    "verify:project-file-navigation",
     "verify:grok-session-files",
     "verify:grok-permissions",
     "verify:agent-onboarding",
