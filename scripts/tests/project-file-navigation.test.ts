@@ -274,16 +274,12 @@ const [
   treePanelSource,
   storeSource,
   appSource,
-  textEditorSource,
-  highlightedCodeSource,
 ] = await Promise.all([
   readFile(new URL('../../src/ui/render/markdown.tsx', import.meta.url), 'utf8'),
   readFile(new URL('../../src/ui/components/MessageCard.tsx', import.meta.url), 'utf8'),
   readFile(new URL('../../src/ui/components/ProjectTreePanel.tsx', import.meta.url), 'utf8'),
   readFile(new URL('../../src/ui/store/useAppStore.ts', import.meta.url), 'utf8'),
   readFile(new URL('../../src/ui/App.tsx', import.meta.url), 'utf8'),
-  readFile(new URL('../../src/ui/components/ProjectTextEditor.tsx', import.meta.url), 'utf8'),
-  readFile(new URL('../../src/ui/components/HighlightedCode.tsx', import.meta.url), 'utf8'),
 ]);
 assert.ok(!`${markdownSource}${messageCardSource}${treePanelSource}`.includes('aegis:open-project-file'));
 assert.ok(!markdownSource.includes('Use a more specific path'));
@@ -295,14 +291,9 @@ assert.ok(treePanelSource.includes('shouldPublishProjectTreeToStore'));
 assert.ok(appSource.includes('ProjectFileMatchDialogHost'));
 assert.match(storeSource, /pendingProjectFileOpen:\s*\{/);
 assert.match(storeSource, /rightUtilityTabs:\s*opened\.tabs/);
-assert.ok(!treePanelSource.includes('sliceTextLineRange'));
-assert.ok(treePanelSource.includes('setFileRevealTarget(null)'));
-assert.ok(treePanelSource.includes('scrollTarget={activeFileRevealTarget}'));
-assert.ok(treePanelSource.includes('revealTarget={activeFileRevealTarget}'));
-assert.ok(textEditorSource.includes("effects: EditorView.scrollIntoView(line.from, { y: 'center' })"));
-assert.ok(highlightedCodeSource.includes("scrollIntoView({ block: 'center', inline: 'nearest' })"));
 
 await import('./project-file-reveal-electron.test.mjs');
+await import('./project-file-reveal-panel-electron.test.mjs');
 
 console.log('project-file-navigation tests passed');
 }
