@@ -193,7 +193,7 @@ app.whenReady().then(async () => {
     setDesignPromptSource((sessionId) => (sessionId === 'session-a' ? { prompt: 'Make the hero calmer', id: 'm-1' } : undefined));
     const current = json(await call(info.url, a, 'design_read', { documentId: created.id }));
     await call(info.url, a, 'design_update', { documentId: created.id, operationId: 'op-3', operations: [{ type: 'content', boardId: current.boards[0].id, expectedRevision: current.boards[0].contentRevision, html: '<main><h1>Calmer</h1></main>' }] });
-    assert.equal(getDesignRepository().boardPrompts('session-a', created.id)[current.boards[0].id].prompt, 'Make the hero calmer');
+    assert.equal(getDesignRepository().history('session-a', created.id)[0].prompt, 'Make the hero calmer');
 
     // A project's design system: guide by default, components and templates on demand.
     const { setDesignProjectRoot, listProjectTemplates } = require('../../dist-electron/electron/design/styles.js');

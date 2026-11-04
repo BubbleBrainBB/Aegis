@@ -104,7 +104,7 @@ export function deriveSidebarSessionState(
     SessionView,
     'status' | 'permissionRequests' | 'runtimeNotice' | 'envMode' | 'worktreePath' | 'isDraft'
   > & Partial<Pick<SessionView, 'turnReport' | 'backgroundTasks'>>,
-  context: { unread?: boolean; pullRequest?: GitPullRequestSummary | null }
+  context: { unread?: boolean; pullRequest?: GitPullRequestSummary | null; worktreeSettled?: boolean }
 ): SidebarSessionState | null {
   if (session.isDraft) return null;
   const running = session.status === 'running' || session.status === 'stopping';
@@ -125,8 +125,8 @@ export function deriveSidebarSessionState(
   if (finished || context.unread) return 'review';
   const pr = context.pullRequest;
   if (pr?.state === 'open') return 'review';
-  // A live worktree holds work that has not been applied back yet, unless
-  // its PR already landed (or was closed) upstream.
-  if (session.envMode === 'worktree' && session.worktreePath && !pr) return 'review';
+  // A live worktree holds work that has not been applied back yet, unless its
+  // PR already landed (or was closed) upstream, or git shows nothing is left.
+  if (session.envMode === 'worktree' && session.worktreePath && !pr && !context.worktreeSettled) return 'review';
   return 'completed';
 }

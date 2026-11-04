@@ -100,7 +100,7 @@
     "verify:new-thread-landing": "node scripts/tests/new-thread-landing-electron.test.mjs",
     "verify:project-switcher": "node scripts/tests/project-switcher-electron.test.mjs",
     "verify:session-links": "npm run transpile:electron && node scripts/tests/session-links-electron.test.mjs",
-    "verify:sidebar-view": "npx tsx scripts/tests/sidebar-view.test.ts && node scripts/tests/sidebar-view-electron.test.mjs",
+    "verify:sidebar-view": "npx tsx scripts/tests/sidebar-view.test.ts && npx tsx scripts/tests/worktree-work.test.ts && node scripts/tests/sidebar-view-electron.test.mjs",
     "verify:session-organization": "npm run transpile:electron && node scripts/tests/session-organization.test.cjs && node scripts/tests/session-windows-electron.test.mjs",
     "verify:session-title": "npx tsx scripts/tests/session-title.test.ts",
     "verify:session-history": "npx tsx scripts/tests/session-history.test.ts",

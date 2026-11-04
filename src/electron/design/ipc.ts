@@ -86,8 +86,6 @@ export function registerDesignIpc() {
       ),
     update: async (x) =>
       getDesignRepository().update(x.sessionId, x, undefined, await user()),
-    prompts: (x) =>
-      Promise.resolve(getDesignRepository().boardPrompts(x.sessionId, x.documentId)),
     history: (x) =>
       Promise.resolve(getDesignRepository().history(x.sessionId, x.documentId)),
     restore: async (x) =>

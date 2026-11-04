@@ -1088,25 +1088,6 @@ export class DesignRepository {
       signal,
     );
   }
-  /**
-   * The message behind each board's latest agent version, for the canvas's
-   * prompt cards: boardId → prompt, the version and who made it.
-   */
-  boardPrompts(sessionId: string, documentId: string): Record<string, { prompt: string; revision: number; author: DesignAuthor | null }> {
-    this.owner(sessionId, documentId);
-    const rows = this.db
-      .prepare(
-        "SELECT revision, prompt, author, board_ids FROM design_revisions WHERE document_id=? AND prompt IS NOT NULL AND hidden=0 ORDER BY revision DESC LIMIT 200",
-      )
-      .all(documentId) as { revision: number; prompt: string; author: string | null; board_ids: string | null }[];
-    const out: Record<string, { prompt: string; revision: number; author: DesignAuthor | null }> = {};
-    for (const row of rows) {
-      for (const boardId of row.board_ids ? (JSON.parse(row.board_ids) as string[]) : []) {
-        out[boardId] ??= { prompt: row.prompt, revision: row.revision, author: row.author ? JSON.parse(row.author) : null };
-      }
-    }
-    return out;
-  }
   history(sessionId: string, documentId: string): DesignRevisionInfo[] {
     this.owner(sessionId, documentId);
     return (

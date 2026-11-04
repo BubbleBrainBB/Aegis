@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import type { AttachSessionPullRequestInput, GitPullRequestSummary, SessionPullRequestView } from '../../shared/types';
 import * as sessions from './session-store';
 import { getGitPullRequestInfo, parseGitHubRepoFromRemote, sameGitHubRepo, samePullRequest } from './git-pull-requests';
+import { worktreeHoldsWork } from './worktree-work';
 
 const exec = promisify(execFile);
 
@@ -155,4 +156,19 @@ export async function listSidebarPullRequests(refresh = false): Promise<Record<s
   const associated: Record<string, GitPullRequestSummary[]> = {};
   for (const { sessionId, pr } of sessions.listAllSessionPullRequests()) (associated[sessionId] ??= []).push(summary(pr));
   return { ...result, ...associated };
+}
+
+let settledWorktrees: Promise<string[]> | null = null;
+
+/** Sessions whose worktree has nothing left to apply back. Local git only, so each caller may ask. */
+export function listSettledWorktreeSessions(): Promise<string[]> {
+  settledWorktrees ??= (async () => {
+    const rows = sessions.listSessions().filter(row => row.env_mode === 'worktree' && row.worktree_path);
+    const settled: string[] = [];
+    await eachLimited(rows, async row => {
+      if (!await worktreeHoldsWork(row.worktree_path!, row.project_cwd ?? null)) settled.push(row.id);
+    });
+    return settled;
+  })().finally(() => { settledWorktrees = null; });
+  return settledWorktrees;
 }

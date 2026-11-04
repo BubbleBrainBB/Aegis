@@ -2539,33 +2539,6 @@ details.design-section > .design-grid {
   font-variant-numeric: tabular-nums;
 }
 
-/* Prompt card under a board: what was asked, and a way to ask again. */
-.design-prompt-card {
-  position: absolute;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 5px 5px 10px;
-  border-radius: 9px;
-  background: var(--bg-primary);
-  box-shadow: 0 0 0 1px var(--d-line), 0 4px 14px #00000012;
-  font-size: 12px;
-  z-index: 4;
-}
-.design-prompt-text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text-secondary);
-}
-.design-panel .design-prompt-card button {
-  flex-shrink: 0;
-  padding: 2px 8px;
-  border-radius: 6px;
-  background: var(--d-fill);
-}
-
 /* History: one row per version, its saves underneath on demand. */
 .design-version-title {
   display: -webkit-box;
