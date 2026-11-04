@@ -15,7 +15,7 @@ window.qa={calls:[],refreshes:0,branchReads:0,attached:[],listeners:new Set()};
 Object.defineProperty(navigator,'clipboard',{value:{writeText:async text=>{qa.copied=text}}});
 window.electron={
  getUiResumeStateSync:()=>null, getRendererStateAllSync:()=>({}), saveUiResumeState:async()=>{},
- getGitBranches:async()=>{qa.branchReads++;await new Promise(r=>setTimeout(r,350));return {ok:true,entries:[{name:'feature/card',fullRef:'refs/heads/feature/card',current:true,remote:false}]}},
+ getGitBranches:async()=>{qa.branchReads++;await (qa.branchGate||new Promise(r=>setTimeout(r,350)));return {ok:true,entries:[{name:'feature/card',fullRef:'refs/heads/feature/card',current:true,remote:false}]}},
  getGitOverview:async()=>qa.overview,
  listSessionPullRequests:async(id,refresh)=>qa.attached.map(pr=>({...pr,lookupStatus:refresh?'found':'cached'})),
  onSessionPullRequestsChanged:callback=>{qa.listeners.add(callback);return()=>qa.listeners.delete(callback)},
@@ -117,7 +117,9 @@ app.whenReady().then(async()=>{
  assert.equal(await js('[...document.querySelectorAll("button")].find(e=>e.textContent.trim()==="Commit or push").disabled'),true,'unknown branch cannot enable mutations');
  await js('qa.patch({branch:"master"})');await delay(100);assert.match(await visible(),/master/);assert.equal(await js('qa.branchReads'),0);
  await click('Open environment panel');await click('Open environment panel');assert.match(await visible(),/master/);assert.doesNotMatch(await visible(),/HEAD/);assert.equal(await js('qa.branchReads'),0,'reopening does not refetch branch list');
+ await js('qa.branchGate=new Promise(r=>{qa.openBranchGate=r});0');
  await click('master');assert.match(await visible(),/Loading branches/);assert.equal(await js('!!document.querySelector("button[title=master]")'),true);
+ await js('qa.openBranchGate();qa.branchGate=null');
  await delay(400);assert.equal(await js('!!document.querySelector("button[title=master]")'),true,'candidate list cannot overwrite the current branch');
  win.webContents.sendInputEvent({type:'keyDown',keyCode:'Escape'});win.webContents.sendInputEvent({type:'keyUp',keyCode:'Escape'});await delay(200);
  await mode('detached');assert.match(await visible(),/Detached HEAD/);
@@ -135,8 +137,9 @@ app.whenReady().then(async()=>{
  await click('Cancel');await delay(450);assert.deepEqual(await js('qa.calls'),[]);
  await click('feature/card');assert.equal(await js('!!document.querySelector("[data-environment-hub-layer]")'),true);
  win.webContents.sendInputEvent({type:'keyDown',keyCode:'Escape'});win.webContents.sendInputEvent({type:'keyUp',keyCode:'Escape'});await delay(200);
- await mode('running');assert.match(await visible(),/active task is running/);
+ await mode('running');assert.doesNotMatch(await visible(),/active task is running/);
  assert.equal(await js('[...document.querySelectorAll("button")].find(e=>e.textContent.trim()==="Commit or push").disabled'),true);
+ assert.match(await js('[...document.querySelectorAll("button")].find(e=>e.textContent.trim()==="Commit or push").title'),/active task is running/);await snap('running');
  await mode('unknown');assert.match(await visible(),/Pull request status unavailable/);assert.doesNotMatch(await visible(),/PR unknown|Create pull request/);await snap('pr-unavailable');
  const refreshBefore=await js('qa.refreshes');await click('Pull request status unavailable');assert.equal(await js('qa.refreshes'),refreshBefore+1);
  await mode('pr-loading');assert.doesNotMatch(await visible(),/Checking pull request|status unavailable|Create pull request/);await snap('silent-pr-check');

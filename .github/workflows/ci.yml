@@ -1,25 +1,68 @@
 name: CI
 
+# Only files nothing builds or reads. Other .md files stay in: src/electron ships some.
 on:
   pull_request:
+    paths-ignore: &docs-only
+      - "docs/**"
+      - "README*.md"
+      - "CLAUDE.md"
   push:
     branches: [master]
+    paths-ignore: *docs-only
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # A merge whose tree is exactly what its PR's CI passed on has nothing new to
+  # test. Anything else runs in full, including when this check cannot tell.
+  gate:
+    name: Check for a tested tree
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      statuses: read
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - id: check
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          commit=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA") || exit 0
+          tree=$(jq -r .commit.tree.sha <<<"$commit")
+          pr_head=$(jq -r '.parents[1].sha // empty' <<<"$commit")
+          [ -n "$pr_head" ] || exit 0
+          tested=$(gh api "repos/$GITHUB_REPOSITORY/commits/$pr_head/statuses?per_page=100" \
+            --jq "[.[] | select(.context == \"CI / tested tree\" and .state == \"success\" and .description == \"$tree\")] | length") || exit 0
+          if [ "$tested" -gt 0 ]; then
+            echo "::notice::Skipping tests: $pr_head already passed CI on tree $tree."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
   test:
-    name: Test & Build (macOS, shard ${{ matrix.shard }}/3)
-    runs-on: macos-15
-    # A shard takes ~8 min; a hung Electron test should fail fast, not hold the
+    needs: gate
+    if: needs.gate.outputs.skip != 'true'
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    # A job takes ~7 min; a hung Electron test should fail fast, not hold the
     # runner for GitHub's 6-hour default.
     timeout-minutes: 30
     strategy:
       fail-fast: false
+      # macOS arm64 runners are scarce and jobs can queue for them, so anything
+      # that does not start Electron runs on Linux. jobs is how many suites run at
+      # once: Linux has 4 cores, and Electron suites interfere with each other.
       matrix:
-        shard: [1, 2, 3]
+        include:
+          - { name: "Test (macOS, shard 1/3)", os: macos-15, group: macos, shard: 1/3, jobs: 1 }
+          - { name: "Test (macOS, shard 2/3)", os: macos-15, group: macos, shard: 2/3, jobs: 1 }
+          - { name: "Test (macOS, shard 3/3)", os: macos-15, group: macos, shard: 3/3, jobs: 1 }
+          - { name: "Test & Build (Linux)", os: ubuntu-latest, group: linux, shard: "", jobs: 4 }
 
     steps:
       - name: Checkout
@@ -49,9 +92,30 @@ jobs:
       - name: Test
         run: npm test
         env:
-          AEGIS_TEST_SHARD: ${{ matrix.shard }}/3
+          AEGIS_TEST_GROUP: ${{ matrix.group }}
+          AEGIS_TEST_SHARD: ${{ matrix.shard }}
+          AEGIS_TEST_JOBS: ${{ matrix.jobs }}
 
-      # Only one shard needs this; scripts/run-tests.mjs gives it fewer suites to match.
+      # Only one job needs this.
       - name: Build (Vite + TS)
-        if: matrix.shard == 1
+        if: matrix.group == 'linux'
         run: npm run build
+
+  # Read by the gate job once this PR merges. A fork's token cannot write statuses.
+  record:
+    name: Record tested tree
+    needs: test
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          tree=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA" --jq .commit.tree.sha)
+          gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$PR_HEAD" \
+            -f state=success -f context="CI / tested tree" -f description="$tree" > /dev/null

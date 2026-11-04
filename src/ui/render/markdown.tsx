@@ -25,6 +25,7 @@ import { Globe, Palette } from '../components/icons';
 import { faviconUrlForHostname, isFaviconPlaceholder } from '../utils/link-favicons';
 import { resolveProjectFileReference } from '../utils/project-file-navigation';
 import { pickProjectFileMatch } from '../components/ProjectFileMatchDialog';
+import { resolveTranscriptFileReference } from '../utils/transcript-file-paths';
 import {
   extractGeneratedMediaFromMessages,
   findGeneratedMediaForPath,
@@ -352,7 +353,7 @@ function useProjectFileNavigation(sessionOverride?: string | null) {
               extractGeneratedMediaFromMessages(session.messages)
             )
           : null;
-        const resolved = projectFile.external
+        const located = projectFile.external
           ? {
               status: 'resolved' as const,
               cwd: projectFile.path.replace(/\\/g, '/').replace(/\/[^/]*$/, '') || '/',
@@ -377,6 +378,14 @@ function useProjectFileNavigation(sessionOverride?: string | null) {
                   : window.electron.getProjectTree(root),
               statFile: statProjectFile,
             });
+        // In no workspace: the transcript may say where the file really is.
+        const resolved = located.status === 'not-found' && session
+          ? await resolveTranscriptFileReference({
+              requestedPath: projectFile.path,
+              messages: session.messages,
+              statFile: statProjectFile,
+            })
+          : located;
 
         if (resolved.status === 'not-found') {
           toast.error(`Couldn’t find “${projectFile.path}” in known workspaces.`);

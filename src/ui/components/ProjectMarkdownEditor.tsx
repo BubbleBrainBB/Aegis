@@ -981,13 +981,18 @@ function scrollEditorPositionIntoMainView(view: EditorView, host: HTMLElement | 
 
   window.requestAnimationFrame(() => {
     window.requestAnimationFrame(() => {
-      const coords = view.coordsAtPos(pos, 1) || view.coordsAtPos(pos, -1);
-      if (!coords) return;
-      const scrollerRect = scroller.getBoundingClientRect();
       const topOffset = Math.min(
         OUTLINE_TARGET_MAX_TOP_OFFSET_PX,
         Math.max(OUTLINE_TARGET_MIN_TOP_OFFSET_PX, scroller.clientHeight * OUTLINE_TARGET_VIEWPORT_RATIO)
       );
+      const coords = view.coordsAtPos(pos, 1) || view.coordsAtPos(pos, -1);
+      if (!coords) {
+        // A line outside CodeMirror's rendered window has no coordinates yet;
+        // its own scroll renders the line first, then scrolls the parent.
+        view.dispatch({ effects: EditorView.scrollIntoView(pos, { y: 'start', yMargin: topOffset }) });
+        return;
+      }
+      const scrollerRect = scroller.getBoundingClientRect();
       const maxScrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
       const nextScrollTop = scroller.scrollTop + coords.top - scrollerRect.top - topOffset;
       scroller.scrollTo({

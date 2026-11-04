@@ -63,15 +63,17 @@ ipcMain.handle('qa-send',async(_e,event)=>{const p=event.payload;const createdAt
 // Export passes its window first when it has one: the options are the last argument.
 dialog.showSaveDialog=async(...args)=>({canceled:false,filePath:path.join(process.env.QA_DATA,path.basename(args.at(-1).defaultPath))});
 const w=new BrowserWindow({width:1440,height:980,show:true,webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true}});
-// Native input events need an OS-focused window (a window blur cancels canvas gestures): keep it in front.
+// Another app may take focus while this runs. Focus is emulated once the page loads, so don't steal it back from the
+// person using the machine: keep the window in front and log each change, to tell a later failure apart from a focus loss.
 w.setAlwaysOnTop(true,'floating');app.focus({steal:true});
+const startedAt=Date.now();const logFocus=label=>console.log('[focus] '+label+' t='+(Date.now()-startedAt)+'ms');w.on('blur',()=>logFocus('blur'));w.on('focus',()=>logFocus('focus'));
 const errors=[];w.webContents.on('console-message',e=>{if(e.level==='error')errors.push(e.message)});
 const js=async s=>{try{return await w.webContents.executeJavaScript(s,true)}catch(e){console.error("Renderer script:",s,errors);throw e}};
 const until=async(s,label)=>{for(let i=0;i<100;i++){if(await js(s))return;await delay(75)}throw Error('Timed out: '+label+'; '+errors.join('\n'))};
 const click=async s=>{await js('document.querySelector('+JSON.stringify(s)+').click()');await delay(160)};
 const text=async(label)=>{await js('(()=>{const b=[...document.querySelectorAll("button")].find(b=>b.textContent.trim()==='+JSON.stringify(label)+');if(!b)throw Error("Missing '+label+'");b.click()})()');await delay(180)};
 try {
-await w.loadURL(process.env.QA_URL);await until('!!window.qa','renderer');
+await w.loadURL(process.env.QA_URL);w.webContents.debugger.attach('1.3');await w.webContents.debugger.sendCommand('Emulation.setFocusEmulationEnabled',{enabled:true});await until('!!window.qa','renderer');
 const a=await js('qa.a'),b=await js('qa.b');const abort=new AbortController();const tools=createNativeDesignTools(a);const call=async(name,args)=>{const r=await tools.find(t=>t.name===name).execute(args,{abortSignal:abort.signal});assert(!r.isError,r.content);return JSON.parse(r.content)};
 await js('qa.store.getState().setRightPanelFullscreen("files")');
 const d=await call('design_create',{title:'Fieldnotes',brief:'A warm, quiet travel journal',operationId:'create'});
@@ -283,7 +285,7 @@ const sameProject=await createNativeDesignTools(b).find(t=>t.name==='design_read
 const cross=await createNativeDesignTools('outsider').find(t=>t.name==='design_read').execute({documentId:d.id},{});assert(cross.isError,'another project cannot');
 console.log(JSON.stringify({ok:true,checks:['agent tools create/update','automatic panel','two HTML boards','iframe isolation','element selection','comment to the agent','pin initials','working thread','chat row + View thread','agent reply + compare','queued reply','resolve','plain note','session A/B/A','history summary + restore','devices','HTML and PNG@2x export','preview navigation','model preview image','stop and ownership'],screenshot:path.join(process.env.QA_CAPTURE,'design-canvas.png'),errors},null,2));
 w.destroy();app.exit(0);
-} catch(e){console.error(e);fs.mkdirSync(process.env.QA_CAPTURE,{recursive:true});fs.writeFileSync(path.join(process.env.QA_CAPTURE,'failure.png'),(await w.webContents.capturePage()).toPNG());w.destroy();app.exit(1)}
+} catch(e){console.error(e);if(!w.isDestroyed())logFocus('at failure, osFocused='+w.isFocused()+' pageFocused='+await w.webContents.executeJavaScript('document.hasFocus()').catch(()=>'unknown'));fs.mkdirSync(process.env.QA_CAPTURE,{recursive:true});fs.writeFileSync(path.join(process.env.QA_CAPTURE,'failure.png'),(await w.webContents.capturePage()).toPNG());w.destroy();app.exit(1)}
 });
 `;
 try {

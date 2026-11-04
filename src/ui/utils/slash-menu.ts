@@ -52,7 +52,7 @@ export function commandTitle(command: Pick<ClaudeSlashCommand, 'name'>): string 
     case 'yolo':
       return 'Permissions';
     case 'new':
-      return 'New Thread';
+      return 'New Task';
     case 'plan':
     case 'view-plan':
     case 'show-plan':

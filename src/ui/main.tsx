@@ -5,8 +5,6 @@ import { App } from './App';
 import { ComputerUsePreviewApp } from './components/ComputerUsePreviewApp';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { isComputerUsePreviewHash } from '../shared/computer-use';
-import { isScreenshotEditorHash } from '../shared/screenshot';
-import { ScreenshotEditorApp } from './components/screenshot/ScreenshotEditorApp';
 import './index.css';
 
 window.addEventListener('unhandledrejection', (event) => {
@@ -48,7 +46,7 @@ function GlobalErrorFallback() {
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <AppearancePreferences><ErrorBoundary fallback={<GlobalErrorFallback />}>
-      {isComputerUsePreviewHash(window.location.hash) ? <ComputerUsePreviewApp /> : isScreenshotEditorHash(window.location.hash) ? <ScreenshotEditorApp /> : <App />}
+      {isComputerUsePreviewHash(window.location.hash) ? <ComputerUsePreviewApp /> : <App />}
     </ErrorBoundary></AppearancePreferences>
   </StrictMode>
 );
