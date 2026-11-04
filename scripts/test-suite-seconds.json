@@ -105,5 +105,6 @@
   "verify:grok-permissions": 1,
   "verify:agent-onboarding": 10,
   "verify:design-core": 88,
-  "verify:design-canvas": 111
+  "verify:design-canvas": 111,
+  "verify:new-tab-menu": 10
 }

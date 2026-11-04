@@ -167,6 +167,7 @@
     "verify:deepseek-runtime-exit": "node scripts/tests/deepseek-runtime-exit.test.mjs",
     "verify:deepseek-images-ui": "node scripts/tests/deepseek-images-electron.test.mjs",
     "verify:context-popover": "node scripts/tests/context-popover-electron.test.mjs",
+    "verify:new-tab-menu": "node scripts/tests/new-tab-menu-electron.test.mjs",
     "verify:background-task-peek": "node scripts/tests/background-task-peek-electron.test.mjs",
     "verify:keyboard-shortcuts": "npm run transpile:electron && npx tsx scripts/tests/keyboard-shortcuts.test.ts && node scripts/tests/keyboard-shortcuts-electron.test.mjs",
     "verify:settings-integration": "node scripts/tests/settings-integration-electron.test.mjs",
@@ -289,7 +290,8 @@
     "verify:grok-permissions",
     "verify:agent-onboarding",
     "verify:design-core",
-    "verify:design-canvas"
+    "verify:design-canvas",
+    "verify:new-tab-menu"
   ],
   "linuxTestSuites": [
     "check:icons",

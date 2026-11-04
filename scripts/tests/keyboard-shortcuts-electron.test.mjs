@@ -22,7 +22,7 @@ window.electron={...window.preferenceBridge, getBubbleProvidersConfig:async()=>(
 window.qa={store:useAppStore,tabs:useTabsStore,prefs:useAppPreferences,dialog:()=>confirmDialog({title:'Test dialog'})};
 useAppStore.setState({showSettings:true,activeSettingsTab:'shortcuts',sidebarCollapsed:false});
 function Harness(){
- useKeyboardShortcuts();useEffect(subscribeAppPreferences,[]);
+ useKeyboardShortcuts({toggleRightPanel:()=>{qa.rightPanel=(qa.rightPanel??0)+1;},toggleFullViewNewTab:()=>{qa.fullView=(qa.fullView??0)+1;}});useEffect(subscribeAppPreferences,[]);
  const settings=useAppStore(s=>s.showSettings);
  return <AppearancePreferences><Tooltip.Provider><div style={{height:'100vh',background:'var(--bg-primary)',color:'var(--text-primary)'}}>{settings?<Settings/>:<><textarea aria-label="Composer probe"/><div className="xterm"><textarea aria-label="Terminal probe"/></div><div contentEditable role="textbox" aria-label="Rich editor probe"/></>}<ConfirmDialogHost/><Toaster/></div></Tooltip.Provider></AppearancePreferences>;
 }
@@ -69,7 +69,7 @@ app.whenReady().then(async()=>{
   await win.loadURL(process.env.QA_URL);
   await until('!!document.querySelector(".shortcut-row")','shortcut settings');
   assert.equal(await js('document.querySelector("h1").textContent'),'Keyboard shortcuts');
-  assert.equal(await rowCount(),16);
+  assert.equal(await rowCount(),18);
   await shot('shortcuts-light');
   await text('[aria-label="Search shortcuts"]','new task');assert.equal(await rowCount(),1);
   await text('[aria-label="Search shortcuts"]','cmd n');assert((await rowCount())>0);
@@ -78,7 +78,7 @@ app.whenReady().then(async()=>{
   assert.equal(await js('document.querySelector(".shortcut-row").dataset.settingsId'),'shortcut:newTask');
   await key('Enter',['shift']);assert.equal(await rowCount(),1);
   assert.equal(await js('document.querySelector(".shortcut-row").dataset.settingsLabel'),'Insert line break');
-  await key('Escape');await key('Escape');assert.equal(await rowCount(),16);
+  await key('Escape');await key('Escape');assert.equal(await rowCount(),18);
   await click('[aria-label="Edit shortcut for New task"]');
   assert.equal(await fired('N',[mod]),false,'recording does not start a task');
   await key('K',[mod]);assert((await js('document.querySelector(".shortcut-capture [role=alert]").textContent')).includes('Search tasks'));
@@ -121,6 +121,9 @@ app.whenReady().then(async()=>{
   await focus('[aria-label="Composer probe"]');
   const collapsed=await js('qa.store.getState().sidebarCollapsed');await key('B',[mod]);assert.equal(await js('qa.store.getState().sidebarCollapsed'),collapsed,'text formatting is not swallowed');
   await js('document.activeElement.blur()');await key('B',[mod,'shift']);assert.equal(await js('qa.store.getState().sidebarCollapsed'),collapsed,'exact modifiers');
+  assert.equal(await js('qa.rightPanel'),1,'Shift+Mod+B toggles the right panel');
+  await focus('[aria-label="Terminal probe"]');await key('F',[mod,'shift']);assert.equal(await js('qa.fullView??0'),0,'terminal owns keys');
+  await js('document.activeElement.blur()');await key('F',[mod,'shift']);assert.equal(await js('qa.fullView'),1,'Shift+Mod+F opens a New tab in full view');
   await key('B',[mod]);assert.equal(await js('qa.store.getState().sidebarCollapsed'),!collapsed);
   await focus('[aria-label="Terminal probe"]');assert.equal(await fired('J',[mod,'shift']),false,'terminal owns keys');
   await js('document.activeElement.blur();void qa.dialog()');await delay(150);assert.equal(await fired('J',[mod,'shift']),false,'dialog owns keys');await key('Escape');

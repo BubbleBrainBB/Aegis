@@ -6,7 +6,8 @@ import { Palette as DesignIcon } from './components/icons';
 import { DesignPanel } from './components/design/DesignPanel';
 import { DesignSection } from './components/design/DesignSection';
 import { useDesignStore, subscribeDesignChanges } from './store/useDesignStore';
-import { subscribeAppPreferences } from './store/useAppPreferences';
+import { subscribeAppPreferences, useAppPreferences } from './store/useAppPreferences';
+import { shortcutLabel } from '../shared/keyboard-shortcuts';
 import { TextInputDialogHost } from './components/ui/text-input-dialog';
 import { GoalEditorPanel } from './components/SessionGoal';
 import { useEffect, useRef, useMemo, useState, useCallback, type ReactNode } from 'react';
@@ -55,6 +56,7 @@ import { AutomationsView } from './components/AutomationsView';
 import { PullRequestsView } from './components/PullRequestsView';
 import { useTabsStore, type TabView } from './store/useTabsStore';
 import { NewSessionView } from './components/NewSessionView';
+import { NewTabMenuButton, type NewTabMode } from './components/NewTabMenuButton';
 import { SessionTitleActions } from './components/SessionTitleActions';
 import { SessionActionsMenu } from './components/SessionActionsMenu';
 import { LogoShimmer } from './components/LogoShimmer';
@@ -87,6 +89,7 @@ import { useSessionSources } from './hooks/useSessionSources';
 import {
   createTerminalTabId,
   getRightUtilityTabKind,
+  isRightUtilityLauncherTab,
   isRightUtilityTerminalTab,
   sessionSourceTabPath,
 } from './utils/right-utility-tabs';
@@ -221,7 +224,6 @@ export function App() {
   useIPC();
 
   // Initialize global keyboard shortcuts
-  useKeyboardShortcuts();
   const codexModelConfig = useCodexModelConfig();
   const [windowShellRounded, setWindowShellRounded] = useState(getDefaultWindowShellRounded);
   // Session id of a side chat pending destructive-close confirmation.
@@ -669,13 +671,6 @@ export function App() {
   const activeLauncherTab =
     activeUtilityPanel === 'launcher' && activeRightUtilityTab ? activeRightUtilityTab : undefined;
 
-  // A session view carries its header (with the pane toggle) on the sheet.
-  const sessionViewShown =
-    !showSettings &&
-    activeWorkspace === 'chat' &&
-    sessionsLoaded &&
-    (chatLayoutMode === 'split' || Boolean(activeSession && !showNewSession));
-
   // A docked right pane continues the main view's sheet on its right edge.
   const rightPaneDocked =
     !showSettings && activeWorkspace === 'chat' && activeUtilityPanel !== null && rightPanelFullscreen === null;
@@ -914,6 +909,22 @@ export function App() {
     showRightUtilityPanels,
   ]);
 
+  // Goes back to a New tab that is still open rather than piling up another.
+  const openNewTab = useCallback((mode: NewTabMode) => {
+    const store = useAppStore.getState();
+    const retained = store.rightUtilityTabs.find(isRightUtilityLauncherTab);
+    if (retained) store.setActiveRightUtilityTab(retained);
+    else store.openRightUtilityLauncherTab();
+    if (mode === 'full') store.setRightPanelFullscreen('launcher');
+  }, []);
+
+  useKeyboardShortcuts({
+    toggleRightPanel: toggleRightUtilityPanel,
+    toggleFullViewNewTab: () => {
+      if (rightPanelFullscreen && !rightPanelFullscreenChat) setRightPanelFullscreen(null);
+      else openNewTab('full');
+    },
+  });
 
   useEffect(() => {
     if (!activeRightUtilityTab || rightUtilityPanelHidden) return;
@@ -1081,6 +1092,14 @@ export function App() {
     </>
   );
 
+  // The title bar's way into a closed right pane: it brings back tabs that are
+  // still open, and otherwise offers a New tab.
+  const closedPaneEntry = rightUtilityTabs.some((tab) => !isRightUtilityLauncherTab(tab)) ? (
+    <PanelLauncher activePanel={null} onToggle={toggleRightUtilityPanel} />
+  ) : (
+    <NewTabMenuButton onNewTab={openNewTab} />
+  );
+
   const chatTabLabel = activeSession?.title?.trim() || 'New chat';
   const fullscreenChatTab = {
     label: chatTabLabel,
@@ -1213,7 +1232,7 @@ export function App() {
                 {activeUtilityPanel === null ? (
                   <>
                     <span aria-hidden="true" className="mx-1 h-4 w-px bg-[var(--border)]" />
-                    <PanelLauncher activePanel={activeUtilityPanel} onToggle={toggleRightUtilityPanel} />
+                    {closedPaneEntry}
                   </>
                 ) : null}
               </div>
@@ -1232,7 +1251,13 @@ export function App() {
       ) : (
         <MainSheet
           joinedRight={rightPaneDocked}
-          header={fullscreenChatShown ? renderFullscreenTabStrip() : undefined}
+          header={
+            fullscreenChatShown ? (
+              renderFullscreenTabStrip()
+            ) : activeUtilityPanel === null ? (
+              <div className="flex h-full min-w-0 flex-1 items-center justify-end">{closedPaneEntry}</div>
+            ) : undefined
+          }
         >
           <NewSessionView key={newSessionKey} />
         </MainSheet>
@@ -1275,6 +1300,7 @@ export function App() {
             if (kind === 'review') return toggleReviewPanelFullscreen;
             if (kind === 'browser') return toggleBrowserPanelFullscreen;
             if (kind === 'terminal') return () => setRightPanelFullscreen(rightPanelFullscreen === 'terminal' ? null : 'terminal');
+            if (kind === 'launcher') return () => setRightPanelFullscreen(rightPanelFullscreen ? null : 'launcher');
             // Kinds without a fullscreen view of their own can still leave it.
             if (rightPanelFullscreen) return () => setRightPanelFullscreen(null);
             return null;
@@ -1468,18 +1494,6 @@ export function App() {
       ) : null}
       </SessionRightPanelPresence>
 
-      {!showSettings &&
-      activeWorkspace === 'chat' &&
-      activeUtilityPanel === null &&
-      !fullscreenChatShown &&
-      !sessionViewShown ? (
-        <div className="absolute right-3 top-1.5 z-[90] no-drag">
-          <PanelLauncher
-            activePanel={activeUtilityPanel}
-            onToggle={toggleRightUtilityPanel}
-          />
-        </div>
-      ) : null}
       </div>
       </div>
       </div>
@@ -1942,18 +1956,22 @@ function PanelLauncher({
   onToggle: () => void;
 }) {
   const active = Boolean(activePanel);
+  const shortcut = useAppPreferences((state) => shortcutLabel('rightPanel', state.keyboardShortcuts));
+  const label = active ? 'Hide tabs' : 'Show tabs';
 
   return (
     <button
       type="button"
+      // A click with the mouse leaves focus where it was.
+      onMouseDown={(event) => event.preventDefault()}
       onClick={onToggle}
       className={`no-drag inline-flex h-7 w-7 items-center justify-center rounded-lg text-[11px] font-medium transition-colors ${
         active
           ? 'bg-[var(--sidebar-item-active)] text-[var(--text-primary)]'
           : 'text-[var(--text-secondary)] hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)]'
       }`}
-      title={active ? 'Close right panel' : 'Open right panel'}
-      aria-label={active ? 'Close right panel' : 'Open right panel launcher'}
+      title={shortcut ? `${label} (${shortcut})` : label}
+      aria-label={label}
       aria-expanded={active}
       aria-pressed={active}
     >
