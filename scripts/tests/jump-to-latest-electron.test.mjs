@@ -47,7 +47,8 @@ app.whenReady().then(async()=>{
  win.webContents.on('console-message',event=>{if(event.level==='error'){errors.push(event.message);console.error(event.message);}});
  const js=async code=>{try{return await win.webContents.executeJavaScript(code,true);}catch(e){throw new Error(code+' :: '+e.message);}};
  const snapshot=()=>js('qa.snapshot()');
- const jump=async()=>{await js('document.querySelector("[aria-label^=Scroll]").click()');await delay(200);};
+ const until=async(check,label)=>{for(let i=0;i<100;i++){if(await check(await snapshot()))return;await delay(50);}throw new Error('Timed out: '+label);};
+ const jump=async()=>{await js('document.querySelector("[aria-label^=Scroll]").click()');await until(s=>s.gap<2&&!s.visible,'jump to latest');};
  try {
   await win.loadURL(process.env.QA_URL);
   console.log('Loaded chat fixture');
@@ -70,8 +71,8 @@ app.whenReady().then(async()=>{
   const saved=await snapshot();
   await js('qa.store.getState().setActiveSession(qa.second)');await delay(250);
   assert.equal((await snapshot()).visible,false,'short transcript has no jump button');
-  await js('qa.store.getState().setActiveSession(qa.first)');await delay(250);
-  assert.equal((await snapshot()).visible,true);assert.ok(Math.abs((await snapshot()).top-saved.top)<2);
+  await js('qa.store.getState().setActiveSession(qa.first)');
+  await until(s=>s.visible&&Math.abs(s.top-saved.top)<2,'restore saved position');
   await jump();
   // Jumping from the oldest loaded message also reaches the bottom.
   await js('qa.scroll().scrollTop=0');await delay(150);
