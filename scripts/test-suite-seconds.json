@@ -75,7 +75,6 @@
   "verify:spreadsheet-preview": 1,
   "verify:claude-rewind": 0,
   "verify:layout-tree": 2,
-  "verify:screenshot": 2,
   "verify:fork-session": 0,
   "verify:composer-link-chip": 2,
   "verify:composer-long-text": 16,
@@ -106,5 +105,8 @@
   "verify:grok-permissions": 0,
   "verify:agent-onboarding": 11,
   "verify:design-core": 73,
-  "verify:design-canvas": 105
+  "verify:design-canvas": 105,
+  "verify:transcript-file-paths": 2,
+  "verify:project-file-navigation": 15,
+  "verify:new-tab-menu": 10
 }

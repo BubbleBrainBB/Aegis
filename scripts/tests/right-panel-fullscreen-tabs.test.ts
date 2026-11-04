@@ -28,6 +28,17 @@ store().setProjectTreeCollapsed(true);
 assert.equal(fs(), 'terminal', 'a terminal opened over a fullscreen file is fullscreen');
 assert.equal(store().activeRightUtilityTab, 'terminal');
 
+// "New tab in full view": a New tab can hold fullscreen, the tool picked on it
+// takes over, and a design tab leaves it with one click like the other kinds.
+useAppStore.setState({ rightUtilityTabs: [], activeRightUtilityTab: null, rightUtilityPanelHidden: true, rightPanelFullscreen: null });
+store().openRightUtilityLauncherTab();
+store().setRightPanelFullscreen('launcher');
+assert.equal(fs(), 'launcher', 'the New tab is fullscreen');
+assert.equal(store().rightUtilityPanelHidden, false);
+const fullViewLauncher = store().activeRightUtilityTab!;
+store().openRightUtilityTab('design', { replace: fullViewLauncher });
+assert.equal(fs(), 'design', 'a design picked on the fullscreen New tab is fullscreen');
+
 // A New tab from the strip's + keeps fullscreen, and so does the tool
 // picked on it.
 start('files:a', 'files');
