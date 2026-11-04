@@ -3,6 +3,7 @@ import claudeLogo from '../assets/claude-color.svg';
 import moonshotLogo from '../assets/moonshot.svg';
 import grokLogo from '../assets/grok.svg';
 import openaiLogo from '../assets/openai.svg';
+import { MonochromeLogo } from './MonochromeLogo';
 import { OpenCodeLogo } from './OpenCodeLogo';
 import { PiLogo } from './PiLogo';
 import { BubbleLogo } from './BubbleLogo';
@@ -14,11 +15,11 @@ import { MinimaxLogo } from './MinimaxLogo';
 
 export function ProviderIcon({ provider }: { provider: AgentProvider }) {
   if (provider === 'claude') {
-    return <img src={claudeLogo} alt="" className="h-4 w-4 flex-shrink-0" aria-hidden="true" />;
+    return <MonochromeLogo src={claudeLogo} />;
   }
 
   if (provider === 'codex') {
-    return <img src={openaiLogo} alt="" className="h-4 w-4 flex-shrink-0" aria-hidden="true" />;
+    return <MonochromeLogo src={openaiLogo} />;
   }
 
   if (provider === 'opencode') {
@@ -26,10 +27,10 @@ export function ProviderIcon({ provider }: { provider: AgentProvider }) {
   }
 
   if (provider === 'kimi') {
-    return <img src={moonshotLogo} alt="" className="h-4 w-4 flex-shrink-0" aria-hidden="true" />;
+    return <MonochromeLogo src={moonshotLogo} />;
   }
   if (provider === 'grok') {
-    return <img src={grokLogo} alt="" className="h-4 w-4 flex-shrink-0" aria-hidden="true" />;
+    return <MonochromeLogo src={grokLogo} />;
   }
   if (provider === 'pi') {
     return <PiLogo />;

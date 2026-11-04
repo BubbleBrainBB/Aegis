@@ -83,5 +83,4 @@
   .provider-settings-section-head { flex-wrap: wrap; }
 }
 
-.dark .providers-settings .provider-monochrome-logo { filter: invert(1); }
 .provider-settings-editor input[aria-invalid="true"] { border-color: var(--error); }

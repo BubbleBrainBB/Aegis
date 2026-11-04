@@ -31,7 +31,6 @@
 .mcp-server-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
 .mcp-form-card { padding: 2px 16px; }
 .mcp-form-card > * + * { border-top: 1px solid color-mix(in srgb, var(--border) 45%, transparent); }
-.dark .settings-monochrome-logo { filter: invert(1); }
 .usage-provider-picker { max-width: 100%; }
 @media (max-width: 800px) {
   .settings-form-field { grid-template-columns: minmax(0,1fr); gap: 8px; }
@@ -40,7 +39,6 @@
 }
 @media (prefers-reduced-motion: reduce) { .settings-disclosure > summary svg { transition: none; } }
 
-.dark .aegis-settings :is([data-settings-provider="claude"], [data-settings-provider="codex"], [data-settings-provider="kimi"], [data-settings-provider="grok"]) img { filter: invert(1); }
 .aegis-settings [tabindex="-1"]:focus:not([data-search-match="true"]) { outline: none; }
 
 .keyboard-shortcuts-settings { font-size: calc(13px * var(--ui-font-scale, 1)); color: var(--text-primary); }

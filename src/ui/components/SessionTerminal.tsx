@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { ChevronDown, Terminal } from './icons';
 import { useAgentReadiness, type AgentReadinessEntry } from '../hooks/useAgentReadiness';
 import type { TerminalActivityState, TerminalAgentKind } from '../../shared/terminal';
+import { MonochromeLogo } from './MonochromeLogo';
 import { OpenCodeLogo } from './OpenCodeLogo';
 import claudeLogo from '../assets/claude-color.svg';
 import openaiLogo from '../assets/openai.svg';
@@ -31,16 +32,16 @@ const TERMINAL_AGENT_SPECS: TerminalAgentSpec[] = [
 
 function AgentLogo({ kind }: { kind: TerminalAgentKind }) {
   if (kind === 'claude') {
-    return <img src={claudeLogo} alt="" className="h-4 w-4 flex-shrink-0" aria-hidden="true" />;
+    return <MonochromeLogo src={claudeLogo} />;
   }
   if (kind === 'codex') {
-    return <img src={openaiLogo} alt="" className="h-4 w-4 flex-shrink-0" aria-hidden="true" />;
+    return <MonochromeLogo src={openaiLogo} />;
   }
   if (kind === 'opencode') {
     return <OpenCodeLogo />;
   }
   if (kind === 'grok') {
-    return <img src={grokLogo} alt="" className="h-4 w-4 flex-shrink-0" aria-hidden="true" />;
+    return <MonochromeLogo src={grokLogo} />;
   }
   return <Terminal className="h-4 w-4 flex-shrink-0 text-[var(--text-muted)]" aria-hidden="true" />;
 }
