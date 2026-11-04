@@ -3,7 +3,6 @@ import { useAppStore } from '../store/useAppStore';
 import { useTabsStore } from '../store/useTabsStore';
 import { useSidebarViewStore } from '../store/useSidebarViewStore';
 import { useAppPreferences } from '../store/useAppPreferences';
-import { startScreenshotCapture } from '../components/screenshot/ScreenshotHost';
 import { matchesShortcut, SHORTCUT_COMMANDS, shortcutBindings, shortcutConflict } from '../../shared/keyboard-shortcuts';
 
 /** One dispatcher for the keymap shown in Settings. Local editors handle keys first. */
@@ -41,7 +40,6 @@ export function useKeyboardShortcuts() {
         case 'settings': state.setShowSettings(true); break;
         case 'newTask': state.setShowNewSession(true); break;
         case 'find': state.openInSessionSearch(); break;
-        case 'screenshot': void startScreenshotCapture('area'); break;
       }
     };
     // Bubble on window: React controls and document-level local handlers get priority.

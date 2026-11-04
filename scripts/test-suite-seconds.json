@@ -75,7 +75,6 @@
   "verify:spreadsheet-preview": 2,
   "verify:claude-rewind": 0,
   "verify:layout-tree": 2,
-  "verify:screenshot": 2,
   "verify:fork-session": 0,
   "verify:composer-link-chip": 2,
   "verify:composer-long-text": 14,

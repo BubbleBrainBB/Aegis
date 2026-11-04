@@ -66,7 +66,6 @@ import { extractAssistantText, isLocalUtilityAssistantText } from './libs/transc
 import { setupSessionTitleIPC } from './ipc/session-title';
 import { syncKimiSessionTitle } from './libs/kimi-title-sync';
 import { setupAttachmentIPC } from './ipc/attachments';
-import { setupScreenshotIPC } from './ipc/screenshot';
 import { ATTACHMENT_MIME_TYPES, MAX_ATTACHMENT_BYTES, attachmentSizeLimit } from '../shared/attachment-policy';
 import { runCodexOneShot, runOpenCodeOneShot } from './libs/codex-runner';
 import { StreamRetryTracker } from './libs/stream-retry-tracker';
@@ -5892,7 +5891,6 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
     broadcast(mainWindow, event);
   });
   setupAttachmentIPC(mainWindow);
-  setupScreenshotIPC(mainWindow);
 
   // Board/background starts need the real persisted session id without
   // routing through a renderer draft. `handleSessionStart` can still return
