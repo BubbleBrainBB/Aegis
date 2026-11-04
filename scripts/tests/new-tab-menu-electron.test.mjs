@@ -17,7 +17,8 @@ import {createRoot} from 'react-dom/client';
 import {NewTabMenuButton} from '/src/ui/components/NewTabMenuButton';
 import '/src/ui/index.css';
 window.electron={getAppPreferences:async()=>({}),onAppPreferencesChanged:()=>()=>{}};
-window.qa={opened:[]};
+window.qa={opened:[],pointer:null};
+document.addEventListener('mousemove',e=>{qa.pointer=e.clientX+','+e.clientY;},true);
 createRoot(document.getElementById('root')).render(<div style={{display:'flex',justifyContent:'flex-end',padding:8}}>
  <textarea id="composer" style={{marginRight:'auto'}}/>
  <NewTabMenuButton onNewTab={mode=>qa.opened.push(mode)}/>
@@ -31,51 +32,69 @@ app.whenReady().then(async()=>{
  const win=new BrowserWindow({show:true,width:900,height:500,webPreferences:{backgroundThrottling:false}});
  const wc=win.webContents,js=s=>wc.executeJavaScript(s,true),delay=ms=>new Promise(r=>setTimeout(r,ms));
  const errors=[];wc.on('console-message',e=>{if(e.level==='error')errors.push(e.message);});
- const move=async(x,y)=>{wc.sendInputEvent({type:'mouseMove',x:x-2,y:y-2});await delay(30);wc.sendInputEvent({type:'mouseMove',x,y});await delay(80);};
+ const until=async(check,message)=>{for(const end=Date.now()+5000;Date.now()<end;await delay(20))if(await check())return;assert.fail(message);};
+ // A move reaches the page on its next frame, which a slow runner paints hundreds
+ // of ms later, and can be lost: wait to see it, sending it again if it does not come.
+ const move=async(x,y)=>{
+  await js('qa.pointer=null');
+  wc.sendInputEvent({type:'mouseMove',x:x-2,y:y-2});await delay(30);
+  for(let i=0;i<10;i++){
+   wc.sendInputEvent({type:'mouseMove',x,y});
+   for(let j=0;j<25;j++){if(await js('qa.pointer')===x+','+y)return;await delay(20);}
+  }
+  assert.fail('the pointer never reached '+x+','+y);
+ };
  const click=async(x,y)=>{await move(x,y);wc.sendInputEvent({type:'mouseDown',x,y,button:'left',clickCount:1});await delay(30);wc.sendInputEvent({type:'mouseUp',x,y,button:'left',clickCount:1});await delay(80);};
  const key=async code=>{wc.sendInputEvent({type:'keyDown',keyCode:code});await delay(20);wc.sendInputEvent({type:'keyUp',keyCode:code});await delay(80);};
  const center=sel=>js('(()=>{const r=document.querySelector('+JSON.stringify(sel)+').getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()');
  const menu=()=>js('!!document.querySelector("[role=menu]")');
  const focused=()=>js('document.activeElement.id||document.activeElement.getAttribute("role")||document.activeElement.tagName');
- const opened=()=>js('qa.opened.splice(0)');
+ const closed=async()=>!await menu();
+ const opened=async()=>{await until(()=>js('qa.opened.length>0'),'no tab opened');return js('qa.opened.splice(0)');};
  try{
   await win.loadURL(process.env.QA_URL);
+  // Another window taking OS focus must not close the keyboard's menu mid-test.
+  wc.debugger.attach();await wc.debugger.sendCommand('Emulation.setFocusEmulationEnabled',{enabled:true});
   for(let i=0;i<150;i++){if(await js('!!document.querySelector("[data-new-tab-button]")'))break;await delay(40);}
   await wc.capturePage();
   await js('document.getElementById("composer").focus()');
   const button=await center('[data-new-tab-button]');
+  const away={x:100,y:await js('innerHeight')-20};
 
   await move(button.x,button.y);
-  assert.equal(await menu(),true,'hovering the button shows the menu');
+  await until(menu,'hovering the button shows the menu');
   assert.equal(await focused(),'composer','hovering leaves focus in the composer');
   const item=await center('[role=menuitem]:nth-child(2)');
-  await move(button.x,button.y+24);await move(item.x,item.y);
+  await move(button.x,button.y+24);await move(item.x,item.y);await delay(200);
   assert.equal(await menu(),true,'the menu survives the trip from the button to an item');
   assert.equal(await focused(),'composer');
-  await move(100,400);await delay(200);
-  assert.equal(await menu(),false,'leaving closes it');
+  await move(away.x,away.y);
+  await until(closed,'leaving closes it');
   assert.equal(await focused(),'composer');
 
   await click(button.x,button.y);
   assert.deepEqual(await opened(),['split'],'a click opens a New tab directly');
   assert.equal(await focused(),'composer','and leaves focus in the composer');
-  assert.equal(await menu(),false,'without leaving the menu up');
+  await until(closed,'without leaving the menu up');
 
-  await move(100,400);await delay(200);await move(button.x,button.y);
+  await move(away.x,away.y);await move(button.x,button.y);
+  await until(menu,'hovering again shows the menu');
   const fullView=await center('[role=menuitem]:nth-child(2)');
   await click(fullView.x,fullView.y);
   assert.deepEqual(await opened(),['full'],'the second item opens in full view');
-  assert.equal(await menu(),false);
-  await move(100,400);await delay(200);
+  await until(closed,'choosing an item closes the menu');
+  // Leaves no hover close pending to undo the keyboard's menu.
+  await move(away.x,away.y);await move(button.x,button.y);await until(menu,'hovering shows the menu once more');
+  await move(away.x,away.y);await until(closed,'leaving closes it again');
 
   await js('document.querySelector("[data-new-tab-button]").focus()');
   await key('Down');
-  assert.equal(await menu(),true,'ArrowDown opens the menu');
+  await until(menu,'ArrowDown opens the menu');
   assert.equal(await js('document.activeElement.innerText.startsWith("New tab\\n")||document.activeElement.innerText==="New tab"'),true,'on its first item');
   await key('Down');
-  assert.match(await js('document.activeElement.innerText'),/full view/);
+  await until(()=>js('/full view/.test(document.activeElement.innerText)'),'ArrowDown moves to the second item');
   await key('Escape');
-  assert.equal(await menu(),false,'Escape closes it');
+  await until(closed,'Escape closes it');
   assert.equal(await js('document.activeElement.hasAttribute("data-new-tab-button")'),true,'and returns to the button');
 
   assert.deepEqual(errors,[]);
