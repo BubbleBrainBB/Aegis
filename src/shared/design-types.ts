@@ -247,7 +247,6 @@ export interface DesignAPI {
   }): Promise<DesignDocument>;
   update(input: DesignUpdate & { sessionId: string }): Promise<DesignDocument>;
   /** Each board's latest agent version and the message that asked for it. */
-  prompts(input: { sessionId: string; documentId: string }): Promise<Record<string, { prompt: string; revision: number; author: DesignAuthor | null }>>;
   history(input: {
     sessionId: string;
     documentId: string;

@@ -310,19 +310,6 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
     [],
   );
   const composerChoice = useDesignStore((s) => (sessionId ? s.composer[sessionId] : undefined));
-  // The message behind each board's latest agent version (prompt cards).
-  const [prompts, setPrompts] = useState<Record<string, { prompt: string; revision: number }>>({});
-  useEffect(() => {
-    if (chrome !== "section" || !sessionId || !doc?.id) return;
-    let alive = true;
-    void window.electron.design
-      .prompts?.({ sessionId, documentId: doc.id })
-      .then((rows) => alive && setPrompts(rows ?? {}))
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, [chrome, sessionId, doc?.id, doc?.revision]);
   const [compare, setCompare] = useState<{
     boardId: string;
     from: number;
@@ -1935,44 +1922,6 @@ function DesignPanelBody({ sessionId, documentId, hidden, chrome = "pane", toolb
                         setCompare({ boardId: activeComment.boardId, from, to, commentId: activeComment.id })
                       }
                     />
-                  </div>,
-                );
-              }
-            }
-            // Prompt cards: the message behind each board, under it, to run again.
-            if (chrome === "section" && !commentsHidden && !historical && !previewing && !ctx.gesturing && doc) {
-              for (const board of doc.boards) {
-                const asked = prompts[board.id];
-                const r = asked && ctx.toScreen(board.id);
-                if (!asked || !r || r.width < 140) continue;
-                nodes.push(
-                  <div
-                    key={`prompt:${board.id}`}
-                    className="design-prompt-card"
-                    data-canvas-ui
-                    data-prompt-board={board.id}
-                    style={{ left: r.x, top: r.y + r.height + 10, maxWidth: Math.min(r.width, 380) }}
-                    onPointerDown={(e) => e.stopPropagation()}
-                  >
-                    <span className="design-prompt-text" title={asked.prompt}>
-                      “{asked.prompt}”
-                    </span>
-                    <button
-                      disabled={!sessionId || !!session?.readOnly}
-                      title="Send this message again"
-                      onClick={() =>
-                        sessionId &&
-                        useAppStore.getState().requestChatInjection({
-                          sessionId,
-                          text: asked.prompt,
-                          mode: "append",
-                          submit: true,
-                          source: "design-rerun",
-                        })
-                      }
-                    >
-                      Re-run
-                    </button>
                   </div>,
                 );
               }

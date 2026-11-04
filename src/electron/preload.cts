@@ -1051,7 +1051,6 @@ contextBridge.exposeInMainWorld('electron', {
     read: (input?: unknown) => ipcRenderer.invoke('design:read', input),
     update: (input?: unknown) => ipcRenderer.invoke('design:update', input),
     history: (input?: unknown) => ipcRenderer.invoke('design:history', input),
-    prompts: (input?: unknown) => ipcRenderer.invoke('design:prompts', input),
     restore: (input?: unknown) => ipcRenderer.invoke('design:restore', input),
     comment: (input?: unknown) => ipcRenderer.invoke('design:comment', input),
     reply: (input?: unknown) => ipcRenderer.invoke('design:reply', input),

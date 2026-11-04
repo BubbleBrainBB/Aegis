@@ -51,7 +51,6 @@ app.whenReady().then(async()=>{
  // Quick edits answer from a stand-in model: a rewrite, or a handoff on request.
  const {setQuickEditModel}=require(path.join(root,'dist-electron/electron/design/quick-edit.js'));
  setQuickEditModel(async({prompt})=>/second board/.test(prompt)?'HANDOFF: needs a new board':prompt.replace(/[\s\S]*?(<h1[^>]*>)/,'$1').replace(/<\/h1>[\s\S]*/,'</h1>').replace('style="','style="letter-spacing: -1px; '));
- const sent=[];ipcMain.on('client-event',(_e,event)=>sent.push(typeof event==='string'?JSON.parse(event):event));
  setDesignPromptSource((sessionId)=>sessionId==='s1'?{prompt:'Design a landing page for Atlas',id:'s1:1'}:undefined);
  const repoRead=()=>require(path.join(root,'dist-electron/electron/design/service.js')).getDesignRepository().read('s1',atlasId());
  let atlasRef=null;const atlasId=()=>atlasRef;
@@ -146,14 +145,6 @@ app.whenReady().then(async()=>{
   assert.equal(await view(),viewBefore,'the canvas view is kept across a preview');
   await press('Escape');
   await until('!Object.values(qa.design.getState().selections).find(Boolean)','Escape: nothing selected');
-
-  // Prompt cards: the message behind each board, under it, with Re-run.
-  await until('document.querySelectorAll(".design-prompt-card").length===2','a prompt card under each board');
-  assert.match(await js('document.querySelector(".design-prompt-card").textContent'),/Design a landing page for Atlas[\s\S]*Re-run/);
-  await js('document.querySelector(".design-prompt-card button").click()');
-  for(let i=0;i<60&&!sent.some(e=>e.type==='session.continue');i++)await delay(75);
-  const rerun=sent.find(e=>e.type==='session.continue');
-  assert(rerun&&rerun.payload.sessionId==='s1'&&rerun.payload.prompt==='Design a landing page for Atlas','Re-run sends the message again: '+JSON.stringify(sent.map(e=>e.type)));
 
   // Styles: pick a style guide for the agent; the main process has it for the next turn.
   await click('[data-design-style-button]');

@@ -164,7 +164,6 @@
 .design-code-tab .cx-decl { font-size: 12px; }
 .design-dock { background: var(--d-surface); box-shadow: var(--d-shadow),0 0 0 1px var(--d-line); }
 .design-dock-snap { border-color: var(--d-select); }
-.design-prompt-card { background: var(--d-popover); box-shadow: 0 1px 4px #00000014,0 0 0 1px var(--d-line); }
 .design-viewport { container-type: inline-size; }
 @container (max-width: 560px) { .design-canvas-tools { left: 8px; } .design-canvas-zoom { right: 8px; top: 56px; } .design-mode-hint { top: 100px; max-width: calc(100% - 16px); white-space: normal; height: auto; min-height: 32px; } }
 @media (pointer: coarse) { .design-panel :is(.design-canvas-tools,.design-canvas-zoom) button { min-height: 32px; min-width: 32px; } .design-canvas-tools,.design-canvas-zoom { height: 44px; } .design-tool-wrap { position: relative; } .design-tool-wrap::before { content: ""; position: absolute; inset: -4px; } }
