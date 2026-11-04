@@ -19,12 +19,10 @@ import { readFileSync } from 'node:fs';
 // the typical durations in test-suite-seconds.json; a suite without a duration
 // counts as DEFAULT_SUITE_SECONDS. Every suite lands in exactly one shard.
 //
-// AEGIS_TEST_JOBS=n runs up to n suites at once, for suites that mostly wait.
-// Their output is held and printed whole when each one ends. package.json
-// "soloTestSuites" break when sharing the machine, so they run one at a time
-// after the rest. Retries do too, so a suite that only fails under load shows up
-// as flaky; move it to the solo list or fix it.
-// vite.config.ts reads AEGIS_TEST_WORKER to keep those suites' servers apart.
+// AEGIS_TEST_JOBS=n runs up to n suites at once. Their output is held and printed
+// whole when each one ends. Retries run one at a time after the rest, so a suite
+// that only fails under load shows up as flaky. Only the Linux group is safe to
+// run this way: Electron suites interfere with each other on a shared machine.
 //
 // `node scripts/run-tests.mjs --list` prints the selected suites and exits.
 
@@ -41,10 +39,9 @@ if (missing.length) {
 }
 
 const linuxSuites = pkg.linuxTestSuites ?? [];
-const soloSuites = pkg.soloTestSuites ?? [];
-const unknown = [...linuxSuites, ...soloSuites].filter((name) => !allSuites.includes(name));
+const unknown = linuxSuites.filter((name) => !allSuites.includes(name));
 if (unknown.length) {
-  console.error(`[test] "linuxTestSuites" or "soloTestSuites" names suites not in "testSuites": ${unknown.join(', ')}`);
+  console.error(`[test] "linuxTestSuites" names suites not in "testSuites": ${unknown.join(', ')}`);
   process.exit(1);
 }
 
@@ -130,11 +127,6 @@ if (!run('transpile:electron', process.env)) {
   console.error('[test] transpile:electron failed.');
   process.exit(1);
 }
-// Electron downloads on first use, which suites running at once would race for.
-if (group !== 'linux' && spawnSync('node', ['-e', "require('electron')"], { stdio: 'inherit' }).status !== 0) {
-  console.error('[test] installing Electron failed.');
-  process.exit(1);
-}
 // Electron-hosted suites load native modules built for Electron's ABI. This used
 // to happen only inside validate:terminal, which a shard may not contain. The
 // Linux group runs no Electron, so it keeps the modules npm built for Node.
@@ -151,26 +143,16 @@ const report = (suite, passed, since) => {
 };
 
 let failed = [];
-const solo = jobs > 1 ? suites.filter((suite) => soloSuites.includes(suite)) : [];
-const queue = suites.filter((suite) => !solo.includes(suite));
-await Promise.all(Array.from({ length: jobs }, async (_, worker) => {
+const queue = [...suites];
+await Promise.all(Array.from({ length: jobs }, async () => {
   while (queue.length) {
     const suite = queue.shift();
     const suiteStarted = Date.now();
-    const passed = jobs > 1
-      ? await runHeld(suite, { ...env, AEGIS_TEST_WORKER: String(worker) })
-      : run(suite, env);
+    const passed = jobs > 1 ? await runHeld(suite, env) : run(suite, env);
     report(suite, passed, suiteStarted);
     if (!passed) failed.push(suite);
   }
 }));
-
-for (const suite of solo) {
-  const suiteStarted = Date.now();
-  const passed = run(suite, env);
-  report(suite, passed, suiteStarted);
-  if (!passed) failed.push(suite);
-}
 
 const flaky = [];
 for (let attempt = 1; attempt <= retries && failed.length; attempt += 1) {
