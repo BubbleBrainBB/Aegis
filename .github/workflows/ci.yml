@@ -1,9 +1,15 @@
 name: CI
 
+# Only files nothing builds or reads. Other .md files stay in: src/electron ships some.
 on:
   pull_request:
+    paths-ignore: &docs-only
+      - "docs/**"
+      - "README*.md"
+      - "CLAUDE.md"
   push:
     branches: [master]
+    paths-ignore: *docs-only
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -11,15 +17,21 @@ concurrency:
 
 jobs:
   test:
-    name: Test & Build (macOS, shard ${{ matrix.shard }}/3)
-    runs-on: macos-15
-    # A shard takes ~8 min; a hung Electron test should fail fast, not hold the
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    # A job takes ~6 min; a hung Electron test should fail fast, not hold the
     # runner for GitHub's 6-hour default.
     timeout-minutes: 30
     strategy:
       fail-fast: false
+      # macOS arm64 runners are scarce and jobs can queue for them, so anything
+      # that does not start Electron runs on Linux.
       matrix:
-        shard: [1, 2, 3]
+        include:
+          - { name: "Test (macOS, shard 1/3)", os: macos-15, group: macos, shard: 1/3 }
+          - { name: "Test (macOS, shard 2/3)", os: macos-15, group: macos, shard: 2/3 }
+          - { name: "Test (macOS, shard 3/3)", os: macos-15, group: macos, shard: 3/3 }
+          - { name: "Test & Build (Linux)", os: ubuntu-latest, group: linux, shard: "" }
 
     steps:
       - name: Checkout
@@ -49,9 +61,10 @@ jobs:
       - name: Test
         run: npm test
         env:
-          AEGIS_TEST_SHARD: ${{ matrix.shard }}/3
+          AEGIS_TEST_GROUP: ${{ matrix.group }}
+          AEGIS_TEST_SHARD: ${{ matrix.shard }}
 
-      # Only one shard needs this; scripts/run-tests.mjs gives it fewer suites to match.
+      # Only one job needs this.
       - name: Build (Vite + TS)
-        if: matrix.shard == 1
+        if: matrix.group == 'linux'
         run: npm run build
