@@ -125,6 +125,7 @@ export function Sidebar() {
   const [isSidebarResizing, setIsSidebarResizing] = useState(false);
   const sidebarResizingRef = useRef(false);
   const sidebarScrollRef = useRef<HTMLDivElement>(null);
+  const [sidebarScrolled, setSidebarScrolled] = useState(false);
   const startXRef = useRef(0);
   const startWidthRef = useRef(sidebarWidth);
   const activeSession = activeSessionId ? sessions[activeSessionId] : null;
@@ -458,13 +459,26 @@ export function Sidebar() {
                 />
               </div>
 
+              <div className="px-4 pb-1.5 pt-5 text-[13px] font-medium text-[var(--text-secondary)]">
+                My Tasks
+              </div>
+
               <div className="relative min-h-0 flex-1">
+                {/* Rows slide under the pinned header, so the edge shows only once they do. */}
+                <div
+                  aria-hidden="true"
+                  data-sidebar-scroll-edge={sidebarScrolled ? 'visible' : 'hidden'}
+                  className={`pointer-events-none absolute inset-x-4 top-0 z-10 h-px bg-[var(--border)] transition-opacity duration-150 ${
+                    sidebarScrolled ? 'opacity-100' : 'opacity-0'
+                  }`}
+                />
                 <div
                   ref={sidebarScrollRef}
+                  onScroll={(event) => setSidebarScrolled(event.currentTarget.scrollTop > 0)}
                   className="sidebar-scrollbar h-full overflow-y-auto overflow-x-hidden px-2"
                   data-sidebar-scroll-region
                 >
-                  <div className="pt-3">
+                  <div className="pt-1.5">
                     <FolderTreeView
                       onSessionClick={(sessionId, options) => {
                         setShowSettings(false);
