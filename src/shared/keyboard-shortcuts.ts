@@ -8,7 +8,6 @@ export const SHORTCUT_COMMANDS = [
   { id: 'settings', title: 'Open settings', group: 'Navigation', defaults: ['Mod+Comma'] },
   { id: 'newTask', title: 'New task', group: 'Conversation', defaults: ['Mod+KeyN'] },
   { id: 'find', title: 'Find in conversation', group: 'Conversation', defaults: ['Mod+KeyF'] },
-  { id: 'screenshot', title: 'Capture screenshot', group: 'Conversation', defaults: ['Mod+Shift+Digit2'] },
 ] as const;
 export type ShortcutOverrides = Record<string, string[]>;
 export type ShortcutKeyEvent = Pick<KeyboardEvent, 'key' | 'code' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey' | 'isComposing'>;

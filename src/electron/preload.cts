@@ -900,29 +900,6 @@ contextBridge.exposeInMainWorld('electron', {
   importAttachments: (paths: string[]) => ipcRenderer.invoke('import-attachments', paths),
   chooseAttachments: () => ipcRenderer.invoke('choose-attachments'),
   createFileAttachment: (name: string, data: Uint8Array) => ipcRenderer.invoke('create-file-attachment', name, data),
-  captureScreenshot: (mode: string) => ipcRenderer.invoke('screenshot-capture', mode),
-  completeScreenshotSelection: (id: string, rect: import('../shared/screenshot').ScreenshotRect | null) => ipcRenderer.invoke('screenshot-selection-complete', id, rect),
-  onScreenshotSelectArea: (callback: (id: string) => void) => {
-    const handler = (_: unknown, id: string) => callback(id);
-    ipcRenderer.on('screenshot-select-area', handler);
-    return () => { ipcRenderer.removeListener('screenshot-select-area', handler); };
-  },
-  openLastScreenshot: () => ipcRenderer.invoke('screenshot-open-last'),
-  requestScreenRecordingPermission: () => ipcRenderer.invoke('screenshot-request-permission'),
-  loadScreenshotEditor: () => ipcRenderer.invoke('screenshot-editor-load'),
-  exportScreenshot: (action: string, data: Uint8Array, name?: string) => ipcRenderer.invoke('screenshot-export', action, data, name),
-  closeScreenshotEditor: () => ipcRenderer.invoke('screenshot-editor-close'),
-  retakeScreenshot: () => ipcRenderer.invoke('screenshot-retake'),
-  onScreenshotAttach: (callback: (attachment: unknown) => void) => {
-    const handler = (_: unknown, attachment: unknown) => callback(attachment);
-    ipcRenderer.on('screenshot-attach', handler);
-    return () => { ipcRenderer.removeListener('screenshot-attach', handler); };
-  },
-  onScreenshotEditorUpdated: (callback: () => void) => {
-    const handler = () => callback();
-    ipcRenderer.on('screenshot-editor-updated', handler);
-    return () => { ipcRenderer.removeListener('screenshot-editor-updated', handler); };
-  },
   selectAttachments: () => {
     return ipcRenderer.invoke('select-attachments');
   },

@@ -69,7 +69,7 @@ app.whenReady().then(async()=>{
   await win.loadURL(process.env.QA_URL);
   await until('!!document.querySelector(".shortcut-row")','shortcut settings');
   assert.equal(await js('document.querySelector("h1").textContent'),'Keyboard shortcuts');
-  assert.equal(await rowCount(),17);
+  assert.equal(await rowCount(),16);
   await shot('shortcuts-light');
   await text('[aria-label="Search shortcuts"]','new task');assert.equal(await rowCount(),1);
   await text('[aria-label="Search shortcuts"]','cmd n');assert((await rowCount())>0);
@@ -78,7 +78,7 @@ app.whenReady().then(async()=>{
   assert.equal(await js('document.querySelector(".shortcut-row").dataset.settingsId'),'shortcut:newTask');
   await key('Enter',['shift']);assert.equal(await rowCount(),1);
   assert.equal(await js('document.querySelector(".shortcut-row").dataset.settingsLabel'),'Insert line break');
-  await key('Escape');await key('Escape');assert.equal(await rowCount(),17);
+  await key('Escape');await key('Escape');assert.equal(await rowCount(),16);
   await click('[aria-label="Edit shortcut for New task"]');
   assert.equal(await fired('N',[mod]),false,'recording does not start a task');
   await key('K',[mod]);assert((await js('document.querySelector(".shortcut-capture [role=alert]").textContent')).includes('Search tasks'));
