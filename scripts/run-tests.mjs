@@ -20,8 +20,10 @@ import { readFileSync } from 'node:fs';
 // counts as DEFAULT_SUITE_SECONDS. Every suite lands in exactly one shard.
 //
 // AEGIS_TEST_JOBS=n runs up to n suites at once, for suites that mostly wait.
-// Their output is held and printed whole when each one ends. Retries run one at
-// a time after the rest, so a suite that only fails under load shows up as flaky.
+// Their output is held and printed whole when each one ends. package.json
+// "soloTestSuites" break when sharing the machine, so they run one at a time
+// after the rest. Retries do too, so a suite that only fails under load shows up
+// as flaky; move it to the solo list or fix it.
 // vite.config.ts reads AEGIS_TEST_WORKER to keep those suites' servers apart.
 //
 // `node scripts/run-tests.mjs --list` prints the selected suites and exits.
@@ -39,9 +41,10 @@ if (missing.length) {
 }
 
 const linuxSuites = pkg.linuxTestSuites ?? [];
-const unknown = linuxSuites.filter((name) => !allSuites.includes(name));
+const soloSuites = pkg.soloTestSuites ?? [];
+const unknown = [...linuxSuites, ...soloSuites].filter((name) => !allSuites.includes(name));
 if (unknown.length) {
-  console.error(`[test] "linuxTestSuites" names suites not in "testSuites": ${unknown.join(', ')}`);
+  console.error(`[test] "linuxTestSuites" or "soloTestSuites" names suites not in "testSuites": ${unknown.join(', ')}`);
   process.exit(1);
 }
 
@@ -148,7 +151,8 @@ const report = (suite, passed, since) => {
 };
 
 let failed = [];
-const queue = [...suites];
+const solo = jobs > 1 ? suites.filter((suite) => soloSuites.includes(suite)) : [];
+const queue = suites.filter((suite) => !solo.includes(suite));
 await Promise.all(Array.from({ length: jobs }, async (_, worker) => {
   while (queue.length) {
     const suite = queue.shift();
@@ -160,6 +164,13 @@ await Promise.all(Array.from({ length: jobs }, async (_, worker) => {
     if (!passed) failed.push(suite);
   }
 }));
+
+for (const suite of solo) {
+  const suiteStarted = Date.now();
+  const passed = run(suite, env);
+  report(suite, passed, suiteStarted);
+  if (!passed) failed.push(suite);
+}
 
 const flaky = [];
 for (let attempt = 1; attempt <= retries && failed.length; attempt += 1) {
