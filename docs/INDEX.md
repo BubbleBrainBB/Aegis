@@ -26,3 +26,5 @@
 
 - [iOS Companion](ios-remote-companion-plan.md)、[实现状态](ios-remote-implementation-status.md)、[Orca/Paseo 远程研究](ios-remote-orca-paseo-research.md)。
 - [历史 Agent Workspace 设计](archive/2026-04-30-agent-workspace-design.md)。
+
+<!-- ci filter test -->

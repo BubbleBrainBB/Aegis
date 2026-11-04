@@ -178,3 +178,5 @@ Aegis 使用 [MIT License](LICENSE) 发布。
 
 - [Codex](https://openai.com/codex/)：感谢它带来的产品与界面设计灵感。
 - 感谢 Claude Code、Kimi Code、OpenCode、Grok、Pi、Qoder、MCP 以及整个 Coding Agent 生态中的开发者和社区。
+
+<!-- ci filter test -->

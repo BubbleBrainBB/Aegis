@@ -178,3 +178,5 @@ Aegis is released under the [MIT License](LICENSE).
 
 - [Codex](https://openai.com/codex/) for the product and interface inspiration described above.
 - The teams and communities behind Claude Code, Kimi Code, OpenCode, Grok, Pi, Qoder, MCP, and the broader coding-agent ecosystem.
+
+<!-- ci filter test -->
