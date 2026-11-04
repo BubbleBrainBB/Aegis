@@ -9,11 +9,15 @@ import { readFileSync } from 'node:fs';
 // slow runners. A suite that only passed on its retry is reported, so a
 // flaky test stays visible. All suites run; every failure is listed at the end.
 //
-// AEGIS_TEST_SHARD=i/n runs only shard i of n, so CI can split the suites across
-// machines. Suites go to the lightest shard, longest first, by the typical
-// durations in test-suite-seconds.json; a suite without a duration counts as
-// DEFAULT_SUITE_SECONDS. Every suite lands in exactly one shard. Shard 1 starts
-// BUILD_SECONDS heavier because CI also runs the build there.
+// AEGIS_TEST_GROUP picks where the suites run, so CI can keep the macOS runners
+// for what needs them. "linux" runs package.json "linuxTestSuites", which never
+// start Electron; "macos" runs everything else, so a new suite lands there unless
+// it is added to the list. Unset runs all suites.
+//
+// AEGIS_TEST_SHARD=i/n then runs only shard i of n of those suites, so CI can
+// split them across machines. Suites go to the lightest shard, longest first, by
+// the typical durations in test-suite-seconds.json; a suite without a duration
+// counts as DEFAULT_SUITE_SECONDS. Every suite lands in exactly one shard.
 // `node scripts/run-tests.mjs --list` prints the selected suites and exits.
 
 const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
@@ -28,8 +32,25 @@ if (missing.length) {
   process.exit(1);
 }
 
+const linuxSuites = pkg.linuxTestSuites ?? [];
+const unknown = linuxSuites.filter((name) => !allSuites.includes(name));
+if (unknown.length) {
+  console.error(`[test] "linuxTestSuites" names suites not in "testSuites": ${unknown.join(', ')}`);
+  process.exit(1);
+}
+
+const group = process.env.AEGIS_TEST_GROUP;
+if (group && group !== 'linux' && group !== 'macos') {
+  console.error(`[test] AEGIS_TEST_GROUP must be linux or macos, got "${group}".`);
+  process.exit(1);
+}
+
 const DEFAULT_SUITE_SECONDS = 10;
-const BUILD_SECONDS = 70;
+
+function selectGroup(names) {
+  if (!group) return names;
+  return names.filter((name) => linuxSuites.includes(name) === (group === 'linux'));
+}
 
 function selectShard(names, spec) {
   if (!spec) return names;
@@ -41,7 +62,7 @@ function selectShard(names, spec) {
   }
   const durations = JSON.parse(readFileSync(new URL('./test-suite-seconds.json', import.meta.url), 'utf8'));
   const seconds = (name) => durations[name] ?? DEFAULT_SUITE_SECONDS;
-  const shards = Array.from({ length: count }, (_, shard) => ({ total: shard === 0 ? BUILD_SECONDS : 0, names: new Set() }));
+  const shards = Array.from({ length: count }, () => ({ total: 0, names: new Set() }));
   const longestFirst = [...names].sort((a, b) => seconds(b) - seconds(a) || a.localeCompare(b));
   for (const name of longestFirst) {
     const lightest = shards.reduce((best, shard) => (shard.total < best.total ? shard : best));
@@ -51,7 +72,7 @@ function selectShard(names, spec) {
   return names.filter((name) => shards[index - 1].names.has(name));
 }
 
-const suites = selectShard(allSuites, process.env.AEGIS_TEST_SHARD);
+const suites = selectShard(selectGroup(allSuites), process.env.AEGIS_TEST_SHARD);
 if (process.argv.includes('--list')) {
   console.log(suites.join('\n'));
   process.exit(0);
@@ -71,8 +92,9 @@ if (!run('transpile:electron', process.env)) {
   process.exit(1);
 }
 // Electron-hosted suites load native modules built for Electron's ABI. This used
-// to happen only inside validate:terminal, which a shard may not contain.
-if (spawnSync('node', ['scripts/prepare-electron-native-deps.mjs'], { stdio: 'inherit' }).status !== 0) {
+// to happen only inside validate:terminal, which a shard may not contain. The
+// Linux group runs no Electron, so it keeps the modules npm built for Node.
+if (group !== 'linux' && spawnSync('node', ['scripts/prepare-electron-native-deps.mjs'], { stdio: 'inherit' }).status !== 0) {
   console.error('[test] preparing native dependencies failed.');
   process.exit(1);
 }
