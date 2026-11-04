@@ -16,7 +16,37 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # A merge whose tree is exactly what its PR's CI passed on has nothing new to
+  # test. Anything else runs in full, including when this check cannot tell.
+  gate:
+    name: Check for a tested tree
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      statuses: read
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - id: check
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          commit=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA") || exit 0
+          tree=$(jq -r .commit.tree.sha <<<"$commit")
+          pr_head=$(jq -r '.parents[1].sha // empty' <<<"$commit")
+          [ -n "$pr_head" ] || exit 0
+          tested=$(gh api "repos/$GITHUB_REPOSITORY/commits/$pr_head/statuses?per_page=100" \
+            --jq "[.[] | select(.context == \"CI / tested tree\" and .state == \"success\" and .description == \"$tree\")] | length") || exit 0
+          if [ "$tested" -gt 0 ]; then
+            echo "::notice::Skipping tests: $pr_head already passed CI on tree $tree."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
   test:
+    needs: gate
+    if: needs.gate.outputs.skip != 'true'
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     # A job takes ~7 min; a hung Electron test should fail fast, not hold the
@@ -70,3 +100,22 @@ jobs:
       - name: Build (Vite + TS)
         if: matrix.group == 'linux'
         run: npm run build
+
+  # Read by the gate job once this PR merges. A fork's token cannot write statuses.
+  record:
+    name: Record tested tree
+    needs: test
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          tree=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA" --jq .commit.tree.sha)
+          gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$PR_HEAD" \
+            -f state=success -f context="CI / tested tree" -f description="$tree" > /dev/null
