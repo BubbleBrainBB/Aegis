@@ -23,7 +23,7 @@ const PROVIDER_LOGO_SRC: Record<Exclude<AgentProvider, 'opencode' | 'deepseek' |
   minimax: minimaxLogo,
 };
 
-// Black single-colour marks; the host surface inverts `.provider-monochrome-logo` in dark mode.
+// Black single-colour marks; `.provider-monochrome-logo` flips them in dark mode.
 const MONOCHROME_PROVIDERS = new Set<AgentProvider>(['claude', 'codex', 'grok', 'kimi']);
 
 /** Bare agent mark (no avatar tile), sized by the caller. */

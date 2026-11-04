@@ -103,7 +103,7 @@ export function ClaudeUsageSettingsContent() {
           id: provider.id,
           title: provider.title,
           logo: provider.logoSrc ? (
-            <img src={provider.logoSrc} alt="" className={`h-3.5 w-3.5 flex-shrink-0 ${[claudeLogo, openaiLogo, grokLogo, moonshotLogo, mimoLogo].includes(provider.logoSrc) ? 'settings-monochrome-logo' : ''}`} aria-hidden="true" />
+            <img src={provider.logoSrc} alt="" className={`h-3.5 w-3.5 flex-shrink-0 ${[claudeLogo, openaiLogo, grokLogo, moonshotLogo, mimoLogo].includes(provider.logoSrc) ? 'provider-monochrome-logo' : ''}`} aria-hidden="true" />
           ) : (
             <OpenCodeLogo className="h-3.5 w-3.5 flex-shrink-0" />
           ),
@@ -1469,7 +1469,7 @@ function ModelProviderLogo({
 
   // One-color marks follow the theme, like the agent picker's logos.
   const monochrome = [claudeLogo, openaiLogo, grokLogo, moonshotLogo, mimoLogo].includes(logo);
-  return <img src={logo} alt="" className={`${className} flex-shrink-0 ${monochrome ? 'settings-monochrome-logo' : ''}`} aria-hidden="true" />;
+  return <img src={logo} alt="" className={`${className} flex-shrink-0 ${monochrome ? 'provider-monochrome-logo' : ''}`} aria-hidden="true" />;
 }
 
 function getProviderLogoForModel(model: string): string | null {

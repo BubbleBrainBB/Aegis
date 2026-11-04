@@ -3272,7 +3272,7 @@ button.aegis-mdx-metadata-key:hover {
 }
 
 /* Single-colour brand marks ship black; flip them on dark surfaces. */
-.dark .agent-onboarding .provider-monochrome-logo {
+.dark .provider-monochrome-logo {
   filter: invert(1);
 }
 

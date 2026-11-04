@@ -265,7 +265,7 @@ export function AgentOnboardingView({ onComplete }: { onComplete: () => void }) 
   };
 
   return (
-    <div className="agent-onboarding fixed inset-0 z-[80] flex items-center justify-center bg-black/[0.1] px-4 dark:bg-black/40">
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/[0.1] px-4 dark:bg-black/40">
       <div className="drag-region absolute inset-x-0 top-0 h-9" aria-hidden="true" />
       <div
         ref={dialogRef}
@@ -505,8 +505,7 @@ function DefaultAgentPicker({
           align="end"
           sideOffset={4}
           aria-label="Default agent"
-          // Same scope as the panel so dark mode inverts the monochrome marks.
-          className="agent-onboarding w-[200px] p-1"
+          className="w-[200px] p-1"
         >
           <div className="max-h-72 overflow-y-auto overscroll-contain">
             {ready.map((item) => (

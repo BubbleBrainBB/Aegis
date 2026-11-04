@@ -241,7 +241,7 @@ export function Settings() {
                                 <span
                                   className={`flex h-4 w-4 flex-shrink-0 items-center justify-center transition-opacity ${active ? '' : 'opacity-80 group-hover:opacity-100'}`}
                                 >
-                                  <span data-settings-provider={runtime.id}><ProviderIcon provider={runtime.id} /></span>
+                                  <ProviderIcon provider={runtime.id} />
                                 </span>
                                 <span className="truncate">{runtime.label}</span>
                               </button>
