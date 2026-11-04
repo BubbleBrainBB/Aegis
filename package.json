@@ -89,6 +89,7 @@
     "verify:markdown-math": "npx tsx scripts/tests/markdown-inline-math.test.tsx",
     "verify:markdown-frontmatter": "npx tsx scripts/tests/markdown-frontmatter-preview.test.ts && node scripts/tests/markdown-frontmatter-preview-electron.test.mjs",
     "verify:project-file-navigation": "npx tsx scripts/tests/project-file-navigation.test.ts",
+    "verify:transcript-file-paths": "npx tsx scripts/tests/transcript-file-paths.test.ts",
     "verify:html-preview": "npm run transpile:electron && npx tsx scripts/tests/html-preview.test.ts && node node_modules/electron/cli.js scripts/tests/html-preview-electron.test.cjs",
     "verify:chat-folders": "npx tsx scripts/tests/chat-folders.test.ts && npx tsx scripts/tests/start-lease.test.ts && npm run transpile:electron && ELECTRON_RUN_AS_NODE=1 node_modules/.bin/electron scripts/tests/chat-sessions-electron.test.cjs",
     "verify:right-utility-tabs": "npx tsx scripts/tests/right-utility-tabs.test.ts && npx tsx scripts/tests/right-panel-fullscreen-tabs.test.ts",
@@ -284,6 +285,7 @@
     "verify:work-disclosure-scope",
     "verify:design-mode",
     "verify:generated-media",
+    "verify:transcript-file-paths",
     "verify:project-tree-visibility",
     "verify:file-preview-readonly",
     "verify:grok-session-files",
@@ -360,6 +362,7 @@
     "verify:work-disclosure-scope",
     "verify:design-mode",
     "verify:generated-media",
+    "verify:transcript-file-paths",
     "verify:project-tree-visibility",
     "verify:grok-session-files",
     "verify:grok-permissions"
