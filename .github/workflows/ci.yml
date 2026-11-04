@@ -19,19 +19,20 @@ jobs:
   test:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
-    # A job takes ~6 min; a hung Electron test should fail fast, not hold the
+    # A job takes ~5 min; a hung Electron test should fail fast, not hold the
     # runner for GitHub's 6-hour default.
     timeout-minutes: 30
     strategy:
       fail-fast: false
       # macOS arm64 runners are scarce and jobs can queue for them, so anything
-      # that does not start Electron runs on Linux.
+      # that does not start Electron runs on Linux. jobs is how many suites run at
+      # once: Electron suites mostly wait, and the Linux ones have 4 cores.
       matrix:
         include:
-          - { name: "Test (macOS, shard 1/3)", os: macos-15, group: macos, shard: 1/3 }
-          - { name: "Test (macOS, shard 2/3)", os: macos-15, group: macos, shard: 2/3 }
-          - { name: "Test (macOS, shard 3/3)", os: macos-15, group: macos, shard: 3/3 }
-          - { name: "Test & Build (Linux)", os: ubuntu-latest, group: linux, shard: "" }
+          - { name: "Test (macOS, shard 1/3)", os: macos-15, group: macos, shard: 1/3, jobs: 2 }
+          - { name: "Test (macOS, shard 2/3)", os: macos-15, group: macos, shard: 2/3, jobs: 2 }
+          - { name: "Test (macOS, shard 3/3)", os: macos-15, group: macos, shard: 3/3, jobs: 2 }
+          - { name: "Test & Build (Linux)", os: ubuntu-latest, group: linux, shard: "", jobs: 4 }
 
     steps:
       - name: Checkout
@@ -63,6 +64,7 @@ jobs:
         env:
           AEGIS_TEST_GROUP: ${{ matrix.group }}
           AEGIS_TEST_SHARD: ${{ matrix.shard }}
+          AEGIS_TEST_JOBS: ${{ matrix.jobs }}
 
       # Only one job needs this.
       - name: Build (Vite + TS)
