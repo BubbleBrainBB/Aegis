@@ -1063,24 +1063,19 @@ type SubSessionNest = {
   onToggle: () => void;
 };
 
-/** Folded sub-sessions in one mark: amber when one needs you, a spinner and done/total while any runs. */
+/** Folded sub-sessions in one mark, only when there is news: amber when one needs you, a spinner while any runs. */
 function SubSessionSummary({ nest }: { nest: SubSessionNest }) {
   if (nest.waiting) {
     return <span className="h-2 w-2 flex-shrink-0 rounded-full bg-[var(--warning)]" title="A sub-session needs you" aria-label="A sub-session needs you" />;
   }
   if (nest.running > 0) {
     return (
-      <span className="flex flex-shrink-0 items-center gap-1 text-[11.5px] tabular-nums text-[var(--text-muted)]" title={`${nest.running} of ${nest.count} sub-sessions running`}>
+      <span className="flex-shrink-0 text-[var(--text-muted)]" title={`${nest.running} of ${nest.count} sub-sessions running`}>
         <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-        {nest.count - nest.running}/{nest.count}
       </span>
     );
   }
-  return (
-    <span className="flex-shrink-0 text-[11.5px] tabular-nums text-[var(--text-muted)]" title={`${nest.count} sub-session${nest.count === 1 ? '' : 's'}`}>
-      {nest.count}
-    </span>
-  );
+  return null;
 }
 
 function SessionItem({
