@@ -46,8 +46,15 @@ app.whenReady().then(async()=>{
  try{
   await win.loadURL(process.env.QA_URL);await until('!!'+heading+'&&!!document.querySelector("[data-session-id=s0]")');
   const newTask=await rect('document.querySelector("[aria-label=\\"New Task\\"]")'),title=await rect(heading),label=await js('(()=>{const r=document.createRange();r.selectNodeContents('+heading+');const b=r.getBoundingClientRect();return {y:b.y,bottom:b.bottom}})()'),list=await rect(scroller);
-  assert.ok(label.y-newTask.bottom>=20,'My Tasks sits clearly apart from New Task: '+JSON.stringify({newTask,label}));
+  const search=await rect('document.querySelector(".aegis-sidebar-panel [aria-label=\\"Search\\"]")');
+  assert.equal(search.x,newTask.x,'Search lines up with New Task');
+  assert.ok(search.y>=newTask.bottom&&search.y-newTask.bottom<=4,'Search sits right under New Task: '+JSON.stringify({newTask,search}));
+  assert.ok(label.y-search.bottom>=20,'My Tasks sits clearly apart from the Search row: '+JSON.stringify({search,label}));
   assert.ok(title.bottom<=list.y,'My Tasks stays above the scrolling list');
+  assert.equal(await js('!!document.querySelector(".aegis-sidebar-panel [aria-label=\\"Search\\"]").title.startsWith("Search")'),true,'Search keeps its tooltip');
+  await js('document.querySelector(".aegis-sidebar-panel [aria-label=\\"Search\\"]").click()');await until('!!document.querySelector("input[placeholder^=\\"Search sessions\\"]")');
+  await shot('search-open');
+  await js('qa.store.getState().setSearchPaletteOpen(false)');await until('!document.querySelector("input[placeholder^=\\"Search sessions\\"]")');
   assert.equal(await state(),'hidden','no edge at the top of the list');assert.equal(await opacity(),'0');
   await shot('top');
   assert.ok(await js(scroller+'.scrollHeight>'+scroller+'.clientHeight'),'list overflows');
@@ -60,7 +67,7 @@ app.whenReady().then(async()=>{
   await js('qa.store.setState({sessions:qa.sessions(1)})');await until(edge+'.dataset.sidebarScrollEdge==="hidden"');
   assert.equal(await js(scroller+'.scrollTop'),0,'a list that stops overflowing clears the edge');
   await js('qa.store.getState().setTheme("dark");qa.store.setState({sessions:qa.sessions(16)})');await delay(200);await scrollTo(60);await shot('scrolled-dark');
-  assert.deepEqual(errors,[]);console.log('PASS: My Tasks heading, spacing and scroll edge');app.exit(0);
+  assert.deepEqual(errors,[]);console.log('PASS: Search row, My Tasks heading, spacing and scroll edge');app.exit(0);
  }catch(e){console.error(e,errors);await shot('failure');app.exit(1)}
 });
 `;
