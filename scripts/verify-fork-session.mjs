@@ -60,7 +60,7 @@ const tree = read('src/ui/components/FolderTreeView.tsx');
 const header = read('src/ui/components/SessionActionsMenu.tsx');
 const menu = read('src/ui/hooks/useSessionActionsMenu.ts');
 assert.ok(
-  tree.includes('useSessionActionsMenu(session)') && header.includes('useSessionActionsMenu(session)') &&
+  /useSessionActionsMenu\(session[,)]/.test(tree) && header.includes('useSessionActionsMenu(session)') &&
     menu.includes('forkSessionToPane(session.id)') && menu.includes('canFork') &&
     menu.includes("['claude', 'codex', 'opencode', 'kimi']") &&
     menu.includes("session.provider === 'kimi' && session.status === 'running'"),
