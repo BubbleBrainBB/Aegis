@@ -14,7 +14,7 @@ const PR_URL = /https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/([1-9]\d*)/gi
 /** `gh pr create` calls still waiting for their output, by tool_use id. */
 const pendingCreates = new Map<string, string>();
 
-function commandOf(input: Record<string, unknown>): string {
+export function commandOf(input: Record<string, unknown>): string {
   for (const value of [input.command, input.cmd, input.shellCommand, input.shell_command]) {
     if (typeof value === 'string') return value;
     if (Array.isArray(value)) return value.filter(part => typeof part === 'string').join(' ');

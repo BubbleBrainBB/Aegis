@@ -151,7 +151,8 @@ export function SessionWorkspaceControl({
 }) {
   const createDraftSession = useAppStore((state) => state.createDraftSession);
   const projectCwd = session.projectCwd || session.cwd || null;
-  const effectiveCwd = session.worktreePath || session.cwd || projectCwd;
+  const agentWorktree = session.agentWorktreePath || null;
+  const effectiveCwd = agentWorktree || session.worktreePath || session.cwd || projectCwd;
   const isWorktree = session.envMode === 'worktree' && Boolean(session.worktreePath);
   // A sub-session in the folder of the session that started it.
   const sharedWith = useFollowUpStore((state) => {
@@ -509,10 +510,10 @@ export function SessionWorkspaceControl({
             type="button"
             className={rowButtonClass}
             disabled={busyAction !== null || !currentBranch}
-            title={`${isWorktree ? session.worktreePath || 'Worktree' : projectCwd}${sharedWith ? ` · shared with ${sharedWithTitle || 'the session that started this one'}` : ''}`}
+            title={agentWorktree || `${isWorktree ? session.worktreePath || 'Worktree' : projectCwd}${sharedWith ? ` · shared with ${sharedWithTitle || 'the session that started this one'}` : ''}`}
           >
-            {BusyIcon ? <BusyIcon className="h-3.5 w-3.5 animate-spin" /> : isWorktree ? <GitFork className="h-3.5 w-3.5" /> : <Monitor className="h-3.5 w-3.5" />}
-            <span className="min-w-0 flex-1 truncate text-left">{sharedWith ? 'Shared folder' : isWorktree ? 'Worktree' : 'Local'}</span>
+            {BusyIcon ? <BusyIcon className="h-3.5 w-3.5 animate-spin" /> : agentWorktree || isWorktree ? <GitFork className="h-3.5 w-3.5" /> : <Monitor className="h-3.5 w-3.5" />}
+            <span className="min-w-0 flex-1 truncate text-left">{agentWorktree ? agentWorktree.split('/').filter(Boolean).pop() : sharedWith ? 'Shared folder' : isWorktree ? 'Worktree' : 'Local'}</span>
             <ChevronDown className="h-3 w-3 shrink-0" />
           </button>
         </DropdownMenu.Trigger>
@@ -523,6 +524,16 @@ export function SessionWorkspaceControl({
             sideOffset={6}
             className="z-[9999] min-w-[190px] rounded-[var(--popover-radius)] border border-[var(--popover-border)] bg-[var(--popover-bg)] p-1 shadow-[var(--popover-shadow)]"
           >
+            {agentWorktree ? (
+              <DropdownMenu.Item
+                onSelect={() => void window.electron.clearAgentWorktree(sessionId)}
+                title={session.worktreePath || projectCwd}
+                className="flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-[13px] text-[var(--text-primary)] outline-none data-[highlighted]:bg-[var(--sidebar-item-hover)]"
+              >
+                {isWorktree ? <GitFork className="h-3.5 w-3.5 text-[var(--text-muted)]" /> : <Monitor className="h-3.5 w-3.5 text-[var(--text-muted)]" />}
+                <span className="flex-1">{isWorktree ? 'Back to Worktree' : 'Back to Local'}</span>
+              </DropdownMenu.Item>
+            ) : <>
             <DropdownMenu.Item
               disabled={!isWorktree || busyAction !== null}
               onSelect={(event) => {
@@ -581,6 +592,7 @@ export function SessionWorkspaceControl({
                 </DropdownMenu.Item>
               </>
             ) : null}
+            </>}
           </DropdownMenu.Content>
         </DropdownMenu.Portal>
       </DropdownMenu.Root>
@@ -929,7 +941,8 @@ export function SessionWorkspaceControl({
               branchOptions.map((entry) => (
                 <DropdownMenu.Item
                   key={`${entry.fullRef}:${entry.worktreePath || ''}`}
-                  disabled={busyAction !== null}
+                  // Picking a branch in another worktree moves the session there.
+                  disabled={busyAction !== null || Boolean(agentWorktree && entry.worktreePath && entry.worktreePath !== agentWorktree)}
                   onSelect={(event) => {
                     event.preventDefault();
                     void handleSelectBranch(entry);

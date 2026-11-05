@@ -557,6 +557,7 @@ function freshSessionViewFromInfo(info: import('../../shared/types').SessionInfo
     associatedWorktreePath: info.associatedWorktreePath ?? null,
     associatedWorktreeBranch: info.associatedWorktreeBranch ?? null,
     associatedWorktreeRef: info.associatedWorktreeRef ?? null,
+    agentWorktreePath: info.agentWorktreePath ?? null,
     claudeSessionId: info.claudeSessionId,
     provider: info.provider || 'claude',
     model: info.model,
@@ -1101,6 +1102,14 @@ export const useAppStore = create<Store>()(
         // state — a stale buffered tail must not be appended afterwards.
         streamDeltaCoalescer.discardSession(event.payload.sessionId);
         handleSessionHistory(event.payload, set);
+        break;
+
+      case 'session.agentWorktree':
+        set((state) => {
+          const session = state.sessions[event.payload.sessionId];
+          if (!session) return state;
+          return { sessions: { ...state.sessions, [session.id]: { ...session, agentWorktreePath: event.payload.path } } };
+        });
         break;
 
       case 'session.deleted':
@@ -3117,6 +3126,7 @@ function handleSessionList(
       associatedWorktreePath: session.associatedWorktreePath ?? null,
       associatedWorktreeBranch: session.associatedWorktreeBranch ?? null,
       associatedWorktreeRef: session.associatedWorktreeRef ?? null,
+      agentWorktreePath: session.agentWorktreePath ?? null,
       claudeSessionId: session.claudeSessionId,
       provider: session.provider || 'claude',
       model: session.model,
@@ -3244,6 +3254,7 @@ function handleSessionStatus(
     associatedWorktreePath?: SessionInfo['associatedWorktreePath'];
     associatedWorktreeBranch?: SessionInfo['associatedWorktreeBranch'];
     associatedWorktreeRef?: SessionInfo['associatedWorktreeRef'];
+    agentWorktreePath?: SessionInfo['agentWorktreePath'];
     provider?: SessionInfo['provider'];
     model?: SessionInfo['model'];
     betas?: SessionInfo['betas'];
@@ -3284,6 +3295,7 @@ function handleSessionStatus(
     associatedWorktreePath,
     associatedWorktreeBranch,
     associatedWorktreeRef,
+    agentWorktreePath,
     provider,
     model,
     betas,
@@ -3376,6 +3388,7 @@ function handleSessionStatus(
             associatedWorktreeRef !== undefined
               ? associatedWorktreeRef
               : session.associatedWorktreeRef ?? null,
+          agentWorktreePath: agentWorktreePath !== undefined ? agentWorktreePath : session.agentWorktreePath ?? null,
           provider: provider || session.provider,
           model: model !== undefined ? (model || undefined) : session.model,
           betas: betas !== undefined ? betas : session.betas,
@@ -3475,6 +3488,7 @@ function handleSessionStatus(
       associatedWorktreePath: associatedWorktreePath ?? null,
       associatedWorktreeBranch: associatedWorktreeBranch ?? null,
       associatedWorktreeRef: associatedWorktreeRef ?? null,
+      agentWorktreePath: agentWorktreePath ?? null,
       provider: provider || 'claude',
       model,
       betas,

@@ -47,7 +47,7 @@ export function useActiveEnvironmentContext(): ActiveEnvironmentContext {
     const sessionId = paneSessionId || activeSessionId || null;
     const session = sessionId ? sessions[sessionId] || null : null;
     const resolvedProjectCwd = session?.projectCwd || session?.cwd || projectCwd || null;
-    const effectiveCwd = session?.worktreePath || session?.cwd || resolvedProjectCwd || null;
+    const effectiveCwd = session?.agentWorktreePath || session?.worktreePath || session?.cwd || resolvedProjectCwd || null;
     const envMode = session?.envMode === 'worktree' && session?.worktreePath ? 'worktree' : 'local';
     const isDraft = Boolean(session?.isDraft);
     const isDm = session?.scope === 'dm';
