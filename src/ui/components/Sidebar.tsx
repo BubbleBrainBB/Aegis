@@ -434,21 +434,10 @@ export function Sidebar() {
                 <div className="aegis-sidebar-brand font-semibold leading-none tracking-[-0.02em] text-[var(--text-primary)]">
                   Aegis
                 </div>
-                <div className="flex items-center gap-0.5">
-                  <button
-                    type="button"
-                    onClick={() => setSearchPaletteOpen(true)}
-                    className={SIDEBAR_TRIGGER_CLASS}
-                    aria-label="Search"
-                    title={['Search', shortcutLabel('search', shortcuts)].filter(Boolean).join(' · ')}
-                  >
-                    <Search className="h-4 w-4" strokeWidth={1.4} />
-                  </button>
-                  <SidebarViewMenu />
-                </div>
+                <SidebarViewMenu />
               </div>
 
-              <div className="px-2 pt-2">
+              <div className="flex flex-col gap-0.5 px-2 pt-2">
                 <SidebarNavRow
                   icon={<SquarePen className="h-[15px] w-[15px]" />}
                   label="New Task"
@@ -456,6 +445,12 @@ export function Sidebar() {
                     goToWorkspace('chat');
                     openDraftSession(newThreadCwd, getActiveChannelIdForProject(newThreadCwd));
                   }}
+                />
+                <SidebarNavRow
+                  icon={<Search className="h-[15px] w-[15px]" />}
+                  label="Search"
+                  title={['Search', shortcutLabel('search', shortcuts)].filter(Boolean).join(' · ')}
+                  onClick={() => setSearchPaletteOpen(true)}
                 />
               </div>
 
@@ -615,12 +610,14 @@ function SidebarRail({
 function SidebarNavRow({
   icon,
   label,
+  title,
   active,
   badge,
   onClick,
 }: {
   icon: ReactNode;
   label: string;
+  title?: string;
   active?: boolean;
   /** Small trailing count (hidden when 0), e.g. Board cards waiting for review. */
   badge?: number;
@@ -639,6 +636,7 @@ function SidebarNavRow({
           : 'text-[var(--text-secondary)] hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)]'
       }`}
       aria-label={label}
+      title={title}
     >
       <span className="flex h-4 w-4 items-center justify-center text-[var(--text-muted)]">
         {icon}
