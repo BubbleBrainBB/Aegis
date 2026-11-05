@@ -57,6 +57,7 @@ import { PullRequestsView } from './components/PullRequestsView';
 import { useTabsStore, type TabView } from './store/useTabsStore';
 import { NewSessionView } from './components/NewSessionView';
 import { NewTabMenuButton, type NewTabMode } from './components/NewTabMenuButton';
+import { parseRemoteProjectPath } from '../shared/remote/remote-path';
 import { SessionTitleActions } from './components/SessionTitleActions';
 import { SessionActionsMenu } from './components/SessionActionsMenu';
 import { LogoShimmer } from './components/LogoShimmer';
@@ -650,7 +651,7 @@ export function App() {
     : resolveDockedRightPanelWidth(rightUtilityPanelWidth, skinHostWidth);
 
   // The panel the right pane has open, whether or not it is showing.
-  const remoteSession = !!activeSession?.device;
+  const remoteSession = !!activeSession?.device || !!parseRemoteProjectPath(activeSession?.cwd);
   const openUtilityPanel = useMemo(() => {
     // Files, git and terminals here belong to this Mac; a session on another one has none of them yet.
     if (rightUtilityPanelHidden || remoteSession) return null;

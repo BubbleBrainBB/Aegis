@@ -9,6 +9,8 @@ const require = createRequire(import.meta.url);
 const { RemoteGateway } = require("../../dist-electron/electron/remote/gateway.js");
 const { RemoteJournal } = require("../../dist-electron/electron/remote/journal.js");
 const { RemoteHostClient } = require("../../dist-electron/electron/remote/host-client.js");
+const { RemoteHostBridge, permissionAnswer } = require("../../dist-electron/electron/remote/host-bridge.js");
+const { agentCatalog } = require("../../dist-electron/shared/remote/agent-catalog.js");
 const crypto = require("../../dist-electron/electron/remote/secure-channel.cjs");
 
 const dir = mkdtempSync(join(tmpdir(), "aegis-host-client-"));
@@ -28,7 +30,7 @@ const big = { id: "big", projectId: "p1", title: "Long session", provider: "clau
 const bigHistory = Array.from({ length: 4000 }, (_, i) => text("m" + i, i % 2 ? "assistant" : "user", `${i} ` + "x".repeat(2000)));
 const histories = { s1: [text("a", "user", "Hello")], big: bigHistory };
 const pending = new Set();
-const calls = { send: 0, stop: 0, permission: [] };
+const calls = { send: 0, stop: 0, permission: [], create: [] };
 let sendGate;
 let gateway;
 const runtime = () => ({
@@ -37,7 +39,10 @@ const runtime = () => ({
   projects: () => [{ id: "p1", name: "coworker", path: dir, isRepo: true }],
   sessions: () => [session, big],
   history: (id) => histories[id] ?? [],
-  start: async () => "new",
+  start: async (project, provider, prompt, extras) => {
+    calls.create.push({ project: project.id, provider, prompt, worktree: extras?.worktree });
+    return "new";
+  },
   send: async (id, prompt) => {
     calls.send++;
     if (sendGate) await sendGate;
@@ -95,6 +100,13 @@ await client.subscribe("s1");
 await until(() => seen.history.length === 1, "history");
 assert.equal(seen.history[0].raw.prompt, "Hello");
 
+// A new task on that Mac.
+const created = await client.command("create", { projectId: "p1", provider: "codex", prompt: "List files", worktree: true });
+assert.equal(created.state, "completed", JSON.stringify(created));
+assert.equal(created.sessionId, "new");
+assert.deepEqual(calls.create, [{ project: "p1", provider: "codex", prompt: "List files", worktree: true }]);
+assert.deepEqual(seen.state.projects, [{ id: "p1", name: "coworker", isRepo: true }]);
+
 // Live output.
 for (const chunk of ["Work", "ing"]) gateway.capture({ type: "stream.message", payload: { sessionId: "s1", message: { type: "stream_event", event: { delta: { type: "text_delta", text: chunk } } } } });
 await until(() => seen.live === "Working", "live text");
@@ -123,6 +135,15 @@ const forSession = seen.state.permissions[0];
 assert.equal((await client.command("permission", { sessionId: "s1", runId: forSession.runId, requestId: forSession.requestId, decision: "allow", scope: "session" })).state, "completed");
 assert.deepEqual(calls.permission.at(-1), ["Bash", "allow", "session"]);
 await until(() => seen.state.permissions.length === 0, "second approval gone");
+
+// A message into the running turn gets through; without saying so it's refused.
+const beforeSteer = calls.send;
+assert.equal((await client.command("send", { sessionId: "s1", prompt: "No steer" })).error, "SESSION_BUSY");
+const steered = await client.command("send", { sessionId: "s1", prompt: "Into the turn", steer: true });
+assert.equal(steered.state, "completed", JSON.stringify(steered));
+assert.equal(calls.send, beforeSteer + 1);
+// The fake runtime opens a new turn for every send; stop below needs that turn's id.
+await new Promise((r) => setTimeout(r, 300));
 
 // Stop.
 const runId = seen.state.sessions.find((s) => s.id === "s1").runId;
@@ -202,6 +223,54 @@ second.close();
 await new Promise((r) => setTimeout(r, 200));
 assert.equal(client.status, "connected", "the first controller outlives the second");
 await until(() => gateway.status === "connected", "gateway still connected");
+
+// What the approval, question and plan cards answer becomes the host's command fields.
+{
+  const base = { requestId: "r", sessionId: "s", runId: "x", toolName: "Bash", detail: "", canApprove: true };
+  assert.deepEqual(permissionAnswer(base, { behavior: "allow", scope: "once" }), { decision: "allow" });
+  assert.deepEqual(permissionAnswer(base, { behavior: "allow", scope: "session" }), { decision: "allow", scope: "session" });
+  assert.deepEqual(permissionAnswer(base, { behavior: "deny", scope: "session" }), { decision: "deny" });
+  const question = { ...base, questions: [{ question: "Color?", options: [] }] };
+  const answers = { "Color?": { selected: ["Blue"], other: "or teal" } };
+  assert.deepEqual(permissionAnswer(question, { behavior: "allow", questionAnswers: answers }), { decision: "allow", answers });
+  assert.deepEqual(permissionAnswer(question, { behavior: "deny" }), { decision: "deny" });
+  const plan = { ...base, plan: { markdown: "x" } };
+  const pick = (label) => ({ behavior: "allow", questionAnswers: { q: { selected: [label] } } });
+  assert.deepEqual(permissionAnswer(plan, pick("Approve and execute")), { decision: "allow" });
+  assert.deepEqual(permissionAnswer(plan, pick("Stay in plan mode")), { decision: "deny" });
+  assert.deepEqual(permissionAnswer(plan, { behavior: "deny" }), { decision: "deny" });
+}
+
+// What another Mac offers, in one shape whatever the agent.
+{
+  const catalog = agentCatalog({
+    claude: { defaultModel: "sonnet", options: ["sonnet", "haiku"] },
+    codex: { defaultModel: "gpt", defaultReasoningEffort: "high", options: [], availableModels: [
+      { name: "gpt", label: "GPT", enabled: true, isDefault: true, supportedReasoningLevels: [{ effort: "high" }], supportsFastMode: true },
+      { name: "off", enabled: false, isDefault: false },
+    ] },
+    devin: { defaultModel: null, availableModels: [{ id: "d", label: "D" }], thoughtLevels: { d: { levels: [{ id: "deep", label: "Deep" }] } } },
+  });
+  assert.deepEqual(catalog.map((e) => e.provider), ["claude", "codex", "devin"]);
+  assert.deepEqual(catalog[1].models, [{ id: "gpt", label: "GPT", efforts: ["high"], fast: true }]);
+  assert.deepEqual(catalog[2].models[0].efforts, ["deep"]);
+}
+
+// Starting a task on a Mac that isn't connected fails at once and hands the message back.
+{
+  const emitted = [];
+  const offline = new RemoteHostBridge({
+    load: () => ({ hosts: [] }), save: () => {}, createIdentity: crypto.createIdentity,
+    environment: "fixture", emit: (event) => emitted.push(event), listChanged: () => {}, crypto,
+  });
+  const dead = { ...gateway.pairing(), relay: "ws://127.0.0.1:9/" };
+  const view = await offline.add(JSON.stringify(dead));
+  assert.equal(offline.handleClientEvent({ type: "session.start", payload: { cwd: `/aegis-remote/${view.id}/p1/coworker`, prompt: "x", title: "x", provider: "codex", startId: "s-1" } }), true);
+  const failure = emitted.find((event) => event.type === "runner.error");
+  assert.equal(failure?.payload.startId, "s-1");
+  assert.equal(offline.handleClientEvent({ type: "session.start", payload: { cwd: "/Users/me/project", prompt: "x", title: "x" } }), false, "local starts stay local");
+  offline.close();
+}
 
 // Revoking ends the first controller's access for good.
 const peer = gateway.describe().devices[0].peerId;

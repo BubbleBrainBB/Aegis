@@ -1103,6 +1103,8 @@ export type ServerEvent =
 export type WorkflowPromptKind = 'event' | 'task' | 'follow-up' | 'sub-session';
 
 export interface SessionStartPayload {
+  /** For a task on another Mac: the choices it should run with there. */
+  remoteSettings?: import('./remote/protocol').RemoteTaskSettings;
   /** The draft chat this start promotes; its browser pages move to the new id. */
   draftSessionId?: string;
   /** The draft's canvas selection shown in the composer when this was sent. */
@@ -1264,6 +1266,8 @@ export interface DesignSelectionRef {
 
 export interface SessionContinuePayload {
   sessionId: string;
+  /** For a session on another Mac: the choices it should run with there. */
+  remoteSettings?: import('./remote/protocol').RemoteTaskSettings;
   prompt: string;
   effectivePrompt?: string;
   /** Design comment thread this message was sent from. */
@@ -1592,6 +1596,8 @@ export interface SessionInfo {
   latestClaudeModelUsage?: LatestClaudeModelUsage;
   /** Set when this session runs on another Mac; everything about it stays there. */
   device?: { id: string; name: string; online: boolean; reconnecting?: boolean };
+  /** What that Mac has set for it. */
+  remoteSettings?: import('./remote/protocol').RemoteTaskSettings;
   createdAt: number;
   updatedAt: number;
 }
@@ -1607,6 +1613,8 @@ export type SessionStatus = 'idle' | 'running' | 'stopping' | 'completed' | 'err
 export interface SessionStatusPayload {
   sessionId: string;
   status: SessionStatus;
+  /** Set when the session runs on another Mac. */
+  device?: { id: string; name: string; online: boolean; reconnecting?: boolean };
   /** A new session started in the background: list it without focusing it. */
   background?: boolean;
   /** The composer start that created this session. */

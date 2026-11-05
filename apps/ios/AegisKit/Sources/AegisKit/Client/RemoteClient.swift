@@ -29,6 +29,10 @@ public final class RemoteClient {
     public private(set) var operations: [String: RemoteOperation] = [:]
 
     public let environment: RemoteEnvironment
+    /// Keeps this Mac's pairing and journal apart when the phone has several. Empty for the first.
+    public let slot: String
+    private var pairingKey: String { slot.isEmpty ? "pairing" : "pairing-" + slot }
+    private var journalFile: String { slot.isEmpty ? "operations.json" : "operations-" + slot + ".json" }
     private let secrets: SecretStore
     public let files: FileStore
     private let deviceName: String
@@ -122,6 +126,7 @@ public final class RemoteClient {
 
     public init(
         environment: RemoteEnvironment = .native,
+        slot: String = "",
         secrets: SecretStore = KeychainStore(),
         files: FileStore = FileStore(),
         deviceName: String = "iPhone",
@@ -135,6 +140,7 @@ public final class RemoteClient {
         }
     ) {
         self.environment = environment
+        self.slot = slot
         self.secrets = secrets
         self.files = files
         self.deviceName = deviceName
@@ -142,7 +148,6 @@ public final class RemoteClient {
     }
 
     private static var now: Double { Date().timeIntervalSince1970 * 1000 }
-    private static let journalFile = "operations.json"
     /// Cache and address files are written here, in order, off the main thread.
     private static let fileQueue = DispatchQueue(label: "ai.aegis.client-files", qos: .utility)
     private static var versions = 0
@@ -159,7 +164,7 @@ public final class RemoteClient {
 
     public func start() async {
         do {
-            guard let stored = try secrets.get("pairing") else { return }
+            guard let stored = try secrets.get(pairingKey) else { return }
             let pairing = try JSONDecoder().decode(Pairing.self, from: Data(stored.utf8))
             try checkEnvironment(pairing)
             self.pairing = pairing
@@ -173,7 +178,7 @@ public final class RemoteClient {
                     return history
                 }
             }
-            if let data = files.read(Self.journalFile) {
+            if let data = files.read(journalFile) {
                 operations = (try? JSONDecoder().decode([String: RemoteOperation].self, from: data)) ?? [:]
             } else if let journal = try? secrets.get("operations") {
                 // Older builds kept it in the Keychain, which can't be written while the phone is locked.
@@ -203,7 +208,7 @@ public final class RemoteClient {
         try checkEnvironment(offer)
         await disconnect(forget: true)
         pairing = offer
-        try secrets.set("pairing", String(decoding: try JSONEncoder.aegis.encode(offer), as: UTF8.self))
+        try secrets.set(pairingKey, String(decoding: try JSONEncoder.aegis.encode(offer), as: UTF8.self))
         await connect()
     }
 
@@ -228,9 +233,9 @@ public final class RemoteClient {
                 Self.fileQueue.async { names.forEach(files.remove) }
                 files.removeAll(prefix: "draft-" + host + "-")
             }
-            try? secrets.remove("pairing")
+            try? secrets.remove(pairingKey)
             try? secrets.remove("operations")
-            files.remove(Self.journalFile)
+            files.remove(journalFile)
             pairing = nil
             lan = nil
             snapshot = nil
@@ -471,7 +476,7 @@ public final class RemoteClient {
             offer.invite = nil
             offer.expiresAt = nil
             pairing = offer
-            try? secrets.set("pairing", String(decoding: (try? JSONEncoder.aegis.encode(offer)) ?? Data(), as: UTF8.self))
+            try? secrets.set(pairingKey, String(decoding: (try? JSONEncoder.aegis.encode(offer)) ?? Data(), as: UTF8.self))
         }
         lastHeard = Self.now
         remember(message.lan)
@@ -1163,7 +1168,7 @@ public final class RemoteClient {
             operations[id] = nil
         }
         // A file readable after first unlock: commands settle while the phone is locked too.
-        if let data = try? JSONEncoder.aegis.encode(operations) { files.write(Self.journalFile, data) }
+        if let data = try? JSONEncoder.aegis.encode(operations) { files.write(journalFile, data) }
     }
 
     /// Called when the app leaves the screen (switching apps or locking). The connection

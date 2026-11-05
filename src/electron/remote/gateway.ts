@@ -955,6 +955,7 @@ export class RemoteGateway {
         throw new Error("STALE_RUN");
       if (
         request.method === "send" &&
+        !request.steer &&
         (this.runId(request.sessionId) ||
           this.pendingCommands.has("session:" + request.sessionId))
       )

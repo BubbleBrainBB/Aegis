@@ -42,6 +42,8 @@ import { useDesignStore } from '../store/useDesignStore';
 import { useAttachmentImport } from '../hooks/useAttachmentImport';
 import { ClaudeSkillMenu } from './ClaudeSkillMenu';
 import { ProjectFileMentionMenu } from './ProjectFileMentionMenu';
+import { RemoteModelControl, RemotePermissionControl, useRemoteSelection } from './RemoteAgentPicker';
+import { useRemoteTarget } from '../hooks/useRemoteHosts';
 import { ComposerPromptEditor, type ComposerPromptEditorHandle } from './ComposerPromptEditor';
 import {
   EMPTY_PROMPT_HISTORY_NAV,
@@ -637,10 +639,17 @@ export function PromptInput({
     [activeSession?.messages]
   );
   // A session on another Mac: its agent, model and files are over there.
+  const remoteTarget = useRemoteTarget(activeSession?.cwd);
+  const remoteSelection = useRemoteSelection(
+    activeSession?.id ?? '',
+    remoteTarget?.catalog ?? [],
+    activeSession?.isDraft ? undefined : activeSession?.provider,
+    activeSession?.remoteSettings,
+  );
   const remoteDevice = activeSession?.device;
+  const hideLocalControls = !!remoteDevice || !!remoteTarget;
   const remoteOffline = !!remoteDevice && !remoteDevice.online && !remoteDevice.reconnecting;
   const canSteerWhileRunning =
-    !remoteDevice &&
     (runtimeProvider === 'codex' ||
       (runtimeProvider === 'kimi' && activeSession?.kimiRuntime !== 'legacy') ||
       // DeepSeek: mid-turn sends splice into the runtime's inbox and are
@@ -986,7 +995,8 @@ export function PromptInput({
               (!startsChat && draftStartMode[activeSession.id] === 'worktree') || undefined,
             attachments: outgoingAttachments.length > 0 ? outgoingAttachments : undefined,
             ...(outgoingDesignSelection ? { designSelection: outgoingDesignSelection } : {}),
-            provider: runtimeProvider,
+            provider: (remoteTarget && remoteSelection.provider) || runtimeProvider,
+            ...(remoteTarget ? { remoteSettings: remoteSelection.settings } : {}),
             model: selectedModel || undefined,
             claudeAccessMode:
               runtimeProvider === 'claude'
@@ -1144,6 +1154,7 @@ export function PromptInput({
         ...(outgoing.design ? { design: outgoing.design } : {}),
         ...(outgoing.designSelection ? { designSelection: outgoing.designSelection } : {}),
         attachments: outgoing.attachments.length > 0 ? outgoing.attachments : undefined,
+        ...(remoteTarget ? { remoteSettings: remoteSelection.settings } : {}),
         provider: runtimeProvider,
         model: selectedModel || undefined,
         claudeAccessMode:
@@ -1753,7 +1764,6 @@ export function PromptInput({
 
           <div className="aegis-composer-toolbar flex items-end justify-between gap-2 px-2.5 pb-2">
             <div className="aegis-composer-leading-controls flex min-w-0 flex-1 items-center gap-1 overflow-visible">
-              {!remoteDevice && (
               <button
                 type="button"
                 onClick={() => {
@@ -1766,13 +1776,13 @@ export function PromptInput({
               >
                 <Plus className="h-4 w-4" />
               </button>
-              )}
               {leadingControls}
               {(sessionGoal.drafting || (sessionGoal.goal && sessionGoal.goal.status !== 'complete')) && <GoalModePill onExit={() => {
                 if (sessionGoal.snapshot?.goal) void sessionGoal.change({ type: 'clear' }).then(() => sessionGoal.setDraft(false)).catch(error => toast.error(String(error)));
                 else sessionGoal.setDraft(false);
               }} disabled={goalSubmitting} />}
-              {!remoteDevice && (<>
+              {remoteTarget ? <RemotePermissionControl selection={remoteSelection} disabled={isBusy || remoteOffline} /> : null}
+              {!hideLocalControls && (<>
               {agentSelection.provider === 'codex' && (
                 <PermissionModePicker
                   value={agentSelection.codexPermissionMode}
@@ -1945,10 +1955,13 @@ export function PromptInput({
                   providerLabel="Qoder"
                 />
               ) : null}
-              {remoteDevice ? (
-                <span className="truncate text-[13px] text-[var(--text-secondary)]" data-remote-model>
-                  {activeSession?.model || 'Default'}
-                </span>
+              {remoteTarget ? (
+                <RemoteModelControl
+                  selection={remoteSelection}
+                  catalog={remoteTarget.catalog}
+                  canChangeAgent={activeSession?.isDraft}
+                  disabled={isBusy || remoteOffline}
+                />
               ) : (
               <ComposerAgentModelPicker
                 agentProvider={runtimeProvider}

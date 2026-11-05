@@ -25,6 +25,8 @@ import { ClaudeSkillMenu } from './ClaudeSkillMenu';
 import { ProjectFileMentionMenu } from './ProjectFileMentionMenu';
 import { ComposerPromptEditor, type ComposerPromptEditorHandle } from './ComposerPromptEditor';
 import { ComposerAgentModelPicker } from './ComposerAgentControls';
+import { RemoteModelControl, RemotePermissionControl, useRemoteSelection } from './RemoteAgentPicker';
+import { useRemoteTarget } from '../hooks/useRemoteHosts';
 import {
   PermissionModePicker,
   BUBBLE_PERMISSION_MODE_OPTIONS,
@@ -121,6 +123,8 @@ export function NewSessionView() {
     });
   });
   const hasSelectedCwd = cwd.trim().length > 0;
+  const remoteTarget = useRemoteTarget(cwd);
+  const remoteSelection = useRemoteSelection(cwd, remoteTarget?.catalog ?? [], undefined);
   const agentSelection = useComposerAgentSelection({ selectionKey: '__new_session__' });
   const modelSetupRequired = Boolean(agentSelection.modelSetup);
   const sessionGoal = useSessionGoal(undefined, supportsGoalUI(agentSelection.provider));
@@ -285,7 +289,8 @@ export function NewSessionView() {
         channelId,
         createIsolatedWorkspace: (dispatchCwd && startMode === 'worktree') || undefined,
         attachments: outgoingAttachments.length > 0 ? outgoingAttachments : undefined,
-        provider: agentSelection.provider,
+        provider: (remoteTarget && remoteSelection.provider) || agentSelection.provider,
+        ...(remoteTarget ? { remoteSettings: remoteSelection.settings } : {}),
         model: agentSelection.model || undefined,
         claudeAccessMode:
           agentSelection.provider === 'claude'
@@ -643,6 +648,8 @@ export function NewSessionView() {
                       <PlusIcon />
                     </button>
                     {sessionGoal.drafting && <GoalModePill onExit={() => sessionGoal.setDraft(false)} disabled={pendingStart} />}
+                    {remoteTarget ? <RemotePermissionControl selection={remoteSelection} disabled={pendingStart} /> : null}
+                    {!remoteTarget && (<>
                     {agentSelection.provider === 'codex' && (
                       <PermissionModePicker
                         value={agentSelection.codexPermissionMode}
@@ -760,9 +767,18 @@ export function NewSessionView() {
                           disabled={pendingStart}
                         />
                       )}
+                    </>)}
                   </div>
 
                   <div className="aegis-composer-trailing-controls flex shrink-0 items-center gap-2">
+                    {remoteTarget ? (
+                      <RemoteModelControl
+                        selection={remoteSelection}
+                        catalog={remoteTarget.catalog}
+                        canChangeAgent
+                        disabled={pendingStart}
+                      />
+                    ) : (
                     <ComposerAgentModelPicker
                       agentProvider={agentSelection.provider}
                       modelLabel={agentSelection.selectedModelLabel}
@@ -812,6 +828,7 @@ export function NewSessionView() {
                       menuSide="top"
                       bubbleModelsLoading={agentSelection.bubbleModelsLoading}
                     />
+                    )}
                     <button
                       type="button"
                       // Always the send action; without a project it starts a

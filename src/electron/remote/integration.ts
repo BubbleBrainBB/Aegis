@@ -172,6 +172,7 @@ export function setupRemoteHosts(emit: (event: ServerEvent) => void, listChanged
     if (action === "add" && typeof payload?.link === "string") return hostBridge!.add(payload.link);
     if (action === "remove" && typeof payload?.id === "string") return hostBridge!.remove(payload.id);
     if (action === "retry" && typeof payload?.id === "string") return hostBridge!.retry(payload.id);
+    if (action === "agents" && typeof payload?.id === "string") return hostBridge!.agents(payload.id);
     throw new Error("Unknown remote host action");
   });
   hostBridge.start();

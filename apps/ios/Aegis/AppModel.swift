@@ -28,10 +28,14 @@ final class AppModel {
     /// `starting`: a new task sent but not yet created on the Mac (by command id).
     enum Screen: Hashable { case home, session(String), starting(String) }
     enum Route: Hashable {
-        case projects, project(String), settings
+        case projects, project(String), settings, devices
     }
 
-    let client: RemoteClient
+    /// One per paired Mac; each keeps its own connection, pairing and journal.
+    private(set) var clients: [RemoteClient]
+    private(set) var activeSlot: String
+    /// The Mac the open page is about. Commands for a session go to the Mac that owns it.
+    var client: RemoteClient { clients.first { $0.slot == activeSlot } ?? clients[0] }
     let core = CoreScript.shared
 
     // Navigation
@@ -69,12 +73,18 @@ final class AppModel {
     private(set) var sessionSettings: [String: RemoteTaskSettings]
 
     @ObservationIgnored private let defaults = UserDefaults.standard
+    @ObservationIgnored private let environment: RemoteEnvironment
     @ObservationIgnored private var drafts: [String: String] = [:]
     private(set) var draftVersion = 0
 
     init(client: RemoteClient? = nil) {
         let environment: RemoteEnvironment = (Bundle.main.bundleIdentifier ?? "").hasSuffix(".dev") ? .development : .production
-        self.client = client ?? RemoteClient(environment: environment)
+        self.environment = environment
+        let slots = UserDefaults.standard.stringArray(forKey: "aegis-mac-slots") ?? [""]
+        let macs = client.map { [$0] } ?? (slots.isEmpty ? [""] : slots).map { RemoteClient(environment: environment, slot: $0) }
+        clients = macs
+        let saved = UserDefaults.standard.string(forKey: "aegis-active-mac")
+        activeSlot = macs.first { $0.slot == saved }?.slot ?? macs[0].slot
         provider = defaults.string(forKey: "aegis-provider") ?? "claude"
         projectId = defaults.string(forKey: "aegis-project") ?? ""
         worktree = defaults.bool(forKey: "aegis-worktree")
@@ -94,14 +104,68 @@ final class AppModel {
     // MARK: Derived state
 
     var snapshot: RemoteSnapshot? { client.snapshot }
-    var sessions: [RemoteSession] { snapshot?.sessions ?? [] }
+    /// Every Mac's sessions and approvals: what's waiting shows wherever it is.
+    var sessions: [RemoteSession] { pairedClients.flatMap { $0.snapshot?.sessions ?? [] } }
+    var permissions: [RemotePermission] { pairedClients.flatMap { $0.snapshot?.permissions ?? [] } }
+    /// The open Mac's own lists; two Macs can have a project at the same path.
+    var activeSessions: [RemoteSession] { snapshot?.sessions ?? [] }
     var projects: [RemoteProject] { snapshot?.projects ?? [] }
-    var permissions: [RemotePermission] { snapshot?.permissions ?? [] }
+    var pairedClients: [RemoteClient] { clients.filter { $0.pairing != nil } }
+    var severalMacs: Bool { pairedClients.count > 1 }
     var ready: Bool { client.connection == .connected }
-    var paired: Bool { client.pairing != nil && !(client.connection == .confirming && snapshot == nil) }
-    var macName: String {
-        let name = snapshot?.machineName ?? client.pairing?.name ?? "Your Mac"
+    private func established(_ client: RemoteClient) -> Bool {
+        client.pairing != nil && !(client.connection == .confirming && client.snapshot == nil)
+    }
+    var paired: Bool { clients.contains(where: established) }
+    /// The open Mac is asking for approval of a new pairing.
+    var confirming: Bool { client.pairing != nil && !established(client) }
+    func macName(of client: RemoteClient) -> String {
+        let name = client.snapshot?.machineName ?? client.pairing?.name ?? "Your Mac"
         return name.hasSuffix(".local") ? String(name.dropLast(6)) : name
+    }
+    var macName: String { macName(of: client) }
+    func owner(ofSession id: String) -> RemoteClient? {
+        pairedClients.first { $0.snapshot?.sessions.contains { $0.id == id } == true }
+    }
+    /// "Mac mini · coworker" where sessions from several Macs mix; the project alone with one Mac.
+    func placeLabel(of session: RemoteSession) -> String? {
+        let owner = owner(ofSession: session.id)
+        let project = owner?.snapshot?.projects.first { $0.id == session.projectId }?.name
+        guard severalMacs, let owner else { return project }
+        return [macName(of: owner), project].compactMap { $0 }.joined(separator: " · ")
+    }
+    func connectionText(of client: RemoteClient) -> String {
+        switch client.connection {
+        case .connected: return client.freshness == .current ? "Synced" : "Updating…"
+        case .offline: return "Offline"
+        default: return "Connecting…"
+        }
+    }
+    /// Shows this Mac: a new task runs there, and Settings and the project pages describe it.
+    func activate(_ next: RemoteClient) {
+        guard next.slot != activeSlot else { return }
+        client.select(nil)
+        activeSlot = next.slot
+        attachments = []
+        defaults.set(activeSlot, forKey: "aegis-active-mac")
+    }
+    private func saveSlots() { defaults.set(clients.map(\.slot), forKey: "aegis-mac-slots") }
+    func startAll() async {
+        await withTaskGroup(of: Void.self) { group in
+            for client in clients { group.addTask { await client.start() } }
+        }
+    }
+    func foregroundAll() async {
+        await withTaskGroup(of: Void.self) { group in
+            for client in clients where client.pairing != nil { group.addTask { await client.foreground() } }
+        }
+    }
+    private func eachClient(_ action: @escaping (RemoteClient) async -> Void) async {
+        for client in clients where client.pairing != nil { await action(client) }
+    }
+    /// A pairing that was refused or cancelled leaves the page on no Mac; go to one that's there.
+    func leaveUnpairedMac() {
+        if client.pairing == nil, let next = pairedClients.first { activate(next) }
     }
     var connectionText: String {
         switch client.connection {
@@ -130,7 +194,7 @@ final class AppModel {
 
     /// Models the Mac's sessions run on, per provider; the catalog resolves these too.
     var sessionModels: [String: [String]] {
-        Dictionary(grouping: sessions.compactMap { s in s.settings?.model.map { (s.provider, $0) } }, by: \.0)
+        Dictionary(grouping: activeSessions.compactMap { s in s.settings?.model.map { (s.provider, $0) } }, by: \.0)
             .mapValues { Array(Set($0.map(\.1))).sorted() }
     }
 
@@ -212,6 +276,7 @@ final class AppModel {
     func open(session id: String) {
         drawerOpen = false
         path = []
+        if let owner = owner(ofSession: id) { activate(owner) }
         screen = .session(id)
         attachments = []
         client.select(id)
@@ -268,12 +333,31 @@ final class AppModel {
         }
     }
 
+    /// Adds a Mac, or pairs again with one this phone already knows. Other Macs stay as they are.
     func pair(_ value: String) async {
         await perform {
-            try await self.client.pair(value)
+            let offer = try Pairing.parse(value)
+            let target: RemoteClient
+            if let known = self.clients.first(where: { $0.pairing?.hostPeerId == offer.hostPeerId }) ?? self.clients.first(where: { $0.pairing == nil }) {
+                target = known
+            } else {
+                target = RemoteClient(environment: self.environment, slot: UUID().uuidString.lowercased())
+                target.push = self.client.push
+                self.clients.append(target)
+                self.saveSlots()
+            }
+            self.activate(target)
+            self.screen = .home
+            try await target.pair(value)
             self.pairOpen = false
             self.pairText = ""
         }
+    }
+
+    /// "Cancel" while the Mac is still asking.
+    func cancelPairing() async {
+        await client.disconnect(forget: true)
+        leaveUnpairedMac()
     }
 
     var attachmentsReady: Bool { attachments.allSatisfy { $0.attachmentId != nil } }
@@ -397,7 +481,7 @@ final class AppModel {
     /// Allow or deny; on a plan, allow approves it and deny keeps planning.
     func decide(_ permission: RemotePermission, _ decision: String) async {
         await perform {
-            try await self.client.mutate(permission.command(decision))
+            try await (self.owner(ofSession: permission.sessionId) ?? self.client).mutate(permission.command(decision))
             self.approval = nil
         }
     }
@@ -405,7 +489,7 @@ final class AppModel {
     /// Answers the agent's questions, keyed by question text.
     func answer(_ permission: RemotePermission, _ answers: [String: QuestionAnswer]) async {
         await perform {
-            try await self.client.mutate(permission.command("allow", answers: answers))
+            try await (self.owner(ofSession: permission.sessionId) ?? self.client).mutate(permission.command("allow", answers: answers))
             self.approval = nil
         }
     }
@@ -423,11 +507,11 @@ final class AppModel {
             // iOS wants the task ended before this handler returns; the close is best effort.
             MainActor.assumeIsolated {
                 guard let self else { return }
-                Task { await self.client.suspend() }
+                Task { await self.eachClient { await $0.suspend() } }
                 self.endBackground()
             }
         }
-        Task { await client.background() }
+        Task { await eachClient { await $0.background() } }
         backgroundTimer = Task { [weak self] in
             try? await Task.sleep(for: .seconds(RemoteClient.backgroundGrace))
             guard !Task.isCancelled else { return }
@@ -450,7 +534,7 @@ final class AppModel {
         backgroundTimer?.cancel()
         backgroundTimer = nil
         Task {
-            await client.suspend()
+            await eachClient { await $0.suspend() }
             if backgroundTask == task {
                 UIApplication.shared.endBackgroundTask(task)
                 backgroundTask = .invalid
@@ -464,9 +548,8 @@ final class AppModel {
 
     /// Mirrors the sidebar's titles into the App Group for the notification extension.
     func saveNotificationTitles() {
-        let names = Dictionary(projects.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
         let entries = Dictionary(
-            sessions.map { ($0.id, NotificationTitles.Entry(title: $0.title.isEmpty ? "Untitled task" : $0.title, project: names[$0.projectId])) },
+            sessions.map { ($0.id, NotificationTitles.Entry(title: $0.title.isEmpty ? "Untitled task" : $0.title, project: placeLabel(of: $0))) },
             uniquingKeysWith: { first, _ in first }
         )
         guard entries != savedTitles else { return }
@@ -474,10 +557,18 @@ final class AppModel {
         NotificationTitles.save(entries)
     }
 
+    /// Forgets the open Mac; the others stay paired.
     func removeMac() async {
-        await client.disconnect(forget: true)
-        savedTitles = [:]
-        NotificationTitles.save([:])
+        let leaving = client
+        await leaving.disconnect(forget: true)
+        if clients.count > 1 {
+            clients.removeAll { $0.slot == leaving.slot }
+            saveSlots()
+            activeSlot = (pairedClients.first ?? clients[0]).slot
+            defaults.set(activeSlot, forKey: "aegis-active-mac")
+        }
+        savedTitles = nil
+        saveNotificationTitles()
         drafts = [:]
         path = []
         screen = .home
