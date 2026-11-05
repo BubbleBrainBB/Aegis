@@ -268,4 +268,71 @@ await withRelay({}, async (port) => {
   assert.equal(createApns({}), null);
 }
 
+// A Mac that sends a boot id takes several controllers: one tunnel per socket, kept apart.
+await withRelay({ maxTunnels: 2 }, async (port) => {
+  const id = await createIdentity();
+  const route = token();
+  const boot = "boot-1";
+  const hostSocket = async (run = boot) => {
+    const ws = await open(port);
+    const registered = next(ws, "registered");
+    const room = hostAuth(ws, id.privateKey, { token: route, boot: run });
+    return { ws, room, registered: await registered };
+  };
+  const first = await hostSocket();
+  assert.equal(first.registered.slots, 2);
+  const phone = async () => {
+    const ws = await open(port);
+    const answer = next(ws);
+    ws.send(JSON.stringify({ role: "phone", room: first.room, token: route }));
+    return { ws, answer: await answer };
+  };
+  const firstPeer = next(first.ws, "peer");
+  const a = await phone();
+  assert.equal(a.answer.type, "peer");
+  await firstPeer;
+  // No free socket yet: the controller is told to try again, and the first tunnel is untouched.
+  assert.deepEqual((await phone()).answer, { closed: 1013, reason: "Busy" });
+  const second = await hostSocket();
+  assert.equal(second.registered.slots, 2);
+  const secondPeer = next(second.ws, "peer");
+  const b = await phone();
+  assert.equal(b.answer.type, "peer");
+  await secondPeer;
+  const frame = (ws) => new Promise((resolve) => ws.once("message", (data) => resolve(data.toString())));
+  const toA = frame(a.ws);
+  const toB = frame(b.ws);
+  first.ws.send(Buffer.from("for a"), { binary: true });
+  second.ws.send(Buffer.from("for b"), { binary: true });
+  assert.equal(await toA, "for a");
+  assert.equal(await toB, "for b");
+  const fromA = frame(first.ws);
+  a.ws.send(Buffer.from("from a"), { binary: true });
+  assert.equal(await fromA, "from a");
+  // Full: no more sockets for this room.
+  assert.deepEqual((await hostSocket()).registered, { closed: 1013, reason: "Room is full" });
+  // One controller leaving ends only its own tunnel.
+  const firstClosed = next(first.ws, "never");
+  a.ws.close();
+  assert.deepEqual(await firstClosed, { closed: 1012, reason: "Recreate encrypted connection" });
+  assert.equal(b.ws.readyState, WebSocket.OPEN);
+  assert.equal(second.ws.readyState, WebSocket.OPEN);
+  // A restarted Mac (new boot id) replaces everything left of the old run.
+  const secondClosed = next(second.ws, "never");
+  const phoneClosed = next(b.ws, "never");
+  await hostSocket("boot-2");
+  assert.deepEqual(await secondClosed, { closed: 1012, reason: "Replaced" });
+  assert.deepEqual(await phoneClosed, { closed: 1012, reason: "Host disconnected" });
+});
+
+// A relay that predates this, or has it off, answers plainly: one socket, one phone.
+await withRelay({ maxTunnels: 0 }, async (port) => {
+  const id = await createIdentity();
+  const ws = await open(port);
+  const registered = next(ws, "registered");
+  hostAuth(ws, id.privateKey, { token: token(), boot: "boot-1" });
+  assert.deepEqual(await registered, { type: "registered" });
+  ws.close();
+});
+
 console.log("Relay: host key proofs, room ownership, token gate, tunnel replacement, IP cap, push gateway and APNs sender passed");
