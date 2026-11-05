@@ -569,14 +569,14 @@ export function FolderTreeView({
   // 平铺列表只放会话本身；所属项目在悬停卡片里。按日期分组时（Codex 式）
   // 项目放在标题下的第二行，因为分组本身不再说明项目。
   /**
-   * A session row and, under it, the sub-sessions it started (one level),
-   * folded with the chevron in its gutter.
+   * A session row and, under it, the sub-sessions it started (one level), hung
+   * on a tree line. The row's menu folds them.
    */
   const withSubSessions = (
     session: SessionView,
     depth: number,
     key: string,
-    renderRow: (row: SessionView, rowDepth: number, nest?: SubSessionNest) => ReactNode,
+    renderRow: (row: SessionView, rowDepth: number, nest?: SubSessionNest, nested?: boolean) => ReactNode,
   ) => {
     const children = subSessionsByRoot.get(session.id);
     if (!children?.length) return <Fragment key={key}>{renderRow(session, depth)}</Fragment>;
@@ -584,23 +584,16 @@ export function FolderTreeView({
     const waits = children
       .filter((_, index) => childStates[index] === 'needs-input')
       .map(subSessionWaitMark);
-    const ownState = sidebarStateOf(session, organization, prsBySession, worktrees);
-    const allDone = view.groupBy === 'state' && ownState !== null && mostUrgentSidebarState(ownState, childStates) === 'completed';
-    // Finished work starts folded and is opened by hand. Everything else starts
-    // open, and a fold holds until another task needs the user.
-    const openKey = `sub-sessions-open:${session.id}`;
+    // A fold holds until another task needs the user.
     const foldKey = `sub-sessions:${session.id}`;
-    const expanded = allDone
-      ? collapsedGroups.has(openKey)
-      : !collapsedGroups.has(foldKey) || waits.some((wait) => !dismissedWaits.has(wait));
+    const expanded = !collapsedGroups.has(foldKey) || waits.some((wait) => !dismissedWaits.has(wait));
     const nest: SubSessionNest = {
       count: children.length,
       running: children.filter((child) => child.status === 'running').length,
       waiting: waits.length > 0,
       expanded,
       onToggle: () => {
-        if (allDone) toggleGroupExpanded(openKey);
-        else if (expanded) foldSubSessions(foldKey, waits);
+        if (expanded) foldSubSessions(foldKey, waits);
         else toggleGroupExpanded(foldKey);
       },
     };
@@ -608,21 +601,27 @@ export function FolderTreeView({
       <Fragment key={key}>
         {renderRow(session, depth, nest)}
         {expanded ? (
-          <div className="relative" data-sub-sessions-of={session.id}>
-            <span
-              aria-hidden="true"
-              className="pointer-events-none absolute bottom-1 top-0 w-px bg-[color-mix(in_srgb,var(--text-primary)_10%,transparent)]"
-              // Under the parent's chevron, which sits in its row's gutter.
-              style={{ left: `${depth * 16 + 1.5}px` }}
-            />
-            {children.map((child) => <Fragment key={child.id}>{renderRow(child, depth + 1)}</Fragment>)}
+          <div data-sub-sessions-of={session.id}>
+            {children.map((child, index) => (
+              <div key={child.id} className="relative flow-root pl-1">
+                {renderRow(child, depth + 1, undefined, true)}
+                <span
+                  aria-hidden="true"
+                  className={`pointer-events-none absolute top-0 w-[9px] border-l border-[color-mix(in_srgb,var(--text-primary)_16%,transparent)] ${
+                    index === children.length - 1 ? 'h-[calc(50%-0.5px)] rounded-bl-[6px] border-b' : 'bottom-0'
+                  }`}
+                  // Just inside the parent's title, which starts 18px past its depth.
+                  style={{ left: `${depth * 16 + 22}px` }}
+                />
+              </div>
+            ))}
           </div>
         ) : null}
       </Fragment>
     );
   };
   const renderFlatSession = (session: SessionView, keyPrefix: string) =>
-    withSubSessions(session, 0, `${keyPrefix}:${session.id}`, (row, rowDepth, nest) => {
+    withSubSessions(session, 0, `${keyPrefix}:${session.id}`, (row, rowDepth, nest, nested) => {
       const isSessionActive = isChatWorkspaceActive && openSessionIds.has(row.id);
       return (
         <SessionItem
@@ -631,6 +630,7 @@ export function FolderTreeView({
           runtimeBadge={runtimeBadgeFor(row)}
           depth={rowDepth}
           nest={nest}
+          nested={nested}
           pullRequests={view.showPullRequests ? prsBySession[row.id] : null}
           showProject={view.groupBy === 'date'}
           onClick={() => onSessionClick(row.id)}
@@ -822,7 +822,7 @@ export function FolderTreeView({
                       }
                     }
                     const renderSession = (session: SessionView, depth: number) =>
-                      withSubSessions(session, depth, session.id, (row, rowDepth, nest) => {
+                      withSubSessions(session, depth, session.id, (row, rowDepth, nest, nested) => {
                         const isSessionActive =
                           isChatWorkspaceActive && openSessionIds.has(row.id);
                         return (
@@ -832,6 +832,7 @@ export function FolderTreeView({
                             runtimeBadge={runtimeBadgeFor(row)}
                             depth={rowDepth}
                             nest={nest}
+                            nested={nested}
                             pullRequests={view.showPullRequests ? prsBySession[row.id] : null}
                             onClick={() => onSessionClick(row.id)}
                             onTogglePin={() =>
@@ -1089,6 +1090,7 @@ function SessionItem({
   runtimeBadge,
   depth,
   nest,
+  nested = false,
   pullRequests,
   showProject = false,
   onClick,
@@ -1100,6 +1102,8 @@ function SessionItem({
   depth: number;
   /** Set on a row with sub-sessions under it. */
   nest?: SubSessionNest;
+  /** Hangs on its parent's tree line, which runs through the pin's gutter. */
+  nested?: boolean;
   pullRequests?: GitPullRequestSummary[] | null;
   /** Second line with the session's project (date-grouped lists). */
   showProject?: boolean;
@@ -1112,7 +1116,7 @@ function SessionItem({
   const startedBySession = useFollowUpStore(s => findProposalForChild(s.proposals, session.id)?.kind === 'session');
   const followUpParentTitle = useAppStore(s => (followUpParentId ? s.sessions[followUpParentId]?.title : undefined));
   const rowRef = useRef<HTMLDivElement>(null);
-  const { openMenu, menuOpen, worktreeAction } = useSessionActionsMenu(session);
+  const { openMenu, menuOpen, worktreeAction } = useSessionActionsMenu(session, nest);
   // The PR list replaces the session preview while it is open.
   const [pullRequestsOpen, setPullRequestsOpen] = useState(false);
   const [branchLookup, setBranchLookup] = useState<{
@@ -1210,22 +1214,7 @@ function SessionItem({
             }}
             onClick={onClick}
           >
-            {nest ? (
-              <button
-                type="button"
-                draggable={false}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  nest.onToggle();
-                }}
-                className="absolute left-1 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-[var(--text-muted)] transition-colors duration-150 hover:text-[var(--text-primary)]"
-                aria-label={nest.expanded ? 'Hide sub-sessions' : 'Show sub-sessions'}
-                aria-expanded={nest.expanded}
-                title={nest.expanded ? 'Hide sub-sessions' : 'Show sub-sessions'}
-              >
-                <ChevronRight className={`h-3.5 w-3.5 transition-transform duration-150 ${nest.expanded ? 'rotate-90' : ''}`} />
-              </button>
-            ) : (
+            {nested ? null : (
             <button
               type="button"
               draggable={false}

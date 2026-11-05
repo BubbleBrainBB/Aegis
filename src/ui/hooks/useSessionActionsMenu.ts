@@ -17,7 +17,7 @@ type WorktreeAction = 'move' | 'apply' | 'discard';
 // Both entry points observe the same pending state, including split panes.
 const useMenuPending = create<{ actions: Record<string, WorktreeAction | undefined> }>(() => ({ actions: {} }));
 
-export function useSessionActionsMenu(session: SessionView) {
+export function useSessionActionsMenu(session: SessionView, subSessions?: { expanded: boolean; onToggle: () => void }) {
   const organization = useSessionOrganization();
   const metadata = organization.sessions[session.id];
   const sessions = useAppStore(s => s.sessions);
@@ -183,6 +183,7 @@ export function useSessionActionsMenu(session: SessionView) {
     { id: 'unread', label: metadata?.unread || session.runtimeNotice ? 'Mark as read' : 'Mark as unread', icon: 'unread', enabled: editable },
     { id: 'archive', label: metadata?.archived ? 'Unarchive' : 'Archive', icon: 'archive', enabled: editable && session.status !== 'running' },
     ...(nestedParentId ? [{ id: 'detach' as const, label: 'Detach from parent', icon: 'fork' as const }] : []),
+    ...(subSessions ? [{ id: 'toggle-sub-sessions' as const, label: subSessions.expanded ? 'Hide sub-sessions' : 'Show sub-sessions', icon: 'fork' as const }] : []),
     { type: 'separator' },
     { label: 'Project', icon: 'folder', enabled: editable && session.source !== 'claude_remote' && canChangeWorktree && !inWorktree, submenu: [
       ...projects.map((cwd, i): SessionMenuItem => ({ id: `project:${i}`, label: cwd.length > 115 ? '…' + cwd.slice(-114) : cwd, icon: 'folder', checked: cwd === projectIdentity(session.projectCwd || session.cwd || '') })),
@@ -306,6 +307,7 @@ export function useSessionActionsMenu(session: SessionView) {
         if (!result.ok && result.error) toast.error(result.error);
         break;
       }
+      case 'toggle-sub-sessions': subSessions?.onToggle(); break;
       case 'section-new': {
         const name = await textInputDialog({ title: 'New section', label: 'Section name', maxLength: 80 });
         if (name) await changeSessionOrganization({ kind: 'create-section', sessionId: session.id, name });

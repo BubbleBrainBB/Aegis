@@ -85,6 +85,9 @@ app.whenReady().then(async()=>{
  const js=code=>win.webContents.executeJavaScript(code,true);
  const point=async selector=>js('new Promise((resolve,reject)=>{const start=performance.now();const t=()=>{const e='+selector+';if(e){const r=e.getBoundingClientRect();resolve({x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)});return}if(performance.now()-start>5000){reject(Error("Missing element"));return}setTimeout(t,50)};t()})');
  const click=async selector=>{win.focus();win.webContents.focus();const p=await point(selector);win.webContents.sendInputEvent({type:'mouseMove',...p});win.webContents.sendInputEvent({type:'mouseDown',...p,button:'left',clickCount:1});win.webContents.sendInputEvent({type:'mouseUp',...p,button:'left',clickCount:1});await delay(220)};
+ let menuLabels=[];
+ ipcMain.handle('show-session-menu',(_,request)=>{menuLabels=request.items.map(item=>item.label);return 'toggle-sub-sessions';});
+ const foldFromMenu=async(id,label)=>{await js('document.querySelector("[data-session-id='+id+']").dispatchEvent(new MouseEvent("contextmenu",{bubbles:true,clientX:40,clientY:40}))');await delay(150);assert.ok(menuLabels.includes(label),'the menu offers '+label);};
  const screenshot=async name=>{if(!process.env.QA_CAPTURE)return;fs.mkdirSync(process.env.QA_CAPTURE,{recursive:true});fs.writeFileSync(path.join(process.env.QA_CAPTURE,name+'.png'),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG())};
  const rowIds=()=>js('[...document.querySelectorAll("[data-session-id]")].map(e=>e.dataset.sessionId)');
  const text=selector=>js('(document.querySelector('+JSON.stringify(selector)+')||{}).textContent||""');
@@ -125,8 +128,19 @@ app.whenReady().then(async()=>{
   assert.equal(await text('[data-session-parent-crumb]'),'Usage settings redesign','the breadcrumb names the parent');
   await screenshot('1-expanded');
 
+  // A tree line hangs the sub-sessions off the parent, ending in a hook on the last one; no chevron.
+  assert.equal(await js('!!document.querySelector("[data-session-id=p1] [aria-expanded]")'),false,'the parent has no chevron');
+  assert.equal(await js('!!document.querySelector("[data-session-id=p1] [aria-label=\\\\"Pin conversation\\\\"]")'),true,'its gutter holds the pin like any row');
+  assert.equal(await js('!!document.querySelector("[data-sub-sessions-of=p1] [aria-label=\\\\"Pin conversation\\\\"]")'),false,'the tree line runs through the gutter of a nested row');
+  const lines=await js('[...document.querySelectorAll("[data-sub-sessions-of=p1] > div")].map(row=>{const line=row.querySelector(":scope > span[aria-hidden]").getBoundingClientRect(),box=row.getBoundingClientRect();return{top:line.top-box.top,bottom:line.bottom-box.bottom,mid:line.bottom-(box.top+box.height/2),hook:parseFloat(getComputedStyle(row.querySelector(":scope > span[aria-hidden]")).borderBottomLeftRadius)}})');
+  assert.equal(lines.length,3);
+  for(const line of lines.slice(0,-1)) assert.deepEqual([line.top,line.bottom,line.hook],[0,0,0],'a middle row carries the line edge to edge');
+  assert.equal(lines.at(-1).top,0);
+  assert.ok(Math.abs(lines.at(-1).mid)<=1,'the hook ends at the middle of the last row');
+  assert.equal(lines.at(-1).hook,6);
+
   // Fold: the parent row sums its sub-sessions up (2 of 3 still running).
-  await click('document.querySelector("[data-session-id=p1] [aria-label=\\\\"Hide sub-sessions\\\\"]")');
+  await foldFromMenu('p1','Hide sub-sessions');
   assert.equal(await js('!!document.querySelector("[data-sub-sessions-of=p1]")'),false,'folded');
   assert.equal(await js('document.querySelector("[data-session-id=p1] [title=\\\\"2 of 3 sub-sessions running\\\\"]").textContent'),'1/3');
   await screenshot('2-folded');
@@ -134,7 +148,7 @@ app.whenReady().then(async()=>{
   // A task that needs you unfolds its conversation; folded over that wait, the mark turns amber.
   await js('qa.app.setState(s=>({sessions:{...s.sessions,g1:{...s.sessions.g1,permissionRequests:[{toolUseId:"t",toolName:"Bash",input:{}}]}}}))');await delay(150);
   assert.equal(await js('!!document.querySelector("[data-sub-sessions-of=p1]")'),true,'a wait unfolds it');
-  await click('document.querySelector("[data-session-id=p1] [aria-label=\\\\"Hide sub-sessions\\\\"]")');
+  await foldFromMenu('p1','Hide sub-sessions');
   assert.equal(await js('!!document.querySelector("[data-sub-sessions-of=p1]")'),false,'it can be folded over that wait');
   assert.equal(await js('!!document.querySelector("[data-session-id=p1] [aria-label=\\\\"A sub-session needs you\\\\"]")'),true);
   // ...until another task needs you.
@@ -148,11 +162,16 @@ app.whenReady().then(async()=>{
   const inState=state=>js('[...document.querySelectorAll("[data-sidebar-state='+state+'] [data-session-id]")].map(e=>e.dataset.sessionId)');
   assert.deepEqual(await inState('needs-input'),['p1'],'g1 waits, so p1 stands in Needs input, folded');
   assert.equal(await js('!!document.querySelector("[data-sidebar-state=needs-input] [data-sub-sessions-of=p1]")'),false,'that fold is kept across views');
-  await click('document.querySelector("[data-session-id=p1] [aria-label=\\\\"Show sub-sessions\\\\"]")');
+  await foldFromMenu('p1','Show sub-sessions');
   assert.deepEqual((await inState('needs-input')).sort(),['c1','c2','g1','p1'],'its tasks nest under it there, whatever their own state');
   await screenshot('2-state-view');
   await js('qa.app.setState(s=>({sessions:{...s.sessions,g1:{...s.sessions.g1,permissionRequests:[]}}}))');await delay(150);
   assert.deepEqual((await inState('running')).includes('p1'),true,'the wait over, it moves to its next most urgent group');
+  // Nothing folds on its own, since a folded row looks like one with no sub-sessions.
+  const fixture=await js('JSON.stringify(qa.app.getState().sessions)');
+  await js('qa.app.setState(s=>({sessions:Object.fromEntries(Object.entries(s.sessions).map(([id,row])=>[id,{...row,status:"completed",runtimeNotice:null,turnReport:null,permissionRequests:[],envMode:"local",worktreePath:null,associatedWorktreeBranch:null}]))}))');await delay(200);
+  assert.deepEqual((await inState('completed')).filter(id=>['c1','c2','g1','p1'].includes(id)).sort(),['c1','c2','g1','p1'],'a finished conversation keeps its sub-sessions open');
+  await js('qa.app.setState({sessions:'+fixture+'})');await delay(150);
   await js('qa.view.setState({groupBy:"project"})');await delay(200);
 
   // The breadcrumb opens the parent.
