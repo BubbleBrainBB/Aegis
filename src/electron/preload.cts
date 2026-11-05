@@ -118,6 +118,7 @@ ipcRenderer.on(
 // 暴露 API 到渲染进程
 contextBridge.exposeInMainWorld('electron', {
   remoteCompanion: (action: string, payload?: unknown) => ipcRenderer.invoke('remote-companion', action, payload),
+  remoteHosts: (action: string, payload?: unknown) => ipcRenderer.invoke('remote-hosts', action, payload),
   // 订阅服务器事件
   onServerEvent: (callback: (event: unknown) => void) => {
     const handler = (_: unknown, eventJson: string) => {

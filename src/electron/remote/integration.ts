@@ -1,5 +1,5 @@
 import { app, dialog, safeStorage, type BrowserWindow } from "electron";
-import { existsSync } from "fs";
+import { existsSync, readFileSync, writeFileSync } from "fs";
 import { basename, join } from "path";
 import { createHash } from "crypto";
 import * as sessions from "../libs/session-store";
@@ -11,7 +11,7 @@ import { defaultRelay } from "./relay-auth";
 import { projectMessages } from "../../shared/remote/projection";
 import { parseTurnReport } from "../../shared/turn-report";
 import type { RemoteAgentOptions } from "../../shared/remote/protocol";
-import type { ServerEvent } from "../../shared/types";
+import type { ClientEvent, ServerEvent } from "../../shared/types";
 export { remoteTaskPayload } from "./task-payload";
 import { getClaudeModelConfigWithCatalog } from "../libs/claude-settings";
 import { getCodexModelConfig } from "../libs/codex-settings";
@@ -21,6 +21,7 @@ import { getMimoModelConfig } from "../libs/mimo-cli";
 import { getMinimaxModelConfig, getMinimaxThinkingEfforts } from "../libs/minimax-cli";
 import { importAttachmentBytes } from "../libs/file-attachments";
 import { composerCapabilities } from "./capabilities";
+import { isRemoteSessionId, RemoteHostBridge, type SavedHosts } from "./host-bridge";
 export { codexReferences } from "./capabilities";
 
 /** Devin's catalog with thinking levels per model (both cached by devin-cli). */
@@ -137,6 +138,43 @@ export function remoteListChanged() {
 }
 export function closeRemoteGateway() {
   gateway?.close();
+  hostBridge?.close();
+}
+let hostBridge: RemoteHostBridge | undefined;
+export { isRemoteSessionId };
+export const remoteHostSessions = () => hostBridge?.sessions() ?? [];
+export const handleRemoteHostEvent = (event: ClientEvent) => hostBridge?.handleClientEvent(event) ?? false;
+export const loadOlderRemoteHistory = (id: string, cursor: string) => hostBridge!.older(id, cursor);
+/** Other Macs this one controls, kept in the keychain-encrypted store beside the gateway's. */
+export function setupRemoteHosts(emit: (event: ServerEvent) => void, listChanged: () => void) {
+  const file = join(app.getPath("userData"), "remote-hosts.enc");
+  const empty: SavedHosts = { hosts: [] };
+  hostBridge = new RemoteHostBridge({
+    load: () => {
+      if (!existsSync(file) || !safeStorage.isEncryptionAvailable()) return empty;
+      try {
+        return JSON.parse(safeStorage.decryptString(readFileSync(file)));
+      } catch {
+        return empty;
+      }
+    },
+    save: (saved) => {
+      if (!safeStorage.isEncryptionAvailable()) throw new Error("System keychain is unavailable");
+      writeFileSync(file, safeStorage.encryptString(JSON.stringify(saved)), { mode: 0o600 });
+    },
+    createIdentity: () => (require(join(__dirname, "secure-channel.cjs")) as typeof import("../../shared/remote/secure-channel")).createIdentity(),
+    environment: app.isPackaged ? "production" : "development",
+    emit,
+    listChanged,
+  });
+  ipcMainHandle("remote-hosts", async (_event, action: string, payload: any) => {
+    if (action === "list") return hostBridge!.list();
+    if (action === "add" && typeof payload?.link === "string") return hostBridge!.add(payload.link);
+    if (action === "remove" && typeof payload?.id === "string") return hostBridge!.remove(payload.id);
+    if (action === "retry" && typeof payload?.id === "string") return hostBridge!.retry(payload.id);
+    throw new Error("Unknown remote host action");
+  });
+  hostBridge.start();
 }
 export function setupRemoteIPC(
   window: BrowserWindow,
@@ -227,10 +265,10 @@ export function setupRemoteIPC(
       confirm: async (name, peerId) => {
         const result = await dialog.showMessageBox(window, {
           type: "question",
-          title: "Connect iPhone",
+          title: "Connect device",
           message: `Allow “${name}” to use Aegis on this Mac?`,
-          detail: `Check that your iPhone shows this device ID:\n${peerId}\n\nOnce allowed, it can see all your projects and sessions, start and stop tasks, and answer one-time approvals.`,
-          buttons: ["Don’t Allow", "Allow This iPhone"],
+          detail: `Check that the other device shows this device ID:\n${peerId}\n\nOnce allowed, it can see all your projects and sessions, start and stop tasks, and answer approvals.`,
+          buttons: ["Don’t Allow", "Allow"],
           defaultId: 0,
           cancelId: 0,
         });

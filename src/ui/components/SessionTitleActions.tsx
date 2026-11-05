@@ -1,6 +1,7 @@
 import { useAppStore } from '../store/useAppStore';
 import { findProposalForChild, useFollowUpStore } from '../store/useFollowUpStore';
 import type { SessionView } from '../types';
+import { Loader2, Monitor } from './icons';
 import { SessionActionsMenu } from './SessionActionsMenu';
 import { SessionTitleEditor } from './SessionTitleEditor';
 
@@ -44,7 +45,16 @@ export function SessionTitleActions({ session, className = '', showMenu = true }
     <div className={`flex min-w-0 items-center gap-2 ${showMenu ? '' : 'flex-1'}`} data-session-title-actions>
       {session ? <ParentCrumb sessionId={session.id} /> : null}
       <SessionTitleEditor session={session} className={className} />
-      {session && showMenu ? <SessionActionsMenu session={session} /> : null}
+      {session?.device ? (
+        <span data-session-machine className="no-drag inline-flex h-6 flex-shrink-0 items-center gap-[5px] rounded-[7px] bg-[var(--sidebar-item-hover)] pl-1.5 pr-2 text-[12.5px] text-[var(--text-secondary)]">
+          <Monitor className="h-3.5 w-3.5" />
+          {session.device.name}
+          {session.device.reconnecting
+            ? <Loader2 className="ml-0.5 h-3 w-3 animate-spin text-[var(--text-muted)]" aria-label="Reconnecting" />
+            : <span className={`ml-0.5 h-1.5 w-1.5 rounded-full ${session.device.online ? 'bg-[var(--success)]' : 'bg-[var(--text-muted)]'}`} aria-label={session.device.online ? 'Connected' : 'Offline'} />}
+        </span>
+      ) : null}
+      {session && showMenu && !session.device ? <SessionActionsMenu session={session} /> : null}
     </div>
   );
 }

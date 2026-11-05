@@ -37,6 +37,8 @@ export type HistoryTail = z.infer<typeof historyTailSchema>;
 export const EMPTY_HISTORY = "0";
 /** Phones that send this in `auth.features` get pushed `event`s instead of `changed` + polls. */
 export const EVENTS_FEATURE = "events";
+/** The other end is a Mac controlling this one, not a phone. */
+export const DESKTOP_FEATURE = "desktop";
 /** Upload chunks stay well under the relay's 256 KB message cap. */
 export const ATTACHMENT_CHUNK_BYTES = 96 * 1024;
 /**
@@ -162,6 +164,8 @@ export const requestSchema = z.discriminatedUnion("method", [
       requestId: id,
       /** On a plan: allow approves it, deny keeps planning. */
       decision: z.enum(["allow", "deny"]),
+      /** Allow the same kind of request for the rest of this session too. */
+      scope: z.literal("session").optional(),
       /** A question's answers, sent with allow. Only for permissions that carry `questions`. */
       answers: questionAnswersSchema.optional(),
     })
@@ -306,6 +310,8 @@ export interface RemotePermission {
   detail: string;
   /** Allow without anything else. False for questions and plans, so older phones send them to the Mac. */
   canApprove: boolean;
+  /** The tool's input, for a desktop that draws its own approval card. Omitted when large. */
+  input?: unknown;
   /**
    * The agent is asking. Answered with allow plus `answers`; every question
    * takes its listed options and free "Other" text, as on the desktop.
@@ -403,8 +409,8 @@ export function parsePairing(value: string): Pairing {
       ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)
     )
   )
-    throw new Error("中继必须使用 WSS");
+    throw new Error("Relays must use WSS");
   if (data.invite && (!data.expiresAt || data.expiresAt < Date.now()))
-    throw new Error("配对码已过期，请在电脑重新生成");
+    throw new Error("This pairing link has expired. Create a new one.");
   return data;
 }

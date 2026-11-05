@@ -650,11 +650,13 @@ export function App() {
     : resolveDockedRightPanelWidth(rightUtilityPanelWidth, skinHostWidth);
 
   // The panel the right pane has open, whether or not it is showing.
+  const remoteSession = !!activeSession?.device;
   const openUtilityPanel = useMemo(() => {
-    if (rightUtilityPanelHidden) return null;
+    // Files, git and terminals here belong to this Mac; a session on another one has none of them yet.
+    if (rightUtilityPanelHidden || remoteSession) return null;
     if (activeRightUtilityTab) return getProjectUtilityTabKind(activeRightUtilityTab);
     return null;
-  }, [activeRightUtilityTab, rightUtilityPanelHidden]);
+  }, [activeRightUtilityTab, rightUtilityPanelHidden, remoteSession]);
 
   // A fullscreen pane keeps the main session as its first tab; this is true
   // while that tab is the one showing.
@@ -1228,8 +1230,8 @@ export function App() {
                 </div>
               </div>
               <div className="flex shrink-0 items-center justify-end gap-1">
-                {sessionHeaderActions}
-                {activeUtilityPanel === null ? (
+                {remoteSession ? null : sessionHeaderActions}
+                {activeUtilityPanel === null && !remoteSession ? (
                   <>
                     <span aria-hidden="true" className="mx-1 h-4 w-px bg-[var(--border)]" />
                     {closedPaneEntry}
@@ -1267,6 +1269,7 @@ export function App() {
       <SessionRightPanelPresence sessionId={activeSessionId}>
       {(sessionChanged) => !showSettings &&
       activeWorkspace === 'chat' &&
+      !remoteSession &&
       (openUtilityPanel !== null || (rightUtilityPanelHidden && rightUtilityTabs.length > 0)) ? (
         <RightUtilityWorkspace
           key="right-utility-workspace"

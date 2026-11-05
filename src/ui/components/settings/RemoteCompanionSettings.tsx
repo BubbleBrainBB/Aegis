@@ -14,13 +14,113 @@ interface Status {
   defaultRelay?: string;
   relayError?: string;
   projects: { id: string; name: string }[];
-  devices: { peerId: string; name: string; push?: unknown }[];
+  devices: { peerId: string; name: string; kind?: 'desktop'; push?: unknown }[];
 }
 interface Pairing { url: string; qr: string; expiresAt: number }
+interface ControlledDevice {
+  id: string;
+  name: string;
+  status: 'connecting' | 'confirming' | 'connected' | 'offline' | 'revoked' | 'rejected';
+  transport?: 'relay' | 'direct';
+}
 const statusLabels: Record<string, string> = {
   disabled: 'Off', connecting: 'Connecting…', waiting: 'Ready to connect',
   connected: 'Connected', offline: 'Reconnecting…', rejected: 'Relay refused this Mac',
 };
+
+function controlledStatus(device: ControlledDevice) {
+  switch (device.status) {
+    case 'connected': return `Connected · ${device.transport === 'direct' ? 'Direct' : 'Relay'}`;
+    case 'connecting': return 'Connecting…';
+    case 'confirming': return `Waiting for approval on ${device.name}`;
+    case 'revoked': return 'Access was removed on this device';
+    case 'rejected': return 'Not allowed';
+    default: return 'Offline';
+  }
+}
+
+/** Other Macs this one controls: their sessions join the list, and stay on those Macs. */
+function DevicesYouControl() {
+  const [devices, setDevices] = useState<ControlledDevice[]>();
+  const [adding, setAdding] = useState(false);
+  const [link, setLink] = useState('');
+  const [deviceId, setDeviceId] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [pairingId, setPairingId] = useState<string>();
+
+  const refresh = async () => {
+    try { setDevices(await window.electron.remoteHosts('list')); }
+    catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+  };
+  useEffect(() => {
+    void refresh();
+    const timer = setInterval(() => void refresh(), 2500);
+    return () => clearInterval(timer);
+  }, []);
+  const pairing = devices?.find(device => device.id === pairingId);
+  useEffect(() => {
+    if (pairing?.status === 'connected') { setAdding(false); setPairingId(undefined); setLink(''); }
+  }, [pairing?.status]);
+
+  const add = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      const added = await window.electron.remoteHosts('add', { link: link.trim() });
+      setDeviceId(added.deviceId);
+      setPairingId(added.id);
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const remove = async (id: string) => {
+    setError('');
+    try { await window.electron.remoteHosts('remove', { id }); await refresh(); }
+    catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+  };
+  const close = () => {
+    setAdding(false); setLink(''); setError('');
+    // Closing while the other Mac is still asking drops the attempt.
+    if (pairingId && pairing?.status !== 'connected') void remove(pairingId);
+    setPairingId(undefined);
+  };
+
+  return <section aria-labelledby="connections-controlled-title">
+    <div className="connections-section-heading">
+      <h2 id="connections-controlled-title">Devices you control</h2>
+      <button className="settings-button connections-outlined-button" onClick={() => { setError(''); setAdding(true); }}>Add device</button>
+    </div>
+    {error && !adding && <p className="connections-error" role="alert">{error}</p>}
+    {devices?.length ? <div className="connections-device-list">
+      {devices.map(device => <div className="connections-row" key={device.id} data-controlled-device={device.id}>
+        <div className="connections-device"><Monitor aria-hidden="true" /><div><h3>{device.name}</h3><p className="connections-controlled-status"><i className="connections-dot" data-online={device.status === 'connected'} />{controlledStatus(device)}</p></div></div>
+        <button className="settings-button connections-outlined-button" onClick={() => void remove(device.id)}>Remove</button>
+      </div>)}
+    </div> : devices ? <p className="connections-note">Add another Mac with Aegis to manage its sessions from here.</p> : null}
+    <Dialog.Root open={adding} onOpenChange={open => { if (!open) close(); }}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-[80] bg-black/30" />
+        <Dialog.Content className="connections-dialog">
+          <div className="connections-dialog-header"><Dialog.Title>Add a device</Dialog.Title><button className="settings-button" aria-label="Close" onClick={close}><X className="h-4 w-4" /></button></div>
+          <Dialog.Description className="connections-dialog-description">On the other Mac, open Settings → Connections and choose Pair a device. Copy its pairing link here.</Dialog.Description>
+          {error && <p role="alert" className="connections-error">{error}</p>}
+          <form onSubmit={event => { event.preventDefault(); if (link.trim() && !pairing) void add(); }}>
+            <label className="connections-field">Pairing link<input className="settings-control" data-pairing-link autoFocus value={link} onChange={event => setLink(event.target.value)} disabled={busy || !!pairing} spellCheck={false} /></label>
+            {pairing && <>
+              <p className="connections-note">{pairing.status === 'rejected' ? `${pairing.name} didn’t allow this Mac. Try again with a new link.` : `Confirm on ${pairing.name}. Its screen should show this device ID:`}</p>
+              {pairing.status !== 'rejected' && <p className="connections-device-id">{deviceId}</p>}
+            </>}
+            <div className="connections-dialog-actions"><button type="button" className="settings-button" onClick={close}>Cancel</button>{!pairing && <button className="settings-primary-button" disabled={busy || !link.trim()}>{busy ? 'Connecting…' : 'Connect'}</button>}</div>
+          </form>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  </section>;
+}
 
 export function RemoteCompanionSettings() {
   const [status, setStatus] = useState<Status>();
@@ -122,25 +222,26 @@ export function RemoteCompanionSettings() {
   };
 
   return <div className="connections-settings">
+    <DevicesYouControl />
     <section aria-labelledby="connections-devices-title">
       <div className="connections-section-heading">
         <h2 id="connections-devices-title">Devices that can access this Mac</h2>
-        {!!status?.devices.length && <button className="settings-button connections-outlined-button" disabled={busy || !ready} onClick={() => void act('pair')}>Add device</button>}
+        {!!status?.devices.length && <button className="settings-button connections-outlined-button" disabled={busy || !ready} onClick={() => void act('pair')}>Pair a device</button>}
       </div>
       {loadError && <div className="connections-error" role="alert">Could not refresh connections. {loadError} <button className="settings-button" onClick={() => setRetry(value => value + 1)}>Retry</button></div>}
       {error && !dialog && <p className="connections-error" role="alert">{error}</p>}
       {!status ? <p className="connections-empty" role="status">{loadError ? 'Connection status unavailable' : 'Loading connections…'}</p>
         : status.devices.length ? <div className="connections-device-list">
           {status.devices.map(device => <div className="connections-row" key={device.peerId}>
-            <div className="connections-device"><span className="connections-phone" aria-hidden="true" /><div><h3>{device.name}</h3><p>{status.enabled ? (device.push ? 'Authorized device · Notifications on' : 'Authorized device') : 'Remote access is off'}</p></div></div>
+            <div className="connections-device">{device.kind === 'desktop' ? <Monitor aria-hidden="true" /> : <span className="connections-phone" aria-hidden="true" />}<div><h3>{device.name}</h3><p>{status.enabled ? (device.push ? 'Authorized device · Notifications on' : 'Authorized device') : 'Remote access is off'}</p></div></div>
             <button className="settings-button connections-outlined-button" disabled={busy || !!loadError} onClick={() => void act('revoke', { peerId: device.peerId })}>Revoke access</button>
           </div>)}
         </div> : <div className="connections-empty">
           <div className="connections-device-illustration" aria-hidden="true"><Monitor /><span className="connections-phone" /></div>
-          <p>Continue your tasks from your iPhone.</p>
-          <button className="settings-primary-button" disabled={busy || !!loadError || (status.enabled && !ready)} onClick={() => status.enabled ? void act('pair') : openSetup()}>{busy ? 'Please wait…' : status.enabled ? 'Add device' : 'Set up'}</button>
+          <p>Control this Mac from your iPhone or another Mac.</p>
+          <button className="settings-primary-button" disabled={busy || !!loadError || (status.enabled && !ready)} onClick={() => status.enabled ? void act('pair') : openSetup()}>{busy ? 'Please wait…' : status.enabled ? 'Pair a device' : 'Set up'}</button>
         </div>}
-      <p className="connections-note">Your iPhone can view conversations, send tasks, and respond to approvals. One phone can be online at a time.</p>
+      <p className="connections-note">Paired devices can view conversations, send tasks, and respond to approvals.</p>
     </section>
 
     <section aria-labelledby="connections-access-title">
@@ -164,8 +265,8 @@ export function RemoteCompanionSettings() {
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-[80] bg-black/30" />
         <Dialog.Content className="connections-dialog">
-          <div className="connections-dialog-header"><Dialog.Title>{dialog === 'setup' ? 'Set up iPhone access' : 'Pair your iPhone'}</Dialog.Title><button className="settings-button" aria-label="Close pairing" disabled={busy} onClick={closeDialog}><X className="h-4 w-4" /></button></div>
-          <Dialog.Description className="connections-dialog-description">{dialog === 'setup' ? 'Your iPhone will see all your projects and conversations.' : 'Open Aegis on your iPhone and scan this code. Then approve the connection on this Mac.'}</Dialog.Description>
+          <div className="connections-dialog-header"><Dialog.Title>{dialog === 'setup' ? 'Set up remote access' : 'Pair a device'}</Dialog.Title><button className="settings-button" aria-label="Close pairing" disabled={busy} onClick={closeDialog}><X className="h-4 w-4" /></button></div>
+          <Dialog.Description className="connections-dialog-description">{dialog === 'setup' ? 'Devices you allow will see all your projects and conversations.' : 'Scan with your iPhone, or copy the link to another Mac. Then approve the connection on this Mac.'}</Dialog.Description>
           {error && <p role="alert" className="connections-error">{error}</p>}
           {dialog === 'setup' && <form onSubmit={event => { event.preventDefault(); void act('configure', { relay: relay.trim(), token: token.trim() }); }}>
             <details className="settings-disclosure connections-details" open={!!relay}>
@@ -178,7 +279,7 @@ export function RemoteCompanionSettings() {
             <div className="connections-dialog-actions"><button type="button" className="settings-button" disabled={busy} onClick={closeDialog}>Cancel</button><button className="settings-primary-button" disabled={busy || (!!token.trim() && token.trim().length < 32)}>{busy ? 'Connecting…' : 'Enable access'}</button></div>
           </form>}
           {dialog === 'pair' && pair && <>
-            <div className="connections-qr">{seconds > 0 ? <img src={pair.qr} width={220} height={220} alt="Scan to pair your iPhone" /> : <div className="connections-expired"><Monitor /><p>Pairing code expired</p><button className="settings-primary-button" disabled={busy || !ready} onClick={() => void act('pair')}>Generate new code</button></div>}</div>
+            <div className="connections-qr">{seconds > 0 ? <img src={pair.qr} width={220} height={220} alt="Scan to pair a device" /> : <div className="connections-expired"><Monitor /><p>Pairing code expired</p><button className="settings-primary-button" disabled={busy || !ready} onClick={() => void act('pair')}>Generate new code</button></div>}</div>
             <p className="connections-pair-expiry">{seconds > 0 ? `Expires in ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')} · Single use` : 'Generate a new code to continue.'}</p>
             <div className="connections-dialog-actions"><button className="settings-button" disabled={!seconds || busy} onClick={() => void copyLink()}><Copy className="h-3.5 w-3.5" />{copied ? 'Copied' : 'Copy pairing link'}</button><button className="settings-primary-button" onClick={closeDialog}>Done</button></div>
           </>}

@@ -1,11 +1,33 @@
 // Host-side proofs for the relay. Mirrors services/relay/protocol.mjs.
-import { createHash, createPrivateKey, randomBytes, sign } from "crypto";
+import { execFileSync } from "child_process";
+import { createHash, createHmac, createPrivateKey, randomBytes, sign } from "crypto";
+import { hostname } from "os";
 
 const PKCS8_ED25519 = Buffer.from("302e020100300506032b657004220420", "hex");
 
 /** The public relay; AEGIS_REMOTE_RELAY overrides it (e.g. a local relay). */
 export const DEFAULT_RELAY = "wss://aegis-relay.fly.dev/";
 export const defaultRelay = () => process.env.AEGIS_REMOTE_RELAY || DEFAULT_RELAY;
+
+let cachedMachineName: string | undefined;
+/** The name people gave this Mac ("Dylan's Mac mini"), not its network host name. */
+export function machineName() {
+  if (cachedMachineName) return cachedMachineName;
+  let name = "";
+  if (process.platform === "darwin") {
+    try {
+      name = execFileSync("scutil", ["--get", "ComputerName"], { encoding: "utf8", timeout: 2000 }).trim();
+    } catch {}
+  }
+  cachedMachineName = (name || hostname().replace(/\.local$/, "")).slice(0, 80);
+  return cachedMachineName;
+}
+
+/**
+ * What a phone proves on a direct connection. Derived from the route token, so the
+ * relay credential itself never travels over plain ws:// on a network that may not be ours.
+ */
+export const lanToken = (routeToken: string) => createHmac("sha256", routeToken).update("aegis.lan/1").digest("hex");
 
 /** Splits the stored libp2p Ed25519 identity (protobuf: 08 01 12 40 seed‖pub). */
 export function identityKeys(identity: string) {

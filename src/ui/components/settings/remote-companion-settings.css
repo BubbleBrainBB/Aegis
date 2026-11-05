@@ -8,6 +8,11 @@
 .connections-phone { position: relative; display: inline-block; width: 13px; height: 21px; border: 1.5px solid currentColor; border-radius: 3px; flex-shrink: 0; }
 .connections-phone::after { content: ''; position: absolute; bottom: 2px; left: 3px; right: 3px; border-bottom: 1px solid currentColor; }
 .connections-note { margin-top: 12px; font-size: calc(12px * var(--ui-font-scale, 1)); color: var(--text-muted); line-height: 1.65; }
+.connections-device > svg { width: 22px; height: 22px; stroke-width: 1.5; flex-shrink: 0; }
+.connections-controlled-status { display: flex; align-items: center; gap: 6px; }
+.connections-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-muted); flex-shrink: 0; }
+.connections-dot[data-online=true] { background: var(--success, #28845b); }
+.connections-device-id { margin-top: 8px; padding: 10px 12px; border-radius: 8px; background: var(--bg-tertiary); font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; overflow-wrap: anywhere; }
 .connections-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; min-height: 66px; padding: 16px 0; border-bottom: 1px solid var(--border); }
 .connections-row > div:first-child { min-width: 0; }
 .connections-row p { color: var(--text-muted); margin-top: 4px; font-size: calc(12px * var(--ui-font-scale, 1)); line-height: 1.5; }

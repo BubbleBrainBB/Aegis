@@ -1,13 +1,14 @@
-import { randomBytes, randomUUID, createHash, createHmac, timingSafeEqual } from "crypto";
+import { randomBytes, randomUUID, createHash, timingSafeEqual } from "crypto";
 import { listProjectDir, readProjectFile, searchProjectFiles } from "./project-files";
-import { hostname, networkInterfaces } from "os";
+import { networkInterfaces } from "os";
 import { join } from "path";
 import type { AddressInfo } from "net";
 import WebSocket from "ws";
 import { RemoteJournal } from "./journal";
 import { PLAN_LIMIT, planOf, promptFields, remotePrompt, resolvePrompt, type RemoteResolution } from "./prompts";
-import { defaultRelay, hostProof, identityKeys, pushRequest, relayHttpOrigin, roomFor } from "./relay-auth";
+import { defaultRelay, hostProof, identityKeys, lanToken, machineName, pushRequest, relayHttpOrigin, roomFor } from "./relay-auth";
 import {
+  DESKTOP_FEATURE,
   EMPTY_HISTORY,
   EVENTS_FEATURE,
   REMOTE_PROTOCOL,
@@ -66,11 +67,7 @@ const sameSecret = (a: unknown, b: string) => {
   const y = Buffer.from(b);
   return x.length === y.length && timingSafeEqual(x, y);
 };
-/**
- * What a phone proves on a direct connection. Derived from the route token, so the
- * relay credential itself never travels over plain ws:// on a network that may not be ours.
- */
-export const lanToken = (routeToken: string) => createHmac("sha256", routeToken).update("aegis.lan/1").digest("hex");
+export { lanToken };
 export interface RemoteRuntime {
   environment?: RemoteEnvironment;
   /** Interface for the direct same-network listener (default all); false turns it off. */
@@ -99,6 +96,7 @@ export interface RemoteRuntime {
     request: PermissionRequestPayload,
     decision: "allow" | "deny",
     resolution?: RemoteResolution,
+    scope?: "session",
   ): boolean;
   hasPermission(id: string, toolUseId: string): boolean;
   confirm(name: string, peerId: string): Promise<boolean>;
@@ -258,7 +256,7 @@ export class RemoteGateway {
       room: config.room,
       routeToken: config.routeToken,
       hostPeerId: config.peerId,
-      name: hostname(),
+      name: machineName(),
       invite: this.invite.value,
       expiresAt: this.invite.expiresAt,
     };
@@ -544,6 +542,7 @@ export class RemoteGateway {
           peerId: channel.peerId,
           name: auth.name,
           pairedAt: Date.now(),
+          ...(Array.isArray(auth.features) && auth.features.includes(DESKTOP_FEATURE) ? { kind: "desktop" as const } : {}),
         };
         this.journal.update((s) => s.devices.push(device!));
         this.invite = undefined;
@@ -671,6 +670,7 @@ export class RemoteGateway {
             ? detail.slice(0, 24000) + "\n… Too long to show here. Review the full request on your Mac."
             : detail,
           canApprove: canApproveRemotely(p),
+          ...(JSON.stringify(p.input).length <= 24000 ? { input: p.input } : {}),
           ...promptFields(p, prompt, this.plans.get(p.sessionId)),
         });
       }
@@ -798,7 +798,7 @@ export class RemoteGateway {
       ...(events ? { historyCount, appendFrom, seq: link!.seq } : {}),
       protocol: REMOTE_PROTOCOL,
       hostBootId: this.hostBootId,
-      machineName: hostname(),
+      machineName: machineName(),
       environment: this.runtime.environment ?? "development",
       serverTime: Date.now(),
       revision: sha256(JSON.stringify(state)),
@@ -1022,7 +1022,7 @@ export class RemoteGateway {
           )
             throw new Error("PERMISSION_EXPIRED");
           const resolution = this.resolution(permission, request.decision, request.answers);
-          if (!this.runtime.permission(permission, request.decision, resolution))
+          if (!this.runtime.permission(permission, request.decision, resolution, request.scope))
             throw new Error("PERMISSION_EXPIRED");
           this.permissions.delete(request.requestId);
         }
@@ -1209,7 +1209,7 @@ export class RemoteGateway {
     for (const device of this.journal.state.devices) {
       const push = device.push;
       if (!push) continue;
-      void this.deliver(config.relay, config.identity, device.peerId, { ...push, kind, sessionId, machineName: hostname().slice(0, 100) });
+      void this.deliver(config.relay, config.identity, device.peerId, { ...push, kind, sessionId, machineName: machineName().slice(0, 100) });
     }
   }
   private async deliver(

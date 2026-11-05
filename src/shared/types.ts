@@ -1590,6 +1590,8 @@ export interface SessionInfo {
   turnReport?: import('./turn-report').TurnReport | null;
   handoffSourceProvider?: AgentProvider | null;
   latestClaudeModelUsage?: LatestClaudeModelUsage;
+  /** Set when this session runs on another Mac; everything about it stays there. */
+  device?: { id: string; name: string; online: boolean; reconnecting?: boolean };
   createdAt: number;
   updatedAt: number;
 }

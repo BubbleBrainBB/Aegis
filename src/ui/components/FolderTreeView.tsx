@@ -16,6 +16,7 @@ import {
   Pin,
   SquarePen,
   Trash2,
+  Monitor,
 } from './icons';
 import { confirmDialog } from './ui/confirm-dialog';
 import {
@@ -1253,6 +1254,13 @@ function SessionItem({
                 <ProviderGlyph provider={session.provider} />
               )}
               <ScrollingTitle title={session.title} className="flex-1 text-[13px] font-normal leading-[1.3]" />
+              {session.device ? (
+                <Monitor
+                  data-session-device
+                  className={`h-[13px] w-[13px] flex-shrink-0 text-[var(--text-muted)] ${session.device.online ? '' : 'opacity-50'}`}
+                  aria-label={`On ${session.device.name}`}
+                />
+              ) : null}
               {unread && <span aria-label="Unread conversation" title="Unread conversation" className="h-2 w-2 shrink-0 rounded-full bg-[var(--accent)]" />}
               {worktreeAction ? (
                 <span className="flex-shrink-0" title={WORKTREE_ACTION_LABELS[worktreeAction]}>
@@ -1336,7 +1344,13 @@ function SessionItem({
             </div>
 
             <div className="mt-2 space-y-1.5 leading-[18px]">
-              <div className="flex min-w-0 items-start gap-2" title={projectPath || undefined}>
+              {session.device ? (
+                <div className="flex min-w-0 items-start gap-2 text-[var(--text-primary)]">
+                  <Monitor className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-[var(--text-muted)]" />
+                  <span className="min-w-0 flex-1 break-words">{session.device.name}</span>
+                </div>
+              ) : null}
+              <div className="flex min-w-0 items-start gap-2" title={session.device ? undefined : projectPath || undefined}>
                 <FolderClosed className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-[var(--text-muted)]" />
                 <span className="min-w-0 flex-1 break-words">{projectLabel}</span>
               </div>
