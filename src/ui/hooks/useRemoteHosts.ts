@@ -20,7 +20,8 @@ export function useRemoteHosts() {
   useEffect(() => {
     let active = true;
     const load = () => {
-      window.electron.remoteHosts('list').then((next: RemoteHost[]) => {
+      // Windows without this bridge just have no other Macs.
+      window.electron.remoteHosts?.('list').then((next: RemoteHost[]) => {
         if (active) setHosts(next);
       }).catch(() => { /* Local projects still work. */ });
     };
@@ -41,7 +42,7 @@ export function useRemoteTarget(cwd: string | null | undefined) {
     setCatalog([]);
     if (!hostId) return;
     let active = true;
-    window.electron.remoteHosts('agents', { id: hostId }).then((next: RemoteAgentEntry[]) => {
+    window.electron.remoteHosts?.('agents', { id: hostId }).then((next: RemoteAgentEntry[]) => {
       if (active) setCatalog(next);
     }).catch(() => { /* The picker stays empty and the start reports what's wrong. */ });
     return () => { active = false; };

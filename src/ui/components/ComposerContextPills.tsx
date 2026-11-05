@@ -182,7 +182,7 @@ export function ComposerContextPills({
       ) : null}
       {hasSelectedCwd ? (
         <>
-          {isRepo && branch && !remote ? (
+          {isRepo && branch ? (
             <DropdownMenu.Root>
               <DropdownMenu.Trigger asChild>
                 <button
