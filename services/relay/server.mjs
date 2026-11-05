@@ -52,6 +52,11 @@ export function createRelay({
   pushesPerHour = 120,
   trustProxy = false,
   apns = null,
+  /**
+   * Controllers one Mac can have connected at once, when it says it can take more
+   * than one. Zero treats every Mac the old way: one room, one phone.
+   */
+  maxTunnels = 8,
   /** Bundle ids allowed as APNs topics. */
   topics = ["ai.aegis.companion", "ai.aegis.companion.dev"],
 } = {}) {
@@ -162,6 +167,8 @@ export function createRelay({
     }
   }, 20000);
   heartbeat.unref();
+  /** Each end of a tunnel in a room with several: which socket its frames go to. */
+  const tunnels = new WeakMap();
   wss.on("connection", (socket, req) => {
     const ip = clientIp(req);
     if (wss.clients.size > maxRooms * 3) {
@@ -186,18 +193,33 @@ export function createRelay({
     const reject = (reason) => socket.close(1008, reason);
     const register = () => {
       const previous = rooms.get(pending.room);
-      if (previous) {
-        // The same Mac reconnected (its key proved it); the old tunnel is stale.
-        previous.replaced = true;
-        previous.phone?.close(1012, "Host disconnected");
-        previous.host.close(1012, "Replaced");
-      } else if (rooms.size >= maxRooms) return reject("Relay is full");
-      room = { host: socket, phone: null, token: pending.token, id: pending.room, publicKey: pending.publicKey };
-      rooms.set(room.id, room);
+      const boot = maxTunnels > 0 ? pending.boot : undefined;
+      if (boot && previous?.boot === boot) {
+        // Another socket from the same running Mac, for the next controller.
+        if (previous.waiting.size + previous.tunnels.size >= maxTunnels) return socket.close(1013, "Room is full");
+        room = previous;
+        room.waiting.add(socket);
+      } else {
+        if (previous) {
+          // The same Mac reconnected (its key proved it); the old tunnels are stale.
+          previous.replaced = true;
+          previous.phone?.close(1012, "Host disconnected");
+          previous.host?.close(1012, "Replaced");
+          for (const host of previous.waiting ?? []) host.close(1012, "Replaced");
+          for (const [host, phone] of previous.tunnels ?? []) {
+            phone.close(1012, "Host disconnected");
+            host.close(1012, "Replaced");
+          }
+        } else if (rooms.size >= maxRooms) return reject("Relay is full");
+        room = boot
+          ? { boot, waiting: new Set([socket]), tunnels: new Map(), token: pending.token, id: pending.room, publicKey: pending.publicKey }
+          : { host: socket, phone: null, token: pending.token, id: pending.room, publicKey: pending.publicKey };
+        rooms.set(room.id, room);
+      }
       role = "host";
       authenticated = true;
       clearTimeout(timer);
-      socket.send(JSON.stringify({ type: "registered" }));
+      socket.send(JSON.stringify(boot ? { type: "registered", slots: maxTunnels } : { type: "registered" }));
     };
     socket.on("message", (data, binary) => {
       if (!authenticated) {
@@ -228,12 +250,33 @@ export function createRelay({
             return reject("Connection rejected");
           if (!HEX64.test(auth.publicKey ?? "")) return reject("Connection rejected");
           if (roomFor(Buffer.from(auth.publicKey, "hex")) !== auth.room) return reject("room-mismatch");
-          pending = { room: auth.room, token: auth.token, publicKey: auth.publicKey, nonce: randomBytes(32).toString("hex") };
+          pending = {
+            room: auth.room,
+            token: auth.token,
+            publicKey: auth.publicKey,
+            nonce: randomBytes(32).toString("hex"),
+            ...(typeof auth.boot === "string" && auth.boot.length <= 64 ? { boot: auth.boot } : {}),
+          };
           socket.send(JSON.stringify({ type: "challenge", nonce: pending.nonce }));
           return;
         }
         room = rooms.get(auth.room);
         if (!room || !equal(room.token, auth.token)) return reject("Connection rejected");
+        if (room.boot) {
+          const [host] = room.waiting;
+          // The Mac is opening its next socket, or has as many controllers as it may; try again shortly.
+          if (!host) return socket.close(1013, "Busy");
+          room.waiting.delete(host);
+          room.tunnels.set(host, socket);
+          tunnels.set(host, socket);
+          tunnels.set(socket, host);
+          role = "phone";
+          host.send(JSON.stringify({ type: "peer" }));
+          socket.send(JSON.stringify({ type: "peer" }));
+          authenticated = true;
+          clearTimeout(timer);
+          return;
+        }
         if (room.phone) {
           // The phone reconnected before its old, stalled socket timed out here.
           // Dropping that one also restarts the Mac's side; the phone retries in a moment.
@@ -248,7 +291,7 @@ export function createRelay({
         clearTimeout(timer);
         return;
       }
-      const target = role === "host" ? room?.phone : room?.host;
+      const target = room?.boot ? tunnels.get(socket) : role === "host" ? room?.phone : room?.host;
       if (
         !binary ||
         !target ||
@@ -266,6 +309,19 @@ export function createRelay({
       const left = (perIp.get(ip) ?? 1) - 1;
       if (left > 0) perIp.set(ip, left);
       else perIp.delete(ip);
+      if (room?.boot) {
+        const other = tunnels.get(socket);
+        if (role === "host") {
+          room.waiting.delete(socket);
+          room.tunnels.delete(socket);
+          if (!room.replaced) other?.close(1012, "Host disconnected");
+          if (!room.waiting.size && !room.tunnels.size && rooms.get(room.id) === room) rooms.delete(room.id);
+        } else if (role === "phone" && other) {
+          room.tunnels.delete(other);
+          if (!room.replaced) other.close(1012, "Recreate encrypted connection");
+        }
+        return;
+      }
       if (role === "host" && room?.host === socket) {
         if (rooms.get(room.id) === room) rooms.delete(room.id);
         if (!room.replaced) room.phone?.close(1012, "Host disconnected");

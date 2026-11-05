@@ -349,16 +349,19 @@ export class RemoteGateway {
           room,
           token: config.routeToken,
           publicKey: keys.publicKey,
+          // Sockets with the same boot id share a room, one controller on each.
+          boot: this.hostBootId,
           ...(config.registrationToken ? { registrationToken: config.registrationToken } : {}),
         }),
       ),
     );
+    let multiple = false;
     const control = (event: any) => {
       if (typeof event.data !== "string") {
         socket.close();
         return;
       }
-      let message: { type?: string; nonce?: string };
+      let message: { type?: string; nonce?: string; slots?: number };
       try {
         message = JSON.parse(event.data);
       } catch {
@@ -372,9 +375,12 @@ export class RemoteGateway {
         this.relayStatus = "waiting";
         this.attempt = 0;
         this.relayError = undefined;
+        multiple = Number(message.slots) > 0;
       } else if (type === "peer") {
         socket.removeEventListener("message", control);
         void this.accept(socket, "relay", generation).catch(() => socket.close());
+        // This socket now belongs to that controller; keep one free for the next.
+        if (multiple && attempt === this.relayAttempt && generation === this.generation) this.connect();
       } else socket.close();
     };
     socket.addEventListener("message", control);
@@ -553,6 +559,9 @@ export class RemoteGateway {
         away: false,
         seq: 0,
       };
+      // Its previous connection through the relay is a stalled one; the relay can't tell them apart.
+      for (const other of [...this.links])
+        if (other.peerId === device.peerId && other.transport === "relay" && transport === "relay") other.channel.close();
       this.links.add(link);
       this.current.set(link.peerId, link);
       // An event phone gets its first snapshot with the answer: one round trip less per connection.

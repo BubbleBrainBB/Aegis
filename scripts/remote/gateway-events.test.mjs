@@ -292,7 +292,37 @@ try {
   assert.equal(r.result.seq, undefined);
   assert.equal(r.result.messages.at(-1).text, "?", "the idle status cleared the earlier text");
   legacy.channel.close();
-  console.log("Gateway events: first snapshot on auth, live deltas, committed appends, state events, rewrites, tail sync, subscriptions, direct listener gating, handover and older phones passed");
+
+  // Two devices at once through the relay: each keeps its own connection and gets events.
+  for (let i = 0; i < 100 && gateway.links.size; i++) await settle();
+  await settle(300);
+  for (let i = 0; i < 100 && gateway.status !== "waiting"; i++) await settle();
+  const secondId = await createIdentity();
+  journal.update((s) => s.devices.push({ peerId: secondId.peerId, name: "Second", pairedAt: 1 }));
+  const one = await open(relayUrl, { auth: { features: ["events"], sessionId: "s1" } });
+  assert.equal(one.first.type, "authenticated");
+  for (let i = 0; i < 100 && gateway.status !== "connected"; i++) await settle();
+  await settle(100);
+  const two = await open(relayUrl, { identity: secondId, auth: { features: ["events"], sessionId: "s1" } });
+  assert.equal(two.first.type, "authenticated");
+  assert.equal(gateway.links.size, 2, "the second device didn't push the first one off");
+  delta("s1", "for both");
+  await one.next((m) => m.type === "event" && m.live?.append?.includes("for both"));
+  await two.next((m) => m.type === "event" && m.live?.append?.includes("for both"));
+  // One leaving doesn't touch the other.
+  two.channel.close();
+  for (let i = 0; i < 100 && gateway.links.size !== 1; i++) await settle();
+  delta("s1", " still here");
+  await one.next((m) => m.type === "event" && m.live?.append?.includes("still here"));
+  // The same device coming back: its stalled connection gives way to the new one.
+  await settle(100);
+  const again = await open(relayUrl, { auth: { features: ["events"], sessionId: "s1" } });
+  assert.equal(again.first.type, "authenticated");
+  await one.next((m) => m.type === "closed");
+  for (let i = 0; i < 100 && gateway.links.size !== 1; i++) await settle();
+  assert.equal(gateway.links.size, 1);
+  again.channel.close();
+  console.log("Gateway events: first snapshot on auth, live deltas, committed appends, state events, rewrites, tail sync, subscriptions, direct listener gating, handover, older phones and several devices at once passed");
 } finally {
   gateway.close();
   await relay.close();

@@ -16,6 +16,11 @@ parses business commands or stores chat history.
      connects again, the new connection replaces the stale one.
 - **Phone:** sends `{role:"phone", room, token}` with the route token from pairing.
   The relay then splices the two sockets together.
+- **Several controllers:** a host that sends `boot` in its hello (an id for this run of
+  the app) is answered with `slots`. It keeps one free socket in its room and opens the
+  next each time a controller takes one, so a phone and a Mac can be connected at once.
+  A different `boot` replaces the room. A controller that finds no free socket is closed
+  with 1013 and tries again. Hosts that send no `boot` get one socket and one phone.
 - **Inside the tunnel:** Noise XX runs between the two ends, pinned to the host's peer
   id. Each phone also needs separate approval on the Mac.
 - **Skipping the relay:** the Mac also listens on its own networks and tells an
