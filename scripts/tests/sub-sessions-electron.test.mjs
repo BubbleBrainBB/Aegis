@@ -128,8 +128,14 @@ app.whenReady().then(async()=>{
   // Fold: the parent row sums its sub-sessions up (2 of 3 still running).
   await click('document.querySelector("[data-session-id=p1] [aria-label=\\\\"Hide sub-sessions\\\\"]")');
   assert.equal(await js('!!document.querySelector("[data-sub-sessions-of=p1]")'),false,'folded');
-  assert.equal(await js('document.querySelector("[data-session-id=p1] [title=\\\\"2 of 3 sub-sessions running\\\\"]").textContent'),'1/3');
+  assert.equal(await js('document.querySelector("[data-session-id=p1] [title=\\\\"2 of 3 sub-sessions running\\\\"]").textContent'),'','a spinner, no numbers');
   await screenshot('2-folded');
+  // With nothing running or waiting, the fold shows no mark at all: never a count.
+  await js('qa.app.setState(s=>({sessions:{...s.sessions,c1:{...s.sessions.c1,status:"completed"},g1:{...s.sessions.g1,status:"completed"}}}))');await delay(150);
+  assert.equal(await js('!!document.querySelector("[data-session-id=p1] [title*=\\\\"sub-sessions running\\\\"]")'),false,'the spinner is gone');
+  assert.equal(await js('/\\\\d/.test(document.querySelector("[data-session-id=p1]").textContent)'),false,'no number on the row');
+  await screenshot('2-folded-idle');
+  await js('qa.app.setState(s=>({sessions:{...s.sessions,c1:{...s.sessions.c1,status:"running"},g1:{...s.sessions.g1,status:"running"}}}))');await delay(150);
 
   // A task that needs you unfolds its conversation; folded over that wait, the mark turns amber.
   await js('qa.app.setState(s=>({sessions:{...s.sessions,g1:{...s.sessions.g1,permissionRequests:[{toolUseId:"t",toolName:"Bash",input:{}}]}}}))');await delay(150);
@@ -137,6 +143,7 @@ app.whenReady().then(async()=>{
   await click('document.querySelector("[data-session-id=p1] [aria-label=\\\\"Hide sub-sessions\\\\"]")');
   assert.equal(await js('!!document.querySelector("[data-sub-sessions-of=p1]")'),false,'it can be folded over that wait');
   assert.equal(await js('!!document.querySelector("[data-session-id=p1] [aria-label=\\\\"A sub-session needs you\\\\"]")'),true);
+  await screenshot('2-folded-waiting');
   // ...until another task needs you.
   await js('qa.app.setState(s=>({sessions:{...s.sessions,c1:{...s.sessions.c1,permissionRequests:[{toolUseId:"u",toolName:"Bash",input:{}}]}}}))');await delay(150);
   assert.equal(await js('!!document.querySelector("[data-sub-sessions-of=p1]")'),true,'a new wait unfolds it again');
