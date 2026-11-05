@@ -1,20 +1,9 @@
 import type { SessionContinuePayload } from "../../shared/types";
 import type { RemoteTaskExtras } from "./gateway";
 
-// Modes the phone may pick; same values as the desktop permission menus.
-// Plan is its own toggle (execution mode), as on the desktop.
-const PERMISSION_MODES: Record<string, string[]> = {
-  claude: ["default", "auto", "acceptEdits", "dontAsk", "bypassPermissions"],
-  codex: ["defaultPermissions", "auto", "fullAccess"],
-  bubble: ["default", "bypassPermissions"],
-  // Devin's plan is one of its ACP session modes, picked in the same menu.
-  devin: ["accept-edits", "smart", "ask", "plan", "bypass"],
-  // MiMo's plan is one of its agents, like Devin's.
-  mimo: ["ask", "plan", "build"],
-  // MiniMax Code's plan is a session mode picked in the same menu.
-  minimax: ["default", "auto", "plan", "bypassPermissions"],
-};
-const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+import { CLAUDE_EFFORTS, REMOTE_PERMISSION_MODES } from "../../shared/remote/agent-catalog";
+
+const PERMISSION_MODES: Record<string, string[]> = REMOTE_PERMISSION_MODES;
 
 /** Maps phone task settings onto the desktop composer's payload fields. */
 export function remoteTaskPayload(

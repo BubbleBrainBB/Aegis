@@ -140,6 +140,8 @@ export const requestSchema = z.discriminatedUnion("method", [
       sessionId: id,
       prompt: z.string().trim().min(1).max(32000),
       settings: taskSettingsSchema.optional(),
+      /** Into the running turn, as the desktop composer does; without it a busy session refuses. */
+      steer: z.boolean().optional(),
       attachmentIds,
     })
     .strict(),

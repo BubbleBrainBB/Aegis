@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { ComposerProjectPicker } from './ComposerProjectPicker';
+import { useRemoteTarget } from '../hooks/useRemoteHosts';
 import * as DropdownMenu from '@/ui/components/ui/dropdown-menu';
 import * as Dialog from '@/ui/components/ui/dialog';
 import { toast } from 'sonner';
@@ -38,8 +39,11 @@ export function ComposerContextPills({
   startMode?: 'local' | 'worktree';
   onStartModeChange?: (mode: 'local' | 'worktree') => void;
 }) {
-  const { current: branch, isRepo, localBranches, loading: branchesLoading, refresh: refreshBranches } =
-    useGitBranches(hasSelectedCwd ? cwd : null);
+  // Git runs on the Mac that has the project; here only its Local or worktree choice applies.
+  const remote = useRemoteTarget(cwd);
+  const { current: branch, isRepo: localRepo, localBranches, loading: branchesLoading, refresh: refreshBranches } =
+    useGitBranches(hasSelectedCwd && !remote ? cwd : null);
+  const isRepo = remote ? !!remote.project?.isRepo : localRepo;
   const [branchQuery, setBranchQuery] = useState('');
   const [newBranchName, setNewBranchName] = useState('');
   const [creatingBranch, setCreatingBranch] = useState(false);
@@ -178,7 +182,7 @@ export function ComposerContextPills({
       ) : null}
       {hasSelectedCwd ? (
         <>
-          {isRepo && branch ? (
+          {isRepo && branch && !remote ? (
             <DropdownMenu.Root>
               <DropdownMenu.Trigger asChild>
                 <button

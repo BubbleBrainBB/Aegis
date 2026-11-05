@@ -583,6 +583,7 @@ function freshSessionViewFromInfo(info: import('../../shared/types').SessionInfo
     teamId: info.teamId || null,
     handoffSourceProvider: info.handoffSourceProvider || null,
     device: info.device,
+    remoteSettings: info.remoteSettings,
     turnReport: info.turnReport ?? null,
     latestClaudeModelUsage: info.latestClaudeModelUsage,
     messages: [],
@@ -3142,10 +3143,13 @@ function handleSessionList(
       teamId: session.teamId || null,
       handoffSourceProvider: session.handoffSourceProvider || null,
       device: session.device,
+      remoteSettings: session.remoteSettings,
       turnReport: session.turnReport ?? null,
       backgroundTasks: existing?.backgroundTasks,
       latestClaudeModelUsage: session.latestClaudeModelUsage,
       messages: existing?.messages || [],
+      // Sent into the running turn and not read yet: only here until the agent takes them.
+      pendingPrompts: existing?.pendingPrompts,
       hydrated: existing?.hydrated || false,
       historyCursor: existing?.historyCursor ?? null,
       hasMoreHistory: existing?.hasMoreHistory ?? false,
@@ -3229,6 +3233,7 @@ function handleSessionStatus(
     agentId?: SessionInfo['agentId'];
     /** A new session started in the background: list it without focusing it. */
     background?: boolean;
+    device?: SessionInfo['device'];
     cwd?: string;
     projectCwd?: SessionInfo['projectCwd'];
     isChat?: boolean;
@@ -3457,6 +3462,7 @@ function handleSessionStatus(
       id: sessionId,
       title: title || 'New Session',
       status,
+      device: payload.device,
       scope: scope || 'project',
       agentId: agentId || null,
       source: 'aegis',

@@ -3,6 +3,8 @@ import { Popover } from '@base-ui-components/react/popover';
 import { Command } from 'cmdk';
 import { toast } from 'sonner';
 import { useAppStore } from '../store/useAppStore';
+import { useRemoteHosts } from '../hooks/useRemoteHosts';
+import { parseRemoteProjectPath } from '../../shared/remote/remote-path';
 import { Folder, Plus, Search, X } from './icons';
 
 export function ComposerProjectPicker({ cwd, onSelect, onSelectNoProject, disabled = false, variant = 'control', projectName: label }: {
@@ -29,16 +31,21 @@ export function ComposerProjectPicker({ cwd, onSelect, onSelectNoProject, disabl
     return () => { active = false; };
   }, [open]);
 
+  const hosts = useRemoteHosts();
   const projects = useMemo(() => Array.from(new Set([
-    cwd,
+    parseRemoteProjectPath(cwd) ? '' : cwd,
     ...Object.values(sessions)
       .filter((session) => !session.hiddenFromThreads && session.scope !== 'dm' && !session.isChat)
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .map((session) => session.projectCwd || session.cwd || ''),
     ...recentCwds,
-  ].map((dir) => dir.trim()).filter(Boolean))), [cwd, sessions, recentCwds]);
-  const filteredProjects = projects.filter((dir) => dir.toLowerCase().includes(query.trim().toLowerCase()));
+  ].map((dir) => dir.trim()).filter((dir) => dir && !parseRemoteProjectPath(dir)))), [cwd, sessions, recentCwds]);
+  const search = query.trim().toLowerCase();
+  const filteredProjects = projects.filter((dir) => dir.toLowerCase().includes(search));
+  const remote = parseRemoteProjectPath(cwd);
+  const remoteHostName = remote ? hosts.find((host) => host.id === remote.hostId)?.name : undefined;
   const projectName = label || cwd.split(/[\\/]/).filter(Boolean).pop() || cwd;
+  const pillName = remoteHostName ? `${remoteHostName} / ${projectName}` : projectName;
 
   const selectProject = (dir: string) => {
     setOpen(false);
@@ -73,7 +80,7 @@ export function ComposerProjectPicker({ cwd, onSelect, onSelectNoProject, disabl
         >
           {variant === 'hero' ? `${projectName}?` : <>
             <Folder className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-            <span className="min-w-0 truncate">{noProject ? 'No project' : projectName || 'Choose project'}</span>
+            <span className="min-w-0 truncate">{noProject ? 'No project' : pillName || 'Choose project'}</span>
           </>}
         </Popover.Trigger>
         <Popover.Portal>
@@ -87,6 +94,7 @@ export function ComposerProjectPicker({ cwd, onSelect, onSelectNoProject, disabl
                 <Command.List>
                   {/* Only the projects scroll; the actions stay pinned below them. */}
                   <div className="max-h-[min(232px,45vh)] overflow-y-auto py-1">
+                    {hosts.length > 0 && <div className="px-2 pb-1 pt-1.5 text-[12px] text-[var(--text-muted)]">This Mac</div>}
                     {filteredProjects.length === 0 && <div className="px-2 py-2 text-[12.5px] leading-[18px] text-[var(--text-muted)]">No projects found</div>}
                     {filteredProjects.map((dir) => {
                       const current = dir === cwd;
@@ -97,6 +105,33 @@ export function ComposerProjectPicker({ cwd, onSelect, onSelectNoProject, disabl
                             : <Folder aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-[var(--text-secondary)]" />}
                           <span className="min-w-0 flex-1 truncate">{dir.split(/[\\/]/).filter(Boolean).pop() || dir}</span>
                         </Command.Item>
+                      );
+                    })}
+                    {hosts.map((host) => {
+                      const connected = host.status === 'connected';
+                      const listed = host.projects.filter((project) => project.name.toLowerCase().includes(search));
+                      if (search && listed.length === 0) return null;
+                      return (
+                        <div key={host.id} data-remote-host-projects={host.id}>
+                          <div className="flex items-center gap-1.5 px-2 pb-1 pt-2 text-[12px] text-[var(--text-muted)]">
+                            <span className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-[var(--success)]' : 'bg-[var(--text-muted)]'}`} aria-hidden="true" />
+                            <span className="min-w-0 flex-1 truncate">{host.name}</span>
+                            {connected ? null : <span className="flex-shrink-0">Offline</span>}
+                          </div>
+                          {listed.map((project) => (
+                            <Command.Item
+                              key={project.path}
+                              value={project.path}
+                              disabled={!connected}
+                              onSelect={() => selectProject(project.path)}
+                              data-current={project.path === cwd || undefined}
+                              className="flex cursor-pointer items-center gap-2 rounded-[var(--popover-item-radius,8px)] px-2 py-1.5 text-[13px] text-[var(--text-primary)] outline-none data-[selected=true]:bg-[var(--bg-tertiary)] data-[disabled=true]:cursor-default data-[disabled=true]:text-[var(--text-muted)]"
+                            >
+                              <Folder aria-hidden="true" className={`h-3.5 w-3.5 shrink-0 ${project.path === cwd ? 'text-[var(--accent)]' : 'text-[var(--text-secondary)]'}`} />
+                              <span className="min-w-0 flex-1 truncate">{project.name}</span>
+                            </Command.Item>
+                          ))}
+                        </div>
                       );
                     })}
                   </div>
