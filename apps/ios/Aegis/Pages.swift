@@ -10,7 +10,7 @@ struct ProjectsPage: View {
         List {
             Section {
                 ForEach(shown) { p in
-                    let own = model.sessions.filter { $0.projectId == p.id }
+                    let own = model.activeSessions.filter { $0.projectId == p.id }
                     let running = own.filter(\.isRunning).count
                     let waiting = model.permissions.filter { perm in own.contains { $0.id == perm.sessionId } }.count
                     let latest = own.map(\.updatedAt).max()
@@ -63,7 +63,7 @@ struct ProjectPage: View {
 
     var body: some View {
         let project = model.projects.first { $0.id == projectId }
-        let own = model.sessions.filter { $0.projectId == projectId }.sorted { $0.updatedAt > $1.updatedAt }
+        let own = model.activeSessions.filter { $0.projectId == projectId }.sorted { $0.updatedAt > $1.updatedAt }
         let waitingIds = Set(model.permissions.map(\.sessionId))
         let waiting = own.filter { waitingIds.contains($0.id) }
         let running = own.filter { $0.isRunning && !waitingIds.contains($0.id) }
@@ -158,7 +158,7 @@ struct SettingsPage: View {
                 .disabled(model.busy)
                 Button { model.pairOpen = true } label: {
                     HStack {
-                        Text("Pair again").foregroundStyle(Color.text1)
+                        Text("Pair this Mac again").foregroundStyle(Color.text1)
                         Spacer()
                         Image(systemName: "qrcode.viewfinder").foregroundStyle(Color.text3)
                     }
@@ -166,6 +166,9 @@ struct SettingsPage: View {
                 .disabled(model.busy)
                 NavigationLink(value: AppModel.Route.projects) {
                     LabeledContent("Projects", value: "\(model.projects.count)")
+                }
+                NavigationLink(value: AppModel.Route.devices) {
+                    LabeledContent("Devices", value: "\(model.pairedClients.count)")
                 }
             } footer: {
                 Text("Your Mac needs to stay awake and online. Closing the Aegis window doesn’t stop running tasks. This iPhone sees every project in Aegis on your Mac.")
@@ -365,5 +368,53 @@ struct Banners: View {
         .padding(.leading, 14).padding(.trailing, 6).frame(minHeight: 40)
         .glassEffect(.regular, in: .capsule)
         .transition(.move(edge: .top).combined(with: .opacity))
+    }
+}
+
+/// Every Mac this phone is paired with. A task can run on any of them.
+struct DevicesPage: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        List {
+            Section {
+                ForEach(model.pairedClients, id: \.slot) { client in
+                    Button {
+                        model.activate(client)
+                        model.push(.settings)
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "laptopcomputer").font(.app(17)).frame(width: 38, height: 38).background(Color.fill2, in: .circle)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(model.macName(of: client)).font(.app(15, weight: .semibold)).lineLimit(1)
+                                HStack(spacing: 5) {
+                                    StatusDot(online: client.connection == .connected)
+                                    Text(client.connection == .connected
+                                        ? "Connected · \(client.transport == .direct ? "Direct" : "Relay")"
+                                        : model.connectionText(of: client))
+                                }
+                                .font(.app(13)).foregroundStyle(Color.text2)
+                            }
+                            Spacer(minLength: 8)
+                            Image(systemName: "chevron.right").font(.app(12, weight: .semibold)).foregroundStyle(Color.text3)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            } footer: {
+                Text("Each Mac needs Aegis open and awake to connect. Code stays on that Mac.")
+            }
+            Section {
+                Button { model.pairOpen = true } label: {
+                    HStack {
+                        Text("Connect another Mac").foregroundStyle(Color.text1)
+                        Spacer()
+                        Image(systemName: "qrcode.viewfinder").foregroundStyle(Color.text3)
+                    }
+                }
+                .disabled(model.busy)
+            }
+        }
+        .navigationTitle("Devices")
     }
 }

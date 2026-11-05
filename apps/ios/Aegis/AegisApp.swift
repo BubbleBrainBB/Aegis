@@ -34,10 +34,10 @@ struct RootView: View {
     var body: some View {
         @Bindable var model = model
         Group {
-            if model.paired {
-                MainShell()
-            } else if model.client.pairing != nil, model.client.connection == .confirming {
+            if model.confirming {
                 ConfirmOnMacView()
+            } else if model.paired {
+                MainShell()
             } else {
                 WelcomeView()
                     .overlay(alignment: .top) { Banners().padding(.top, 8) }
@@ -51,7 +51,7 @@ struct RootView: View {
         .task {
             AppDelegate.model = model
             await model.refreshNotifications()
-            await model.client.start()
+            await model.startAll()
         }
         .onChange(of: model.paired) { _, paired in
             if paired, let id = AppDelegate.pendingSession {
@@ -61,11 +61,12 @@ struct RootView: View {
         }
         .task(id: CatalogKey(options: model.client.agentOptions, models: model.sessionModels)) { await model.reloadCatalogs() }
         .onChange(of: model.sessions, initial: true) { model.saveNotificationTitles() }
+        .onChange(of: model.client.pairing == nil) { model.leaveUnpairedMac() }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .active:
                 model.endBackground()
-                Task { await model.client.foreground() }
+                Task { await model.foregroundAll() }
                 Task { await model.refreshNotifications() }
             case .background:
                 model.beginBackground()
@@ -136,6 +137,7 @@ private struct PageStack: View {
                     case .projects: ProjectsPage()
                     case .project(let id): ProjectPage(projectId: id)
                     case .settings: SettingsPage()
+                    case .devices: DevicesPage()
                     }
                 }
         }

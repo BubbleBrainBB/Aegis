@@ -116,10 +116,6 @@ struct PairSheet: View {
                 Text(model.notice.isEmpty ? model.client.error : model.notice)
                     .font(.app(13)).foregroundStyle(Color.danger)
             }
-            if model.paired {
-                Text("This replaces the current connection to \(model.macName).")
-                    .font(.app(13)).foregroundStyle(Color.text2)
-            }
             Text("Pairing codes expire after 2 minutes.")
                 .font(.app(13)).foregroundStyle(Color.text2).frame(maxWidth: .infinity)
         }
@@ -207,7 +203,7 @@ struct ConfirmOnMacView: View {
             Spacer()
             VStack(spacing: 12) {
                 Text("Doesn’t match? Cancel and pair again.").font(.app(13)).foregroundStyle(Color.text3)
-                Button("Cancel") { Task { await model.client.disconnect(forget: true) } }
+                Button("Cancel") { Task { await model.cancelPairing() } }
                     .buttonStyle(PillButtonStyle(kind: .secondary, height: 52))
                     .background(Color.fill2, in: .capsule)
             }

@@ -166,15 +166,23 @@ private struct ContextRows: View {
     var body: some View {
         @Bindable var model = model
         VStack(alignment: .leading, spacing: 0) {
-            Button { model.push(.settings) } label: {
-                row(icon: "laptopcomputer", value: model.macName) {
-                    HStack(spacing: 5) {
-                        StatusDot(online: model.ready)
-                        Text(model.connectionText)
+            if model.severalMacs {
+                Menu {
+                    ForEach(model.pairedClients, id: \.slot) { client in
+                        Button {
+                            model.activate(client)
+                        } label: {
+                            Label(
+                                "\(model.macName(of: client)) · \(model.connectionText(of: client))",
+                                systemImage: client.slot == model.client.slot ? "checkmark" : "laptopcomputer")
+                        }
                     }
-                }
+                } label: { macRow }
+                .buttonStyle(.plain)
+            } else {
+                Button { model.push(.settings) } label: { macRow }
+                    .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
             Menu {
                 Picker("Work in", selection: $model.worktree) {
                     Text("Local").tag(false)
@@ -190,6 +198,15 @@ private struct ContextRows: View {
             .buttonStyle(.plain)
         }
         .padding(.horizontal, 4)
+    }
+
+    private var macRow: some View {
+        row(icon: "laptopcomputer", value: model.macName) {
+            HStack(spacing: 5) {
+                StatusDot(online: model.ready)
+                Text(model.connectionText)
+            }
+        }
     }
 
     private func row(icon: String, value: String, @ViewBuilder detail: () -> some View) -> some View {

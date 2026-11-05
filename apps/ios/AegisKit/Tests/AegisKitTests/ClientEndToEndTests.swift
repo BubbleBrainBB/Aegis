@@ -13,6 +13,58 @@ import Testing
         }
     }
 
+    @Test func keychainTakesAPairingPerMac() {
+        #expect(KeychainStore.isAllowed("pairing"))
+        #expect(KeychainStore.isAllowed("pairing-" + UUID().uuidString.lowercased()))
+        #expect(KeychainStore.isAllowed("identity"))
+        #expect(!KeychainStore.isAllowed("anything-else"))
+    }
+
+    @Test func twoMacsKeepTheirOwnPairingAndJournal() async throws {
+        let ports = (0..<2).map { _ in Int.random(in: 20000...40000) }
+        let offers = ports.map { FileManager.default.temporaryDirectory.appendingPathComponent("aegis-offer-\($0).txt") }
+        let fixtures = try zip(ports, offers).map { port, offer in
+            try NodeProcess(["scripts/remote/fixture.mjs"], environment: [
+                "AEGIS_FIXTURE_PORT": String(port), "AEGIS_FIXTURE_OFFER": offer.path,
+            ])
+        }
+        for fixture in fixtures { _ = try await fixture.line(containing: "Isolated UI fixture ready") }
+
+        let files = FileStore(directory: FileManager.default.temporaryDirectory.appendingPathComponent("aegis-two-\(UUID().uuidString)"))
+        let secrets = MemoryStore()
+        let first = RemoteClient(environment: .fixture, secrets: secrets, files: files)
+        let second = RemoteClient(environment: .fixture, slot: "second", secrets: secrets, files: files)
+        try await first.pair(try String(contentsOf: offers[0], encoding: .utf8))
+        try await second.pair(try String(contentsOf: offers[1], encoding: .utf8))
+        try await waitUntil { first.connection == .connected && second.connection == .connected && first.snapshot != nil && second.snapshot != nil }
+        #expect(first.pairing?.hostPeerId != second.pairing?.hostPeerId)
+        #expect(first.peerId == second.peerId) // one phone, one identity
+
+        // A command goes to one Mac and stays in that Mac's journal.
+        let sent = try await second.mutate(["method": "send", "sessionId": "stream", "prompt": "Only on the second"])
+        #expect(sent.state == .completed)
+        #expect(!second.operations.isEmpty)
+        #expect(first.operations.isEmpty)
+
+        // Started again, each finds its own Mac.
+        let restoredFirst = RemoteClient(environment: .fixture, secrets: secrets, files: files)
+        let restoredSecond = RemoteClient(environment: .fixture, slot: "second", secrets: secrets, files: files)
+        await first.disconnect()
+        await second.disconnect()
+        await restoredFirst.start()
+        await restoredSecond.start()
+        try await waitUntil { restoredFirst.connection == .connected && restoredSecond.connection == .connected }
+        #expect(restoredFirst.pairing?.hostPeerId == first.pairing?.hostPeerId)
+        #expect(restoredSecond.pairing?.hostPeerId == second.pairing?.hostPeerId)
+        #expect(restoredFirst.operations.isEmpty)
+
+        // Forgetting one leaves the other.
+        await restoredSecond.disconnect(forget: true)
+        #expect(restoredSecond.pairing == nil)
+        #expect(restoredFirst.connection == .connected)
+        await restoredFirst.disconnect()
+    }
+
     @Test func pairsReadsAndMutatesAgainstFixtureHost() async throws {
         let port = Int.random(in: 20000...40000)
         let offerFile = FileManager.default.temporaryDirectory.appendingPathComponent("aegis-offer-\(port).txt")

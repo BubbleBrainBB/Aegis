@@ -58,7 +58,8 @@ extension AppModel {
 
     func setPushToken(_ hex: String) {
         guard client.environment != .fixture, let topic = Bundle.main.bundleIdentifier else { return }
-        client.push = PushRegistration(deviceToken: hex, topic: topic, environment: Self.apnsEnvironment)
+        // Every Mac notifies the same phone.
+        for client in clients { client.push = PushRegistration(deviceToken: hex, topic: topic, environment: Self.apnsEnvironment) }
     }
 
     /// The APNs environment this install's tokens belong to. It follows the signing

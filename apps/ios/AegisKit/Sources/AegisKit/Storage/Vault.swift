@@ -13,13 +13,15 @@ public protocol SecretStore: AnyObject, Sendable {
 public final class KeychainStore: SecretStore, @unchecked Sendable {
     private let service: String
     private static let keys: Set<String> = ["identity", "pairing", "operations"]
+    /// The fixed names, plus one pairing per further Mac.
+    static func isAllowed(_ key: String) -> Bool { keys.contains(key) || key.hasPrefix("pairing-") }
 
     public init(service: String = Bundle.main.bundleIdentifier ?? "ai.aegis.companion") {
         self.service = service
     }
 
     private func query(_ key: String) throws -> [String: Any] {
-        guard Self.keys.contains(key) else { throw AegisError.message("Invalid key") }
+        guard Self.isAllowed(key) else { throw AegisError.message("Invalid key") }
         return [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

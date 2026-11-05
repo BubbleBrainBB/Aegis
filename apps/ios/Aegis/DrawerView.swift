@@ -7,6 +7,8 @@ struct SidebarSection: Identifiable {
     let id: String
     let kind: Kind
     let items: [RemoteSession]
+    /// Waiting and pinned work list together however many Macs it's on.
+    var isAcrossMacs: Bool { kind == .waiting || kind == .pinned }
 }
 
 /// Sidebar order, like the desktop grouped by project: sessions waiting on you,
@@ -112,12 +114,23 @@ struct DrawerView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
                     if q.isEmpty {
-                        ForEach(sidebarSections(model.sessions, projects: model.projects, permissions: model.permissions)) { section in
-                            sectionView(section)
+                        if model.severalMacs {
+                            // Waiting and pinned work from every Mac first, then each Mac with its projects.
+                            ForEach(sidebarSections(model.sessions, projects: [], permissions: model.permissions).filter(\.isAcrossMacs)) { section in
+                                sectionView(section, on: nil)
+                            }
+                            ForEach(model.pairedClients, id: \.slot) { client in
+                                macHeading(client)
+                                ForEach(sectionsOfMac(client)) { section in sectionView(section, on: client) }
+                            }
+                        } else {
+                            ForEach(sidebarSections(model.sessions, projects: model.projects, permissions: model.permissions)) { section in
+                                sectionView(section, on: nil)
+                            }
                         }
                     } else {
                         let found = model.sessions.filter { $0.title.lowercased().contains(q) }.sorted { $0.updatedAt > $1.updatedAt }
-                        ForEach(found) { s in sessionRow(s, project: projectName(s.projectId)) }
+                        ForEach(found) { s in sessionRow(s, project: model.placeLabel(of: s)) }
                         if found.isEmpty {
                             Text("No matching tasks.").font(.app(14)).foregroundStyle(Color.text2).padding(10)
                         }
@@ -128,19 +141,25 @@ struct DrawerView: View {
             }
             .scrollDismissesKeyboard(.immediately)
 
-            Button { model.push(.settings) } label: {
+            Button { model.push(model.severalMacs ? .devices : .settings) } label: {
                 HStack(spacing: 12) {
                     Image(systemName: "laptopcomputer").font(.app(17)).frame(width: 38, height: 38).background(Color.fill2, in: .circle)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(model.macName).font(.app(15, weight: .semibold))
-                        HStack(spacing: 5) {
-                            StatusDot(online: model.ready)
-                            Text("\(model.environmentLabel) · \(model.connectionText)")
+                    if model.severalMacs {
+                        Text("Devices").font(.app(15, weight: .semibold))
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.app(14, weight: .semibold)).foregroundStyle(Color.text3)
+                    } else {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(model.macName).font(.app(15, weight: .semibold))
+                            HStack(spacing: 5) {
+                                StatusDot(online: model.ready)
+                                Text("\(model.environmentLabel) · \(model.connectionText)")
+                            }
+                            .font(.app(12)).foregroundStyle(Color.text2)
                         }
-                        .font(.app(12)).foregroundStyle(Color.text2)
+                        Spacer()
+                        Image(systemName: "gearshape").foregroundStyle(Color.text3)
                     }
-                    Spacer()
-                    Image(systemName: "gearshape").foregroundStyle(Color.text3)
                 }
                 .padding(10)
                 .contentShape(Rectangle())
@@ -153,14 +172,36 @@ struct DrawerView: View {
         .background(Color.page)
     }
 
-    @ViewBuilder private func sectionView(_ section: SidebarSection) -> some View {
+    /// A Mac's projects, without what the top of the list already shows.
+    private func sectionsOfMac(_ client: RemoteClient) -> [SidebarSection] {
+        sidebarSections(client.snapshot?.sessions ?? [], projects: client.snapshot?.projects ?? [], permissions: model.permissions)
+            .filter { !$0.isAcrossMacs }
+            .map { SidebarSection(id: client.slot + "-" + $0.id, kind: $0.kind, items: $0.items) }
+    }
+
+    private func macHeading(_ client: RemoteClient) -> some View {
+        HStack(spacing: 7) {
+            StatusDot(online: client.connection == .connected)
+            Text(model.macName(of: client)).font(.app(14, weight: .semibold)).lineLimit(1)
+            Spacer(minLength: 4)
+            if client.connection != .connected {
+                Text(model.connectionText(of: client)).font(.app(13)).foregroundStyle(Color.text3)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.top, 18)
+        .padding(.bottom, 2)
+    }
+
+    /// `owner`: the Mac this section lists, when the list has several.
+    @ViewBuilder private func sectionView(_ section: SidebarSection, on owner: RemoteClient?) -> some View {
         switch section.kind {
         case .waiting:
             sectionTitle("Needs you")
-            ForEach(section.items) { s in sessionRow(s, project: projectName(s.projectId)) }
+            ForEach(section.items) { s in sessionRow(s, project: model.placeLabel(of: s)) }
         case .pinned:
             sectionTitle("Pinned")
-            ForEach(section.items) { s in sessionRow(s, project: projectName(s.projectId)) }
+            ForEach(section.items) { s in sessionRow(s, project: model.placeLabel(of: s)) }
         case .project(let project):
             let id = section.id
             let folded = collapsed.contains(id)
@@ -181,6 +222,7 @@ struct DrawerView: View {
                 .accessibilityValue(folded ? "Collapsed" : "Expanded")
                 if let project {
                     Button {
+                        if let owner { model.activate(owner) }
                         model.projectId = project.id
                         model.openHome()
                     } label: {
@@ -242,8 +284,6 @@ struct DrawerView: View {
         }
         .buttonStyle(.plain)
     }
-
-    private func projectName(_ id: String) -> String? { model.projects.first { $0.id == id }?.name }
 
     private func toggleCollapsed(_ id: String) {
         var set = collapsed
