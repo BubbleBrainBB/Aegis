@@ -636,7 +636,11 @@ export function PromptInput({
     () => latestTurnHasPendingDelegation(activeSession?.messages ?? []),
     [activeSession?.messages]
   );
+  // A session on another Mac: its agent, model and files are over there.
+  const remoteDevice = activeSession?.device;
+  const remoteOffline = !!remoteDevice && !remoteDevice.online && !remoteDevice.reconnecting;
   const canSteerWhileRunning =
+    !remoteDevice &&
     (runtimeProvider === 'codex' ||
       (runtimeProvider === 'kimi' && activeSession?.kimiRuntime !== 'legacy') ||
       // DeepSeek: mid-turn sends splice into the runtime's inbox and are
@@ -805,6 +809,7 @@ export function PromptInput({
   };
 
   const handleSend = async (invertFollowUp = false) => {
+    if (remoteOffline) return;
     const goalInput = parseGoalInput(prompt, sessionGoal.drafting);
     const isGoal = supportsGoalUI(agentSelection.provider) && goalInput.isGoal;
     if (isGoal && (agentSelection.provider === 'claude' || agentSelection.provider === 'kimi') && isClaudeGoalClearObjective(goalInput.objective) && attachments.length === 0) {
@@ -1663,6 +1668,18 @@ export function PromptInput({
             data-composer-drop-zone
             {...attachmentImport.dropProps}
           >
+          {remoteOffline && remoteDevice && (
+            <div role="status" data-remote-offline className="flex items-center gap-2.5 border-b border-[var(--border)] py-2 pl-4 pr-2.5 text-[13px] text-[var(--text-secondary)]">
+              <span className="min-w-0 flex-1">Can’t reach {remoteDevice.name}. Showing what it last reported.</span>
+              <button
+                type="button"
+                className="flex-shrink-0 rounded-lg border border-[var(--border)] px-2.5 py-1 text-[13px] text-[var(--text-primary)] transition-colors hover:bg-[var(--bg-tertiary)]"
+                onClick={() => void window.electron.remoteHosts('retry', { id: remoteDevice.id })}
+              >
+                Try again
+              </button>
+            </div>
+          )}
           {attachmentImport.isImporting && <div role="status" className="px-5 pt-3 text-xs text-[var(--text-muted)]">Adding attachments…</div>}
           {imageAttachmentsLoading && <span className="sr-only" role="status">Adding selected images…</span>}
           {attachments.length > 0 && (
@@ -1728,7 +1745,7 @@ export function PromptInput({
                 ? 'Starting session...'
                 : idlePlaceholder
             }
-            disabled={pendingStart || draftStartLocked || approvalPending}
+            disabled={pendingStart || draftStartLocked || approvalPending || remoteOffline}
             placeholderClassName={isLandingSurface ? 'inset-x-4 top-3 text-[14px] leading-[21px]' : undefined}
             className="w-full bg-transparent px-4 pt-3 pb-1 text-[14px] outline-none resize-none min-h-[56px] max-h-[200px] disabled:opacity-50"
             autoFocus={isLandingSurface}
@@ -1736,6 +1753,7 @@ export function PromptInput({
 
           <div className="aegis-composer-toolbar flex items-end justify-between gap-2 px-2.5 pb-2">
             <div className="aegis-composer-leading-controls flex min-w-0 flex-1 items-center gap-1 overflow-visible">
+              {!remoteDevice && (
               <button
                 type="button"
                 onClick={() => {
@@ -1748,11 +1766,13 @@ export function PromptInput({
               >
                 <Plus className="h-4 w-4" />
               </button>
+              )}
               {leadingControls}
               {(sessionGoal.drafting || (sessionGoal.goal && sessionGoal.goal.status !== 'complete')) && <GoalModePill onExit={() => {
                 if (sessionGoal.snapshot?.goal) void sessionGoal.change({ type: 'clear' }).then(() => sessionGoal.setDraft(false)).catch(error => toast.error(String(error)));
                 else sessionGoal.setDraft(false);
               }} disabled={goalSubmitting} />}
+              {!remoteDevice && (<>
               {agentSelection.provider === 'codex' && (
                 <PermissionModePicker
                   value={agentSelection.codexPermissionMode}
@@ -1885,6 +1905,7 @@ export function PromptInput({
                   disabled={isBusy}
                 />
               )}
+              </>)}
             </div>
 
             <div className="aegis-composer-trailing-controls flex shrink-0 items-center gap-2">
@@ -1924,6 +1945,11 @@ export function PromptInput({
                   providerLabel="Qoder"
                 />
               ) : null}
+              {remoteDevice ? (
+                <span className="truncate text-[13px] text-[var(--text-secondary)]" data-remote-model>
+                  {activeSession?.model || 'Default'}
+                </span>
+              ) : (
               <ComposerAgentModelPicker
                 agentProvider={runtimeProvider}
                 modelLabel={agentSelection.selectedModelLabel}
@@ -1973,6 +1999,7 @@ export function PromptInput({
                 menuSide={menuSide}
                 bubbleModelsLoading={agentSelection.bubbleModelsLoading}
               />
+              )}
               {/* While a steer-capable turn runs, the slot flips with composer
                   content: empty → stop square; typing → the normal send arrow
                   (which queues the follow-up), so the user sees they can send

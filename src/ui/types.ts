@@ -393,6 +393,8 @@ export interface SessionView {
   detachedDraft?: boolean;
   draftTitleEdited?: boolean;
   handoffSourceProvider?: AgentProvider | null;
+  /** Set when this session runs on another Mac. */
+  device?: { id: string; name: string; online: boolean; reconnecting?: boolean };
   latestClaudeModelUsage?: import('../shared/types').LatestClaudeModelUsage;
   /** Claude Code's own context window usage after the latest turn (live only). */
   claudeContextUsage?: import('../shared/types').ClaudeContextUsage;

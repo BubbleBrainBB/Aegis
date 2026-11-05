@@ -1,4 +1,4 @@
-import { captureRemoteEvent, setupRemoteIPC, closeRemoteGateway, remoteTaskPayload, codexReferences } from './remote/integration';
+import { captureRemoteEvent, setupRemoteIPC, closeRemoteGateway, remoteTaskPayload, codexReferences, setupRemoteHosts, remoteHostSessions, handleRemoteHostEvent, isRemoteSessionId, loadOlderRemoteHistory } from './remote/integration';
 import {
   getWorkflowSessionPolicy,
   observeTurnMessage,
@@ -5316,6 +5316,10 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
   // 初始化数据库
   sessions.initialize();
   setupTurnReports(mainWindow);
+  setupRemoteHosts(
+    (event) => broadcastSessionEvent(mainWindow, event),
+    () => handleSessionList(mainWindow),
+  );
   setupRemoteIPC(mainWindow, {
     hasBackgroundWork: hasSessionBackgroundWork,
     start: async (project, provider, prompt, extras) => {
@@ -5342,9 +5346,12 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
     stop: sessionId => handleSessionStop(mainWindow, sessionId),
     // No updatedInput on a plain allow: the request input is the approval card, not the tool's arguments.
     // Questions and plans come resolved like the desktop card resolves them.
-    permission: (request, decision, resolution) => {
+    permission: (request, decision, resolution, scope) => {
       const behavior = resolution?.behavior ?? decision;
-      return handlePermissionResponse({ sessionId: request.sessionId, toolUseId: request.toolUseId, result: { scope: 'once', ...resolution, behavior, ...(behavior === 'allow' ? {} : { message: 'Declined from iPhone' }) } });
+      const answered = handlePermissionResponse({ sessionId: request.sessionId, toolUseId: request.toolUseId, result: { scope: scope ?? 'once', ...resolution, behavior, ...(behavior === 'allow' ? {} : { message: 'Declined from another device' }) } });
+      // This window has no way to know it was answered elsewhere; its card would stay until a reload.
+      if (answered) broadcast(mainWindow, { type: 'permission.dismissed', payload: { sessionId: request.sessionId, toolUseId: request.toolUseId } });
+      return answered;
     },
     hasPermission: (sessionId, toolUseId) => sessionStates.get(sessionId)?.pendingPermissions.has(toolUseId) ?? false,
   });
@@ -6600,6 +6607,7 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
   });
 
   ipcMainHandle('load-older-session-history', async (_event, sessionId: string, cursor: string, limit?: number) => {
+    if (isRemoteSessionId(sessionId)) return loadOlderRemoteHistory(sessionId, cursor);
     const session = sessions.getSession(sessionId);
     if (!session) {
       throw new Error('Unknown session');
@@ -9571,6 +9579,7 @@ async function handleClientEvent(
   event: ClientEvent,
   replyWindow: BrowserWindow = mainWindow
 ): Promise<void> {
+  if (handleRemoteHostEvent(event)) return;
   switch (event.type) {
     case 'session.list':
       handleSessionList(replyWindow, true);
@@ -9780,7 +9789,7 @@ function handleSessionList(mainWindow: BrowserWindow, replyOnly = false): void {
 
   emit(mainWindow, {
     type: 'session.list',
-    payload: { sessions: sessionInfos },
+    payload: { sessions: [...sessionInfos, ...remoteHostSessions()] },
   });
 
   // 同时发送文件夹列表

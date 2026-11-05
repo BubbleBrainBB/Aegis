@@ -193,6 +193,7 @@ declare global {
     getTerminalTransportInfo: () => Promise<TerminalTransportInfo>;
     setWindowMinSize: (width: number, height: number) => Promise<{ ok: boolean }>;
     remoteCompanion: (action: string, payload?: unknown) => Promise<any>;
+    remoteHosts: (action: string, payload?: unknown) => Promise<any>;
     getAppVersion: () => Promise<string>;
     getWindowShellState: () => Promise<{ rounded: boolean; fullScreen: boolean }>;
     setTheme: (theme: 'light' | 'dark' | 'system', look?: { variant: 'light' | 'dark'; background: string; material?: 'glass' | 'solid' }) => Promise<{ ok: boolean }>;

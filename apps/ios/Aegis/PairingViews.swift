@@ -82,7 +82,7 @@ struct PairSheet: View {
             VStack(alignment: .leading, spacing: 12) {
                 step(1, Text("Open Aegis on your Mac"))
                 step(2, Text("Go to ") + Text("Settings → Connections").bold())
-                step(3, Text("Choose Set up or Add device to show the pairing code"))
+                step(3, Text("Choose Set up or Pair a device to show the pairing code"))
             }
             if DataScannerViewController.isSupported {
                 Button { scanning = true } label: { Label("Scan pairing code", systemImage: "qrcode.viewfinder") }

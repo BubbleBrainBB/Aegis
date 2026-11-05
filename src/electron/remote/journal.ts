@@ -25,6 +25,8 @@ export interface RemoteConfig {
   lanPort?: number;
 }
 export interface RemoteDevice {
+  /** Another Mac; phones leave this unset. */
+  kind?: "desktop";
   peerId: string;
   name: string;
   pairedAt: number;
