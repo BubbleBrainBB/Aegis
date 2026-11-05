@@ -1149,6 +1149,7 @@ contextBridge.exposeInMainWorld('electron', {
     return ipcRenderer.invoke('get-git-working-tree-summary', cwd);
   },
 
+  clearAgentWorktree: (sessionId: string, onlyIfGone?: boolean) => ipcRenderer.invoke('clear-agent-worktree', sessionId, onlyIfGone),
   listSessionPullRequests: (sessionId: string, refresh?: boolean) => ipcRenderer.invoke('list-session-pull-requests', sessionId, refresh),
   listSidebarPullRequests: (refresh?: boolean) => ipcRenderer.invoke('list-sidebar-pull-requests', refresh),
   listSettledWorktreeSessions: () => ipcRenderer.invoke('list-settled-worktree-sessions'),

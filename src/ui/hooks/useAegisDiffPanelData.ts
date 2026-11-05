@@ -92,10 +92,12 @@ export function useAegisDiffPanelData({
 
   // Until the user picks a source explicitly, default to the last captured
   // turn's diff (what the agent just changed); fall back to Uncommitted when
-  // the session has no captured turns.
+  // the session has no captured turns, or follows the agent's worktree: turns
+  // are captured in the session's folder, so they would miss the work there.
+  const followsAgentWorktree = Boolean(session?.agentWorktreePath);
   const defaultSelection = useMemo<ReviewDiffSelection>(() => {
     const lastTurn = turnOptions.length > 0 ? turnOptions[turnOptions.length - 1] : null;
-    if (!lastTurn) {
+    if (!lastTurn || followsAgentWorktree) {
       return DEFAULT_REVIEW_DIFF_SELECTION;
     }
     return {
@@ -110,7 +112,7 @@ export function useAegisDiffPanelData({
       selectedFilePath: lastTurn.summary.records[0]?.filePath ?? null,
       requestedAt: 0,
     };
-  }, [session?.id, turnOptions]);
+  }, [followsAgentWorktree, session?.id, turnOptions]);
   const effectiveSelection = selection || defaultSelection;
 
   const turnData = useMemo(() => {

@@ -592,6 +592,7 @@ export function initialize(): void {
   ensureColumn('sessions', 'env_mode', "TEXT DEFAULT 'local'");
   ensureColumn('sessions', 'worktree_path', 'TEXT');
   ensureColumn('sessions', 'associated_worktree_path', 'TEXT');
+  ensureColumn('sessions', 'agent_worktree_path', 'TEXT');
   ensureColumn('sessions', 'associated_worktree_branch', 'TEXT');
   ensureColumn('sessions', 'associated_worktree_ref', 'TEXT');
   ensureColumn('sessions', 'handoff_source_provider', 'TEXT');
@@ -2307,6 +2308,7 @@ export function updateSessionWorkspace(
         associated_worktree_path = ?,
         associated_worktree_branch = ?,
         associated_worktree_ref = ?,
+        agent_worktree_path = NULL,
         updated_at = ?
     WHERE id = ?
   `);
@@ -2321,6 +2323,11 @@ export function updateSessionWorkspace(
     now,
     sessionId
   );
+}
+
+/** The worktree this session's agent moved its work into, shown by the Environment card. */
+export function setSessionAgentWorktree(sessionId: string, path: string | null): void {
+  getDb().prepare('UPDATE sessions SET agent_worktree_path = ? WHERE id = ?').run(path, sessionId);
 }
 
 // 批量更新指定文件夹（及其子文件夹）下的 session 的路径（用于文件夹重命名）

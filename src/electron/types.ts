@@ -58,6 +58,7 @@ export interface SessionRow {
   associated_worktree_path: string | null;
   associated_worktree_branch: string | null;
   associated_worktree_ref: string | null;
+  agent_worktree_path: string | null;
   handoff_source_provider: string | null;
   handoff_pending: number | null;
   /** JSON TurnReport (shared/turn-report.ts): how the agent says its latest turn ended. */

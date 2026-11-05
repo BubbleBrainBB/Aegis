@@ -999,6 +999,7 @@ export type ServerEvent =
   | { type: 'session.open'; payload: { sessionId: string } }
   | { type: 'session.list'; payload: { sessions: SessionInfo[] } }
   | { type: 'session.status'; payload: SessionStatusPayload }
+  | { type: 'session.agentWorktree'; payload: { sessionId: string; path: string | null } }
   | { type: 'session.history'; payload: SessionHistoryPayload }
   | { type: 'session.deleted'; payload: { sessionId: string } }
   | { type: 'session.pinned'; payload: { sessionId: string; pinned: boolean } }
@@ -1542,6 +1543,8 @@ export interface SessionInfo {
   associatedWorktreePath?: string | null;
   associatedWorktreeBranch?: string | null;
   associatedWorktreeRef?: string | null;
+  /** The worktree this session's agent moved its work into; the Environment card follows it. */
+  agentWorktreePath?: string | null;
   claudeSessionId?: string;
   provider?: AgentProvider;
   model?: string;
@@ -1625,6 +1628,8 @@ export interface SessionStatusPayload {
   associatedWorktreePath?: string | null;
   associatedWorktreeBranch?: string | null;
   associatedWorktreeRef?: string | null;
+  /** The worktree this session's agent moved its work into; the Environment card follows it. */
+  agentWorktreePath?: string | null;
   error?: string;
   provider?: AgentProvider;
   model?: string;

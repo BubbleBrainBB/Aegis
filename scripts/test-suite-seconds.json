@@ -21,6 +21,7 @@
   "verify:environment-hub-anchor": 0,
   "verify:environment-summary": 32,
   "verify:session-pull-requests": 8,
+  "verify:agent-worktrees": 6,
   "verify:git-branch-pill": 1,
   "verify:side-chat-drop": 0,
   "verify:right-utility-tabs": 4,

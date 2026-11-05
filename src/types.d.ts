@@ -447,6 +447,7 @@ declare global {
     unwatchProjectFile: (cwd: string, filePath: string) => Promise<boolean>;
     getGitChanges: (cwd: string) => Promise<{ ok: boolean; error: string | null; entries: import('./shared/types').GitChangeEntry[] }>;
     getGitWorkingTreeSummary: (cwd: string) => Promise<{ ok: boolean; error: string | null; insertions: number; deletions: number }>;
+    clearAgentWorktree: (sessionId: string, onlyIfGone?: boolean) => Promise<void>;
     listSessionPullRequests: (sessionId: string, refresh?: boolean) => Promise<import('./shared/types').SessionPullRequestView[]>;
     listSidebarPullRequests: (refresh?: boolean) => Promise<Record<string, import('./shared/types').GitPullRequestSummary[]>>;
     listSettledWorktreeSessions: () => Promise<string[]>;

@@ -36,6 +36,7 @@ import { broadcastSessionEvent } from './ipc/session-windows';
 import { getGitPullRequestInfo, parseGitHubRepoFromRemote } from './libs/git-pull-requests';
 import { notifySessionPullRequestsChanged, setupSessionPullRequestsIPC } from './ipc/session-pull-requests';
 import { attachAgentPullRequest, pullRequestCreatedBy } from './libs/agent-pull-requests';
+import { observeAgentWorktree } from './libs/agent-worktrees';
 import { registerDesignIpc } from './design/ipc';
 import { deleteSessionDesigns, markDesignCommentSent, moveSessionDesigns, settleDesignTurn } from './design/service';
 import { sanitizeDesignPromptRef } from '../shared/design-comment';
@@ -4130,6 +4131,7 @@ function broadcastSessionWorkspace(mainWindow: BrowserWindow, sessionId: string)
       associatedWorktreePath: row.associated_worktree_path || null,
       associatedWorktreeBranch: row.associated_worktree_branch || null,
       associatedWorktreeRef: row.associated_worktree_ref || null,
+      agentWorktreePath: row.agent_worktree_path || null,
       hiddenFromThreads: row.hidden_from_threads === 1,
     },
   });
@@ -9068,6 +9070,14 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
     }
   });
 
+  // The user going back to the session's folder, or the agent's worktree gone.
+  ipcMainHandle('clear-agent-worktree', (_event, sessionId: string, onlyIfGone?: boolean) => {
+    const path = sessions.getSession(sessionId)?.agent_worktree_path;
+    if (!path || (onlyIfGone && existsSync(path))) return;
+    sessions.setSessionAgentWorktree(sessionId, null);
+    broadcast(mainWindow, { type: 'session.agentWorktree', payload: { sessionId, path: null } });
+  });
+
   ipcMainHandle(
     'git-session-handoff',
     async (_event, input: GitSessionHandoffInput) => {
@@ -9089,6 +9099,7 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
             associatedWorktreePath: updated.associated_worktree_path || null,
             associatedWorktreeBranch: updated.associated_worktree_branch || null,
             associatedWorktreeRef: updated.associated_worktree_ref || null,
+            agentWorktreePath: updated.agent_worktree_path || null,
           },
         });
       };
@@ -9727,6 +9738,7 @@ function buildSessionInfoFromRow(
     associatedWorktreePath: row.associated_worktree_path || null,
     associatedWorktreeBranch: row.associated_worktree_branch || null,
     associatedWorktreeRef: row.associated_worktree_ref || null,
+    agentWorktreePath: row.agent_worktree_path || null,
     claudeSessionId: row.claude_session_id || undefined,
     provider: row.provider || 'claude',
     model: row.model || undefined,
@@ -11809,6 +11821,9 @@ function startRunner(
             .then((created) => { if (created) notifySessionPullRequestsChanged(session.id); })
             .catch(() => undefined);
         }
+        observeAgentWorktree(session.id, attributedMessage, (path) => {
+          broadcast(mainWindow, { type: 'session.agentWorktree', payload: { sessionId: session.id, path } });
+        });
 
         // Subagent stream_events have no renderer consumer: the store drops
         // them before touching state (they never enter messages or the

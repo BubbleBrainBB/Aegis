@@ -356,6 +356,7 @@ export interface SessionView {
   associatedWorktreePath?: string | null;
   associatedWorktreeBranch?: string | null;
   associatedWorktreeRef?: string | null;
+  agentWorktreePath?: string | null;
   claudeSessionId?: string;
   provider?: AgentProvider;
   model?: string;

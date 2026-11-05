@@ -444,6 +444,14 @@ export function App() {
     openSessionSource(environmentContext.sessionId, source ?? null);
   }, [environmentContext.sessionId, sessionSources.sources]);
   const gitEnvironment = useGitEnvironment(environmentContext.effectiveCwd, environmentContext.contextKey);
+  // The worktree the card followed is gone (agent removed it, cleaned up by hand).
+  const followedAgentWorktreeGone = Boolean(environmentContext.session?.agentWorktreePath)
+    && gitEnvironment.overview.error === 'not-a-repo';
+  useEffect(() => {
+    if (followedAgentWorktreeGone && environmentContext.sessionId) {
+      void window.electron.clearAgentWorktree(environmentContext.sessionId, true);
+    }
+  }, [environmentContext.sessionId, followedAgentWorktreeGone]);
   const refreshEnvironmentGit = useCallback(async () => {
     await gitEnvironment.refresh();
   }, [gitEnvironment.refresh]);
@@ -1384,7 +1392,7 @@ export function App() {
             <AegisDiffPanel
               key={`${activeSessionId ?? 'new'}:review`}
               collapsed={activeRightUtilityTab !== 'review'}
-              cwd={activeSession?.cwd || projectCwd || null}
+              cwd={activeSession?.agentWorktreePath || activeSession?.cwd || projectCwd || null}
               session={activeSession}
               onClose={() => closeRightUtilityTab('review')}
               isFullscreen={
