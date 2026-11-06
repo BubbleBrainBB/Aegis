@@ -186,7 +186,8 @@
     "ios:project": "node apps/ios/core/build.mjs && cd apps/ios && xcodegen generate",
     "ios:device": "zsh apps/ios/scripts/device.sh",
     "ios:test": "npm run transpile:electron && node apps/ios/core/build.mjs && node --test apps/ios/core/core.test.mjs && swift test --package-path apps/ios/AegisKit",
-    "verify:question-answers": "npx tsx scripts/tests/question-answers.test.ts"
+    "verify:question-answers": "npx tsx scripts/tests/question-answers.test.ts",
+    "verify:answer-fold": "npx tsx scripts/tests/answer-after-bookkeeping.test.ts"
   },
   "testSuites": [
     "validate:terminal",
@@ -249,6 +250,7 @@
     "verify:devin-acp-adapter",
     "verify:decision-panel",
     "verify:question-answers",
+    "verify:answer-fold",
     "verify:mimo-acp-adapter",
     "verify:minimax-acp-adapter",
     "verify:warm-send-options",
@@ -337,6 +339,7 @@
     "verify:deepseek-key-source",
     "verify:devin-acp-adapter",
     "verify:question-answers",
+    "verify:answer-fold",
     "verify:mimo-acp-adapter",
     "verify:minimax-acp-adapter",
     "verify:warm-send-options",
