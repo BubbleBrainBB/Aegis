@@ -56,7 +56,7 @@ assert.ok(
 );
 
 // Both native menu entry points share the provider-gated action hook.
-const tree = read('src/ui/components/FolderTreeView.tsx');
+const tree = read('src/ui/components/TasksView.tsx');
 const header = read('src/ui/components/SessionActionsMenu.tsx');
 const menu = read('src/ui/hooks/useSessionActionsMenu.ts');
 assert.ok(

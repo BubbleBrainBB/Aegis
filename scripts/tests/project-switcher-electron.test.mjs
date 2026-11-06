@@ -14,9 +14,7 @@ import { createRoot } from 'react-dom/client';
 import { Tooltip } from '@base-ui-components/react/tooltip';
 import { NewThreadLanding } from '/src/ui/components/NewThreadLanding.tsx';
 import { NewThreadProjectHeading } from '/src/ui/components/NewThreadProjectHeading.tsx';
-import { FolderTreeView } from '/src/ui/components/FolderTreeView.tsx';
 import { useAppStore } from '/src/ui/store/useAppStore.ts';
-import { useSidebarViewStore } from '/src/ui/store/useSidebarViewStore.ts';
 import { openProjectNewChat } from '/src/ui/utils/project-new-chat.ts';
 import '/src/ui/index.css';
 window.electron = { getRecentCwds: async () => ['/projects/Alpha', '/projects/Beta', '/projects/RecentOnly'], selectDirectory: async () => window.browseResult, gitBranch: async () => null, followUps: { list: async () => [] } };
@@ -27,17 +25,14 @@ a.setProjectCwd('/projects/Alpha');
 a.setShowNewSession(true);
 a.setActiveChannelForProject('/projects/Alpha', 'alpha-channel');
 a.setActiveChannelForProject('/projects/Beta', 'beta-channel');
-useSidebarViewStore.setState({groupBy:'project'});
 window.qa = { store: useAppStore, openProjectNewChat, old, snapshot: () => {
  const s = useAppStore.getState(); const active = s.sessions[s.activeSessionId];
- const row = document.querySelector('[data-session-id="'+s.activeSessionId+'"]');
- return {cwd:s.projectCwd, active: active && {id:active.id,cwd:active.cwd,channelId:active.channelId,isDraft:active.isDraft}, draftCount:Object.values(s.sessions).filter(x=>x.isDraft).length, oldExists:!!s.sessions[old], selected:row?.getAttribute('aria-current'), visible:!!row && row.getBoundingClientRect().height>0, heading:document.querySelector('h1')?.textContent};
+ return {cwd:s.projectCwd, active: active && {id:active.id,cwd:active.cwd,channelId:active.channelId,isDraft:active.isDraft}, draftCount:Object.values(s.sessions).filter(x=>x.isDraft).length, oldExists:!!s.sessions[old], heading:document.querySelector('h1')?.textContent};
 }};
 function Harness() {
  const s = useAppStore();
  const active = s.activeSessionId ? s.sessions[s.activeSessionId] : null;
  return <Tooltip.Provider><div style={{display:'flex',height:'100vh',background:'var(--bg-primary)'}}>
- <aside style={{width:280,flexShrink:0,overflowY:'auto',padding:12,background:'var(--sidebar-bg)'}}><FolderTreeView projectCwd={s.projectCwd} onSessionClick={s.setActiveSession} onSelectProjectFolder={()=>{}} onNewSessionForProject={openProjectNewChat}/></aside>
  <NewThreadLanding heading={<NewThreadProjectHeading cwd={active?.projectCwd || s.projectCwd || ''} sessionId={active?.id} disabled={s.pendingStart}/>}><div style={{padding:24,border:'1px solid var(--border)',borderRadius:18,color:'var(--text-muted)'}}>Start a new chat</div></NewThreadLanding>
  </div></Tooltip.Provider>;
 }
@@ -62,15 +57,13 @@ app.whenReady().then(async()=>{
  try {
   await win.loadURL(process.env.QA_URL);
   for(let i=0;i<150;i++){if(await js('!!window.qa && !!document.querySelector("h1")'))break;await delay(100);}
-  // Collapse destination first: selecting it must reveal its New chat again.
-  await js('Array.from(document.querySelectorAll("button")).find(b=>b.textContent.trim()==="Beta").click()');
   await click('[aria-label="Switch project: Alpha"]');
   await searchFocused();
   await win.webContents.insertText('Beta');
   await until('document.querySelectorAll("[cmdk-item][title]").length===1','search filters to one project');
   await win.webContents.sendInputEvent({type:'keyDown',keyCode:'Enter'});await win.webContents.sendInputEvent({type:'keyUp',keyCode:'Enter'});await delay(250);
   const beta=await js('qa.snapshot()');
-  assert.equal(beta.cwd,'/projects/Beta');assert.equal(beta.active.channelId,'beta-channel');assert.equal(beta.selected,undefined,'an unsent chat has no row');assert.equal(beta.draftCount,1);assert.equal(beta.oldExists,true);
+  assert.equal(beta.cwd,'/projects/Beta');assert.equal(beta.active.channelId,'beta-channel');assert.equal(beta.draftCount,1);assert.equal(beta.oldExists,true);
   // Current project is checked and selecting it is a no-op.
   await click('[aria-label="Switch project: Beta"]');
   assert.equal(await js('!!document.querySelector("[aria-label^=Current]")'),true);
@@ -78,7 +71,7 @@ app.whenReady().then(async()=>{
   assert.equal((await js('qa.snapshot()')).active.id,beta.active.id);
   await click('[aria-label="Switch project: Beta"]');
   await click('[cmdk-item][title="/projects/Alpha"]');
-  const alpha=await js('qa.snapshot()');assert.equal(alpha.active.channelId,'alpha-channel');assert.equal(alpha.draftCount,1);assert.equal(alpha.oldExists,true);assert.equal(alpha.selected,undefined,'an unsent chat has no row');
+  const alpha=await js('qa.snapshot()');assert.equal(alpha.active.channelId,'alpha-channel');assert.equal(alpha.draftCount,1);assert.equal(alpha.oldExists,true);
   // Escape closes, no-match state works, cancelling browse preserves selection.
   await click('[aria-label="Switch project: Alpha"]');
   await searchFocused();

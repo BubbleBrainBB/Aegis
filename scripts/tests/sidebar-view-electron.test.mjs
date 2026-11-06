@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
 
-// Sidebar view options (the Kanban replacement): filters, Group by
+// My Tasks display options (the Kanban replacement): list and board, filters, Group by
 // Project/State/Date, derived session states, PR glyphs and the Archived
 // entry, rendered with the real components against fixture sessions.
 // QA_CAPTURE=<dir> saves a screenshot of each view.
@@ -16,8 +16,7 @@ const harness = `
 import React from 'react';
 import {createRoot} from 'react-dom/client';
 import {Tooltip} from '@base-ui-components/react/tooltip';
-import {FolderTreeView} from '/src/ui/components/FolderTreeView.tsx';
-import {SidebarViewMenu} from '/src/ui/components/sidebar/SidebarViewMenu.tsx';
+import {TasksView} from '/src/ui/components/TasksView.tsx';
 import {useAppStore} from '/src/ui/store/useAppStore.ts';
 import {useSidebarViewStore} from '/src/ui/store/useSidebarViewStore.ts';
 import '/src/ui/index.css';
@@ -44,10 +43,7 @@ window.qa={app:useAppStore,view:useSidebarViewStore};
 function Harness(){
  const s=useAppStore();
  return <Tooltip.Provider><div style={{display:'flex',height:'100vh',background:'var(--bg-primary)'}}>
- <aside style={{width:300,padding:'12px 8px',background:'var(--app-sidebar-surface)',overflow:'auto'}}>
-  <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'4px 4px 12px'}}><b style={{fontSize:20,letterSpacing:'-0.04em'}}>Aegis</b><SidebarViewMenu/></div>
-  {s.showSettings?null:<FolderTreeView projectCwd="/projects/coworker" onSessionClick={s.setActiveSession} onSelectProjectFolder={()=>{}} onNewSessionForProject={()=>{}} />}
- </aside><main style={{flex:1}}/></div></Tooltip.Provider>;
+ {s.showSettings?<main/>:<TasksView/>}</div></Tooltip.Provider>;
 }
 createRoot(document.getElementById('root')).render(<Harness/>);
 `;
@@ -80,19 +76,19 @@ app.whenReady().then(async()=>{
  const setView=patch=>js('qa.view.setState('+JSON.stringify(patch)+')').then(()=>delay(150));
  try{
   await win.loadURL(process.env.QA_URL);
-  await js('new Promise(r=>{const t=()=>document.querySelector("[data-session-id]")?r():setTimeout(t,50);t()})');await delay(400);
+  await js('new Promise((r,x)=>{const start=Date.now();const t=()=>document.querySelector("[data-session-id]")?r():Date.now()-start>30000?x(Error("No task rows")):setTimeout(t,50);t()})');await delay(400);
 
-  assert.equal(await js('document.querySelector("[aria-label=\\\\"View options\\\\"]")!==null'),true,'default options leave the trigger untinted');
-  assert.equal(await js('qa.view.getState().groupBy'),'state','Group by State is the default');
+  assert.equal(await js('document.querySelector("[aria-label=\\\\"Display options\\\\"]")!==null'),true,'default options leave the trigger untinted');
+  assert.equal(await js('qa.view.getState().groupBy'),'none','a flat list is the default');
+  assert.equal(await js('qa.view.getState().sortBy'),'state','most urgent first is the default');
 
   // Group by Project: pinned on top, archived hidden behind the entry at the bottom.
   await js('qa.view.setState({groupBy:"project"})');await delay(200);
-  assert.equal(await js('document.querySelector("[aria-label=\\\\"View options (customized)\\\\"]")!==null'),true,'changed options tint the trigger');
+  assert.equal(await js('document.querySelector("[aria-label=\\\\"Display options (customized)\\\\"]")!==null'),true,'changed options tint the trigger');
   const projectRows=await rowIds();
   assert.equal(projectRows[0],'s10','pinned threads lead');
   assert.equal(projectRows.includes('s11'),false,'archived threads stay out of Active');
   assert.equal(await js(byText('Archived')+'!==undefined'),true);
-  assert.equal(await js('document.body.textContent.includes("Projects")'),true);
   assert.equal(await js('!!document.querySelector("[data-session-id=s4] [aria-label^=\\\\"Pull request #44 · Open\\\\"]")'),true,'PR status shows on the row');
   assert.equal(await js('document.querySelector("[data-session-id=s6] [data-pull-request-count]").getAttribute("aria-label")'),'2 pull requests · 1 open, 1 merged','several PRs show a count');
   assert.equal(await js('document.querySelector("[data-session-id=s6] [data-pull-request-count]").textContent'),'2');
@@ -103,19 +99,20 @@ app.whenReady().then(async()=>{
   await screenshot('1b-pr-list');
   await js('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))');
   win.webContents.sendInputEvent({type:'mouseMove',x:700,y:800});await delay(400);
-  assert.equal(await js('!!document.querySelector("[data-session-id=s1] [aria-label=\\\\"Waiting for your approval\\\\"]")'),true);
+  assert.equal(await js('document.querySelector("[data-session-id=s1] [data-task-attention]").textContent'),'Run rm -rf build','a waiting task says what it wants');
   await screenshot('1-project');
 
-  // The menu drives the same store; Group by -> State from the submenu.
-  // The runner sometimes loses a synthetic press: open the menu again if it never appeared.
-  const menuOpen=async()=>{for(let i=0;i<40;i++){if(await js(byText('Show PR status')+'!==undefined'))return true;await delay(50)}return false};
-  await click('document.querySelector("[aria-label^=\\\\"View options\\\\"]")');
-  if(!await menuOpen()){await click('document.querySelector("[aria-label^=\\\\"View options\\\\"]")');await menuOpen();}
-  for(const label of ['Status','Project','Last activity','Group by','Sort by','Show PR status'])assert.equal(await js(byText(label)+'!==undefined'),true,'menu row '+label);
-  await hover(byText('Group by'));
+  // The panel drives the same store, and stays open while its selects are used.
+  const panel='document.querySelector("[data-task-display-menu]")';
+  const panelOpen=async()=>{for(let i=0;i<40;i++){if(await js('!!'+panel))return true;await delay(50)}return false};
+  await click('document.querySelector("[aria-label^=\\\\"Display options\\\\"]")');
+  if(!await panelOpen()){await click('document.querySelector("[aria-label^=\\\\"Display options\\\\"]")');await panelOpen();}
+  for(const label of ['List','Board','Grouping','Sub-grouping','Ordering','Completed tasks','Status','Show sub-sessions','Display properties','Pull requests'])assert.equal(await js(panel+'.textContent.includes('+JSON.stringify(label)+')'),true,'panel row '+label);
   await screenshot('2-menu');
-  await click(byText('State'));
+  const pick=async(select,option)=>{await click('document.querySelector("[data-task-display-menu] [aria-label=\\\\"'+select+'\\\\"]")');await click('[...document.querySelectorAll("[role=menuitemradio]")].find(e=>e.textContent.trim()==='+JSON.stringify(option)+')');await delay(120)};
+  await pick('Grouping','State');
   assert.equal(await js('qa.view.getState().groupBy'),'state');
+  assert.equal(await js('!!'+panel),true,'choosing an option leaves the panel open');
   await js('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))');await delay(200);
 
   // Group by State: most urgent first, derived from live status, unread and PRs.
@@ -126,42 +123,21 @@ app.whenReady().then(async()=>{
   assert.deepEqual(await members('running'),['s3','s4']);
   assert.deepEqual(await members('review'),['s5','s6','s7'],'unseen result, open PR and live worktree wait on review');
   assert.deepEqual(await members('completed'),['s10','s12','s8','s9'].sort(),'Completed starts open; a merged PR lands in it');
-  assert.equal(await js('document.querySelector("[aria-label=\\\\"View options\\\\"]")!==null'),true,'back on the default, the trigger is untinted again');
-  assert.equal(await js('document.querySelector("[data-session-id=s5]").textContent.includes("coworker")'),false,'rows show the session only, not its project');
+  assert.equal(await js('document.querySelector("[data-session-id=s5] [data-task-project]").textContent'),'coworker','rows name their project');
   await screenshot('3-state');
 
-  // Past five sessions a state group folds the rest behind Show more, like a project.
-  const sessionListToggle='[...document.querySelectorAll("[data-sidebar-state=completed] button")].find(e=>/^Show (more|less)$/.test(e.textContent))';
-  const toggleLabel=()=>js('('+sessionListToggle+')?.textContent ?? null');
-  assert.equal(await toggleLabel(),null,'a short group has no Show more');
-  await js('(()=>{const s=qa.app.getState().sessions;qa.app.setState({sessions:{...s,c1:{...s.s9,id:"c1"},c2:{...s.s9,id:"c2"},c3:{...s.s9,id:"c3"}}})})()');await delay(200);
-  assert.equal((await members('completed')).length,5,'only the first five show');
-  assert.equal(await toggleLabel(),'Show more');
-  await click(sessionListToggle);
-  assert.equal((await members('completed')).length,7,'Show more lists the whole group');
-  assert.equal(await toggleLabel(),'Show less');
-  await screenshot('3b-state-show-more');
-
-  // Settings unmounts the list; coming back keeps what was folded and shown.
+  // Settings unmounts the list; coming back keeps what was folded.
   const openAndCloseSettings=async()=>{
     await js('qa.app.setState({showSettings:true})');await delay(200);
     assert.equal(await js('!!document.querySelector("[data-sidebar-state]")'),false,'Settings unmounts the list');
     await js('qa.app.setState({showSettings:false})');await delay(200);
   };
-  await openAndCloseSettings();
-  assert.equal((await members('completed')).length,7,'Show more survives Settings');
-  await click(sessionListToggle);
-  assert.equal((await members('completed')).length,5,'Show less returns to the first five');
-  await openAndCloseSettings();
-  assert.equal((await members('completed')).length,5,'Show less survives Settings');
   await click('document.querySelector("[data-sidebar-state=completed] button")');
   assert.deepEqual(await members('completed'),[],'the header folds a group');
-  assert.equal(await toggleLabel(),null,'a folded group has no Show more');
   await openAndCloseSettings();
   assert.deepEqual(await members('completed'),[],'a fold survives Settings');
   await click('document.querySelector("[data-sidebar-state=completed] button")');
-  assert.equal((await members('completed')).length,5,'unfolding keeps the group short');
-  await js('(()=>{const {c1,c2,c3,...s}=qa.app.getState().sessions;qa.app.setState({sessions:s})})()');await delay(200);
+  assert.equal((await members('completed')).length,4,'unfolding lists the whole group');
 
   // A new task nothing was sent from yet is in no list at all, and New Task goes back to it.
   await js('(()=>{const s=qa.app.getState().sessions;qa.app.setState({sessions:{...s,d1:{...s.s8,id:"d1",title:"New Chat",isDraft:true,status:"idle",updatedAt:Date.now()}}})})()');await delay(200);
@@ -177,37 +153,30 @@ app.whenReady().then(async()=>{
   assert.equal(opened.active,opened.notDetached);
   await js('qa.app.getState().setActiveSession("s3")');await delay(150);
 
-  // Going to a draft reveals its project, but a fold made after that outlives Settings.
+  // A project folds, and the fold outlives Settings.
   await setView({groupBy:'project'});
   const projectHeader='document.querySelector("button[title=\\\\"/projects/coworker\\\\"][aria-expanded]")';
   const projectOpen=()=>js(projectHeader+'.getAttribute("aria-expanded")==="true"');
-  const activate=id=>js('qa.app.getState().setActiveSession('+JSON.stringify(id)+')').then(()=>delay(200));
-  await js('(()=>{const s=qa.app.getState().sessions;qa.app.setState({sessions:{...s,d1:{...s.s8,id:"d1",title:"New Chat",isDraft:true,status:"idle",updatedAt:Date.now()}}})})()');await delay(200);
   await click(projectHeader);
   assert.equal(await projectOpen(),false,'the header folds a project');
-  await activate('d1');
-  assert.equal(await projectOpen(),true,'going to a draft reveals its project');
-  await click(projectHeader);
-  assert.equal(await projectOpen(),false,'a project with the active draft can still be folded');
   await openAndCloseSettings();
   assert.equal(await projectOpen(),false,'that fold survives Settings');
-  await activate('s3');
-  assert.equal(await projectOpen(),false,'leaving the draft does not unfold');
-  await activate('d1');
-  assert.equal(await projectOpen(),true,'going back to the draft reveals its project again');
-  await activate('s3');
-  await js('(()=>{const {d1,...s}=qa.app.getState().sessions;qa.app.setState({sessions:s})})()');await delay(200);
+  await click(projectHeader);
+  assert.equal(await projectOpen(),true);
 
   // Group by Date: every session has a bucket, old ones by month.
   await setView({groupBy:'date'});
-  const dateHeaders=await js('[...document.querySelectorAll("section > div")].map(e=>e.textContent)');
-  assert.ok(dateHeaders.includes('Today'));
+  const dateHeaders=await js('[...document.querySelectorAll("[data-task-group]")].map(e=>e.dataset.taskGroup)');
+  assert.ok(dateHeaders.includes('date:Today'));
   assert.equal((await rowIds()).includes('s12'),true,'sessions older than a week still appear');
   await screenshot('4-date');
 
   // Filters compose: activity window, project, status.
   await setView({activity:'7d'});
-  assert.equal((await rowIds()).includes('s12'),false,'the activity window hides stale threads');
+  assert.equal((await rowIds()).includes('s12'),false,'the window hides completed tasks older than it');
+  await setView({activity:'1d'});
+  assert.equal((await rowIds()).includes('s2'),true,'and never what is still open');
+  await setView({activity:'all'});
   await setView({activity:'all',project:'/projects/bubble-cowork',groupBy:'none'});
   assert.deepEqual((await rowIds()).sort(),['s2','s9']);
   await setView({project:null,groupBy:'project'});
@@ -215,15 +184,65 @@ app.whenReady().then(async()=>{
   assert.equal(await js('qa.view.getState().status'),'archived');
   assert.deepEqual(await rowIds(),['s11']);
   await screenshot('5-archived');
-  await click(byText('Back to active threads'));
+  await click(byText('Back to active tasks'));
   assert.equal(await js('qa.view.getState().status'),'active');
 
-  // PR glyphs are optional decoration.
-  await setView({showPullRequests:false});
+  // Display properties.
+  const allProperties=await js('qa.view.getState().properties');
+  await setView({groupBy:'none',properties:allProperties.filter(p=>p!=='pull-requests')});
   assert.equal(await js('!!document.querySelector("[aria-label^=\\\\"Pull request #\\\\"],[data-pull-request-count]")'),false);
+  await setView({properties:allProperties.filter(p=>p!=='project'&&p!=='agent'&&p!=='date'&&p!=='summary')});
+  for(const hidden of ['[data-task-project]','[data-task-provider]','[data-task-date]','[data-task-attention]'])assert.equal(await js('!!document.querySelector('+JSON.stringify(hidden)+')'),false,hidden);
+  await setView({properties:allProperties});
+
+  // More ways to group, and a second level.
+  const groupKeys=()=>js('[...document.querySelectorAll("[data-task-group]")].map(e=>e.dataset.taskGroup)');
+  await setView({groupBy:'agent'});
+  assert.deepEqual((await groupKeys()).sort(),['agent:claude','agent:codex']);
+  await setView({groupBy:'pull-request'});
+  assert.deepEqual(await groupKeys(),['pull-request:open','pull-request:merged','pull-request:none'],'open first, and tasks without one last');
+  await setView({groupBy:'state',subGroupBy:'project'});
+  assert.equal(await js('!!document.querySelector("[data-task-subgroup=\\\\"state:needs-input//projects/coworker\\\\"] button")'),true,'subgroups sit under their group');
+  assert.equal(await js('!!document.querySelector("[data-task-project]")'),false,'a project subgroup does not repeat its name on each row');
+  await screenshot('6-subgroup');
+  await click('document.querySelector("[data-task-subgroup=\\\\"state:needs-input//projects/coworker\\\\"] button")');
+  assert.equal(await js('!!document.querySelector("[data-task-group=\\\\"state:needs-input\\\\"] [data-session-id=s1]")'),false,'a subgroup folds');
+  await setView({subGroupBy:'state'});
+  assert.equal(await js('!!document.querySelector("[data-task-subgroup]")'),false,'a subgroup the same as its group is no subgroup');
+  await setView({subGroupBy:'none',showEmptyGroups:true});
+  await js('(()=>{const s=qa.app.getState().sessions;window.__allSessions=s;qa.app.setState({sessions:Object.fromEntries(Object.entries(s).filter(([id])=>id==="s5"))})})()');await delay(150);
+  assert.deepEqual(await groupKeys(),['state:needs-input','state:running','state:review','state:completed'],'empty state groups stay listed when asked');
+  await setView({showEmptyGroups:false});
+  assert.deepEqual(await groupKeys(),['state:review']);
+
+  // The board: same tasks and groups, in columns.
+  await js('qa.app.setState({sessions:window.__allSessions})');await delay(150);
+  await setView({layout:'board',groupBy:'none',status:'active'});
+  const columns=()=>js('[...document.querySelectorAll("[data-task-column]")].map(e=>e.dataset.taskColumn)');
+  assert.deepEqual(await columns(),['state:needs-input','state:running','state:review','state:completed'],'No grouping on a board means columns by state');
+  assert.equal(await js('!!document.querySelector("[data-task-list]")'),false);
+  assert.equal(await js('document.querySelector("[data-task-column=\\\\"state:needs-input\\\\"] [data-session-id=s1] [data-task-attention]").textContent'),'Run rm -rf build');
+  assert.equal(await js('document.querySelector("[data-session-id=s5] [data-task-project]").textContent'),'coworker');
+  await screenshot('7-board');
+  await setView({groupBy:'project',subGroupBy:'state'});
+  assert.ok((await columns()).includes('/projects/qoder'),'any grouping makes columns');
+  assert.equal(await js('!!document.querySelector("[data-task-column=\\\\"/projects/qoder\\\\"] [data-task-subgroup]")'),true,'and sub-grouping splits a column');
+  assert.equal(await js('!!document.querySelector("[data-session-id=s5] [data-task-project]")'),false,'a project column does not repeat its name');
+  await screenshot('8-board-project');
+  await setView({subGroupBy:'none',groupBy:'none'});
+  await click('document.querySelector("[aria-label^=\\\\"Display options\\\\"]")');await panelOpen();
+  assert.equal(await js(panel+'.textContent.includes("Columns")'),true,'on a board the first row names the columns');
+  await click('document.querySelector("[data-task-display-menu] [aria-label=\\\\"Columns\\\\"]")');
+  await delay(200);
+  assert.equal(await js('[...document.querySelectorAll("[role=menuitemradio]")].some(e=>e.textContent.trim()==="No grouping")'),false,'a board always has columns');
+  await js('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))');await delay(200);
+  await js('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))');await delay(200);
+  await click('document.querySelector("[data-session-id=s5]")');
+  assert.equal(await js('qa.app.getState().activeSessionId'),'s5','a card opens its task');
+  await setView({layout:'list'});
 
   assert.deepEqual(errors.filter(e=>!/No handler registered/.test(e)),[]);
-  console.log(JSON.stringify({ok:true,checks:['project grouping with pinned and archived entry','view menu rows and submenu','derived state groups','state group show more','group fold and show more survive Settings','draft project reveal and fold','date buckets','activity, project and status filters','PR glyph toggle']}));
+  console.log(JSON.stringify({ok:true,checks:['project grouping with pinned and archived entry','view menu rows and submenu','derived state groups','group folds survive Settings','date buckets','completed window, project and status filters','display properties','agent, PR and sub-grouping','board columns, cards and sub-grouping']}));
   app.exit(0);
  }catch(e){console.error(e);console.error(errors);await screenshot('failure');app.exit(1)}
 });
@@ -233,7 +252,8 @@ try {
   await writeFile(path.join(tmp, 'index.html'), '<!doctype html><html><body style="margin:0"><div id="root"></div><script type="module" src="./harness.tsx"></script></body></html>');
   await writeFile(path.join(tmp, 'harness.tsx'), harness);
   await writeFile(path.join(tmp, 'main.cjs'), main);
-  server = await createServer({ root, configFile: path.join(root, 'vite.config.ts'), server: { host: '127.0.0.1', port: 0, strictPort: false } });
+  // Own dep cache: sharing node_modules/.vite breaks a running dev server.
+  server = await createServer({ root, configFile: path.join(root, 'vite.config.ts'), cacheDir: path.join(tmp, 'vite-cache'), server: { host: '127.0.0.1', port: 0, strictPort: false } });
   await server.listen();
   const url = new URL(path.relative(root, tmp) + '/index.html', server.resolvedUrls.local[0]).href;
   await new Promise((resolve, reject) => {

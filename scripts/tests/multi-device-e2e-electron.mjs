@@ -82,6 +82,13 @@ app.whenReady().then(async () => {
         for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
         return true;
       }, label);
+      // Task rows live on the My Tasks page; its sidebar row may carry a count.
+      const openMyTasks = () => page(() => {
+        const el = [...document.querySelectorAll('button')].find((n) => n.textContent.trim().startsWith('My Tasks') && n.getBoundingClientRect().width > 0);
+        if (!el) return false;
+        el.click();
+        return true;
+      });
       await page(() => {
         const el = document.querySelector('[aria-label^="Profile menu"]');
         for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window, button: 0 }));
@@ -104,6 +111,7 @@ app.whenReady().then(async () => {
       await delay(600);
       await shot('0-connections-paired');
       await until(() => press('Back to app'), 'back to app', 10000);
+      await until(() => openMyTasks(), 'open My Tasks', 10000);
       await until(async () => (await text()).includes('Fix relay reconnect'), 'row in sidebar', 30000);
       await shot('1-sidebar');
       const rowInfo = await js(\`(() => { const el = [...document.querySelectorAll('*')].filter((n) => n.children.length === 0 || n.textContent === 'Fix relay reconnect').reverse().find((n) => n.textContent === 'Fix relay reconnect' && n.getBoundingClientRect().width > 0); const row = el && (el.closest('[data-session-id]') || el.closest('button') || el.closest('[role="button"]') || el.parentElement); if (!row) return null; row.click(); return { glyph: !!row.querySelector('[data-session-device]') }; })()\`);
@@ -154,6 +162,7 @@ app.whenReady().then(async () => {
 
       // A plan from a session in plan mode on that Mac, approved here.
       fs.writeFileSync(path.join(TMP, 'start-plan'), '1');
+      await until(() => openMyTasks(), 'open My Tasks', 10000);
       await until(async () => (await text()).includes('Plan a file'), 'plan session listed', 60000);
       await until(() => page(() => {
         const el = [...document.querySelectorAll('*')].reverse().find((n) => n.textContent === 'Plan a file' && n.getBoundingClientRect().width > 0 && n.closest('button, [role="button"], [data-session-id]'));

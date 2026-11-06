@@ -16,7 +16,7 @@ import {Toaster} from 'sonner';
 import {TextInputDialogHost} from '/src/ui/components/ui/text-input-dialog.tsx';
 import {ConfirmDialogHost} from '/src/ui/components/ui/confirm-dialog.tsx';
 import {SessionTitleActions} from '/src/ui/components/SessionTitleActions.tsx';
-import {FolderTreeView} from '/src/ui/components/FolderTreeView.tsx';
+import {TasksView} from '/src/ui/components/TasksView.tsx';
 import {ComposerPromptEditor} from '/src/ui/components/ComposerPromptEditor.tsx';
 import {useAppStore} from '/src/ui/store/useAppStore.ts';
 import { useSidebarViewStore } from '/src/ui/store/useSidebarViewStore.ts';
@@ -32,7 +32,7 @@ function Harness(){
  const [value,setValue]=useState('');const [cursor,setCursor]=useState(0);
  window.qa.value=value;window.qa.setValue=text=>{setValue(text);setCursor(text.length)};
  return <Tooltip.Provider><div style={{display:'flex',height:'100vh',background:'var(--bg-primary)'}}>
- <aside style={{width:260,padding:12,background:'var(--sidebar-bg)'}}><h3>Aegis</h3><FolderTreeView projectCwd="/projects/test" onSessionClick={s.setActiveSession} onSelectProjectFolder={()=>{}} onNewSessionForProject={()=>{}} /></aside>
+ <aside style={{width:520,flexShrink:0,display:'flex',background:'var(--sidebar-bg)'}}><TasksView/></aside>
  <main style={{flex:1,padding:24}}><header style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>{active && <SessionTitleActions session={active} className="text-[13px] font-medium"/>}</header>
  <div style={{marginTop:180,border:'1px solid var(--border)',borderRadius:16,padding:20}}><ComposerPromptEditor value={value} cursorIndex={cursor} onChange={(v,c)=>{setValue(v);setCursor(c)}} placeholder="Paste a conversation link" /></div>
  <button id="outside">Outside</button></main><Toaster/><TextInputDialogHost/><ConfirmDialogHost/></div></Tooltip.Provider>;
@@ -261,7 +261,7 @@ app.whenReady().then(async()=>{
   await js('(()=>{[...document.querySelectorAll("button")].find(e=>e.textContent==="Archived").click()})()');await delay(100);
   await click('[data-session-id="'+source.id+'"]','right');await select('Unarchive');
   assert.equal(sessions.getSessionOrganization().sessions[source.id].archived,false);
-  await js('(()=>{[...document.querySelectorAll("button")].find(e=>e.textContent==="Back to active threads").click()})()');await delay(100);
+  await js('(()=>{[...document.querySelectorAll("button")].find(e=>e.textContent==="Back to active tasks").click()})()');await delay(100);
   await click('[data-session-id="'+source.id+'"]','right');await select('Conversation as Markdown');
   assert.ok(clipboard.readText().includes('message-0'));assert.ok(clipboard.readText().includes('new arrival'));
   await click('[data-session-id="'+source.id+'"]','right');await select('New section…');await screenshot('new-section-dialog');

@@ -27,6 +27,7 @@ import { useAppStore } from './useAppStore';
  */
 export type TabView =
   | { kind: 'chat'; sessionId: string | null }
+  | { kind: 'tasks' }
   | { kind: 'design' }
   | { kind: 'automations' }
   | { kind: 'prs' }
