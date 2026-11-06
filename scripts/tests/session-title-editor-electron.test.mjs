@@ -14,7 +14,7 @@ import { createRoot } from 'react-dom/client';
 import { Tooltip } from '@base-ui-components/react/tooltip';
 import { Toaster } from 'sonner';
 import { SessionTitleEditor } from '/src/ui/components/SessionTitleEditor.tsx';
-import { FolderTreeView } from '/src/ui/components/FolderTreeView.tsx';
+import {TasksView} from '/src/ui/components/TasksView.tsx';
 import { useAppStore } from '/src/ui/store/useAppStore.ts';
 import { useTabsStore } from '/src/ui/store/useTabsStore.ts';
 import '/src/ui/index.css';
@@ -30,7 +30,7 @@ window.qa={store:useAppStore,id,input:()=>document.querySelector('[aria-label="C
 function Harness(){
  const s=useAppStore(); const active=s.sessions[s.activeSessionId];
  return <Tooltip.Provider><div style={{display:'flex',height:'100vh',background:'var(--bg-primary)'}}>
- <aside style={{width:230,flexShrink:0,padding:12,background:'var(--sidebar-bg)'}}><div style={{padding:'14px 12px',fontWeight:600}}>Aegis</div><FolderTreeView projectCwd="/projects/coworker" onSessionClick={s.setActiveSession} onSelectProjectFolder={()=>{}} onNewSessionForProject={()=>{}} /></aside>
+ <aside style={{width:300,flexShrink:0,display:'flex',overflow:'hidden',background:'var(--sidebar-bg)'}}><TasksView/></aside>
  <main style={{flex:1,minWidth:0}}><header style={{height:44,display:'flex',alignItems:'center',padding:'0 16px',gap:12}}><div style={{flex:1,minWidth:0,display:'flex'}}><SessionTitleEditor session={active} className="text-[13px] font-medium text-[var(--text-primary)]"/></div><button id="outside">Open</button></header><div style={{padding:'70px 48px',color:'var(--text-secondary)'}}>请按照录屏实现标题的原位编辑</div></main><Toaster/></div></Tooltip.Provider>;
 }
 createRoot(document.getElementById('root')).render(<Harness/>);

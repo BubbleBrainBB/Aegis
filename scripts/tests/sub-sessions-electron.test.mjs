@@ -16,7 +16,7 @@ const harness = `
 import React from 'react';
 import {createRoot} from 'react-dom/client';
 import {Tooltip} from '@base-ui-components/react/tooltip';
-import {FolderTreeView} from '/src/ui/components/FolderTreeView.tsx';
+import {TasksView} from '/src/ui/components/TasksView.tsx';
 import {SubSessionCard} from '/src/ui/components/follow-up/SubSessionCard.tsx';
 import {SubSessionBriefCard, SubSessionsFinishedRow} from '/src/ui/components/follow-up/SubSessionPromptRows.tsx';
 import {SessionTitleActions} from '/src/ui/components/SessionTitleActions.tsx';
@@ -51,8 +51,8 @@ const ok=id=>JSON.stringify({proposalId:id});
 function Harness(){
  const s=useAppStore();
  return <Tooltip.Provider><div style={{display:'flex',height:'100vh',background:'var(--bg-primary)'}}>
- <aside style={{width:290,padding:'12px 8px',background:'var(--app-sidebar-surface)',overflow:'auto'}}>
-  <FolderTreeView projectCwd="/projects/coworker" onSessionClick={s.setActiveSession} onSelectProjectFolder={()=>{}} onNewSessionForProject={()=>{}} />
+ <aside style={{width:560,flexShrink:0,display:'flex',background:'var(--app-sidebar-surface)'}}>
+  <TasksView/>
  </aside>
  <main style={{flex:1,padding:'20px 28px',overflow:'auto',fontSize:14}}>
   <div data-qa="crumb" style={{fontSize:15,marginBottom:16}}><SessionTitleActions session={s.sessions.c1} showMenu={false}/></div>
@@ -128,16 +128,9 @@ app.whenReady().then(async()=>{
   assert.equal(await text('[data-session-parent-crumb]'),'Usage settings redesign','the breadcrumb names the parent');
   await screenshot('1-expanded');
 
-  // A tree line hangs the sub-sessions off the parent, ending in a hook on the last one; no chevron.
-  assert.equal(await js('!!document.querySelector("[data-session-id=p1] [aria-expanded]")'),false,'the parent has no chevron');
-  assert.equal(await js('!!document.querySelector("[data-session-id=p1] [aria-label=\\\\"Pin conversation\\\\"]")'),true,'its gutter holds the pin like any row');
-  assert.equal(await js('!!document.querySelector("[data-sub-sessions-of=p1] [aria-label=\\\\"Pin conversation\\\\"]")'),false,'the tree line runs through the gutter of a nested row');
-  const lines=await js('[...document.querySelectorAll("[data-sub-sessions-of=p1] > div")].map(row=>{const line=row.querySelector(":scope > span[aria-hidden]").getBoundingClientRect(),box=row.getBoundingClientRect();return{top:line.top-box.top,bottom:line.bottom-box.bottom,mid:line.bottom-(box.top+box.height/2),hook:parseFloat(getComputedStyle(row.querySelector(":scope > span[aria-hidden]")).borderBottomLeftRadius)}})');
-  assert.equal(lines.length,3);
-  for(const line of lines.slice(0,-1)) assert.deepEqual([line.top,line.bottom,line.hook],[0,0,0],'a middle row carries the line edge to edge');
-  assert.equal(lines.at(-1).top,0);
-  assert.ok(Math.abs(lines.at(-1).mid)<=1,'the hook ends at the middle of the last row');
-  assert.equal(lines.at(-1).hook,6);
+  // On the page the chevron beside the parent's title folds them, as does the row menu.
+  assert.equal(await js('document.querySelector("[data-session-id=p1] [aria-expanded]")?.getAttribute("aria-expanded")'),'true','the parent has an open chevron');
+  assert.equal(await js('!!document.querySelector("[data-sub-sessions-of=p1] [aria-expanded]")'),false,'nested rows have none');
 
   // Fold: the parent row sums its sub-sessions up (2 of 3 still running).
   await foldFromMenu('p1','Hide sub-sessions');

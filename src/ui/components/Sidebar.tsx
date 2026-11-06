@@ -13,6 +13,8 @@ import {
   Home,
   Palette,
   HomeFilled,
+  ListChecks,
+  Plus,
   Script,
   Search,
   SquarePen,
@@ -25,14 +27,16 @@ import type {
   PaletteProject,
   PaletteThread,
 } from './search/palette-ranking';
-import { FolderTreeView } from './FolderTreeView';
 import { CappedScrollbar } from './CappedScrollbar';
 import { DEFAULT_WORKSPACE_CHANNEL_ID } from '../../shared/types';
 import { getMessageContentBlocks } from '../utils/message-content';
 import { MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH } from '../utils/sidebar-width';
 import { SessionHistoryButtons } from './SessionHistoryButtons';
 import { SidebarProfileMenu } from './sidebar/SidebarProfileMenu';
-import { SidebarViewMenu } from './sidebar/SidebarViewMenu';
+import { SidebarWorkspaceProjects } from './sidebar/SidebarWorkspaceProjects';
+import { useSessionOrganization } from '../store/useSessionOrganizationStore';
+import { useSidebarViewStore } from '../store/useSidebarViewStore';
+import { deriveSidebarSessionState } from '../utils/sidebar-view';
 
 const SIDEBAR_TRIGGER_CLASS =
   'no-drag inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--text-secondary)] transition-[background-color,color,transform] duration-150 ease-[cubic-bezier(0.22,1,0.36,1)] hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)] active:scale-95';
@@ -107,8 +111,6 @@ export function Sidebar() {
     activeChannelByProject,
     sessions,
     activeWorkspace,
-    chatLayoutMode,
-    setChatLayoutMode,
     setSidebarCollapsed,
     setSidebarWidth,
     setChatSidebarView,
@@ -122,6 +124,9 @@ export function Sidebar() {
     searchPaletteOpen,
     setSearchPaletteOpen,
   } = useAppStore();
+  const organization = useSessionOrganization();
+  const viewProject = useSidebarViewStore((state) => state.project);
+  const setViewOption = useSidebarViewStore((state) => state.setOption);
   const [isSidebarResizing, setIsSidebarResizing] = useState(false);
   const sidebarResizingRef = useRef(false);
   const sidebarScrollRef = useRef<HTMLDivElement>(null);
@@ -129,8 +134,10 @@ export function Sidebar() {
   const startXRef = useRef(0);
   const startWidthRef = useRef(sidebarWidth);
   const activeSession = activeSessionId ? sessions[activeSessionId] : null;
-  // A chat's folder is not a project: New Task from a chat keeps the last project.
-  const newThreadCwd = (activeSession?.isChat ? null : activeSession?.cwd) || projectCwd;
+  // New Task from a project's page starts there. A chat's folder is not a
+  // project: New Task from a chat keeps the last project.
+  const newThreadCwd =
+    (activeWorkspace === 'tasks' && viewProject) || (activeSession?.isChat ? null : activeSession?.cwd) || projectCwd;
   const getActiveChannelIdForProject = (cwd?: string | null) => {
     const key = cwd?.trim() || '__no_project__';
     return activeChannelByProject[key] || DEFAULT_WORKSPACE_CHANNEL_ID;
@@ -216,6 +223,12 @@ export function Sidebar() {
         keywords: ['chat', 'sessions'],
       },
       {
+        id: 'switch-tasks',
+        label: 'Go to My Tasks',
+        description: 'Every task, by state or project',
+        keywords: ['tasks', 'list', 'sessions', 'threads'],
+      },
+      {
         id: 'switch-design',
         label: 'Go to Design',
         description: 'Your design canvases',
@@ -259,6 +272,17 @@ export function Sidebar() {
     [sessions]
   );
 
+  // My Tasks stands in for the list that used to sit here: the sidebar still says when one waits on you.
+  const needsInputCount = useMemo(
+    () =>
+      visibleSessions.filter(
+        (session) =>
+          !organization.sessions[session.id]?.archived &&
+          deriveSidebarSessionState(session, { unread: organization.sessions[session.id]?.unread }) === 'needs-input'
+      ).length,
+    [visibleSessions, organization]
+  );
+
   const hasRunningSession = useMemo(
     () => visibleSessions.some((session) => session.status === 'running'),
     [visibleSessions]
@@ -267,7 +291,7 @@ export function Sidebar() {
   const paletteProjects = useMemo<PaletteProject[]>(() => {
     const map = new Map<string, PaletteProject>();
     for (const session of visibleSessions) {
-      const cwd = session.cwd?.trim();
+      const cwd = (session.projectCwd || session.cwd)?.trim();
       if (!cwd || session.isChat) continue;
       const existing = map.get(cwd);
       if (existing) {
@@ -328,6 +352,12 @@ export function Sidebar() {
     });
   }, [visibleSessions]);
 
+  const openTasks = (project: string | null) => {
+    setViewOption('project', project);
+    if (project) setProjectCwd(project);
+    goToWorkspace('tasks');
+  };
+
   const runPaletteAction = (actionId: string) => {
     switch (actionId) {
       case 'new-thread':
@@ -341,6 +371,9 @@ export function Sidebar() {
         setActiveWorkspace('chat');
         setChatSidebarView('threads');
         setShowSettings(false);
+        break;
+      case 'switch-tasks':
+        openTasks(null);
         break;
       case 'switch-design':
         setActiveWorkspace('design');
@@ -378,15 +411,10 @@ export function Sidebar() {
     setChatSidebarView('threads');
   };
 
-  const openProjectFromPalette = (projectId: string) => {
-    setActiveWorkspace('chat');
-    setChatSidebarView('threads');
-    setProjectCwd(projectId);
-    setShowSettings(false);
-  };
+  const openProjectFromPalette = (projectId: string) => openTasks(projectId);
 
 
-  const goToWorkspace = (workspace: 'chat' | 'design' | 'automations' | 'prs' | 'skills') => {
+  const goToWorkspace = (workspace: 'chat' | 'tasks' | 'design' | 'automations' | 'prs' | 'skills') => {
     setActiveWorkspace(workspace);
     setChatSidebarView('threads');
     setShowSettings(false);
@@ -434,7 +462,6 @@ export function Sidebar() {
                 <div className="aegis-sidebar-brand font-semibold leading-none tracking-[-0.02em] text-[var(--text-primary)]">
                   Aegis
                 </div>
-                <SidebarViewMenu />
               </div>
 
               <div className="flex flex-col gap-0.5 px-2 pt-2">
@@ -452,10 +479,26 @@ export function Sidebar() {
                   title={['Search', shortcutLabel('search', shortcuts)].filter(Boolean).join(' · ')}
                   onClick={() => setSearchPaletteOpen(true)}
                 />
+                <SidebarNavRow
+                  icon={<ListChecks className="h-[15px] w-[15px]" strokeWidth={1.5} />}
+                  label="My Tasks"
+                  active={activeWorkspace === 'tasks' && !viewProject}
+                  badge={needsInputCount}
+                  onClick={() => openTasks(null)}
+                />
               </div>
 
-              <div className="px-4 pb-1.5 pt-5 text-[13px] font-medium text-[var(--text-secondary)]">
-                My Tasks
+              <div className="flex items-center justify-between pb-1.5 pl-4 pr-2 pt-5">
+                <div className="text-[13px] font-medium text-[var(--text-secondary)]">Workspace</div>
+                <button
+                  type="button"
+                  onClick={() => void handleProjectFolderSelect()}
+                  className="no-drag flex h-5 w-5 items-center justify-center rounded-md text-[var(--text-muted)] transition-colors duration-150 hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)]"
+                  aria-label="Open project folder"
+                  title="Open project folder"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </button>
               </div>
 
               <div className="relative min-h-0 flex-1">
@@ -470,33 +513,19 @@ export function Sidebar() {
                 <div
                   ref={sidebarScrollRef}
                   onScroll={(event) => setSidebarScrolled(event.currentTarget.scrollTop > 0)}
-                  className="sidebar-scrollbar h-full overflow-y-auto overflow-x-hidden px-2"
+                  className="sidebar-scrollbar h-full overflow-y-auto overflow-x-hidden px-2 pb-2"
                   data-sidebar-scroll-region
                 >
-                  <div className="pt-1.5">
-                    <FolderTreeView
-                      onSessionClick={(sessionId, options) => {
-                        setShowSettings(false);
-                        setChatLayoutMode(
-                          options?.preserveSplit || chatLayoutMode === 'split' ? 'split' : 'single'
-                        );
-                        setActiveSession(sessionId);
-                        setShowNewSession(false);
-                        setActiveWorkspace('chat');
-                        setChatSidebarView('threads');
-                      }}
-                      onSelectProjectFolder={handleProjectFolderSelect}
-                      projectCwd={projectCwd}
-                      onNewSessionForProject={(nextCwd, channelId) => {
-                        const nextChannelId = channelId || getActiveChannelIdForProject(nextCwd);
-                        setProjectCwd(nextCwd);
-                        setActiveChannelForProject(nextCwd, nextChannelId);
-                        setShowSettings(false);
-                        setChatSidebarView('threads');
-                        openDraftSession(nextCwd, nextChannelId);
-                      }}
-                    />
-                  </div>
+                  <SidebarWorkspaceProjects
+                    onOpenProject={openTasks}
+                    onNewTask={(path) => {
+                      const channelId = getActiveChannelIdForProject(path);
+                      setProjectCwd(path);
+                      setActiveChannelForProject(path, channelId);
+                      goToWorkspace('chat');
+                      openDraftSession(path, channelId);
+                    }}
+                  />
                 </div>
 
                 <CappedScrollbar scrollRef={sidebarScrollRef} />
@@ -545,7 +574,7 @@ function SidebarRail({
 }: {
   activeWorkspace: string;
   showRunningDot: boolean;
-  onSelect: (workspace: 'chat' | 'design' | 'automations' | 'prs' | 'skills') => void;
+  onSelect: (workspace: 'chat' | 'tasks' | 'design' | 'automations' | 'prs' | 'skills') => void;
   onOpenSettings: () => void;
 }) {
   const item = (
@@ -555,7 +584,8 @@ function SidebarRail({
     activeIcon?: ReactNode,
     dot = false
   ) => {
-    const active = activeWorkspace === workspace;
+    // My Tasks is part of Home: it lives in Home's panel.
+    const active = activeWorkspace === workspace || (workspace === 'chat' && activeWorkspace === 'tasks');
     return (
       <button
         type="button"

@@ -37,7 +37,10 @@ export function useKeyboardShortcuts(actions: { toggleRightPanel: () => void; to
       switch (id) {
         case 'search': state.toggleSearchPalette(); break;
         case 'sidebar': state.setSidebarCollapsed(!state.sidebarCollapsed); break;
-        case 'activity': useSidebarViewStore.getState().toggleStateView(); break;
+        case 'activity':
+          state.setActiveWorkspace('tasks');
+          useSidebarViewStore.getState().toggleStateView();
+          break;
         case 'back': tabs.goBack(); break;
         case 'forward': tabs.goForward(); break;
         case 'settings': state.setShowSettings(true); break;

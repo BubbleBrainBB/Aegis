@@ -7,19 +7,20 @@ import {
   SIDEBAR_GROUP_LABELS,
   SIDEBAR_SORT_LABELS,
   SIDEBAR_STATUS_LABELS,
+  TASK_PROPERTY_LABELS,
   type SidebarGroupBy,
   type SidebarViewOptions,
+  type TaskFilter,
+  type TaskProperty,
 } from '../utils/sidebar-view';
 
 interface SidebarViewStore extends SidebarViewOptions {
   /** Grouping to return to when the state-view shortcut is pressed again. */
   previousGroupBy: SidebarGroupBy;
   /**
-   * Which groups are folded, and which show every session instead of the first
-   * few. Kept here because the Sidebar unmounts while Settings is open. Not persisted.
+   * Which groups are folded. Kept here so a fold outlives leaving the page. Not persisted.
    */
   collapsedGroups: ReadonlySet<string>;
-  expandedSessionGroups: ReadonlySet<string>;
   toggleGroupCollapsed: (key: string) => void;
   /**
    * Waits the user folded a conversation over (see subSessionWaitMark): only a
@@ -27,11 +28,9 @@ interface SidebarViewStore extends SidebarViewOptions {
    */
   dismissedWaits: ReadonlySet<string>;
   foldSubSessions: (key: string, waits: readonly string[]) => void;
-  /** The draft whose project was last unfolded for it, so a remount does not undo a later fold. */
-  revealedDraft: { sessionId: string; project: string } | null;
-  /** Unfold the project when going to a draft; pass null while no draft is active. */
-  revealDraftProject: (draft: { sessionId: string; project: string } | null) => void;
-  toggleSessionListExpanded: (key: string) => void;
+  /** Which state the page lists. Not persisted: a restart starts from everything. */
+  taskFilter: TaskFilter;
+  setTaskFilter: (filter: TaskFilter) => void;
   setOption: <K extends keyof SidebarViewOptions>(key: K, value: SidebarViewOptions[K]) => void;
   toggleStateView: () => void;
   reset: () => void;
@@ -51,9 +50,8 @@ export const useSidebarViewStore = create<SidebarViewStore>()(
   persist(
     (set) => ({
       ...DEFAULT_SIDEBAR_VIEW,
-      previousGroupBy: 'project',
+      previousGroupBy: 'none',
       collapsedGroups: new Set<string>(),
-      expandedSessionGroups: new Set<string>(),
       toggleGroupCollapsed: (key) =>
         set((state) => ({ collapsedGroups: withToggled(state.collapsedGroups, key) })),
       dismissedWaits: new Set<string>(),
@@ -62,55 +60,55 @@ export const useSidebarViewStore = create<SidebarViewStore>()(
           collapsedGroups: new Set(state.collapsedGroups).add(key),
           dismissedWaits: new Set([...state.dismissedWaits, ...waits]),
         })),
-      revealedDraft: null,
-      revealDraftProject: (draft) =>
-        set((state) => {
-          const revealed = state.revealedDraft;
-          if (revealed?.sessionId === draft?.sessionId && revealed?.project === draft?.project) return state;
-          return {
-            revealedDraft: draft,
-            collapsedGroups:
-              draft && state.collapsedGroups.has(draft.project)
-                ? withToggled(state.collapsedGroups, draft.project)
-                : state.collapsedGroups,
-          };
-        }),
-      toggleSessionListExpanded: (key) =>
-        set((state) => ({ expandedSessionGroups: withToggled(state.expandedSessionGroups, key) })),
+      taskFilter: 'all',
+      setTaskFilter: (taskFilter) => set({ taskFilter }),
       setOption: (key, value) => set({ [key]: value } as Partial<SidebarViewStore>),
       toggleStateView: () =>
         set((state) =>
           state.groupBy === 'state'
-            ? { groupBy: state.previousGroupBy === 'state' ? 'project' : state.previousGroupBy }
+            ? { groupBy: state.previousGroupBy === 'state' ? 'none' : state.previousGroupBy }
             : { groupBy: 'state', previousGroupBy: state.groupBy }
         ),
-      reset: () => set({ ...DEFAULT_SIDEBAR_VIEW }),
+      reset: () => set((state) => ({ ...DEFAULT_SIDEBAR_VIEW, project: state.project })),
     }),
     {
       name: 'cowork-sidebar-view',
       storage: createJSONStorage(() => rendererStateStorage),
-      version: 2,
-      // Version 2 made Group by State the default, and it replaces the old default once.
+      version: 3,
+      // Version 2 made Group by State the default. Version 3 moved the list to a
+      // page with its own state filter, so the old defaults make way for the flat list once.
       migrate: (persisted, version) => {
         const saved = (persisted ?? {}) as Partial<SidebarViewStore>;
-        return version < 2 && saved.groupBy === 'project'
-          ? { ...saved, groupBy: 'state' as const, previousGroupBy: 'project' as const }
-          : saved;
+        if (version >= 3) return saved;
+        return {
+          ...saved,
+          groupBy: !saved.groupBy || saved.groupBy === 'state' || (version < 2 && saved.groupBy === 'project') ? 'none' as const : saved.groupBy,
+          sortBy: !saved.sortBy || saved.sortBy === 'updated' ? 'state' as const : saved.sortBy,
+        };
       },
-      partialize: ({ status, project, activity, groupBy, sortBy, showPullRequests, previousGroupBy }) => ({
-        status, project, activity, groupBy, sortBy, showPullRequests, previousGroupBy,
+      partialize: ({ layout, status, project, activity, groupBy, subGroupBy, sortBy, showSubSessions, showEmptyGroups, properties, previousGroupBy }) => ({
+        layout, status, project, activity, groupBy, subGroupBy, sortBy, showSubSessions, showEmptyGroups, properties, previousGroupBy,
       }),
       merge: (persisted, current) => {
-        const saved = (persisted ?? {}) as Partial<SidebarViewStore>;
+        const saved = (persisted ?? {}) as Partial<SidebarViewStore> & { showPullRequests?: unknown };
+        const properties = Array.isArray(saved.properties)
+          ? saved.properties.filter((property): property is TaskProperty => typeof property === 'string' && property in TASK_PROPERTY_LABELS)
+          : saved.showPullRequests === false
+            ? current.properties.filter((property) => property !== 'pull-requests')
+            : current.properties;
         return {
           ...current,
+          layout: saved.layout === 'board' ? 'board' : 'list',
           status: pickValid(saved.status, SIDEBAR_STATUS_LABELS, current.status),
           project: typeof saved.project === 'string' && saved.project ? saved.project : null,
           activity: pickValid(saved.activity, SIDEBAR_ACTIVITY_LABELS, current.activity),
           groupBy: pickValid(saved.groupBy, SIDEBAR_GROUP_LABELS, current.groupBy),
+          subGroupBy: pickValid(saved.subGroupBy, SIDEBAR_GROUP_LABELS, current.subGroupBy),
           previousGroupBy: pickValid(saved.previousGroupBy, SIDEBAR_GROUP_LABELS, current.previousGroupBy),
           sortBy: pickValid(saved.sortBy, SIDEBAR_SORT_LABELS, current.sortBy),
-          showPullRequests: typeof saved.showPullRequests === 'boolean' ? saved.showPullRequests : current.showPullRequests,
+          showSubSessions: typeof saved.showSubSessions === 'boolean' ? saved.showSubSessions : current.showSubSessions,
+          showEmptyGroups: typeof saved.showEmptyGroups === 'boolean' ? saved.showEmptyGroups : current.showEmptyGroups,
+          properties,
         };
       },
     }
@@ -118,11 +116,15 @@ export const useSidebarViewStore = create<SidebarViewStore>()(
 );
 
 export function useSidebarViewOptions(): SidebarViewOptions {
+  const layout = useSidebarViewStore((s) => s.layout);
   const status = useSidebarViewStore((s) => s.status);
   const project = useSidebarViewStore((s) => s.project);
   const activity = useSidebarViewStore((s) => s.activity);
   const groupBy = useSidebarViewStore((s) => s.groupBy);
+  const subGroupBy = useSidebarViewStore((s) => s.subGroupBy);
   const sortBy = useSidebarViewStore((s) => s.sortBy);
-  const showPullRequests = useSidebarViewStore((s) => s.showPullRequests);
-  return { status, project, activity, groupBy, sortBy, showPullRequests };
+  const showSubSessions = useSidebarViewStore((s) => s.showSubSessions);
+  const showEmptyGroups = useSidebarViewStore((s) => s.showEmptyGroups);
+  const properties = useSidebarViewStore((s) => s.properties);
+  return { layout, status, project, activity, groupBy, subGroupBy, sortBy, showSubSessions, showEmptyGroups, properties };
 }

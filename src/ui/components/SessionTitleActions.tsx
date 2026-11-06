@@ -1,9 +1,40 @@
 import { useAppStore } from '../store/useAppStore';
 import { findProposalForChild, useFollowUpStore } from '../store/useFollowUpStore';
+import { useSidebarViewStore } from '../store/useSidebarViewStore';
+import { getProjectLabel } from '../utils/sidebar-view';
 import type { SessionView } from '../types';
 import { Loader2, Monitor } from './icons';
 import { SessionActionsMenu } from './SessionActionsMenu';
 import { SessionTitleEditor } from './SessionTitleEditor';
+
+/**
+ * The list a task sits in, one click back: the project page it was opened from,
+ * else My Tasks. A project page left over from earlier that doesn't hold this
+ * task isn't where it came from.
+ */
+function TasksCrumb({ session }: { session: SessionView }) {
+  const viewProject = useSidebarViewStore((state) => state.project);
+  const taskProject = session.isChat ? null : session.projectCwd?.trim() || session.cwd?.trim() || null;
+  const project = viewProject && viewProject === taskProject ? viewProject : null;
+  const label = project ? getProjectLabel(project) : 'My Tasks';
+  return (
+    <>
+      <button
+        type="button"
+        className="no-drag min-w-0 max-w-[40%] flex-shrink-0 truncate text-[length:inherit] font-medium text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]"
+        title={`Back to ${label}`}
+        onClick={() => {
+          useSidebarViewStore.getState().setOption('project', project);
+          useAppStore.getState().setActiveWorkspace('tasks');
+        }}
+        data-session-tasks-crumb
+      >
+        {label}
+      </button>
+      <span className="flex-shrink-0 text-[var(--text-muted)]" aria-hidden="true">›</span>
+    </>
+  );
+}
 
 /** For a sub-session: the session that started it, one click back. */
 function ParentCrumb({ sessionId }: { sessionId: string }) {
@@ -17,7 +48,7 @@ function ParentCrumb({ sessionId }: { sessionId: string }) {
     <>
       <button
         type="button"
-        className="min-w-0 max-w-[40%] flex-shrink truncate text-[length:inherit] font-medium text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]"
+        className="no-drag min-w-0 max-w-[40%] flex-shrink truncate text-[length:inherit] font-medium text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]"
         title={`Open ${parentTitle}`}
         onClick={() => useAppStore.getState().setActiveSession(parentId)}
         data-session-parent-crumb
@@ -34,15 +65,18 @@ function ParentCrumb({ sessionId }: { sessionId: string }) {
  * main title bar sets `showMenu={false}` and puts the menu with its other
  * actions on the right instead.
  */
-export function SessionTitleActions({ session, className = '', showMenu = true }: {
+export function SessionTitleActions({ session, className = '', showMenu = true, tasksCrumb = false }: {
   session: SessionView | null | undefined;
   className?: string;
   showMenu?: boolean;
+  /** Lead with the list the task sits in (the main title bar; split panes have no room). */
+  tasksCrumb?: boolean;
 }) {
   return (
     // Without the menu beside it the title alone sets this group's width;
     // filling the row keeps its hover inset (negative margins) from clipping it.
     <div className={`flex min-w-0 items-center gap-2 ${showMenu ? '' : 'flex-1'}`} data-session-title-actions>
+      {session && tasksCrumb && !session.isDraft && !session.hiddenFromThreads && session.scope !== 'dm' ? <TasksCrumb session={session} /> : null}
       {session ? <ParentCrumb sessionId={session.id} /> : null}
       <SessionTitleEditor session={session} className={className} />
       {session?.device ? (

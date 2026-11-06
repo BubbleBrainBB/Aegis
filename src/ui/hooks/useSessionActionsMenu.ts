@@ -20,10 +20,13 @@ const useMenuPending = create<{ actions: Record<string, WorktreeAction | undefin
 export function useSessionActionsMenu(session: SessionView, subSessions?: { expanded: boolean; onToggle: () => void }) {
   const organization = useSessionOrganization();
   const metadata = organization.sessions[session.id];
-  const sessions = useAppStore(s => s.sessions);
-  const projectCwd = useAppStore(s => s.projectCwd);
   const projectIdentity = (cwd: string) => organization.projectSources?.[cwd]?.[0] || cwd;
-  const projects = [...new Set([projectCwd, ...Object.values(organization.projectSources ?? {}).map(roots => roots[0]), ...Object.values(sessions).filter(s => !s.hiddenFromThreads && s.scope !== 'dm' && !s.isChat).map(s => s.projectCwd || s.cwd)].filter((p): p is string => Boolean(p)).map(projectIdentity))].slice(0, 250);
+  // Read when the menu opens: one row per task uses this hook, so subscribing
+  // to the sessions here would re-render the whole list on every agent event.
+  const listProjects = () => {
+    const { sessions, projectCwd } = useAppStore.getState();
+    return [...new Set([projectCwd, ...Object.values(organization.projectSources ?? {}).map(roots => roots[0]), ...Object.values(sessions).filter(s => !s.hiddenFromThreads && s.scope !== 'dm' && !s.isChat).map(s => s.projectCwd || s.cwd)].filter((p): p is string => Boolean(p)).map(projectIdentity))].slice(0, 250);
+  };
   const [launchers, setLaunchers] = useState<EnvironmentEditorLauncher[]>([]);
   useEffect(() => {
     if (!window.electron?.getEnvironmentEditorLaunchers) return;
@@ -177,7 +180,7 @@ export function useSessionActionsMenu(session: SessionView, subSessions?: { expa
   const nestedParentId = useFollowUpStore(s => subSessionParents(s.proposals).get(session.id) ?? null);
   // A sub-session in its parent's worktree: the worktree is the parent's to apply or discard.
   const sharesParentWorktree = useFollowUpStore(s => findProposalForChild(s.proposals, session.id)?.place === 'shared') && inWorktree;
-  const items: SessionMenuItem[] = [
+  const buildItems = (projects: string[]): SessionMenuItem[] => [
     { id: 'rename', label: 'Rename…', icon: 'rename', enabled: session.source !== 'claude_remote' },
     { id: 'pin', label: session.pinned ? 'Unpin' : 'Pin', icon: 'pin' },
     { id: 'unread', label: metadata?.unread || session.runtimeNotice ? 'Mark as read' : 'Mark as unread', icon: 'unread', enabled: editable },
@@ -226,7 +229,7 @@ export function useSessionActionsMenu(session: SessionView, subSessions?: { expa
     { id: 'delete', label: 'Delete…', icon: 'trash', enabled: !worktreeAction },
   ];
 
-  const execute = async (action: SessionMenuAction) => {
+  const execute = async (action: SessionMenuAction, projects: string[]) => {
     if (action === 'copy-link' || action === 'copy-cwd') {
       const target = action === 'copy-link' ? 'link' : 'cwd';
       if (session.isDraft && target === 'cwd' && session.cwd) await navigator.clipboard.writeText(session.cwd);
@@ -282,6 +285,7 @@ export function useSessionActionsMenu(session: SessionView, subSessions?: { expa
       }
       case 'archive': {
         const archived = !metadata?.archived;
+        const { sessions } = useAppStore.getState();
         // Sub-sessions nested under this one follow it in and out of the archive.
         const nested = nestedSessionIds(subSessionParents(useFollowUpStore.getState().proposals), session.id)
           .filter(id => sessions[id] && Boolean(organization.sessions[id]?.archived) !== archived);
@@ -332,8 +336,9 @@ export function useSessionActionsMenu(session: SessionView, subSessions?: { expa
     if (menuOpen) return;
     setMenuOpen(true);
     try {
-      const action = await window.electron.showSessionMenu({ items, position });
-      if (action) await execute(action);
+      const projects = listProjects();
+      const action = await window.electron.showSessionMenu({ items: buildItems(projects), position });
+      if (action) await execute(action, projects);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Could not open conversation menu');
     } finally {

@@ -198,7 +198,7 @@ export interface SessionStreamingState {
   retry?: Extract<import('../shared/types').StreamMessage, { subtype: 'api_retry' }>;
 }
 
-export type ActiveWorkspace = 'chat' | 'design' | 'skills' | 'automations' | 'prs';
+export type ActiveWorkspace = 'chat' | 'tasks' | 'design' | 'skills' | 'automations' | 'prs';
 export type ChatSidebarView = 'threads' | 'skills';
 export type ProjectPanelView = 'files' | 'changes';
 export type ProjectUtilityPanelKind = 'files' | 'side-chat' | 'browser' | 'review' | 'terminal' | 'subagent' | 'goal' | 'images' | 'sources' | 'workflow-member' | 'launcher' | 'design';

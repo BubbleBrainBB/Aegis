@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useState, type ComponentType, type ReactNode } from 'react';
-import { Boxes, Clock, FolderOpen, GitPullRequest, Home, MessageSquare, Search, Settings, SquarePen } from '../icons';
+import { Boxes, Clock, FolderOpen, GitPullRequest, Home, ListChecks, MessageSquare, Search, Settings, SquarePen } from '../icons';
 import {
   CommandDialog,
   CommandEmpty,
@@ -28,6 +28,7 @@ const ACTION_ICON: Partial<Record<string, Icon>> = {
   'new-thread': SquarePen,
   'open-project': FolderOpen,
   'switch-chat': Home,
+  'switch-tasks': ListChecks,
   'switch-automations': Clock,
   'switch-prs': GitPullRequest,
   'switch-skills': Boxes,

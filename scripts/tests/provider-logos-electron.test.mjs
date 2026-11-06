@@ -16,7 +16,7 @@ const harness=`
 import React from 'react';
 import {createRoot} from 'react-dom/client';
 import {Tooltip} from '@base-ui-components/react/tooltip';
-import {Sidebar} from '/src/ui/components/Sidebar';
+import {TasksView} from '/src/ui/components/TasksView';
 import {ComposerAgentModelPicker} from '/src/ui/components/ComposerAgentControls';
 import {ProviderPicker} from '/src/ui/components/ProviderPicker';
 import {ProviderIcon} from '/src/ui/components/AgentModelPicker';
@@ -33,7 +33,7 @@ useAppStore.setState({sessions,sidebarCollapsed:false,sidebarWidth:280,showSetti
 window.qa={store:useAppStore,providers:PROVIDERS.map(p=>p.id)};
 const models=Object.fromEntries(PROVIDERS.map(p=>[p.id,null]));
 const noop=()=>{};
-createRoot(document.getElementById('root')).render(<Tooltip.Provider><div style={{height:'100vh',display:'flex',background:'var(--bg-primary)',color:'var(--text-primary)'}}><Sidebar/><main style={{flex:1,display:'flex',flexDirection:'column',alignItems:'flex-start',gap:16,padding:'80px 24px 24px'}}>
+createRoot(document.getElementById('root')).render(<Tooltip.Provider><div style={{height:'100vh',display:'flex',background:'var(--bg-primary)',color:'var(--text-primary)'}}><div style={{width:560,flexShrink:0,display:'flex'}}><TasksView/></div><main style={{flex:1,display:'flex',flexDirection:'column',alignItems:'flex-start',gap:16,padding:'80px 24px 24px'}}>
  <div data-qa="composer"><ComposerAgentModelPicker agentProvider="claude" modelLabel="Default" modelValue={null} modelValueByProvider={models} allAgentModelOptions={{}} onAgentChange={noop} onModelChange={noop} menuSide="bottom"/></div>
  <div data-qa="provider-picker"><ProviderPicker value="claude" onChange={noop} embedded/></div>
  <div data-qa="provider-icons" style={{display:'flex',gap:12}}>{PROVIDERS.map(p=><span key={p.id} data-provider={p.id}><ProviderIcon provider={p.id}/></span>)}</div>
@@ -71,7 +71,7 @@ app.whenReady().then(async()=>{
   else assert.ok(m.background-m.min>60,'stands out from the surface, '+label);
  };
  const click=async selector=>{win.focus();win.webContents.focus();const box=await js('(()=>{const r=('+selector+').getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()');win.webContents.sendInputEvent({type:'mouseMove',...box});win.webContents.sendInputEvent({type:'mouseDown',...box,button:'left',clickCount:1});win.webContents.sendInputEvent({type:'mouseUp',...box,button:'left',clickCount:1});await delay(200)};
- const row=p=>'document.querySelector("[data-session-id='+p+']")?.querySelector('+JSON.stringify(GLYPH)+')';
+ const row=p=>'document.querySelector("[data-session-id='+p+'] [data-task-provider]")?.querySelector('+JSON.stringify(GLYPH)+')';
  try{
   await win.loadURL(process.env.QA_URL);
   await until('!!document.querySelector("[data-session-id=claude]")');
@@ -79,7 +79,6 @@ app.whenReady().then(async()=>{
    // The real app sets this in its set-theme handler; the self-theming SVGs read it.
    nativeTheme.themeSource=theme;
    await js('qa.store.getState().setTheme('+JSON.stringify(theme)+')');await delay(400);
-   await js('[...document.querySelectorAll("button")].find(b=>b.textContent.trim()==="Show more")?.click()');
    await until('!!document.querySelector("[data-session-id=minimax]")');await delay(150);
    await shot('sidebar-'+theme);
    const providers=await js('qa.providers');

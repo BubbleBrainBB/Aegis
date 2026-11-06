@@ -65,7 +65,7 @@ export interface LegacyPersisted {
 
 /**
  * Project the (possibly N-pane) tree onto the legacy two-pane shape so existing
- * consumers (FolderTreeView, env context, Sidebar) keep working. When the tree
+ * consumers (TasksView, env context, Sidebar) keep working. When the tree
  * has >2 leaves this is a best-effort projection of the first two leaves.
  */
 export function deriveLegacyFields(layout: WorkspaceLayout): LegacyPaneFields {

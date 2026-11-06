@@ -53,6 +53,7 @@ import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { Sidebar } from './components/Sidebar';
 import { MainSheet, MainTitlebarRow } from './components/MainSheet';
 import { AutomationsView } from './components/AutomationsView';
+import { TasksView } from './components/TasksView';
 import { PullRequestsView } from './components/PullRequestsView';
 import { useTabsStore, type TabView } from './store/useTabsStore';
 import { NewSessionView } from './components/NewSessionView';
@@ -392,6 +393,7 @@ export function App() {
     if (activeWorkspace === 'chat') {
       view = { kind: 'chat', sessionId: showNewSession ? null : activeSessionId };
     } else if (
+      activeWorkspace === 'tasks' ||
       activeWorkspace === 'design' ||
       activeWorkspace === 'automations' ||
       activeWorkspace === 'prs' ||
@@ -1207,6 +1209,8 @@ export function App() {
           </main>
         </div>
         </MainSheet>
+      ) : activeWorkspace === 'tasks' ? (
+        <TasksView />
       ) : activeWorkspace === 'design' ? (
         <DesignSection codexModelConfig={codexModelConfig} />
       ) : activeWorkspace === 'automations' ? (
@@ -1228,14 +1232,14 @@ export function App() {
             ) : (
             <div className="flex h-full min-w-0 flex-1 items-center justify-between">
               <div className="flex min-w-0 flex-1 items-center gap-2">
-                <div className="flex min-w-0 flex-1 items-center gap-2">
+                <div className="flex min-w-0 flex-1 items-center gap-2 text-[13px]">
                   {activeSession?.handoffSourceProvider ? (
                     <SessionHandoffProviderRoute
                       sourceProvider={activeSession.handoffSourceProvider}
                       targetProvider={activeSession.provider ?? 'claude'}
                     />
                   ) : null}
-                  <SessionTitleActions session={activeSession} showMenu={false} className="text-[13px] font-medium text-[var(--text-primary)]" />
+                  <SessionTitleActions session={activeSession} showMenu={false} tasksCrumb className="text-[13px] font-medium text-[var(--text-primary)]" />
                 </div>
               </div>
               <div className="flex shrink-0 items-center justify-end gap-1">

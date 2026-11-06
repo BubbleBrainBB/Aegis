@@ -148,8 +148,8 @@ assert.ok(
   'global and split-pane headers must show the provider route before the title, matching the sidebar'
 );
 assert.ok(
-  read('src/ui/components/FolderTreeView.tsx').includes('<SessionHandoffProviderRoute') &&
-    read('src/ui/components/FolderTreeView.tsx').includes('targetProvider={session.provider'),
+  read('src/ui/components/TasksView.tsx').includes('<SessionHandoffProviderRoute') &&
+    read('src/ui/components/TasksView.tsx').includes('targetProvider={session.provider'),
   'project session rows must show source-to-target provider icons for handoff sessions'
 );
 assert.ok(
