@@ -405,14 +405,20 @@ export function TasksView() {
       <Fragment key={key}>
         {renderRow(session, depth, nest)}
         {expanded ? (
-          <div className="relative" data-sub-sessions-of={session.id}>
-            <span
-              aria-hidden="true"
-              className="pointer-events-none absolute bottom-1 top-0 w-px bg-[color-mix(in_srgb,var(--text-primary)_10%,transparent)]"
-              // Under the parent's state icon.
-              style={{ left: `${depth * ROW_INDENT + 20}px` }}
-            />
-            {children.map((child) => <Fragment key={child.id}>{renderRow(child, depth + 1)}</Fragment>)}
+          <div data-sub-sessions-of={session.id}>
+            {children.map((child, index) => (
+              <div key={child.id} className="relative">
+                {renderRow(child, depth + 1)}
+                <span
+                  aria-hidden="true"
+                  className={`pointer-events-none absolute top-0 w-[10px] border-l border-[color-mix(in_srgb,var(--text-primary)_16%,transparent)] ${
+                    index === children.length - 1 ? 'h-[calc(50%-0.5px)] rounded-bl-[6px] border-b' : 'bottom-0'
+                  }`}
+                  // Down from the parent's state icon, hooking into the last sub-session.
+                  style={{ left: `${depth * ROW_INDENT + 19.5}px` }}
+                />
+              </div>
+            ))}
           </div>
         ) : null}
       </Fragment>
