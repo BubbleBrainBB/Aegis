@@ -19,6 +19,8 @@ public final class CoreScript: @unchecked Sendable {
         let live: String?
         let running: Bool
         let status: String
+        let workflows: [JSONValue]
+        let approvals: [String: Int]
     }
 
     public init(source: String? = nil) {
@@ -88,22 +90,26 @@ public final class CoreScript: @unchecked Sendable {
         let live: String?
         let running: Bool
         let status: String
+        let workflows: [JSONValue]
+        let approvals: [String: Int]
     }
 
     /// The session render model for committed `messages`, named by `history` (it must
     /// change whenever they do), plus the streamed `live` text. While only `live`
     /// changes, the messages stay in the JS context instead of crossing the bridge again.
-    public func renderSession(history: String, messages: [RemoteMessage], live: String?, running: Bool, status: String) async -> SessionModel {
-        let key = RenderKey(history: history, live: live, running: running, status: status)
+    /// `workflows` are the ones this chat started; `approvals` count pending requests per session.
+    public func renderSession(history: String, messages: [RemoteMessage], live: String?, running: Bool, status: String,
+                              workflows: [JSONValue] = [], approvals: [String: Int] = [:]) async -> SessionModel {
+        let key = RenderKey(history: history, live: live, running: running, status: status, workflows: workflows, approvals: approvals)
         do {
             return try await run {
                 if let last = self.lastKeyed, last.key == key { return last.model }
                 let resend = self.sentHistory != history
                 let model: SessionModel
                 do {
-                    model = try self.call("renderSession", KeyedInput(key: history, messages: resend ? messages : nil, live: live, running: running, status: status), as: SessionModel.self)
+                    model = try self.call("renderSession", KeyedInput(key: history, messages: resend ? messages : nil, live: live, running: running, status: status, workflows: workflows, approvals: approvals), as: SessionModel.self)
                 } catch AegisError.message("STALE_HISTORY") where !resend {
-                    model = try self.call("renderSession", KeyedInput(key: history, messages: messages, live: live, running: running, status: status), as: SessionModel.self)
+                    model = try self.call("renderSession", KeyedInput(key: history, messages: messages, live: live, running: running, status: status, workflows: workflows, approvals: approvals), as: SessionModel.self)
                 }
                 self.sentHistory = history
                 self.lastKeyed = (key, model)
@@ -121,7 +127,7 @@ public final class CoreScript: @unchecked Sendable {
     static func plainText(_ messages: [RemoteMessage], running: Bool, status: String) -> SessionModel {
         var items: [SessionItem] = messages.compactMap { m in
             if m.role == "user" { return .user(id: m.id, prompt: m.text, attachments: []) }
-            if m.role == "assistant", !m.text.isEmpty { return .answer(id: m.id, markdown: m.text, streaming: m.streaming == true) }
+            if m.role == "assistant", !m.text.isEmpty { return .answer(id: m.id, markdown: m.text, streaming: m.streaming == true, result: nil) }
             return nil
         }
         if running { items.append(.working(id: "working", label: status == "stopping" ? "Stopping…" : "Working")) }

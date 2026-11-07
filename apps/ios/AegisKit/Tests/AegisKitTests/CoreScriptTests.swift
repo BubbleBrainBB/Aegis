@@ -35,7 +35,7 @@ import Testing
         #expect(keyed == plain)
         // More streamed text under the same key; the messages stay in the JS context.
         let more = await script.renderSession(history: "s:1", messages: history, live: "Partial answer", running: true, status: "running")
-        guard case .answer(_, let markdown, let streaming) = more.items.last else {
+        guard case .answer(_, let markdown, let streaming, _) = more.items.last else {
             Issue.record("expected the streamed answer last"); return
         }
         #expect(markdown == "Partial answer" && streaming)

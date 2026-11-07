@@ -20,6 +20,9 @@ import {
 import type { ChangeRecord } from "../../../src/ui/utils/change-records";
 import { buildTurnChangeContext, type TurnChangeSummary } from "../../../src/ui/utils/turn-change-records";
 import { buildTranscript, type Transcript } from "./transcript";
+import { isStartWorkflowToolName, WORKFLOW_REPORT_SUFFIX } from "../../../src/shared/workflow";
+import { splitWorkflowResult } from "../../../src/ui/utils/workflow-result";
+import { NO_WORKFLOWS, workflowBoard, type WorkflowBoard, type WorkflowContext } from "./workflow";
 
 export interface Lane {
   id: string;
@@ -48,6 +51,7 @@ export interface Stage {
 }
 export type WorkGroup =
   | { kind: "note"; id: string; markdown: string; streaming: boolean }
+  | { kind: "workflow"; id: string; board: WorkflowBoard }
   | { kind: "thinking"; id: string; label: string; active: boolean; text: string }
   | { kind: "compaction"; id: string; inProgress: boolean; label: string }
   | {
@@ -68,11 +72,17 @@ export interface WorkBlock {
   stoppedLabel: string | null;
   defaultExpanded: boolean;
   groups: WorkGroup[];
+  /** Workflow boards a collapsed turn keeps outside its trace, as the desktop does. */
+  pinned: WorkflowBoard[];
   working: boolean;
 }
 export type SessionItem =
   | { kind: "user"; id: string; prompt: string; attachments: { id: string; name: string; image: boolean }[] }
-  | { kind: "answer"; id: string; markdown: string; streaming: boolean }
+  | { kind: "answer"; id: string; markdown: string; streaming: boolean; result: string | null }
+  /** A step a workflow or follow-up drove in this chat: a notice, not the user's words. */
+  | { kind: "notice"; id: string; text: string; style: "center" | "chip" }
+  /** The task a workflow or parent chat handed this session, folded to one line. */
+  | { kind: "brief"; id: string; title: string; markdown: string }
   | { kind: "plan"; id: string; markdown: string }
   | { kind: "changes"; id: string; files: { path: string; additions: number; deletions: number; diff: string | null }[] }
   | { kind: "work"; id: string; work: WorkBlock }
@@ -229,7 +239,15 @@ function stagesGroup(entries: WorkstreamEntry[], isLatestRunning: boolean, recor
   };
 }
 
-function workBlock(group: TimelineWorkGroup, active: boolean, running: boolean, transcript: Transcript, defaultExpanded: boolean, allowCollapse: boolean, records: Records): WorkBlock | null {
+type TaskEntryLike = Extract<WorkstreamEntry, { type: "task" }>;
+const isWorkflowCall = (entry: WorkstreamEntry): entry is TaskEntryLike => entry.type === "task" && isStartWorkflowToolName(entry.toolName);
+
+function boardFor(entry: TaskEntryLike, context: WorkflowContext): WorkflowBoard {
+  const resultText = entry.result ? getToolResultOutputContent(entry.result) : null;
+  return workflowBoard(entry.block.id, resultText, entry.status === "error" || entry.result?.is_error === true, context);
+}
+
+function workBlock(group: TimelineWorkGroup, active: boolean, running: boolean, transcript: Transcript, defaultExpanded: boolean, allowCollapse: boolean, records: Records, context: WorkflowContext): WorkBlock | null {
   const live = running && active;
   const model = createBatchWorkstreamModel({
     messages: group.messages,
@@ -260,7 +278,8 @@ function workBlock(group: TimelineWorkGroup, active: boolean, running: boolean, 
     buffer = [];
   };
   for (const entry of model.entries) {
-    if (entry.type === "compaction" || entry.type === "note" || entry.type === "thinking") {
+    // A workflow board is its own block in the trace, like the desktop's.
+    if (entry.type === "compaction" || entry.type === "note" || entry.type === "thinking" || isWorkflowCall(entry)) {
       flush();
       raw.push({ single: entry });
     } else buffer.push(entry);
@@ -275,7 +294,10 @@ function workBlock(group: TimelineWorkGroup, active: boolean, running: boolean, 
       return;
     }
     const entry = g.single;
-    if (entry.type === "compaction") {
+    if (isWorkflowCall(entry)) {
+      // A collapsed turn draws it outside the trace instead.
+      if (!canCollapse) groups.push({ kind: "workflow", id: entry.id, board: boardFor(entry, context) });
+    } else if (entry.type === "compaction") {
       groups.push({
         kind: "compaction",
         id: entry.id,
@@ -283,7 +305,8 @@ function workBlock(group: TimelineWorkGroup, active: boolean, running: boolean, 
         label: entry.state === "inProgress" ? "Compacting context…" : "Context compacted",
       });
     } else if (entry.type === "note") {
-      const text = entry.detail || entry.summary;
+      // A workflow result block closing a note is for the engine, not the reader.
+      const text = splitWorkflowResult(entry.detail || entry.summary).body;
       if (text.trim()) groups.push({ kind: "note", id: entry.id, markdown: text, streaming: entry.state === "streaming" });
     } else if (entry.type === "thinking") {
       const activeThinking = entry.state === "active";
@@ -302,6 +325,7 @@ function workBlock(group: TimelineWorkGroup, active: boolean, running: boolean, 
     stoppedLabel: stopped ? (model.durationMs != null ? `You stopped after ${formatElapsed(model.durationMs)}` : "You stopped") : null,
     defaultExpanded: !canCollapse || defaultExpanded,
     groups,
+    pinned: canCollapse ? model.entries.filter(isWorkflowCall).map((entry) => boardFor(entry, context)) : [],
     working: runningModel && !(last && "run" in last) && !model.entries.some(isPendingEntry),
   };
 }
@@ -329,12 +353,26 @@ function turnCardsByTimelineIndex(transcript: Transcript, turns: TurnChangeSumma
   return map;
 }
 
+/**
+ * A prompt Aegis sent rather than the user, drawn as the desktop MessageCard
+ * draws it. The run's closing report has no row: its board says how it ended.
+ */
+function promptRow(id: string, text: string, kind: string): SessionItem | null {
+  if (kind === "event") return text.endsWith(WORKFLOW_REPORT_SUFFIX) ? null : { kind: "notice", id, text, style: "center" };
+  if (kind === "task") return { kind: "brief", id, title: "Task from workflow", markdown: text };
+  if (kind === "sub-session") return { kind: "brief", id, title: "Task from the parent chat", markdown: text };
+  // Follow-up results and tasks: a chip naming what the reply answers.
+  const match = /^(?:Follow-up|Sub-session) (?:results?|task): ([\s\S]*)$/.exec(text);
+  return { kind: "notice", id, text: match ? match[1] : text, style: "chip" };
+}
+
 /** `transcript` may be a cached buildTranscript() of the same messages and `running`. */
 export function renderSession(
   messages: RemoteMessage[],
   running: boolean,
   status: string,
   transcript: Transcript = buildTranscript(messages, running),
+  context: WorkflowContext = NO_WORKFLOWS,
 ): SessionModel {
   const items: SessionItem[] = [];
   const used = new Set<string>();
@@ -364,7 +402,7 @@ export function renderSession(
       // The desktop's per-turn changes card follows the turn's last item.
       if (timelineIndex > 0) pushCard(timelineIndex - 1);
       if (item.type === "work") {
-        const work = workBlock(item.group, item.active, running, transcript, item.defaultExpanded, item.canCollapse !== false, records);
+        const work = workBlock(item.group, item.active, running, transcript, item.defaultExpanded, item.canCollapse !== false, records, context);
         // Ids from the first message survive "load earlier", unlike the index-based group id.
         const first = item.group.messages[0] as { uuid?: string } | undefined;
         if (work) items.push({ kind: "work", id: unique("work:" + (first?.uuid ?? item.group.id)), work });
@@ -372,7 +410,10 @@ export function renderSession(
       }
       const m = item.message;
       const id = unique(("uuid" in m && typeof m.uuid === "string" ? m.uuid : `${m.type}:${item.originalIndex}`) + ":" + m.type);
-      if (m.type === "user_prompt") {
+      if (m.type === "user_prompt" && m.workflowPrompt) {
+        const row = promptRow(id, m.prompt, m.workflowPrompt);
+        if (row) items.push(row);
+      } else if (m.type === "user_prompt") {
         items.push({
           kind: "user",
           id,
@@ -382,15 +423,15 @@ export function renderSession(
       } else if (m.type === "proposed_plan") {
         items.push({ kind: "plan", id, markdown: m.planMarkdown });
       } else if (m.type === "assistant") {
-        const text = textOf(m);
-        if (text.trim()) items.push({ kind: "answer", id, markdown: text, streaming: m.streaming === true });
+        const { body, result } = splitWorkflowResult(textOf(m));
+        if (body.trim() || result) items.push({ kind: "answer", id, markdown: body, streaming: m.streaming === true, result });
       }
     });
     pushCard(transcript.items.length - 1);
     const lastItem = transcript.items[transcript.items.length - 1];
     const liveWork = lastItem?.type === "work" && lastItem.active;
     if (running && transcript.partialText && !liveWork)
-      items.push({ kind: "answer", id: "partial", markdown: transcript.partialText, streaming: true });
+      items.push({ kind: "answer", id: "partial", markdown: transcript.partialText, streaming: true, result: null });
     else if (running && !liveWork) items.push(working);
   } else {
     // Hosts without stream-message sync: text rows, tool rows folded into steps.
@@ -406,12 +447,12 @@ export function renderSession(
       }
       activity = undefined;
       if (m.role === "user") items.push({ kind: "user", id: unique(m.id), prompt: m.text, attachments: [] });
-      else if (m.role === "assistant") items.push({ kind: "answer", id: unique(m.id), markdown: m.text, streaming: m.streaming === true });
+      else if (m.role === "assistant") items.push({ kind: "answer", id: unique(m.id), markdown: m.text, streaming: m.streaming === true, result: null });
     }
     if (running) items.push(working);
   }
 
   const lastAnswer = [...transcript.messages].reverse().find((m) => m.type === "assistant" && textOf(m).trim());
-  const lastAnswerText = lastAnswer ? textOf(lastAnswer) : [...messages].reverse().find((m) => m.role === "assistant")?.text;
+  const lastAnswerText = lastAnswer ? splitWorkflowResult(textOf(lastAnswer)).body : [...messages].reverse().find((m) => m.role === "assistant")?.text;
   return { structured: transcript.structured, items, lastAnswerText: lastAnswerText ?? null };
 }

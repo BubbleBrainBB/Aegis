@@ -10,7 +10,9 @@ import { RemoteJournal } from "./journal";
 import { defaultRelay } from "./relay-auth";
 import { projectMessages } from "../../shared/remote/projection";
 import { parseTurnReport } from "../../shared/turn-report";
-import type { RemoteAgentOptions } from "../../shared/remote/protocol";
+import type { RemoteAgentOptions, RemoteSession } from "../../shared/remote/protocol";
+import type { SessionRow } from "../types";
+import type { WorkflowAction, WorkflowActionResult, WorkflowRunView } from "../../shared/workflow";
 import type { ClientEvent, ServerEvent } from "../../shared/types";
 export { remoteTaskPayload } from "./task-payload";
 import { getClaudeModelConfigWithCatalog } from "../libs/claude-settings";
@@ -129,6 +131,15 @@ async function agentOptions(): Promise<RemoteAgentOptions> {
   };
 }
 let gateway: RemoteGateway | undefined;
+/** The workflow service, once it is set up (after the gateway). */
+let workflowRemote:
+  | { list(): WorkflowRunView[]; act(action: WorkflowAction): Promise<WorkflowActionResult>; ownsHiddenSession(id: string): boolean }
+  | undefined;
+export function setRemoteWorkflows(service: NonNullable<typeof workflowRemote>) {
+  workflowRemote = service;
+  // A phone may have read the list before workflows were set up.
+  gateway?.listChanged();
+}
 export function captureRemoteEvent(event: ServerEvent) {
   gateway?.capture(event);
 }
@@ -205,6 +216,24 @@ export function setupRemoteIPC(
       path,
       isRepo: existsSync(join(path, ".git")),
     }));
+  const toRemoteSession = (s: SessionRow): RemoteSession => ({
+    id: s.id,
+    projectId: projectId(s.project_cwd || s.cwd!),
+    title: s.title,
+    provider: s.provider || "claude",
+    status: s.status,
+    updatedAt: s.updated_at,
+    runId: null,
+    handoffSourceProvider: s.handoff_source_provider,
+    pinned: s.pinned === 1,
+    settings: {
+      model: s.model || undefined,
+      effort: (s.provider === "codex" ? s.codex_reasoning_effort : s.provider === "claude" ? s.claude_reasoning_effort : null) || undefined,
+      fast: s.provider === "codex" && s.codex_fast_mode != null ? s.codex_fast_mode === 1 : undefined,
+      permissionMode: (s.provider === "codex" ? s.codex_permission_mode : s.provider === "claude" ? s.claude_access_mode : null) || undefined,
+      plan: (s.provider === "codex" ? s.codex_execution_mode : s.provider === "claude" ? s.claude_execution_mode : null) === "plan" || undefined,
+    },
+  });
   const get = () => {
     if (gateway) return gateway;
     if (!safeStorage.isEncryptionAvailable())
@@ -239,25 +268,16 @@ export function setupRemoteIPC(
               s.session_origin === "aegis" &&
               !organization[s.id]?.archived,
           )
-          .map((s) => ({
-            id: s.id,
-            projectId: projectId(s.project_cwd || s.cwd!),
-            title: s.title,
-            provider: s.provider || "claude",
-            status: s.status,
-            updatedAt: s.updated_at,
-            runId: null,
-            handoffSourceProvider: s.handoff_source_provider,
-            pinned: s.pinned === 1,
-            settings: {
-              model: s.model || undefined,
-              effort: (s.provider === "codex" ? s.codex_reasoning_effort : s.provider === "claude" ? s.claude_reasoning_effort : null) || undefined,
-              fast: s.provider === "codex" && s.codex_fast_mode != null ? s.codex_fast_mode === 1 : undefined,
-              permissionMode: (s.provider === "codex" ? s.codex_permission_mode : s.provider === "claude" ? s.claude_access_mode : null) || undefined,
-              plan: (s.provider === "codex" ? s.codex_execution_mode : s.provider === "claude" ? s.claude_execution_mode : null) === "plan" || undefined,
-            },
-          }));
+          .map(toRemoteSession);
       },
+      memberSession: (id) => {
+        if (!workflowRemote?.ownsHiddenSession(id)) return null;
+        const row = sessions.getSession(id);
+        return row?.cwd ? toRemoteSession(row) : null;
+      },
+      workflows: () => workflowRemote?.list() ?? null,
+      workflowAction: (action) =>
+        workflowRemote ? workflowRemote.act(action) : Promise.resolve({ ok: false as const, error: "Workflows aren’t ready on this Mac yet." }),
       quietTurn: (id) => {
         const outcome = parseTurnReport(sessions.getSession(id)?.turn_report)?.outcome;
         return outcome === "nothing_to_do" || (outcome === "in_progress" && actions.hasBackgroundWork(id));

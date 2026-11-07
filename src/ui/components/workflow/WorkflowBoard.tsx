@@ -12,13 +12,30 @@ import {
   CURRENT_SESSION_AGENT,
   type WorkflowAction,
   type WorkflowMemberView,
-  type WorkflowRunStatus,
   type WorkflowRunView,
   type WorkflowStepView,
 } from '../../../shared/workflow';
 import { useAppStore } from '../../store/useAppStore';
 import { findRunForToolUse, useWorkflowStore } from '../../store/useWorkflowStore';
 import { formatDurationLabel } from '../../utils/format-duration';
+import {
+  ACTIVE_RUN_STATUSES as ACTIVE,
+  DRIFT_EXPLANATION,
+  FINISHED_RUN_STATUSES as FINISHED,
+  NEEDS_INPUT_TITLE as NEEDS_TITLE,
+  WORKFLOW_VERDICT as VERDICT,
+  parseWorkflowRunId as parseRunId,
+  workflowElapsed as runElapsed,
+  workflowHasRounds as hasRounds,
+  workflowLaneSteps as laneSteps,
+  workflowMemberParts as memberParts,
+  workflowMemberRole as memberRole,
+  workflowOpenByDefault as openByDefault,
+  workflowRunTitle,
+  workflowShowsTime,
+  workflowStatusLabel,
+  workflowStepLine,
+} from '../../utils/workflow-board';
 import { ProviderIcon } from '../AgentModelPicker';
 import { TraceChevron, TraceLine, TraceNest, TraceSpinner } from '../TraceLine';
 import {
@@ -36,49 +53,6 @@ import {
 } from '../icons';
 import { cn } from '../../utils/cn';
 
-const ACTIVE = new Set<WorkflowRunStatus>(['planning', 'running', 'pausing', 'cancelling']);
-const FINISHED = new Set<WorkflowRunStatus>(['succeeded', 'completed_with_gaps', 'cancelled', 'failed']);
-
-const PROVIDER_LABEL: Record<string, string> = {
-  claude: 'Claude',
-  codex: 'Codex',
-  kimi: 'Kimi',
-  opencode: 'OpenCode',
-  grok: 'Grok',
-  pi: 'Pi',
-  qoder: 'Qoder',
-  bubble: 'Bubble',
-  deepseek: 'DeepSeek',
-  devin: 'Devin',
-  mimo: 'MiMo Code',
-  minimax: 'MiniMax Code',
-};
-
-const NEEDS_TITLE: Record<string, string> = {
-  ask: 'A question for you',
-  'plan-invalid': 'The plan could not be used',
-  'repeat-exhausted': 'The review rounds ran out',
-  budget: 'Agent-step limit reached',
-  'interrupted-instance': 'A step was interrupted',
-  'stop-step': 'The workflow stopped',
-  'review-blocked': 'A reviewer could not review',
-  'dispute-maintained': 'A disputed finding was kept',
-  'unresolved-twice': 'A blocking finding is not getting fixed',
-  'no-progress': 'A fix changed nothing',
-  'workspace-drift': 'Files changed outside the workflow',
-  'final-drift': 'Files changed after the last check',
-  'app-restart': 'Aegis was closed during this workflow',
-  'parent-moved': 'This chat moved to another folder',
-  step: 'A step needs attention',
-};
-
-const VERDICT: Record<string, { word: string; tone: 'success' | 'warning' | 'error' }> = {
-  approved: { word: 'Approved', tone: 'success' },
-  changes_requested: { word: 'Changes requested', tone: 'warning' },
-  blocked: { word: 'Blocked', tone: 'error' },
-  failed: { word: 'Failed', tone: 'error' },
-};
-
 const TONE_CLASS = {
   success: 'text-[var(--success)]',
   warning: 'text-[var(--warning)]',
@@ -90,17 +64,6 @@ const buttonClass =
   'inline-flex h-7 items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 text-[12px] font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--sidebar-item-hover)] disabled:opacity-50';
 const primaryButtonClass =
   'inline-flex h-7 items-center gap-1 rounded-md bg-[var(--text-primary)] px-2.5 text-[12px] font-medium text-[var(--bg-primary)] transition-opacity hover:opacity-90 disabled:opacity-50';
-
-/** The run id the start_workflow tool returned, when its result is in. */
-function parseRunId(resultText: string | null): string | null {
-  if (!resultText) return null;
-  try {
-    const value = JSON.parse(resultText) as { workflowId?: unknown };
-    return typeof value.workflowId === 'string' ? value.workflowId : null;
-  } catch {
-    return null;
-  }
-}
 
 export function WorkflowBoard({
   toolUseId,
@@ -260,55 +223,15 @@ function RunBoard({ run }: { run: WorkflowRunView }) {
   );
 }
 
-/** A run folds to its header line once it ends; a failure keeps its error line. */
-function openByDefault(run: WorkflowRunView): boolean {
-  return !FINISHED.has(run.status);
-}
-
-/**
- * The planner names each workflow in a few words; the description and the
- * request are sentences, so they go in the tooltip. Built-in templates carry
- * an id for a name, which is no title.
- */
 function runTitle(run: WorkflowRunView): string {
-  const name = run.spec?.name?.trim();
-  if (name && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name)) return name;
-  return run.description || run.title;
+  return workflowRunTitle(run, run.spec?.name);
 }
 
 /** The header's right side: what the run is doing, and for how long. */
 function RunStatus({ run, lanes, now }: { run: WorkflowRunView; lanes: WorkflowStepView[]; now: number }) {
   const elapsed = formatDurationLabel(runElapsed(run, now));
-  const done = lanes.filter((s) => s.state === 'succeeded' || s.state === 'failed').length;
-  const [word, tone, spinning]: [string, keyof typeof TONE_CLASS, boolean] = (() => {
-    switch (run.status) {
-      case 'planning':
-        return ['Planning', 'muted', true];
-      case 'awaiting_confirmation':
-        return ['Waiting for you', 'warning', false];
-      case 'running':
-        return [lanes.length > 0 ? `${done} of ${lanes.length}` : 'Running', 'muted', true];
-      case 'pausing':
-        return ['Pausing', 'muted', true];
-      case 'paused':
-        return ['Paused', 'muted', false];
-      case 'needs_input':
-        return ['Needs you', 'warning', false];
-      case 'interrupted':
-        return ['Interrupted', 'warning', false];
-      case 'cancelling':
-        return ['Stopping', 'muted', true];
-      case 'cancelled':
-        return ['Stopped', 'muted', false];
-      case 'succeeded':
-        return [finalVerdictApproved(lanes) ? 'Approved' : 'Done', 'success', false];
-      case 'completed_with_gaps':
-        return ['Done with open items', 'warning', false];
-      case 'failed':
-        return ['Failed', 'error', false];
-    }
-  })();
-  const showTime = elapsed && run.status !== 'planning' && run.status !== 'awaiting_confirmation';
+  const { word, tone, spinning } = workflowStatusLabel(run, lanes);
+  const showTime = elapsed && workflowShowsTime(run);
   return (
     <span className="ml-auto flex flex-shrink-0 items-center gap-1.5 whitespace-nowrap text-[12px] tabular-nums text-[var(--text-muted)]">
       {spinning ? <LoaderCircle className="h-3 w-3 animate-spin" aria-hidden="true" /> : null}
@@ -316,70 +239,6 @@ function RunStatus({ run, lanes, now }: { run: WorkflowRunView; lanes: WorkflowS
       {showTime ? <span>· {elapsed}</span> : null}
     </span>
   );
-}
-
-/** Whether the run ended on approving reviews (each reviewer's latest round), so the header can say so. */
-function finalVerdictApproved(lanes: WorkflowStepView[]): boolean {
-  const latest = new Map<string, WorkflowStepView>();
-  for (const step of lanes) {
-    if (step.kind !== 'agent' || step.verdict === null) continue;
-    const key = step.memberKey ?? step.stepId;
-    const seen = latest.get(key);
-    if (!seen || (step.endedAt ?? 0) >= (seen.endedAt ?? 0)) latest.set(key, step);
-  }
-  return latest.size > 0 && [...latest.values()].every((s) => s.verdict === 'approved');
-}
-
-/**
- * From the first step's start to the last step's end (or now, while it runs).
- * Null when that is not known: runs from before steps were timed, or a step
- * that Aegis closed under, whose end nobody recorded.
- */
-function runElapsed(run: WorkflowRunView, now: number): number | null {
-  const starts = run.steps.map((s) => s.startedAt).filter((t): t is number => t !== null);
-  if (starts.length === 0) return null;
-  const start = Math.min(...starts);
-  if (ACTIVE.has(run.status) || run.steps.some((s) => s.state === 'running')) return now - start;
-  if (run.steps.some((s) => s.startedAt !== null && s.endedAt === null)) return null;
-  const ends = run.steps.map((s) => s.endedAt).filter((t): t is number => t !== null);
-  return (ends.length > 0 ? Math.max(...ends) : run.updatedAt) - start;
-}
-
-/** Agent and check steps that have run or are coming up; skipped and, once finished, unreached steps are left out. */
-function laneSteps(run: WorkflowRunView): WorkflowStepView[] {
-  return run.steps.filter(
-    (step) =>
-      (step.kind === 'agent' || step.kind === 'check') &&
-      step.state !== 'skipped' &&
-      !(step.state === 'pending' && (FINISHED.has(run.status) || run.status === 'awaiting_confirmation' || run.status === 'planning')),
-  );
-}
-
-function hasRounds(lanes: WorkflowStepView[]): boolean {
-  return lanes.some((s) => (s.iteration?.[s.iteration.length - 1] ?? 0) > 0);
-}
-
-/**
- * A member's short name and what tells it apart: the pinned model, the
- * effort, and the member key only when two members share all of those. The
- * planner's focus text can be a whole instruction, so it goes in tooltips.
- */
-function memberParts(member: WorkflowMemberView, members: WorkflowMemberView[]): { name: string; detail: string[] } {
-  if (member.agent === CURRENT_SESSION_AGENT) return { name: 'This chat', detail: [] };
-  const shared = members.some(
-    (m) =>
-      m.key !== member.key &&
-      m.provider === member.provider &&
-      m.model === member.model &&
-      (m.effort ?? null) === (member.effort ?? null) &&
-      m.agent !== CURRENT_SESSION_AGENT,
-  );
-  return {
-    name: PROVIDER_LABEL[member.provider] ?? member.agent,
-    detail: [member.model ? member.modelLabel ?? member.model : null, member.effort, shared ? member.key : null].filter(
-      (part): part is string => Boolean(part),
-    ),
-  };
 }
 
 function StepLine({
@@ -395,15 +254,8 @@ function StepLine({
   showRound: boolean;
   now: number;
 }) {
-  const isCurrent = member?.agent === CURRENT_SESSION_AGENT;
-  const approvals = useAppStore((s) => (step.sessionId && !isCurrent ? s.sessions[step.sessionId]?.permissionRequests?.length ?? 0 : 0));
-  const round = step.iteration ? step.iteration[step.iteration.length - 1] + 1 : null;
-  // Agent step labels read "<member> · <output>"; the line names the member itself.
-  const what = step.kind === 'check' ? step.label : step.phase ?? step.label.split(' · ').pop() ?? step.label;
-  const parts = member ? memberParts(member, members) : null;
-  const title = `${parts ? `${parts.name} · ${what}` : what}${showRound && round ? ` · round ${round}` : ''}`;
-  // The chat's own turns are already in this conversation.
-  const sessionId = isCurrent ? null : step.sessionId;
+  const { title, detail, sessionId } = workflowStepLine(step, member, members, showRound);
+  const approvals = useAppStore((s) => (sessionId ? s.sessions[sessionId]?.permissionRequests?.length ?? 0 : 0));
   const end = step.state === 'running' ? now : step.endedAt;
   const duration = step.startedAt === null || end === null ? null : formatDurationLabel(end - step.startedAt);
   const verdict = step.verdict ? VERDICT[step.verdict] : undefined;
@@ -411,7 +263,7 @@ function StepLine({
     <TraceLine
       icon={member ? <ProviderIcon provider={member.provider as AgentProvider} /> : <Terminal />}
       title={title}
-      meta={parts && parts.detail.length > 0 ? <span>{parts.detail.join(' · ')}</span> : undefined}
+      meta={detail.length > 0 ? <span>{detail.join(' · ')}</span> : undefined}
       aside={
         <>
           {approvals > 0 ? (
@@ -500,12 +352,6 @@ function ActionBox({ children }: { children: ReactNode }) {
       {children}
     </div>
   );
-}
-
-function memberRole(member: WorkflowMemberView): string {
-  if (member.role === 'implementer') return 'writes code';
-  if (member.role === 'reviewer') return 'reviewer, read-only';
-  return 'advisor, read-only';
 }
 
 function PlanBox({ run, busy, perform }: { run: WorkflowRunView; busy: boolean; perform: Perform }) {
@@ -607,10 +453,7 @@ function NeedsInputBox({ run, busy, perform }: { run: WorkflowRunView; busy: boo
       </div>
       {needs.question ? <div className="text-[var(--text-primary)]">{needs.question}</div> : null}
       {drift ? (
-        <div>
-          Files no longer match the version the workflow expected. Using the current files continues with those edits included; they
-          will be checked and reviewed too.
-        </div>
+        <div>{DRIFT_EXPLANATION}</div>
       ) : needs.detail ? (
         <div className="whitespace-pre-wrap break-words">{needs.detail}</div>
       ) : null}

@@ -53,7 +53,7 @@ enum MarkdownBlocks {
     static func warm(_ items: [SessionItem]) {
         for item in items {
             switch item {
-            case .answer(_, let markdown, _), .plan(_, let markdown):
+            case .answer(_, let markdown, _, _), .plan(_, let markdown):
                 _ = parse(markdown)
             case .work(_, let work):
                 for case .note(_, let markdown, _) in work.groups { _ = parse(markdown) }

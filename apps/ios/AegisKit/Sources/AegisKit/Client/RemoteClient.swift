@@ -148,6 +148,8 @@ public final class RemoteClient {
     }
 
     private static var now: Double { Date().timeIntervalSince1970 * 1000 }
+    /// Now on the Mac's clock (ms), for times the Mac sent, such as a workflow step's start.
+    public var serverNow: Double { Self.now + serverOffset }
     /// Cache and address files are written here, in order, off the main thread.
     private static let fileQueue = DispatchQueue(label: "ai.aegis.client-files", qos: .utility)
     private static var versions = 0
@@ -854,12 +856,13 @@ public final class RemoteClient {
         // Views read the list everywhere; leave it alone when only the clock moved. Older
         // Macs compare `revision` on the next poll, so theirs is always kept current.
         if let current = snapshot, link.events, current.projects == list.projects, current.sessions == list.sessions,
-           current.permissions == list.permissions, current.hostBootId == list.hostBootId,
+           current.permissions == list.permissions, current.workflows == list.workflows, current.members == list.members,
+           current.hostBootId == list.hostBootId,
            current.machineName == list.machineName, current.sessionId == list.sessionId {
         } else {
             snapshot = list
         }
-        prune(to: state.sessions)
+        prune(to: state.sessions + (state.members ?? []))
         if let sessionId = state.sessionId, let messages = state.messages {
             merge(messages, of: state, into: sessionId, link: link)
         }
@@ -935,11 +938,14 @@ public final class RemoteClient {
             list.projects = state.projects
             list.sessions = state.sessions
             list.permissions = state.permissions
+            list.workflows = state.workflows
+            list.members = state.members
             snapshot = list
-            prune(to: state.sessions)
+            let reachable = state.sessions + (state.members ?? [])
+            prune(to: reachable)
             // The open session is back (unarchived) or just appeared: subscribe and load it.
             if let selected = selectedSession, messagesBySession[selected] == nil,
-               state.sessions.contains(where: { $0.id == selected }) {
+               reachable.contains(where: { $0.id == selected }) {
                 Task { await refresh() }
             }
         }

@@ -141,6 +141,29 @@ import Testing
         #expect(try await client.mutate(plan.command("allow")).state == .completed)
         let approved = try await fixture.line(containing: "fixture permission ExitPlanMode")
         #expect(approved.contains(#""answers":{"Approve this plan and let Claude start implementing it?":"Approve and execute"}"#))
+
+        // Workflows: the chats' runs and their member sessions arrive with the list.
+        #expect(snapshot.workflows(startedIn: "wf-plan").count == 1)
+        #expect(snapshot.workflows?.count == 4)
+        #expect(snapshot.isMember("wf-review") && !snapshot.sessions.contains { $0.id == "wf-review" })
+        // A member's session reads like any other, and its approval goes through.
+        client.select("wf-review")
+        try await waitUntil { client.messagesBySession["wf-review"]?.messages.isEmpty == false }
+        let memberApproval = try #require(snapshot.permissions.first { $0.sessionId == "wf-review" })
+        #expect(try await client.mutate(memberApproval.command("allow")).state == .completed)
+        _ = try await fixture.line(containing: "fixture permission Bash")
+        // The board's decisions: a stale revision is refused, the current one starts the plan.
+        let stale = try await client.mutate(["method": "workflow", "workflowId": "run-wf-plan",
+                                             "action": .object(["type": "confirm", "expectedRevision": 0])])
+        #expect(stale.state == .rejected && stale.error == "The workflow changed; review it again.")
+        let start = try await client.mutate(["method": "workflow", "workflowId": "run-wf-plan",
+                                             "action": .object(["type": "confirm", "expectedRevision": 1])])
+        #expect(start.state == .completed)
+        _ = try await fixture.line(containing: "fixture workflow wf-plan {\"type\":\"confirm\"")
+        try await waitUntil {
+            client.snapshot?.workflows(startedIn: "wf-plan").first?["status"]?.stringValue == "running"
+        }
+        client.select("design")
         // What's left is the fixture's single question, still waiting.
         try await waitUntil { client.snapshot?.permissions.map(\.sessionId) == ["deps"] }
 

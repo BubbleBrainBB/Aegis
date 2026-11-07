@@ -273,3 +273,135 @@ test("composer menu: commands and skills as the desktop lists them", () => {
   assert.equal(menu("devin", "/brand").groups.length, 0);
   assert.equal(menu("claude", "/model").groups[0].items[0].action, "model");
 });
+
+// Workflows: the start_workflow call's board, prompts Aegis sent, and result blocks.
+const workflowCall = (uuid, id, createdAt) => ({
+  id: uuid, role: "assistant", text: "",
+  raw: { type: "assistant", uuid, createdAt, message: { content: [{ type: "tool_use", id, name: "mcp__aegis-sessions__start_workflow", input: { request: "Have Codex fix it and Claude review" } }] } },
+});
+const member = (key, provider, role, extra = {}) => ({
+  key, role, agent: provider, provider, model: null, modelLabel: null, effort: null, focus: null, source: "inferred",
+  permissionMode: null, permissionModeIsDefault: true, readOnlyMechanism: null, degraded: [], unverified: false, currentSessionId: null, ...extra,
+});
+const wfStep = (key, memberKey, state, extra = {}) => ({
+  key, stepId: key, kind: "agent", phase: null, label: `x · ${key}`, memberKey, iteration: null, group: null, state,
+  sessionId: null, version: null, summary: null, verdict: null, startedAt: null, endedAt: null, ...extra,
+});
+const workflowRun = (extra = {}) => ({
+  id: "run-1", title: "workflow", location: "current", status: "running", revision: 2, createdAt: 1, updatedAt: 9000,
+  description: "Fix the login redirect", name: "Login redirect fix",
+  members: [member("impl", "codex", "implementer", { currentSessionId: "s-impl" }), member("review", "claude", "reviewer")],
+  acceptance: [], checks: [], unsupported: [], assumptions: ["Tests live in src/auth"], warnings: [], confirmReasons: [],
+  steps: [
+    wfStep("implement", "impl", "succeeded", { label: "Codex · implement", sessionId: "s-impl", startedAt: 1000, endedAt: 61000 }),
+    wfStep("review", "review", "running", { label: "Claude · review", sessionId: "s-review", startedAt: 61000 }),
+    wfStep("fix", "impl", "pending", { label: "Codex · fix" }),
+  ],
+  needsInput: null, error: null, finalVersion: null, plannerSessionId: "s-plan", includesUserChanges: false,
+  parent: { sessionId: "chat", toolUseId: "wf1", provider: "claude" },
+  ...extra,
+});
+const startedTurn = [
+  prompt("p1", "Have Codex fix it and Claude review", 1000),
+  workflowCall("a1", "wf1", 2000),
+  toolResult("r1", "wf1", JSON.stringify({ workflowId: "run-1" }), 2500),
+  answer("a2", "Started a workflow.", 3000),
+];
+
+test("start_workflow: a running turn draws the board in its trace", () => {
+  const model = call("renderSession", {
+    messages: startedTurn.slice(0, 3),
+    running: true,
+    status: "running",
+    workflows: [workflowRun()],
+    approvals: { "s-review": 1 },
+  });
+  const groups = model.items.find((i) => i.kind === "work").work.groups;
+  const board = groups.find((g) => g.kind === "workflow").board;
+  assert.equal(board.phase, "run");
+  assert.equal(board.title, "Login redirect fix");
+  assert.deepEqual(board.status, { word: "1 of 3", tone: "muted", spinning: true });
+  assert.deepEqual(board.time, { start: 1000, end: null });
+  assert.equal(board.canStop, true);
+  assert.equal(board.open, true);
+  assert.deepEqual(board.assumptions, ["Tests live in src/auth"]);
+  assert.deepEqual(board.steps.map((s) => [s.title, s.state, s.provider, s.sessionId]), [
+    ["Codex · implement", "succeeded", "codex", "s-impl"],
+    ["Claude · review", "running", "claude", "s-review"],
+    ["Codex · fix", "pending", "codex", null],
+  ]);
+  assert.equal(board.steps[1].approvals, 1);
+  assert.ok(!groups.some((g) => g.kind === "stages" && g.stages.some((s) => s.kind === "subagents")), "no subagent lane for the call");
+});
+
+test("start_workflow: a finished turn keeps the board outside its folded trace", () => {
+  const done = workflowRun({
+    status: "succeeded",
+    steps: [
+      wfStep("implement", "impl", "succeeded", { sessionId: "s-impl", startedAt: 1000, endedAt: 61000 }),
+      wfStep("review", "review", "succeeded", { sessionId: "s-review", startedAt: 61000, endedAt: 91000, verdict: "approved" }),
+      wfStep("fix", "impl", "pending"),
+    ],
+    acceptance: [{ id: "a", description: "Login returns to the page", kind: "review", source: "user", status: "satisfied" }],
+    unsupported: ["Real browser check"],
+  });
+  const model = call("renderSession", { messages: startedTurn, running: false, status: "idle", workflows: [done] });
+  const work = model.items.find((i) => i.kind === "work").work;
+  assert.ok(work.label);
+  assert.ok(!work.groups.some((g) => g.kind === "workflow"));
+  const [board] = work.pinned;
+  assert.deepEqual(board.status, { word: "Approved", tone: "success", spinning: false });
+  assert.deepEqual(board.time, { start: 1000, end: 91000 });
+  assert.equal(board.open, false);
+  assert.equal(board.steps.length, 2, "unreached steps drop out once it ends");
+  assert.deepEqual(board.steps[1].verdict, { word: "Approved", tone: "success" });
+  assert.deepEqual(board.outcome.map((o) => o.status), ["met", "open"]);
+});
+
+test("start_workflow: plan, question, starting and failed boards", () => {
+  const board = (workflows, messages = startedTurn.slice(0, 3)) =>
+    call("renderSession", { messages, running: true, status: "running", workflows })
+      .items.find((i) => i.kind === "work").work.groups.find((g) => g.kind === "workflow").board;
+  const plan = board([workflowRun({ status: "awaiting_confirmation", steps: [wfStep("implement", "impl", "pending")], checks: [{ stepId: "c", argv: ["npm", "test"], authorization: "confirm", basis: null, highlight: false, reasons: [] }] })]);
+  assert.deepEqual(plan.status, { word: "Waiting for you", tone: "warning", spinning: false });
+  assert.equal(plan.time, null);
+  assert.deepEqual(plan.plan.members.map((m) => [m.name, m.detail]), [["Codex", "writes code"], ["Claude", "reviewer, read-only"]]);
+  assert.deepEqual(plan.plan.checks, [{ text: "npm test", highlight: false }]);
+  assert.deepEqual(plan.steps, [], "nothing has run yet");
+  const asked = board([workflowRun({ status: "needs_input", needsInput: { reason: "ask", detail: null, instanceKey: null, stepId: null, question: "Which branch?", options: [{ id: "o1", label: "main" }] } })]);
+  assert.equal(asked.needs.title, "A question for you");
+  assert.deepEqual(asked.needs.options, [{ id: "o1", label: "main", answer: "text" }]);
+  assert.equal(asked.needs.freeText, false);
+  const drift = board([workflowRun({ status: "needs_input", needsInput: { reason: "workspace-drift", detail: "hash mismatch", instanceKey: null, stepId: null, question: null, options: [{ id: "use-current", label: "Use current files" }] } })]);
+  assert.match(drift.needs.detail, /^Files no longer match/);
+  assert.equal(drift.needs.options[0].answer, "option");
+  assert.equal(board([]).phase, "starting");
+  // Found by the call id when the result isn't in yet.
+  assert.equal(board([workflowRun()], startedTurn.slice(0, 2)).runId, "run-1");
+  const refused = board([], [startedTurn[0], startedTurn[1], toolResult("r1", "wf1", "Workflows need a project folder", 2500, true)]);
+  assert.equal(refused.phase, "failed");
+  assert.equal(refused.failure, "Workflow could not start: Workflows need a project folder");
+});
+
+test("prompts the workflow sent are not user bubbles; result blocks fold", () => {
+  const sent = (uuid, text, kind, createdAt) => ({ id: uuid, role: "user", text, raw: { type: "user_prompt", uuid, prompt: text, workflowPrompt: kind, createdAt } });
+  const result = '```json\n{"schemaVersion":1,"status":"completed","summary":"Fixed it","details":"x"}\n```';
+  const model = call("renderSession", {
+    messages: [
+      sent("t1", "Fix the login redirect.\n\nEnd with a result block.", "task", 1000),
+      answer("a1", "Fixed the redirect.\n\n" + result, 2000),
+      sent("e1", "Workflow: Codex finished implement", "event", 3000),
+      sent("e2", "Workflow finished · result sent to this chat", "event", 4000),
+      sent("f1", "Follow-up result: Update the docs", "follow-up", 5000),
+    ],
+    running: false,
+    status: "idle",
+  });
+  assert.deepEqual(model.items.map((i) => i.kind), ["brief", "answer", "notice", "notice"]);
+  assert.equal(model.items[0].title, "Task from workflow");
+  assert.equal(model.items[1].markdown, "Fixed the redirect.");
+  assert.match(model.items[1].result, /"summary":"Fixed it"/);
+  assert.deepEqual([model.items[2].text, model.items[2].style], ["Workflow: Codex finished implement", "center"]);
+  assert.deepEqual([model.items[3].text, model.items[3].style], ["Update the docs", "chip"]);
+  assert.equal(model.lastAnswerText, "Fixed the redirect.");
+});

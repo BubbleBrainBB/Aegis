@@ -29,6 +29,8 @@ final class AppModel {
     enum Screen: Hashable { case home, session(String), starting(String) }
     enum Route: Hashable {
         case projects, project(String), settings, devices
+        /// A workflow's member or planner session, opened from one of its steps.
+        case member(String)
     }
 
     /// One per paired Mac; each keeps its own connection, pairing and journal.
@@ -125,8 +127,14 @@ final class AppModel {
     }
     var macName: String { macName(of: client) }
     func owner(ofSession id: String) -> RemoteClient? {
-        pairedClients.first { $0.snapshot?.sessions.contains { $0.id == id } == true }
+        pairedClients.first { $0.snapshot?.session(id) != nil }
     }
+    /// A listed session, or a workflow's member session (which the lists leave out).
+    func session(_ id: String) -> RemoteSession? {
+        sessions.first { $0.id == id } ?? pairedClients.lazy.compactMap { $0.snapshot?.session(id) }.first
+    }
+    /// Run by a workflow: it has no composer, as on the desktop.
+    func isWorkflowMember(_ id: String) -> Bool { owner(ofSession: id)?.snapshot?.isMember(id) == true }
     /// "Mac mini · coworker" where sessions from several Macs mix; the project alone with one Mac.
     func placeLabel(of session: RemoteSession) -> String? {
         let owner = owner(ofSession: session.id)
@@ -180,7 +188,7 @@ final class AppModel {
         if case .session(let id) = screen { return id }
         return nil
     }
-    var currentSession: RemoteSession? { sessions.first { $0.id == currentSessionId } }
+    var currentSession: RemoteSession? { currentSessionId.flatMap(session) }
     /// Sends the Mac hasn't confirmed and no request is waiting on; a normal send never counts.
     var stalledCount: Int { client.stalledCount }
 
@@ -285,6 +293,27 @@ final class AppModel {
     func push(_ route: Route) {
         drawerOpen = false
         path.append(route)
+    }
+
+    /// Opens a workflow member's session over the chat, so Back returns to the board.
+    func openMember(_ sessionId: String) {
+        Haptics.tap()
+        push(.member(sessionId))
+    }
+
+    /// A decision on a workflow's board: start or cancel its plan, answer it, or stop it.
+    func act(on board: WorkflowBoard, in chatId: String, _ action: [String: JSONValue]) async {
+        guard let runId = board.runId else { return }
+        var action = action
+        action["expectedRevision"] = .number(Double(board.revision))
+        await perform {
+            let client = self.owner(ofSession: chatId) ?? self.client
+            let result = try await client.mutate(["method": "workflow", "workflowId": .string(runId), "action": .object(action)])
+            if result.state == .rejected {
+                self.notice = result.error ?? "Your Mac didn’t take that. Check the workflow there."
+                Haptics.warning()
+            }
+        }
     }
 
     /// Parses an edit stage's file diffs (one file per entry, in stage order).

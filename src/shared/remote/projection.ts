@@ -1,5 +1,6 @@
 import type { StreamMessage } from "../types";
-import type { RemoteMessage } from "./protocol";
+import type { WorkflowRunView } from "../workflow";
+import type { RemoteMessage, RemoteWorkflow } from "./protocol";
 
 // The phone rebuilds the desktop trace (turns, work groups, stage summaries)
 // from the same stream messages the desktop renders, so it ships a bounded
@@ -81,4 +82,20 @@ export function projectMessages(messages: StreamMessage[]): RemoteMessage[] {
     });
   }
   return result;
+}
+
+const nullableTrim = (text: string | null, limit: number) => (text === null ? null : trim(text, limit));
+
+/** A workflow run for the phone's board: no definition, folders or request text, long text bounded. */
+export function projectWorkflow(view: WorkflowRunView): RemoteWorkflow {
+  const { spec, cwd: _cwd, isolated: _isolated, goal: _goal, parent, ...run } = view;
+  return {
+    ...run,
+    name: spec?.name ?? null,
+    parent: parent ? { sessionId: parent.sessionId, toolUseId: parent.toolUseId, provider: parent.provider } : null,
+    description: nullableTrim(run.description, 2000),
+    steps: run.steps.map((step) => ({ ...step, summary: nullableTrim(step.summary, 2000) })),
+    needsInput: run.needsInput && { ...run.needsInput, detail: nullableTrim(run.needsInput.detail, VALUE_LIMIT) },
+    error: nullableTrim(run.error, VALUE_LIMIT),
+  };
 }
