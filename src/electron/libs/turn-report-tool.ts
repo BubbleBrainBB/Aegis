@@ -36,7 +36,8 @@ export function reportStatusDescription(background: boolean): string {
     'Call it once, as your last action before your final reply. Outcomes:',
     `${reportStatusOutcomes(background).map((outcome) => OUTCOME_DESCRIPTIONS[outcome]).join('; ')}.`,
     'Do not call it when you finished the work you were asked for, and do not use it instead of your reply: still write',
-    'your answer or question in the chat as usual.',
+    'your answer or question in the chat as usual. It does not put your question in front of the user, so when they have to pick',
+    'between options, ask with your question tool if you have one (such as AskUserQuestion).',
   ].join(' ');
 }
 
@@ -112,7 +113,7 @@ export function reportStatus(
   } catch (error) {
     return reply(error instanceof Error ? error.message : String(error), true);
   }
-  return reply('Recorded. Now write your reply to the user as usual.');
+  return reply('Recorded. If you already wrote your reply, end your turn; otherwise write it now, in the language you have been using with the user.');
 }
 
 /** Whether the tool_use with this id is a subagent's; null while history does not show it yet. */

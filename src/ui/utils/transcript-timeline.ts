@@ -1,6 +1,8 @@
 import { isCompactionMessage, type WorkstreamMessage } from './compaction';
 import { isBackgroundTaskEndedMessage } from './background-task-ended';
 import { getAssistantPhase } from '../../shared/assistant-phase';
+import { isProposeFollowUpToolName, isWithdrawFollowUpToolName } from '../../shared/follow-up';
+import { isReportStatusToolName } from '../../shared/turn-report';
 import type { ContentBlock, StreamMessage } from '../types';
 import type { ThreadGoal } from '../../shared/session-goal';
 import {
@@ -58,8 +60,35 @@ function isAnswerSupportBlock(block: ContentBlock): boolean {
   return block.type === 'memory_citations' && block.citations.length > 0;
 }
 
-function hasToolUseBlock(blocks: ContentBlock[]): boolean {
-  return blocks.some((block) => Boolean(normalizeToolUseBlock(block)));
+/**
+ * Tools that only file something with Aegis (how the turn ended, a follow-up
+ * task) and do no work. Agents often call them after writing their answer, so
+ * they must not split that answer into work and a closing line.
+ */
+function isBookkeepingToolName(name: string): boolean {
+  return isReportStatusToolName(name) || isProposeFollowUpToolName(name) || isWithdrawFollowUpToolName(name);
+}
+
+function hasWorkToolUseBlock(blocks: ContentBlock[]): boolean {
+  return blocks.some((block) => {
+    const toolUse = normalizeToolUseBlock(block);
+    return Boolean(toolUse) && !isBookkeepingToolName(toolUse!.name);
+  });
+}
+
+/** Work made only of bookkeeping calls, with any reasoning that led to them. */
+function isBookkeepingWorkGroup(group: TimelineWorkGroup): boolean {
+  let bookkeeping = false;
+  for (const message of group.messages) {
+    if (message.type !== 'assistant') return false;
+    for (const block of getMessageContentBlocks(message)) {
+      if (block.type === 'thinking') continue;
+      const toolUse = normalizeToolUseBlock(block);
+      if (!toolUse || !isBookkeepingToolName(toolUse.name)) return false;
+      bookkeeping = true;
+    }
+  }
+  return bookkeeping;
 }
 
 function cloneAssistantMessageWithContent(
@@ -349,6 +378,30 @@ function collapseTurnWorkBeforeAnswer(
     !interruptedTurn &&
     (!activeRunningTurn || hasTurnResult(turnItems) || hasExplicitFinalAnswer);
 
+  // An answer the agent wrote before a bookkeeping call (report_status after
+  // the reply, then a closing line) is still the answer: the texts read as one.
+  let answerStartIndex = answerSourceIndex;
+  if (hasTerminalAnswer) {
+    while (answerStartIndex > 0) {
+      const item = turnItems[answerStartIndex];
+      const previous = turnItems[answerStartIndex - 1];
+      if (
+        item.type !== 'message' ||
+        !item.inlineWorkGroup ||
+        !isBookkeepingWorkGroup(item.inlineWorkGroup) ||
+        previous?.type !== 'message' ||
+        previous.message.type !== 'assistant' ||
+        getAssistantPhase(previous.message) === 'commentary'
+      ) {
+        break;
+      }
+      answerStartIndex -= 1;
+    }
+  }
+  const answerParts = turnItems
+    .slice(answerStartIndex, answerSourceIndex + 1)
+    .filter((item): item is Extract<TranscriptTimelineItem, { type: 'message' }> => item.type === 'message');
+
   const workGroups: TimelineWorkGroup[] = [];
   const visibleItems: TranscriptTimelineItem[] = [];
   let answerVisibleIndex = -1;
@@ -374,7 +427,13 @@ function collapseTurnWorkBeforeAnswer(
       continue;
     }
 
-    if (item.message.type === 'assistant' && (!hasTerminalAnswer || index !== answerSourceIndex)) {
+    if (index > answerStartIndex && index <= answerSourceIndex) {
+      if (item.inlineWorkGroup) workGroups.push(item.inlineWorkGroup);
+      continue;
+    }
+
+    const answerHead = hasTerminalAnswer && index === answerStartIndex;
+    if (item.message.type === 'assistant' && !answerHead) {
       if (item.inlineWorkGroup) {
         workGroups.push(item.inlineWorkGroup);
       }
@@ -386,13 +445,12 @@ function collapseTurnWorkBeforeAnswer(
       workGroups.push(item.inlineWorkGroup);
     }
 
-    const visibleItem: TranscriptTimelineItem = {
-      ...item,
-      inlineWorkGroup: undefined,
-    };
+    const visibleItem: TranscriptTimelineItem = answerHead && answerParts.length > 1
+      ? mergeAnswerParts(answerParts)
+      : { ...item, inlineWorkGroup: undefined };
     visibleItems.push(visibleItem);
 
-    if (index === answerSourceIndex) {
+    if (answerHead) {
       answerVisibleIndex = visibleItems.length - 1;
     }
   }
@@ -433,6 +491,21 @@ function collapseTurnWorkBeforeAnswer(
   }
 
   return visibleItems;
+}
+
+/** One answer item from texts split by bookkeeping calls; it stands where the last one was. */
+function mergeAnswerParts(
+  parts: Array<Extract<TranscriptTimelineItem, { type: 'message' }>>
+): TranscriptTimelineItem {
+  const last = parts[parts.length - 1];
+  const content = parts.flatMap((part) => getMessageContentBlocks(part.message));
+  const completedGoals = parts.flatMap((part) => part.completedGoals ?? []);
+  return {
+    ...last,
+    message: cloneAssistantMessageWithContent(last.message as AssistantMessage, content),
+    completedGoals: completedGoals.length ? completedGoals : undefined,
+    inlineWorkGroup: undefined,
+  };
 }
 
 function getMessageCreatedAt(message: StreamMessage): number | undefined {
@@ -729,7 +802,7 @@ export function deriveTranscriptTimelineItems(
     }
 
     const blocks = getMessageContentBlocks(message);
-    const messageHasToolUse = hasToolUseBlock(blocks);
+    const messageHasToolUse = hasWorkToolUseBlock(blocks);
     let traceBuffer: ContentBlock[] = [];
     let textBuffer: ContentBlock[] = [];
 
