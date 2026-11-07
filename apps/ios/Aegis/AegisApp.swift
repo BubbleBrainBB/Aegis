@@ -138,6 +138,7 @@ private struct PageStack: View {
                     case .project(let id): ProjectPage(projectId: id)
                     case .settings: SettingsPage()
                     case .devices: DevicesPage()
+                    case .member(let id): SessionView(sessionId: id, pushed: true).id(id)
                     }
                 }
         }

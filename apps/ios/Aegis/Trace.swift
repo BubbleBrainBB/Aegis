@@ -50,6 +50,8 @@ private struct Disclosure: View {
 /// Turn-level disclosure ("Worked for 1m 12s").
 struct WorkBlockView: View {
     let work: WorkBlock
+    /// The chat this turn is in; a workflow board's decisions go to its Mac.
+    let chatId: String
     /// Only a tap sets this; otherwise it follows the default, which collapses the
     /// trace once the turn finishes (as on the desktop).
     @State private var choice: Bool?
@@ -75,6 +77,8 @@ struct WorkBlockView: View {
                         switch group {
                         case .note(_, let markdown, let streaming):
                             MarkdownView(text: markdown, streaming: streaming)
+                        case .workflow(_, let board):
+                            WorkflowBoardView(board: board, chatId: chatId)
                         case .thinking(_, let label, let active, let text):
                             ThinkingRow(label: label, active: active, text: text)
                         case .compaction(_, let inProgress, let label):
@@ -93,6 +97,8 @@ struct WorkBlockView: View {
                 }
                 .transition(.opacity)
             }
+            // A folded turn keeps its workflows in view: they are part of the answer.
+            ForEach(work.pinned) { board in WorkflowBoardView(board: board, chatId: chatId) }
         }
         .animation(.snappy(duration: 0.25), value: work.defaultExpanded)
     }

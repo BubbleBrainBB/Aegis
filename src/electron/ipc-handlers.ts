@@ -1,4 +1,4 @@
-import { captureRemoteEvent, setupRemoteIPC, closeRemoteGateway, remoteTaskPayload, codexReferences, setupRemoteHosts, remoteHostSessions, handleRemoteHostEvent, isRemoteSessionId, loadOlderRemoteHistory } from './remote/integration';
+import { captureRemoteEvent, setRemoteWorkflows, setupRemoteIPC, closeRemoteGateway, remoteTaskPayload, codexReferences, setupRemoteHosts, remoteHostSessions, handleRemoteHostEvent, isRemoteSessionId, loadOlderRemoteHistory } from './remote/integration';
 import {
   getWorkflowSessionPolicy,
   observeTurnMessage,
@@ -5025,6 +5025,8 @@ function setupWorkflows(mainWindow: BrowserWindow): void {
     effortLevels: workflowEffortLevels,
   });
   setupWorkflowIPC(service);
+  // Phones see the workflows their chats started, and open their members' sessions.
+  setRemoteWorkflows(service);
   // Workflow sessions are hidden from the thread list, so the board loads
   // one on demand when the user opens it in the right panel.
   ipcMainHandle('workflow-session-info', (_event, sessionId: string) => {

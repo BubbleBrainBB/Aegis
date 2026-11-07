@@ -209,6 +209,10 @@ public struct RemoteSnapshot: Codable, Equatable, Sendable {
     public var projects: [RemoteProject]
     public var sessions: [RemoteSession]
     public var permissions: [RemotePermission]
+    /// Workflows the listed chats started (newer Macs). Passed to the shared JS as they are.
+    public var workflows: [JSONValue]?
+    /// The workflows' member and planner sessions: off the task list, opened from a workflow.
+    public var members: [RemoteSession]?
     public var sessionId: String?
     public var messages: [RemoteMessage]?
     public var before: Double?
@@ -254,6 +258,24 @@ public struct RemoteState: Codable, Equatable, Sendable {
     public let projects: [RemoteProject]
     public let sessions: [RemoteSession]
     public let permissions: [RemotePermission]
+    public let workflows: [JSONValue]?
+    public let members: [RemoteSession]?
+}
+
+extension RemoteSnapshot {
+    /// The workflows a chat started, for its boards.
+    public func workflows(startedIn sessionId: String) -> [JSONValue] {
+        (workflows ?? []).filter { $0["parent"]?["sessionId"]?.stringValue == sessionId }
+    }
+
+    /// A listed session or a workflow's member session.
+    public func session(_ id: String) -> RemoteSession? {
+        sessions.first { $0.id == id } ?? members?.first { $0.id == id }
+    }
+
+    public func isMember(_ id: String) -> Bool {
+        members?.contains { $0.id == id } == true && !sessions.contains { $0.id == id }
+    }
 }
 
 /// Where the Mac listens on its own networks.

@@ -55,15 +55,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   },
 }));
 
-/** The run a chat session started with this start_workflow tool call. */
-export function findRunForToolUse(
-  runs: Record<string, WorkflowRunView>,
-  toolUseId: string,
-  resultRunId: string | null,
-): WorkflowRunView | null {
-  if (resultRunId && runs[resultRunId]) return runs[resultRunId];
-  return Object.values(runs).find((run) => run.parent?.toolUseId === toolUseId) ?? null;
-}
+export { findRunForToolUse } from '../utils/workflow-board';
 
 /** Tab label for a member (or planner) session: "<Agent> · <role>" (the planner's focus text can be long, so it is left out). */
 export function workflowSessionLabel(runs: Record<string, WorkflowRunView>, sessionId: string): string {

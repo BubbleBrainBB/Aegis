@@ -148,7 +148,7 @@ private struct NeedsCards: View {
         return VStack(alignment: .leading, spacing: 3) {
             Label(label, systemImage: icon)
                 .font(.app(12, weight: .semibold)).foregroundStyle(Color.warn)
-            Text(model.sessions.first { $0.id == p.sessionId }?.title ?? "Task")
+            Text(model.session(p.sessionId)?.title ?? "Task")
                 .font(.app(15, weight: .semibold)).lineLimit(1)
             Text(detail)
                 .font(.app(13)).foregroundStyle(Color.text2).lineLimit(1)

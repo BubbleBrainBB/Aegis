@@ -4,11 +4,13 @@ import SwiftUI
 struct SessionView: View {
     @Environment(AppModel.self) private var model
     let sessionId: String
+    /// Opened from a workflow's step over its chat: the toolbar gives Back, not the sidebar.
+    var pushed = false
 
     @State private var rendered = SessionModel.empty
     /// The inputs `rendered` was built from. Rendering is async, so anything placed next
     /// to it (pending bubbles, the copy button) must follow these, not the newest data.
-    @State private var shown = RenderKey(history: "", live: nil, running: false, status: "")
+    @State private var shown = RenderKey(history: "", live: nil, running: false, status: "", workflows: [], approvals: [:])
     /// The committed messages `rendered` was built from.
     @State private var shownMessages: [RemoteMessage] = []
     private static let bottomID = "session-bottom"
@@ -29,7 +31,19 @@ struct SessionView: View {
     private static let firstRows = 30
     private static let moreRows = 20
 
-    private var session: RemoteSession? { model.sessions.first { $0.id == sessionId } }
+    private var session: RemoteSession? { model.session(sessionId) }
+    /// Run by a workflow: no composer, as on the desktop; approvals still come here.
+    private var member: Bool { model.isWorkflowMember(sessionId) }
+    /// The workflows this chat started, for their boards.
+    private var workflows: [JSONValue] { model.owner(ofSession: sessionId)?.snapshot?.workflows(startedIn: sessionId) ?? [] }
+    /// Pending approvals per session, for "Needs approval" on a workflow's steps.
+    private var approvals: [String: Int] {
+        workflows.isEmpty ? [:] : Dictionary(model.permissions.map { ($0.sessionId, 1) }, uniquingKeysWith: +)
+    }
+    private var renderKey: RenderKey {
+        RenderKey(history: historyKey, live: history?.live, running: running, status: session?.status ?? "",
+                  workflows: workflows, approvals: approvals)
+    }
     private var history: SessionHistory? { model.client.messagesBySession[sessionId] }
     private var messages: [RemoteMessage] { history?.messages ?? [] }
     /// Names `messages`: comparing it is cheap, unlike comparing the messages.
@@ -43,6 +57,8 @@ struct SessionView: View {
         let live: String?
         let running: Bool
         let status: String
+        let workflows: [JSONValue]
+        let approvals: [String: Int]
     }
 
     /// Sends not yet in the loaded history, shown with their delivery state. A delivered
@@ -183,11 +199,12 @@ struct SessionView: View {
             let fits = room.content <= room.viewport
             if room.offset < room.viewport, userScrolling || fits { loadOlder() }
         }
-        .task(id: RenderKey(history: historyKey, live: history?.live, running: running, status: session?.status ?? "")) {
-            let key = RenderKey(history: historyKey, live: history?.live, running: running, status: session?.status ?? "")
+        .task(id: renderKey) {
+            let key = renderKey
             let committed = messages
             let before = history?.before
-            let next = await model.core.renderSession(history: key.history, messages: committed, live: key.live, running: key.running, status: key.status)
+            let next = await model.core.renderSession(history: key.history, messages: committed, live: key.live, running: key.running,
+                                                      status: key.status, workflows: key.workflows, approvals: key.approvals)
             await Task.detached(priority: .userInitiated) { MarkdownBlocks.warm(next.items) }.value
             guard !Task.isCancelled else { return }
             // An older page goes in above what's on screen.
@@ -212,6 +229,8 @@ struct SessionView: View {
             // The reader waited at the top for this page.
             else if prepended, scroller.nearTop { loadOlder() }
         }
+        // A member's page selects its session; back on the chat, the chat is selected again.
+        .onAppear { (model.owner(ofSession: sessionId) ?? model.client).select(sessionId) }
         .onChange(of: model.sendTick) {
             scrollToBottom(proxy, animated: true)
         }
@@ -247,6 +266,12 @@ struct SessionView: View {
                     QuestionDock(permission: question, provider: session.provider)
                         .id(question.requestId)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
+                } else if member {
+                    Label("A workflow runs this session. Its board in the chat controls it.", systemImage: "point.3.connected.trianglepath.dotted")
+                        .font(.app(12.5)).foregroundStyle(Color.text2)
+                        .padding(.horizontal, 14).padding(.vertical, 10)
+                        .frame(maxWidth: .infinity)
+                        .glassEffect(.regular, in: .capsule)
                 } else if let session {
                     if running && !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         Text("Draft saved · send it after this turn").font(.app(12.5)).foregroundStyle(Color.text2)
@@ -269,7 +294,7 @@ struct SessionView: View {
             .animation(.smooth(duration: 0.3), value: permissions.first { $0.kind == .question }?.requestId)
         }
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) { SidebarButton() }
+            if !pushed { ToolbarItem(placement: .topBarLeading) { SidebarButton() } }
             // Title sits next to the sidebar button, without a glass background. In the
             // principal slot: a leading item's (hidden) glass morphed into the next
             // page's back button as a rectangle during the push.
@@ -399,8 +424,24 @@ private struct ItemView: View, Equatable {
         switch item {
         case .user(_, let prompt, let attachments):
             UserBubble(prompt: prompt, attachments: attachments)
-        case .answer(_, let markdown, let streaming):
-            MarkdownView(text: markdown, streaming: streaming)
+        case .answer(_, let markdown, let streaming, let result):
+            VStack(alignment: .leading, spacing: 6) {
+                if !markdown.isEmpty { MarkdownView(text: markdown, streaming: streaming) }
+                if let result { Folded(title: "Result sent to workflow", text: result, mono: true) }
+            }
+        case .notice(_, let text, let style):
+            if style == "center" {
+                Label(text, systemImage: "point.3.connected.trianglepath.dotted")
+                    .font(.app(12.5)).foregroundStyle(Color.text3).lineLimit(2)
+                    .frame(maxWidth: .infinity)
+            } else {
+                Label(text, systemImage: "arrow.uturn.backward")
+                    .font(.app(12.5)).foregroundStyle(Color.text2).lineLimit(1)
+                    .padding(.horizontal, 10).frame(height: 26)
+                    .background(Color.fill2, in: .capsule)
+            }
+        case .brief(_, let title, let markdown):
+            Folded(title: title, text: markdown, mono: false, icon: "point.3.connected.trianglepath.dotted")
         case .plan(_, let markdown):
             VStack(alignment: .leading, spacing: 8) {
                 Text("Proposed plan").font(.app(13, weight: .semibold)).foregroundStyle(Color.text2)
@@ -411,11 +452,50 @@ private struct ItemView: View, Equatable {
         case .changes(_, let files):
             ChangesCard(files: files) { path in Task { await model.openTurnDiff(files, focus: path) } }
         case .work(_, let work):
-            WorkBlockView(work: work)
+            WorkBlockView(work: work, chatId: sessionId)
         case .activity(_, let steps):
             LegacyActivity(steps: steps)
         case .working(_, let label):
             Text(label).font(.app(14)).shimmer()
+        }
+    }
+}
+
+/// One line that opens onto text the agents exchanged: a workflow task or result.
+private struct Folded: View {
+    let title: String
+    let text: String
+    let mono: Bool
+    var icon: String? = nil
+    @State private var open = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                withAnimation(.snappy(duration: 0.25)) { open.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.right").font(.app(10, weight: .semibold)).rotationEffect(.degrees(open ? 90 : 0))
+                    if let icon { Image(systemName: icon).font(.app(12)).foregroundStyle(Color.accent) }
+                    Text(title)
+                }
+                .font(.app(13)).foregroundStyle(Color.text3)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(open ? "Expanded" : "Collapsed")
+            if open {
+                Group {
+                    if mono {
+                        Text(text).font(.app(12, design: .monospaced)).textSelection(.enabled)
+                    } else {
+                        MarkdownView(text: text)
+                    }
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.code, in: .rect(cornerRadius: 12))
+            }
         }
     }
 }

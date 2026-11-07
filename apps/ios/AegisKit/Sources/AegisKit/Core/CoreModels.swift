@@ -29,7 +29,12 @@ public struct ChangedFile: Decodable, Equatable, Sendable {
 
 public enum SessionItem: Decodable, Equatable, Sendable, Identifiable {
     case user(id: String, prompt: String, attachments: [Attachment])
-    case answer(id: String, markdown: String, streaming: Bool)
+    /// `result`: a workflow result block that closed the reply, shown folded.
+    case answer(id: String, markdown: String, streaming: Bool, result: String?)
+    /// A step a workflow or follow-up drove in this chat; "center" or "chip".
+    case notice(id: String, text: String, style: String)
+    /// The task a workflow or parent chat handed this session, folded to its title.
+    case brief(id: String, title: String, markdown: String)
     case plan(id: String, markdown: String)
     case changes(id: String, files: [ChangedFile])
     case work(id: String, work: WorkBlock)
@@ -43,20 +48,24 @@ public enum SessionItem: Decodable, Equatable, Sendable, Identifiable {
 
     public var id: String {
         switch self {
-        case .user(let id, _, _), .answer(let id, _, _), .plan(let id, _), .changes(let id, _),
-             .work(let id, _), .activity(let id, _), .working(let id, _):
+        case .user(let id, _, _), .answer(let id, _, _, _), .notice(let id, _, _), .brief(let id, _, _), .plan(let id, _),
+             .changes(let id, _), .work(let id, _), .activity(let id, _), .working(let id, _):
             return id
         }
     }
 
-    private enum Keys: String, CodingKey { case kind, id, prompt, attachments, markdown, streaming, files, work, steps, label }
+    private enum Keys: String, CodingKey { case kind, id, prompt, attachments, markdown, streaming, files, work, steps, label, result, text, style, title }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         let id = try c.decode(String.self, forKey: .id)
         switch try c.decode(String.self, forKey: .kind) {
         case "user": self = .user(id: id, prompt: try c.decode(String.self, forKey: .prompt), attachments: try c.decode([Attachment].self, forKey: .attachments))
-        case "answer": self = .answer(id: id, markdown: try c.decode(String.self, forKey: .markdown), streaming: try c.decode(Bool.self, forKey: .streaming))
+        case "answer":
+            self = .answer(id: id, markdown: try c.decode(String.self, forKey: .markdown), streaming: try c.decode(Bool.self, forKey: .streaming),
+                           result: try c.decodeIfPresent(String.self, forKey: .result))
+        case "notice": self = .notice(id: id, text: try c.decode(String.self, forKey: .text), style: try c.decode(String.self, forKey: .style))
+        case "brief": self = .brief(id: id, title: try c.decode(String.self, forKey: .title), markdown: try c.decode(String.self, forKey: .markdown))
         case "plan": self = .plan(id: id, markdown: try c.decode(String.self, forKey: .markdown))
         case "changes": self = .changes(id: id, files: try c.decode([ChangedFile].self, forKey: .files))
         case "work": self = .work(id: id, work: try c.decode(WorkBlock.self, forKey: .work))
@@ -72,23 +81,131 @@ public struct WorkBlock: Decodable, Equatable, Sendable {
     public let stoppedLabel: String?
     public let defaultExpanded: Bool
     public let groups: [WorkGroup]
+    /// Workflow boards a collapsed turn keeps outside its trace.
+    public let pinned: [WorkflowBoard]
     public let working: Bool
+
+    private enum Keys: String, CodingKey { case label, stoppedLabel, defaultExpanded, groups, pinned, working }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        label = try c.decodeIfPresent(String.self, forKey: .label)
+        stoppedLabel = try c.decodeIfPresent(String.self, forKey: .stoppedLabel)
+        defaultExpanded = try c.decode(Bool.self, forKey: .defaultExpanded)
+        groups = try c.decode([WorkGroup].self, forKey: .groups)
+        pinned = try c.decodeIfPresent([WorkflowBoard].self, forKey: .pinned) ?? []
+        working = try c.decode(Bool.self, forKey: .working)
+    }
+}
+
+/// A workflow started from the chat, as the desktop's in-chat board shows it (apps/ios/core/workflow.ts).
+public struct WorkflowBoard: Decodable, Equatable, Sendable, Identifiable {
+    public struct Status: Decodable, Equatable, Sendable {
+        public let word: String
+        /// success, warning, error, muted
+        public let tone: String
+        public let spinning: Bool
+    }
+    public struct Span: Decodable, Equatable, Sendable {
+        public let start: Double
+        /// Nil while it runs: count to now.
+        public let end: Double?
+    }
+    public struct Verdict: Decodable, Equatable, Sendable {
+        public let word: String
+        public let tone: String
+    }
+    public struct Step: Decodable, Equatable, Sendable, Identifiable {
+        public let key: String
+        public let title: String
+        public let detail: String
+        public let provider: String?
+        /// pending, running, succeeded, failed, skipped, needs_input
+        public let state: String
+        /// The member session it opens; nil for checks and this chat's own turns.
+        public let sessionId: String?
+        public let start: Double?
+        public let end: Double?
+        public let verdict: Verdict?
+        public let approvals: Int
+        public let summary: String?
+        public var id: String { key }
+    }
+    public struct Outcome: Decodable, Equatable, Sendable, Identifiable {
+        public let id: String
+        public let text: String
+        /// met, waived, unmet, open
+        public let status: String
+    }
+    public struct Plan: Decodable, Equatable, Sendable {
+        public struct Member: Decodable, Equatable, Sendable, Identifiable {
+            public let key: String
+            public let provider: String
+            public let name: String
+            public let detail: String
+            public let note: String?
+            public var id: String { key }
+        }
+        public struct Check: Decodable, Equatable, Sendable {
+            public let text: String
+            public let highlight: Bool
+        }
+        public let members: [Member]
+        public let checks: [Check]
+        public let unsupported: [String]
+        public let assumptions: [String]
+    }
+    public struct Needs: Decodable, Equatable, Sendable {
+        public struct Option: Decodable, Equatable, Sendable, Identifiable {
+            public let id: String
+            public let label: String
+            /// "option" sends the id, "text" the label.
+            public let answer: String
+        }
+        public let title: String
+        public let question: String?
+        public let detail: String?
+        public let options: [Option]
+        public let freeText: Bool
+    }
+    public struct Planning: Decodable, Equatable, Sendable {
+        public let sessionId: String?
+    }
+
+    public let id: String
+    public let runId: String?
+    /// failed, starting, run
+    public let phase: String
+    public let failure: String?
+    public let title: String
+    public let status: Status
+    public let time: Span?
+    public let revision: Int
+    public let canStop: Bool
+    public let open: Bool
+    public let planning: Planning?
+    public let assumptions: [String]
+    public let steps: [Step]
+    public let outcome: [Outcome]
+    public let plan: Plan?
+    public let needs: Needs?
+    public let error: String?
 }
 
 public enum WorkGroup: Decodable, Equatable, Sendable, Identifiable {
     case note(id: String, markdown: String, streaming: Bool)
+    case workflow(id: String, board: WorkflowBoard)
     case thinking(id: String, label: String, active: Bool, text: String)
     case compaction(id: String, inProgress: Bool, label: String)
     case stages(StageGroup)
 
     public var id: String {
         switch self {
-        case .note(let id, _, _), .thinking(let id, _, _, _), .compaction(let id, _, _): return id
+        case .note(let id, _, _), .thinking(let id, _, _, _), .compaction(let id, _, _), .workflow(let id, _): return id
         case .stages(let group): return group.id
         }
     }
 
-    private enum Keys: String, CodingKey { case kind, id, markdown, streaming, label, active, text, inProgress }
+    private enum Keys: String, CodingKey { case kind, id, markdown, streaming, label, active, text, inProgress, board }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -97,6 +214,8 @@ public enum WorkGroup: Decodable, Equatable, Sendable, Identifiable {
             self = .note(id: try c.decode(String.self, forKey: .id), markdown: try c.decode(String.self, forKey: .markdown), streaming: try c.decode(Bool.self, forKey: .streaming))
         case "thinking":
             self = .thinking(id: try c.decode(String.self, forKey: .id), label: try c.decode(String.self, forKey: .label), active: try c.decode(Bool.self, forKey: .active), text: try c.decode(String.self, forKey: .text))
+        case "workflow":
+            self = .workflow(id: try c.decode(String.self, forKey: .id), board: try c.decode(WorkflowBoard.self, forKey: .board))
         case "compaction":
             self = .compaction(id: try c.decode(String.self, forKey: .id), inProgress: try c.decode(Bool.self, forKey: .inProgress), label: try c.decode(String.self, forKey: .label))
         default:

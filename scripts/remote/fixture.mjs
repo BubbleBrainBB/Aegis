@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { createRelay } from "../../services/relay/server.mjs";
+import { workflowFixture } from "./fixture-workflows.mjs";
 const require = createRequire(import.meta.url);
 const {
   RemoteGateway,
@@ -162,9 +163,13 @@ const history = {
     { id: "a6", role: "assistant", text: "Astro has a new major version. Everything else is a minor bump." },
   ],
 };
-// Waiting requests by toolUseId: a command approval, a question and a plan.
-const pending = new Set(["check", "ask", "plan", "pick"]);
 let gateway;
+// Chats that started workflows, and the sessions those workflows run.
+const workflows = workflowFixture((event) => gateway.capture(event));
+sessions.push(...workflows.sessions);
+Object.assign(history, workflows.history);
+// Waiting requests by toolUseId: a command approval, a question and a plan, and a workflow member's command.
+const pending = new Set(["check", "ask", "plan", "pick", "wf-approve"]);
 const runtime = {
   // "development" lets the Aegis Dev simulator build pair with it.
   environment: process.env.AEGIS_FIXTURE_ENVIRONMENT || "fixture",
@@ -224,6 +229,9 @@ const runtime = {
   }),
   sessions: () => sessions,
   history: (id) => history[id] || [],
+  workflows: () => workflows.views(),
+  memberSession: workflows.memberSession,
+  workflowAction: workflows.act,
   confirm: async () => true,
   hasPermission: (_id, toolUseId) => pending.has(toolUseId),
   start: async (project, provider, prompt, extras) => {
@@ -324,6 +332,8 @@ gateway.capture({
     input: { command: "npm run test -- src/auth/redirect.test.ts", cwd: "/fixture/coworker" },
   },
 });
+gateway.capture({ type: "stream.user_prompt", payload: { sessionId: workflows.permission.sessionId, prompt: "test" } });
+gateway.capture({ type: "permission.request", payload: workflows.permission });
 // A question (one single-choice, one multi-select) for the Bubble task and a plan
 // for the Claude task, shaped like the desktop's AskUserQuestion and ExitPlanMode requests.
 for (const sessionId of ["tests", "notes", "deps"])

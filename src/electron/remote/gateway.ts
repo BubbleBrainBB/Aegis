@@ -33,6 +33,8 @@ import {
   providerSchema,
 } from "../../shared/remote/protocol";
 import type { ServerEvent, PermissionRequestPayload, Attachment, StreamMessage } from "../../shared/types";
+import type { WorkflowAction, WorkflowActionResult, WorkflowRunView } from "../../shared/workflow";
+import { projectWorkflow } from "../../shared/remote/projection";
 import { getMessageContentBlocks, normalizeToolUseBlock } from "../../ui/utils/message-content";
 
 /** Settings a phone may attach to a new task or a follow-up. */
@@ -53,6 +55,8 @@ const HISTORY_MIN_INTERVAL = 150;
 const PAGE_MESSAGES = 100;
 const PAGE_BYTES = 512 * 1024;
 const MAX_LAN_SOCKETS = 8;
+/** Workflows sent with the session list: the newest the listed chats started. */
+const MAX_WORKFLOWS = 20;
 
 interface Project extends RemoteProject {
   path: string;
@@ -100,6 +104,11 @@ export interface RemoteRuntime {
   ): boolean;
   hasPermission(id: string, toolUseId: string): boolean;
   confirm(name: string, peerId: string): Promise<boolean>;
+  /** Every workflow run; null while workflows aren't set up yet. Later changes arrive as `workflow.updated`. */
+  workflows?(): WorkflowRunView[] | null;
+  /** A workflow's member or planner session, which the task list leaves out; null for any other. */
+  memberSession?(id: string): RemoteSession | null;
+  workflowAction?(action: WorkflowAction): Promise<WorkflowActionResult>;
 }
 type Channel = Awaited<ReturnType<typeof import("../../shared/remote/secure-channel").secureChannel>>;
 /** One authenticated phone connection, through the relay or directly. */
@@ -183,6 +192,8 @@ export class RemoteGateway {
   private relayError?: string;
   private running = new Set<string>();
   private notified = new Map<string, number>();
+  /** Workflow runs by id, read once and then kept current from `workflow.updated`. */
+  private workflowRuns?: Map<string, WorkflowRunView>;
   constructor(
     readonly journal: RemoteJournal,
     private runtime: RemoteRuntime,
@@ -639,7 +650,47 @@ export class RemoteGateway {
     if (!session) throw new Error("SCOPE_DENIED");
     return session;
   }
-  private runId(id: string, sessions = this.runtime.sessions()) {
+  private runs() {
+    if (!this.workflowRuns) {
+      const views = this.runtime.workflows?.();
+      if (!views) return new Map<string, WorkflowRunView>();
+      this.workflowRuns = new Map(views.map((view) => [view.id, view]));
+    }
+    return this.workflowRuns;
+  }
+  private upsertRun(view: WorkflowRunView) {
+    const runs = this.workflowRuns;
+    // Before the first read there is nothing to keep current; that read brings it.
+    if (!runs) return;
+    const current = runs.get(view.id);
+    if (!current || current.revision <= view.revision) runs.set(view.id, view);
+  }
+  /**
+   * The listed sessions, the workflows those chats started, and the sessions
+   * those workflows run. A phone may read a member session and answer its
+   * approvals; the workflow drives it, so nothing else.
+   */
+  private reachable(listed = this.runtime.sessions()) {
+    const ids = new Set(listed.map((s) => s.id));
+    const workflows = [...this.runs().values()]
+      .filter((run) => run.parent && ids.has(run.parent.sessionId))
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, MAX_WORKFLOWS);
+    const memberIds = new Set<string>();
+    for (const run of workflows) {
+      if (run.plannerSessionId) memberIds.add(run.plannerSessionId);
+      for (const step of run.steps) if (step.sessionId) memberIds.add(step.sessionId);
+      for (const member of run.members) if (member.currentSessionId) memberIds.add(member.currentSessionId);
+    }
+    const members: RemoteSession[] = [];
+    for (const id of memberIds) {
+      if (ids.has(id)) continue;
+      const session = this.runtime.memberSession?.(id);
+      if (session) members.push(session);
+    }
+    return { listed, workflows, members, all: [...listed, ...members] };
+  }
+  private runId(id: string, sessions = this.reachable().all) {
     const session = sessions.find((s) => s.id === id);
     if (!session || !["running", "stopping"].includes(session.status))
       return null;
@@ -648,12 +699,12 @@ export class RemoteGateway {
   }
   /** Projects, sessions and pending approvals: everything but a session's messages. */
   private state(): RemoteState {
-    const listed = this.runtime.sessions();
-    const sessions = listed.map((s) => ({ ...s, runId: this.runId(s.id, listed) }));
-    const visible = new Set(sessions.map((s) => s.id));
+    const { listed, workflows, members, all } = this.reachable();
+    const sessions = listed.map((s) => ({ ...s, runId: this.runId(s.id, all) }));
+    const visible = new Set(all.map((s) => s.id));
     const permissions: RemotePermission[] = [];
     for (const [requestId, p] of this.permissions) {
-      const runId = this.runId(p.sessionId, listed);
+      const runId = this.runId(p.sessionId, all);
       if (
         visible.has(p.sessionId) &&
         runId &&
@@ -681,6 +732,8 @@ export class RemoteGateway {
         .map(({ id, name, isRepo }) => ({ id, name, isRepo })),
       sessions,
       permissions,
+      workflows: workflows.map(projectWorkflow),
+      members: members.map((s) => ({ ...s, runId: this.runId(s.id, all) })),
     };
   }
   /** Reads and projects a session's history once until its events or the TTL say otherwise. */
@@ -756,7 +809,7 @@ export class RemoteGateway {
     let cursor: number | null = null;
     let liveEntry: { id: number; total: number } | undefined;
     if (sessionId) {
-      this.allowedSession(sessionId, base.sessions);
+      this.allowedSession(sessionId, [...base.sessions, ...(base.members ?? [])]);
       const history = this.historyOf(sessionId);
       const live = this.liveMessage(sessionId);
       liveEntry = this.live.get(sessionId);
@@ -942,9 +995,16 @@ export class RemoteGateway {
             })
           : undefined;
       if ("sessionId" in request) {
-        const session = this.allowedSession(request.sessionId);
+        const { listed, all } = this.reachable();
+        const session = this.allowedSession(request.sessionId, all);
+        // A workflow drives its own sessions; the phone only answers their approvals, like the desktop.
+        if (request.method !== "permission" && !listed.some((s) => s.id === session.id)) throw new Error("WORKFLOW_SESSION");
         if (!["claude", "codex", "bubble", "devin", "mimo", "minimax"].includes(session.provider))
           throw new Error("DESKTOP_REQUIRED");
+      }
+      if (request.method === "workflow") {
+        if (!this.runtime.workflowAction) throw new Error("UNSUPPORTED");
+        if (!this.reachable().workflows.some((run) => run.id === request.workflowId)) throw new Error("SCOPE_DENIED");
       }
       if (
         request.method === "create" &&
@@ -973,6 +1033,7 @@ export class RemoteGateway {
           throw new Error("PERMISSION_EXPIRED");
         this.resolution(permission, request.decision, request.answers);
       }
+      let rejected: string | undefined;
       const result: CommandResult = {
         commandId: request.commandId,
         state: "accepted",
@@ -1026,8 +1087,14 @@ export class RemoteGateway {
           if (!this.runtime.permission(permission, request.decision, resolution, request.scope))
             throw new Error("PERMISSION_EXPIRED");
           this.permissions.delete(request.requestId);
+        } else if (request.method === "workflow") {
+          const outcome = await this.runtime.workflowAction!({ ...request.action, runId: request.workflowId });
+          if (outcome.run) this.upsertRun(outcome.run);
+          // A stale revision or a choice that no longer applies: a definite answer, not a lost one.
+          if (!outcome.ok) rejected = outcome.error;
         }
-        result.state = "completed";
+        result.state = rejected ? "rejected" : "completed";
+        if (rejected) result.error = rejected;
       } catch {
         result.state = "unknown";
         result.error = "Check the result on your Mac before sending this again.";
@@ -1105,6 +1172,11 @@ export class RemoteGateway {
     };
   }
   capture(event: ServerEvent) {
+    if (event.type === "workflow.updated") {
+      this.upsertRun(event.payload);
+      this.invalidate();
+      return;
+    }
     const p = event.payload as any;
     const id = p.sessionId as string | undefined;
     let textDelta = false;
@@ -1200,7 +1272,9 @@ export class RemoteGateway {
     // Pushes go out through the relay, so this Mac must be registered there.
     if (!config?.enabled || this.relayStatus !== "waiting") return;
     if ([...this.current.values()].some((link) => !link.away)) return;
-    const session = this.runtime.sessions().find((s) => s.id === sessionId);
+    // A workflow's own sessions only ask for approvals; their turns ending is the workflow's business.
+    const { listed, all } = this.reachable();
+    const session = (kind === "approval" ? all : listed).find((s) => s.id === sessionId);
     if (!session) return;
     const key = kind + ":" + sessionId;
     const now = Date.now();
@@ -1348,6 +1422,6 @@ export class RemoteGateway {
     }
   }
   private visible(sessionId: string, state?: RemoteState) {
-    return (state?.sessions ?? this.runtime.sessions()).some((s) => s.id === sessionId);
+    return (state ? [...state.sessions, ...(state.members ?? [])] : this.reachable().all).some((s) => s.id === sessionId);
   }
 }

@@ -1,6 +1,6 @@
 // JavaScriptCore entry for the Swift app (AegisKit/Core). Every function takes and
 // returns JSON strings; failures come back as {"error": "..."} instead of throwing.
-import type { RemoteAgentOptions, RemoteMessage } from "../../../src/shared/remote/protocol";
+import type { RemoteAgentOptions, RemoteMessage, RemoteWorkflow } from "../../../src/shared/remote/protocol";
 import { catalogFor } from "./agents";
 import { composerMenu } from "./composer";
 import { describeRequest, parsePatch, requestSummary } from "./patch";
@@ -69,10 +69,15 @@ interface RenderInput {
   live?: string | null;
   running: boolean;
   status: string;
+  /** The Mac's workflows, for the boards of start_workflow calls. */
+  workflows?: RemoteWorkflow[];
+  /** Pending approvals per session id. */
+  approvals?: Record<string, number>;
 }
 
 function render(input: RenderInput) {
-  if (input.key === undefined) return renderSession(input.messages ?? [], input.running, input.status);
+  const context = { workflows: input.workflows ?? [], approvals: input.approvals ?? {} };
+  if (input.key === undefined) return renderSession(input.messages ?? [], input.running, input.status, undefined, context);
   if (input.messages) history = { key: input.key, messages: input.messages };
   if (!history || history.key !== input.key) return { error: STALE_HISTORY };
   if (!history.transcript || history.running !== input.running) {
@@ -83,7 +88,7 @@ function render(input: RenderInput) {
   const messages: RemoteMessage[] = live
     ? [...history.messages, { id: "live", role: "assistant", text: live, streaming: true }]
     : history.messages;
-  return renderSession(messages, input.running, input.status, { ...history.transcript, partialText: live });
+  return renderSession(messages, input.running, input.status, { ...history.transcript, partialText: live }, context);
 }
 const api = {
   renderSession: guard(render),

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { WorkflowParent, WorkflowRunView } from "../workflow";
 
 export const REMOTE_PROTOCOL = "aegis.remote.v1";
 export const environmentSchema = z.enum(["development", "production", "fixture"]);
@@ -172,6 +173,29 @@ export const requestSchema = z.discriminatedUnion("method", [
       answers: questionAnswersSchema.optional(),
     })
     .strict(),
+  /** Decides on a workflow a listed chat started, as its in-chat board does: start or cancel the plan, answer, stop. */
+  z
+    .object({
+      id,
+      method: z.literal("workflow"),
+      commandId: id,
+      expiresAt: z.number(),
+      workflowId: id,
+      action: z.discriminatedUnion("type", [
+        z.object({ type: z.literal("confirm"), expectedRevision: z.number().int().nonnegative() }).strict(),
+        z.object({ type: z.literal("cancel"), expectedRevision: z.number().int().nonnegative() }).strict(),
+        z
+          .object({
+            type: z.literal("answer"),
+            expectedRevision: z.number().int().nonnegative(),
+            optionId: id.optional(),
+            text: z.string().trim().min(1).max(4000).optional(),
+          })
+          .strict()
+          .refine((answer) => Boolean(answer.optionId) !== Boolean(answer.text)),
+      ]),
+    })
+    .strict(),
 ]);
 export type RemoteRequest = z.infer<typeof requestSchema>;
 export type RemoteMutation = Extract<
@@ -331,6 +355,8 @@ export interface RemoteSnapshot {
   projects: RemoteProject[];
   sessions: RemoteSession[];
   permissions: RemotePermission[];
+  workflows?: RemoteWorkflow[];
+  members?: RemoteSession[];
   sessionId?: string;
   messages?: RemoteMessage[];
   before?: number | null;
@@ -343,11 +369,26 @@ export interface RemoteSnapshot {
   /** Event phones only: the last event sent before this snapshot; later events build on it. */
   seq?: number;
 }
+/**
+ * A workflow a listed chat started, as its in-chat board shows it: the run
+ * without its definition or folders. `name` is the planner's short title.
+ */
+export type RemoteWorkflow = Omit<WorkflowRunView, "spec" | "cwd" | "isolated" | "goal" | "parent"> & {
+  name: string | null;
+  parent: Pick<WorkflowParent, "sessionId" | "toolUseId" | "provider"> | null;
+};
 /** The session list part of a snapshot, as an event carries it. */
 export interface RemoteState {
   projects: RemoteProject[];
   sessions: RemoteSession[];
   permissions: RemotePermission[];
+  /** Newer Macs: workflows the listed chats started, newest first. */
+  workflows?: RemoteWorkflow[];
+  /**
+   * Newer Macs: the workflows' member and planner sessions. Off the task list
+   * like on the desktop, but they open from a workflow's steps and take approvals.
+   */
+  members?: RemoteSession[];
 }
 /**
  * Pushed to phones with the events feature, at most every 50 ms. `seq` counts

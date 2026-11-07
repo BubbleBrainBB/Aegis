@@ -66,6 +66,7 @@ A Release app pairs only with a packaged desktop (`npm run dist`), and a Debug a
 ## Notes
 
 - **Questions and plans:** a permission that carries `questions` replaces the task's composer with a docked card, one question at a time (listed options, several where the question allows it, and free "Something else…" text); one that carries `plan` opens the plan sheet (Approve, or Keep planning). The Mac resolves them the way its own question card does. Computer use still needs the Mac.
+- **Workflows:** a chat's `start_workflow` call draws the desktop's workflow board (from `src/ui/utils/workflow-board.ts`): status and clock, steps, the plan to start or cancel, questions to answer, Stop, and the outcome. Each step opens its member session, which reads like any task and takes approvals but has no composer; the workflow drives it.
 - **Notifications:** the app asks after the first task it starts and sends its APNs token to the Mac over the encrypted channel. The Mac notifies through the relay only while no phone is connected, and only with status ("A task needs your approval"). Tapping a notification opens that task.
 - **Drafts** are files under Application Support, written on every change.
 - **The snapshot cache** is a per-Mac JSON file.
