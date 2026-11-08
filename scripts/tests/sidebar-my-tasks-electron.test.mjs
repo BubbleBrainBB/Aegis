@@ -15,10 +15,14 @@ import {TasksView} from '/src/ui/components/TasksView';
 import {SessionTitleActions} from '/src/ui/components/SessionTitleActions';
 import {useAppStore} from '/src/ui/store/useAppStore';
 import {useSidebarViewStore} from '/src/ui/store/useSidebarViewStore';
+import {useFollowUpStore} from '/src/ui/store/useFollowUpStore';
 import '/src/ui/index.css';
 const emptyResult=()=>{const done=()=>{};const result=Promise.resolve([]);for(const key of ['then','catch','finally'])done[key]=result[key].bind(result);return done};
 const autoStub=()=>new Proxy(function(){},{get:(_,k)=>k==='then'?undefined:autoStub(),apply:emptyResult});
-const stubs={getUserProfile:async()=>({displayName:'BubbleBrain',handle:'bubblebrain',customized:true}),getBubbleProvidersConfig:async()=>({providers:[]}),getGitBranch:async()=>({ok:false})};
+const org={sessions:{},sections:[],projectSources:{}};const changes=[];
+const stubs={getUserProfile:async()=>({displayName:'BubbleBrain',handle:'bubblebrain',customized:true}),getBubbleProvidersConfig:async()=>({providers:[]}),getGitBranch:async()=>({ok:false}),
+ getSessionOrganization:async()=>structuredClone(org),onSessionOrganizationChanged:()=>()=>{},
+ changeSessionOrganization:async change=>{changes.push(change);if(change.kind==='status')org.sessions[change.sessionId]={archived:false,unread:false,sectionId:null,...org.sessions[change.sessionId],manualStatus:change.status};return structuredClone(org)}};
 window.electron=new Proxy(stubs,{get:(t,k)=>k in t?t[k]:autoStub()});
 const a=useAppStore.getState();const draft=a.createDraftSession('/projects/coworker');const base=useAppStore.getState().sessions[draft];
 const day=86400000,now=Date.now();
@@ -29,18 +33,26 @@ const fixed=[
  task('running','Rewrite the sidebar as a task page','coworker',{status:'running',provider:'codex',updatedAt:now-60000}),
  task('review','Move Search below New Task','coworker',{runtimeNotice:'completed',updatedAt:now-day*2}),
  task('done','Give this article a cyberpunk title','test',{updatedAt:now-day*4}),
+ // A finished task whose sub-task still waits for review: the whole family stays in Active.
+ task('parent','Ship the sidebar redesign','launch-site',{updatedAt:now-day*3.5}),
+ task('child-a','Draw the tree line','launch-site',{runtimeNotice:'completed',updatedAt:now-day*3,createdAt:now-day*3.4}),
+ task('child-b','Measure the row height','launch-site',{updatedAt:now-day*3.2,createdAt:now-day*3.5}),
 ];
+const sub=(id,child)=>[id,{id,parentSessionId:'parent',childSessionId:child,detachedAt:null,kind:'session',status:'started'}];
+useFollowUpStore.setState({loaded:true,proposals:Object.fromEntries([sub('fa','child-a'),sub('fb','child-b')])});
 const projects=['test','test-astra','test-mimo-2.6','test-glm-5','digital-garden','insight-daily','desktop-trust','desktop-basic','desktop-deny','podcasts','test-kimi-2.5','voxel-lab','launch-site','notes','pixel-pets','rust-book','tiny-compiler','color-tools','ink-garden','paper-plane'];
-const filler=projects.map((p,i)=>task('p'+i,'Read README in '+p,p,{updatedAt:now-day*(6+i)}));
+// Results nobody has looked at yet: enough to make the sidebar's Active list scroll.
+const filler=projects.map((p,i)=>task('p'+i,'Read README in '+p,p,{runtimeNotice:'completed',updatedAt:now-day*(6+i)}));
 const sessions=()=>Object.fromEntries([...fixed,...filler]);
 useAppStore.setState({sessions:sessions(),sidebarCollapsed:false,sidebarWidth:280,showSettings:false,activeSessionId:'done'});
 useAppStore.getState().setTheme('light');
-window.qa={store:useAppStore,view:useSidebarViewStore};
+window.qa={store:useAppStore,view:useSidebarViewStore,changes};
 function Main(){const workspace=useAppStore(s=>s.activeWorkspace);const active=useAppStore(s=>s.sessions[s.activeSessionId]);return workspace==='tasks'?<TasksView/>:<main data-chat-stub style={{flex:1,minWidth:0}}><div data-chat-title style={{display:'flex',fontSize:13}}><SessionTitleActions session={active} showMenu={false} tasksCrumb/></div></main>;}
 createRoot(document.getElementById('root')).render(<Tooltip.Provider><div style={{height:'100vh',display:'flex',background:'var(--bg-primary)',color:'var(--text-primary)'}}><Sidebar/><Main/></div></Tooltip.Provider>);
 `;
 const main=String.raw`
 const {app,BrowserWindow}=require('electron');
+const qaLast=list=>list[list.length-1];
 app.commandLine.appendSwitch('force-prefers-no-reduced-motion');
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
 app.setPath('userData',path.join(__dirname,'profile'));
@@ -53,8 +65,12 @@ app.whenReady().then(async()=>{
  const edge='document.querySelector("[data-sidebar-scroll-edge]")';
  const scroller='document.querySelector("[data-sidebar-scroll-region]")';
  const nav=label=>'document.querySelector(".aegis-sidebar-panel [aria-label=\\"'+label+'\\"]")';
- const heading='[...document.querySelectorAll(".aegis-sidebar-panel div")].find(e=>e.textContent==="Workspace")';
- const project=name=>'document.querySelector("[data-workspace-project=\\"/projects/'+name+'\\"]")';
+ const heading='document.querySelector("[data-active-heading]")';
+ const active=()=>js('[...document.querySelectorAll("[data-active-tasks] [data-session-id]")].map(e=>e.dataset.sessionId)');
+ const projectMenu='document.querySelector("[data-task-project-menu]")';
+ const pickProject=async name=>{await js('document.querySelector("[data-task-project-filter]").click()');await until('!!'+projectMenu);await js('document.querySelector("[data-project-choice=\\"'+(name?'/projects/'+name:'')+'\\"]").click()');await until('!'+projectMenu)};
+ const statusMenu='document.querySelector("[data-task-status-menu]")';
+ const key=async k=>{for(const type of ['keyDown','char','keyUp'])win.webContents.sendInputEvent({type,keyCode:k});await delay(60)};
  const filter=label=>'[...document.querySelectorAll("[aria-label=\\"Filter tasks\\"] button")].find(e=>e.textContent==='+JSON.stringify(label)+')';
  const rect=s=>js('(()=>{const r=('+s+').getBoundingClientRect();return {x:r.x,y:r.y,bottom:r.bottom}})()');
  const state=()=>js(edge+'.dataset.sidebarScrollEdge');
@@ -63,21 +79,31 @@ app.whenReady().then(async()=>{
  const rows=()=>js('[...document.querySelectorAll("[data-task-list] [data-session-id]")].map(e=>e.dataset.sessionId)');
  const title=()=>js('document.querySelector("[data-main-titlebar] h1").textContent');
  try{
-  await win.loadURL(process.env.QA_URL);await until('!!'+heading+'&&!!'+project('coworker'));
-  // The sidebar: three actions, then Workspace and its projects.
+  await win.loadURL(process.env.QA_URL);await until('!!'+heading+'&&!!document.querySelector("[data-active-tasks] [data-session-id]")');
+  // The sidebar: three actions, then the tasks you are working through.
   const newTask=await rect(nav('New Task')),search=await rect(nav('Search')),myTasks=await rect(nav('My Tasks')),label=await js('(()=>{const r=document.createRange();r.selectNodeContents('+heading+');const b=r.getBoundingClientRect();return {y:b.y,bottom:b.bottom}})()'),list=await rect(scroller);
   assert.equal(search.x,newTask.x,'Search lines up with New Task');
   assert.equal(myTasks.x,newTask.x,'My Tasks lines up with New Task');
   assert.ok(search.y>=newTask.bottom&&search.y-newTask.bottom<=4,'Search sits right under New Task: '+JSON.stringify({newTask,search}));
   assert.ok(myTasks.y>=search.bottom&&myTasks.y-search.bottom<=4,'My Tasks sits right under Search');
-  assert.ok(label.y-myTasks.bottom>=20,'Workspace sits clearly apart from the actions: '+JSON.stringify({myTasks,label}));
-  assert.ok(label.bottom<=list.y,'Workspace stays above the scrolling list');
-  assert.equal(await js('!!document.querySelector(".aegis-sidebar-panel [data-session-id]")'),false,'tasks are no longer listed in the sidebar');
+  assert.ok(label.y-myTasks.bottom>=20,'Active sits clearly apart from the actions: '+JSON.stringify({myTasks,label}));
+  assert.ok(label.bottom<=list.y,'Active stays above the scrolling list');
+  const sidebarRows=await active();
+  assert.deepEqual(sidebarRows.slice(0,3),['failed','waiting','review'],'what needs you first, then what waits for review');
+  assert.equal(sidebarRows.at(-1),'running','what still runs comes last');
+  assert.equal(sidebarRows.includes('done'),false,'finished work leaves the list');
+  assert.deepEqual(await js('[...document.querySelectorAll("[data-active-family=parent] [data-session-id]")].map(e=>e.dataset.sessionId)'),['parent','child-b','child-a'],
+   'a finished parent stays with all its sub-tasks, in the order they started');
+  assert.equal(await js('document.querySelectorAll("[data-active-family=parent] [class*=rounded-bl]").length'),1,'the last sub-task hooks the tree line');
+  assert.ok(sidebarRows.indexOf('parent')>sidebarRows.indexOf('review'),'a family stands where its most urgent member does, by latest activity');
+  await shot('sidebar');
+  assert.equal(await js('document.querySelector("[data-active-tasks] [data-session-id=review] [data-task-age]").textContent'),'2d');
   assert.equal(await js(nav('My Tasks')+'.textContent.trim()'),'My Tasks2','the row counts tasks waiting on you');
+  assert.equal(await js('getComputedStyle(document.querySelector("[data-nav-badge]")).color===getComputedStyle(document.documentElement).getPropertyValue("--warning").trim()||document.querySelector("[data-nav-badge]").className.includes("--warning")'),true,'in amber');
   assert.equal(await js(nav('Search')+'.title.startsWith("Search")'),true,'Search keeps its tooltip');
   await js(nav('Search')+'.click()');await until('!!document.querySelector("input[placeholder^=\\"Search sessions\\"]")');
   await js('qa.store.getState().setSearchPaletteOpen(false)');await until('!document.querySelector("input[placeholder^=\\"Search sessions\\"]")');
-  // Projects scroll under the pinned heading.
+  // Tasks scroll under the pinned heading.
   assert.equal(await state(),'hidden','no edge at the top of the list');assert.equal(await opacity(),'0');
   assert.ok(await js(scroller+'.scrollHeight>'+scroller+'.clientHeight'),'list overflows');
   await scrollTo(60);
@@ -87,7 +113,9 @@ app.whenReady().then(async()=>{
   await js(nav('My Tasks')+'.click()');await until('!!document.querySelector("[data-task-list] [data-session-id]")');
   assert.equal(await title(),'My Tasks');
   assert.equal(await js(nav('My Tasks')+'.classList.contains("bg-[var(--sidebar-item-active)]")'),true,'the row shows where you are');
-  assert.deepEqual((await rows()).slice(0,5),['failed','waiting','running','review','done'],'needs you, then running, then review, then done');
+  const pageRows=await rows();
+  assert.deepEqual(pageRows.slice(0,4),['failed','waiting','running','review'],'needs you, then running, then review');
+  assert.equal(pageRows.at(-1),'done','then done');
   assert.equal(await js('document.querySelector("[data-session-id=failed] [data-task-attention]").textContent'),'Stopped with an error');
   assert.equal(await js('document.querySelector("[data-session-id=waiting] [data-task-attention]").textContent'),'Run npm run release');
   assert.equal(await js('document.querySelector("[data-session-id=failed] [role=img]").getAttribute("aria-label")'),'Failed');
@@ -106,20 +134,30 @@ app.whenReady().then(async()=>{
   assert.deepEqual(await rows(),['running']);
   await js(filter('All')+'.click()');await until('document.querySelectorAll("[data-task-list] [data-session-id]").length>5');
   // A project narrows the page, and its name stops repeating on every row.
-  await js(project('coworker')+'.querySelector("button").click()');await until('document.querySelectorAll("[data-task-list] [data-session-id]").length===3');
+  await js('document.querySelector("[data-task-project-filter]").click()');await until('!!'+projectMenu);
+  assert.equal(await js('document.querySelector("[data-project-choice=\\"/projects/coworker\\"]").textContent'),'coworker3','each project says how many tasks it has');
+  await shot('project-menu');
+  const desktopRow=await rect('document.querySelector("[data-project-choice=\\"/projects/coworker\\"]")');
+  win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(desktopRow.x+80),y:Math.round(desktopRow.y+10)});await delay(150);
+  assert.equal(await js('getComputedStyle(document.querySelector("[data-project-choice=\\"/projects/coworker\\"] [aria-label=\\"New task in coworker\\"]")).display!=="none"'),true,'hovering a project shows its actions');
+  await shot('project-menu-hover');
+  await js('document.querySelector("[data-project-choice=\\"/projects/coworker\\"]").click()');await until('document.querySelectorAll("[data-task-list] [data-session-id]").length===3');
   assert.equal(await title(),'coworker');
   assert.deepEqual(await rows(),['waiting','running','review']);
-  assert.equal(await js('!!document.querySelector("[data-task-project]")'),false);
-  assert.equal(await js(project('coworker')+'.querySelector("button").getAttribute("aria-current")'),'page');
+  assert.equal(await js('!!document.querySelector("[data-task-list] [data-task-project]")'),false);
+  assert.equal(await js('document.querySelector("[data-task-project-filter]").getAttribute("aria-label")'),'Project: coworker');
   assert.equal(await js('qa.store.getState().projectCwd'),'/projects/coworker');
+  assert.deepEqual((await active()).slice(0,2),['failed','waiting'],'the sidebar is not filtered');
   await shot('project');
   assert.equal(await js('[...document.querySelectorAll("[data-main-titlebar] button")].some(e=>e.textContent.trim()==="New task")'),false,'the sidebar has New Task, the page does not repeat it');
   // The sidebar's New Task starts in the project on screen, not the last task's.
   await js(nav('New Task')+'.click()');await until('qa.store.getState().sessions[qa.store.getState().activeSessionId]?.isDraft===true');
   assert.equal(await js('qa.store.getState().sessions[qa.store.getState().activeSessionId].cwd'),'/projects/coworker');
   await js('qa.store.getState().setActiveSession("done");qa.store.getState().setActiveWorkspace("tasks")');await until('document.querySelectorAll("[data-task-list] [data-session-id]").length===3');
-  // My Tasks goes back to everything; a task opens its chat.
-  await js(nav('My Tasks')+'.click()');await until('document.querySelectorAll("[data-task-list] [data-session-id]").length>5');
+  // My Tasks keeps the filter; All projects goes back to everything; a task opens its chat.
+  await js(nav('My Tasks')+'.click()');await until('document.querySelectorAll("[data-task-list] [data-session-id]").length===3');
+  assert.equal(await title(),'coworker');
+  await pickProject(null);await until('document.querySelectorAll("[data-task-list] [data-session-id]").length>5');
   assert.equal(await title(),'My Tasks');
   await js('document.querySelector("[data-session-id=review]").click()');await until('!!document.querySelector("[data-chat-stub]")');
   assert.equal(await js('qa.store.getState().activeSessionId'),'review');
@@ -130,8 +168,15 @@ app.whenReady().then(async()=>{
   await shot('crumb');
   await js(crumb+'.click()');await until('!!document.querySelector("[data-task-list] [data-session-id]")');
   assert.equal(await title(),'My Tasks');
-  await js(project('coworker')+'.querySelector("button").click()');await until('document.querySelectorAll("[data-task-list] [data-session-id]").length===3');
-  await js('document.querySelector("[data-session-id=review]").click()');await until('!!document.querySelector("[data-chat-stub]")');
+  // A right click on a row's project chip offers the project's actions.
+  await js('document.querySelector("[data-task-list] [data-session-id=review] [data-task-project]").dispatchEvent(new MouseEvent("contextmenu",{bubbles:true,cancelable:true}))');await until('!!document.querySelector("[data-project-chip-menu]")');
+  assert.deepEqual(await js('[...document.querySelectorAll("[data-project-chip-menu] [role=menuitem]")].map(e=>e.textContent)'),['Show only coworker','New task here','Show in Finder','Remove project…']);
+  await shot('chip-menu');
+  await key('Escape');await until('!document.querySelector("[data-project-chip-menu]")');
+  // A row's project chip filters too.
+  await js('document.querySelector("[data-task-list] [data-session-id=review] [data-task-project]").click()');await until('document.querySelectorAll("[data-task-list] [data-session-id]").length===3');
+  assert.equal(await js('qa.store.getState().activeWorkspace'),'tasks','the chip filters instead of opening the task');
+  await js('document.querySelector("[data-task-list] [data-session-id=review]").click()');await until('!!document.querySelector("[data-chat-stub]")');
   assert.equal(await js(crumb+'.textContent'),'coworker','opened from a project, the path names it');
   await js(crumb+'.click()');await until('document.querySelectorAll("[data-task-list] [data-session-id]").length===3');
   assert.equal(await title(),'coworker','and goes back to that project');
@@ -140,15 +185,58 @@ app.whenReady().then(async()=>{
   assert.equal(await js(crumb+'.textContent'),'My Tasks','a project page it is not in is not its path');
   await js(crumb+'.click()');await until('document.querySelectorAll("[data-task-list] [data-session-id]").length>5');
   assert.equal(await title(),'My Tasks');
+  // Change status from the sidebar: the agent owns Needs input and Running, you pick the rest.
+  const sideRow=id=>'document.querySelector("[data-active-tasks] [data-session-id='+id+']")';
+  assert.equal(await js('!!'+sideRow('running')+'.querySelector("[data-task-status-trigger]")'),false,'a running task keeps its state');
+  await js(sideRow('review')+'.querySelector("[data-task-status-trigger]").click()');await until('!!'+statusMenu);
+  assert.deepEqual(await js('[...'+statusMenu+'.querySelectorAll("[data-task-status-option]")].map(e=>[e.dataset.taskStatusOption,e.hasAttribute("data-disabled"),e.textContent])'),
+   [['needs-input',true,'Needs input'],['running',true,'Running'],['review',false,'Ready for review1'],['completed',false,'Completed2']]);
+  assert.equal(await js('!!'+statusMenu+'.querySelector("[data-task-status-option=review] [aria-label=Current]")'),true,'the current state is checked');
+  await shot('status-menu');
+  await js(statusMenu+'.querySelector("[data-task-status-option=completed]").click()');await until('!'+sideRow('review'));
+  assert.deepEqual(qaLast(await js('qa.changes')),{kind:'status',sessionId:'review',status:'completed'});
+  assert.equal(await js('qa.store.getState().activeWorkspace'),'tasks','picking a status does not open the task');
+  assert.equal(await js('document.querySelector("[data-task-list] [data-session-id=review] [role=img]").getAttribute("aria-label")'),'Completed');
+  // Back to review from the list, with the keyboard: S on the focused row, then 1. It is where the task would be anyway, so the hand-set status goes.
+  await js('document.querySelector("[data-task-list] [data-session-id=review]").focus()');await key('s');await until('!!'+statusMenu);
+  await key('1');await until('!!'+sideRow('review'));
+  assert.deepEqual(qaLast(await js('qa.changes')),{kind:'status',sessionId:'review',status:null});
+  // S also works on the row under the pointer.
+  await js('document.activeElement.blur()');
+  assert.equal(await js('!!'+sideRow('waiting')+'.querySelector("[data-task-status-trigger]")'),false,'an approval the agent waits on is answered, not closed');
+  const r=await rect(sideRow('failed'));win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(r.x+60),y:Math.round(r.y+8)});await delay(120);
+  await key('s');await until('!!'+statusMenu);
+  await key('2');await until('!'+sideRow('failed'));
+  assert.deepEqual(qaLast(await js('qa.changes')),{kind:'status',sessionId:'failed',status:'completed'});
+  assert.equal(await js(nav('My Tasks')+'.textContent.trim()'),'My Tasks1','a task closed by hand stops counting as waiting on you');
+  // S keeps working on the row under the pointer after that row re-renders.
+  const hovered=await rect(sideRow('review'));win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(hovered.x+60),y:Math.round(hovered.y+8)});await delay(120);
+  await js('qa.store.setState(s=>({sessions:{...s.sessions,review:{...s.sessions.review,title:"Move Search below New Task again"}}}))');await delay(120);
+  await key('s');await until('!!'+statusMenu);await key('Escape');await until('!'+statusMenu);
+  // A key something else already handled is left alone.
+  await js('window.__claimS=e=>{if(e.key==="s")e.preventDefault()};window.addEventListener("keydown",window.__claimS,true)');
+  await key('s');await delay(200);
+  assert.equal(await js('!!'+statusMenu),false,'S handled elsewhere does not open the menu');
+  await js('window.removeEventListener("keydown",window.__claimS,true)');
+  // A hand-set state the task later reaches on its own still clears when you pick it.
+  await js('document.querySelector("[data-task-list] [data-session-id=done] [data-task-status-trigger]").click()');await until('!!'+statusMenu);
+  await js(statusMenu+'.querySelector("[data-task-status-option=review]").click()');await until('!!'+sideRow('done'));
+  assert.deepEqual(qaLast(await js('qa.changes')),{kind:'status',sessionId:'done',status:'review'});
+  await js('qa.store.setState(s=>({sessions:{...s.sessions,done:{...s.sessions.done,runtimeNotice:"completed"}}}))');await delay(120);
+  await js(sideRow('done')+'.querySelector("[data-task-status-trigger]").click()');await until('!!'+statusMenu);
+  await js(statusMenu+'.querySelector("[data-task-status-option=review]").click()');await until('!'+statusMenu);await delay(150);
+  assert.deepEqual(qaLast(await js('qa.changes')),{kind:'status',sessionId:'done',status:null},'picking the state the task has anyway clears the hand-set one');
   await js('qa.store.getState().setActiveWorkspace("chat")');await until('!!document.querySelector("[data-chat-stub]")');
-  // New task from a project row starts there.
-  await js(project('podcasts')+'.querySelector("[aria-label=\\"New task in podcasts\\"]").click()');await until('qa.store.getState().sessions[qa.store.getState().activeSessionId]?.isDraft===true');
+  // New task from a project in the filter starts there.
+  await js('qa.store.getState().setActiveWorkspace("tasks")');await until('!!document.querySelector("[data-task-project-filter]")');
+  await js('document.querySelector("[data-task-project-filter]").click()');await until('!!'+projectMenu);
+  await js('document.querySelector("[data-project-choice=\\"/projects/podcasts\\"] [aria-label=\\"New task in podcasts\\"]").click()');await until('qa.store.getState().sessions[qa.store.getState().activeSessionId]?.isDraft===true');
   assert.equal(await js('qa.store.getState().sessions[qa.store.getState().activeSessionId].cwd'),'/projects/podcasts');
   assert.equal(await js('!!document.querySelector("[data-chat-stub]")'),true);
   assert.equal(await js('!!document.querySelector("[data-session-tasks-crumb]")'),false,'an unsent chat is not a task yet');
   // Dark.
   await js('qa.store.getState().setTheme("dark")');await js(nav('My Tasks')+'.click()');await until('!!document.querySelector("[data-task-list] [data-session-id]")');await shot('page-dark');
-  assert.deepEqual(errors,[]);console.log('PASS: sidebar actions, Workspace projects, the My Tasks page and its breadcrumb');app.exit(0);
+  assert.deepEqual(errors,[]);console.log('PASS: sidebar actions, the Active list, Change status, the Project filter, the My Tasks page and its breadcrumb');app.exit(0);
  }catch(e){console.error(e,errors);await shot('failure');app.exit(1)}
 });
 `;

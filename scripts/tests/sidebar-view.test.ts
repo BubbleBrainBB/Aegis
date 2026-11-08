@@ -7,6 +7,7 @@ import {
   formatTaskDate,
   getProjectLabel,
   isDefaultSidebarView,
+  listActiveTaskFamilies,
   listWorkspaceProjects,
   taskAttention,
   TASK_FILTERS,
@@ -55,6 +56,9 @@ assert.equal(deriveSidebarSessionState(idle, {}), 'completed');
 assert.equal(deriveSidebarSessionState(idle, { pullRequest: pr('merged') }), 'completed');
 
 const worktree: StateInput = { ...idle, envMode: 'worktree', worktreePath: '/p/.worktrees/a' };
+function report0(outcome: NonNullable<StateInput['turnReport']>['outcome']): StateInput['turnReport'] {
+  return { outcome, summary: 'x', reportedAt: 1 };
+}
 assert.equal(deriveSidebarSessionState(worktree, {}), 'review', 'a live worktree holds work not applied back yet');
 assert.equal(deriveSidebarSessionState(worktree, { pullRequest: pr('merged') }), 'completed', 'a merged PR closes the loop');
 assert.equal(deriveSidebarSessionState(worktree, { pullRequest: pr('closed') }), 'completed');
@@ -64,9 +68,44 @@ assert.equal(deriveSidebarSessionState(worktree, { worktreeSettled: true, pullRe
 assert.equal(deriveSidebarSessionState({ ...worktree, worktreePath: null }, {}), 'completed',
   'applying or discarding the worktree clears it');
 
+// --- a status set by hand (Change status) -------------------------------------
+assert.equal(deriveSidebarSessionState({ ...worktree, runtimeNotice: 'completed' }, { pullRequest: pr('open'), manualStatus: 'completed' }), 'completed',
+  'done by hand outranks an open PR, a live worktree and an unseen result');
+assert.equal(deriveSidebarSessionState({ ...idle, runtimeNotice: 'error' }, { manualStatus: 'review' }), 'review',
+  'a failure you decided to look at later moves to review');
+assert.equal(deriveSidebarSessionState({ ...idle, turnReport: report0('question') }, { manualStatus: 'completed' }), 'completed',
+  'a question you will not answer can be closed');
+assert.equal(deriveSidebarSessionState(idle, { manualStatus: 'review' }), 'review', 'finished work can be reopened');
+assert.equal(deriveSidebarSessionState({ ...idle, status: 'running' }, { manualStatus: 'completed' }), 'running', 'a run in progress outranks it');
+assert.equal(deriveSidebarSessionState({ ...idle, permissionRequests: [permission] }, { manualStatus: 'completed' }), 'needs-input',
+  'a pending approval still asks for you');
+assert.equal(deriveSidebarSessionState({ ...idle, isDraft: true }, { manualStatus: 'review' }), null);
+
+// --- the sidebar's Active list ----------------------------------------------
+{
+  type Task = { id: string; updatedAt: number; createdAt?: number; state: ReturnType<typeof deriveSidebarSessionState> };
+  const task = (id: string, state: Task['state'], updatedAt: number, createdAt = updatedAt): Task => ({ id, state, updatedAt, createdAt });
+  const tasks = [
+    task('running', 'running', 900),
+    task('review-old', 'review', 100),
+    task('review-new', 'review', 500),
+    task('done', 'completed', 990),
+    task('parent', 'completed', 50),
+    task('child-waiting', 'needs-input', 60, 20),
+    task('child-done', 'completed', 70, 10),
+    task('orphan', 'review', 300),
+    task('draft', null, 999),
+  ];
+  const roots: Record<string, string> = { 'child-waiting': 'parent', 'child-done': 'parent', orphan: 'deleted-parent' };
+  const families = listActiveTaskFamilies(tasks, (id) => roots[id] ?? null, (t) => t.state);
+  assert.deepEqual(families.map((f) => f.root.id), ['parent', 'review-new', 'orphan', 'review-old', 'running'],
+    'needs you, then review, then running; finished work and drafts stay out; a sub-task without its parent stands alone');
+  assert.deepEqual(families[0].children.map((t) => t.id), ['child-done', 'child-waiting'],
+    'a finished parent stays while a sub-task is open, with all its sub-tasks in the order they started');
+}
+
 // --- the agent's own report of how its turn ended ---------------------------
-const report = (outcome: NonNullable<StateInput['turnReport']>['outcome']): StateInput['turnReport'] =>
-  ({ outcome, summary: 'x', reportedAt: 1 });
+const report = report0;
 assert.equal(deriveSidebarSessionState({ ...idle, turnReport: report('question') }, {}), 'needs-input',
   'a question waits on you, seen or not');
 assert.equal(deriveSidebarSessionState({ ...idle, runtimeNotice: 'completed', turnReport: report('blocked') }, {}), 'needs-input',
@@ -139,7 +178,7 @@ assert.equal(formatTaskDate(dateNow - 3 * 3_600_000, dateNow), '3h');
 assert.equal(formatTaskDate(new Date(2026, 9, 31, 12).getTime(), dateNow), 'Oct 31');
 assert.equal(formatTaskDate(new Date(2025, 9, 31, 12).getTime(), dateNow), 'Oct 2025');
 
-// The Workspace list: projects with tasks, newest first, plus the one just picked.
+// The Project filter's list: projects with tasks, newest first, plus the one just picked.
 const workspaceTask = (extra: Record<string, unknown>) => ({ updatedAt: 1, ...extra }) as never;
 assert.deepEqual(
   listWorkspaceProjects(

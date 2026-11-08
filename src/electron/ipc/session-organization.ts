@@ -10,11 +10,7 @@ export function setupSessionOrganizationIPC() {
   ipcMainHandle('get-session-organization', () => sessions.getSessionOrganization());
   ipcMainHandle('change-session-organization', (_, change: SessionOrganizationChange) => {
     const snapshot = sessions.changeSessionOrganization(change);
-    for (const win of BrowserWindow.getAllWindows()) {
-      if (!win.isDestroyed()) win.webContents.send('session-organization-changed', snapshot);
-    }
-    // Archiving hides a session from the phone too; it isn't a session event, so say so.
-    remoteListChanged();
+    broadcastSessionOrganization(snapshot);
     return snapshot;
   });
   ipcMainHandle('export-session-markdown', async (event, sessionId: string, share: boolean) => {
@@ -35,6 +31,14 @@ export function setupSessionOrganizationIPC() {
   ipcMainHandle('copy-session-markdown', async (_, sessionId: string) => {
     clipboard.writeText(await getSessionMarkdown(sessionId));
   });
+}
+
+export function broadcastSessionOrganization(snapshot = sessions.getSessionOrganization()) {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('session-organization-changed', snapshot);
+  }
+  // Archiving hides a session from the phone too; it isn't a session event, so say so.
+  remoteListChanged();
 }
 
 export async function getSessionMarkdown(sessionId: string): Promise<string> {

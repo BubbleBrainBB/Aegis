@@ -552,6 +552,7 @@ export function initialize(): void {
     );
   `);
 
+  ensureColumn('session_organization', 'manual_status', 'TEXT');
   ensureColumn('sessions', 'codex_session_id', 'TEXT');
   ensureColumn('sessions', 'opencode_session_id', 'TEXT');
   ensureColumn('sessions', 'kimi_session_id', 'TEXT');
@@ -1296,7 +1297,7 @@ export function moveSessionWithProjectSources(sessionId: string, projectCwd: str
 }
 
 export function getSessionOrganization(): SessionOrganizationSnapshot {
-  const entries = getDb().prepare('SELECT * FROM session_organization').all() as { session_id: string; archived: number; unread: number; section_id: string | null }[];
+  const entries = getDb().prepare('SELECT * FROM session_organization').all() as { session_id: string; archived: number; unread: number; section_id: string | null; manual_status: string | null }[];
   const sections = getDb().prepare('SELECT id, name FROM session_sections ORDER BY rowid').all() as SessionOrganizationSnapshot['sections'];
   const roots = getDb().prepare('SELECT DISTINCT project_cwd FROM project_sources').all() as { project_cwd: string }[];
   const projectSources = Object.fromEntries(roots.map(row => [row.project_cwd, getProjectSources(row.project_cwd)]));
@@ -1307,6 +1308,7 @@ export function getSessionOrganization(): SessionOrganizationSnapshot {
   }
   return { projectSources, sessions: Object.fromEntries(entries.map(row => [row.session_id, {
     archived: !!row.archived, unread: !!row.unread, sectionId: row.section_id,
+    manualStatus: row.manual_status === 'review' || row.manual_status === 'completed' ? row.manual_status : null,
   }])), sections };
 }
 
@@ -1317,6 +1319,7 @@ export function changeSessionOrganization(change: SessionOrganizationChange): Se
       const session = typeof change.sessionId === 'string' ? getSession(change.sessionId) : null;
       if (!session || session.hidden_from_threads) throw new Error('This task is no longer available.');
       if (change.kind === 'archive' && change.archived && session.status === 'running') throw new Error('Stop the task before archiving it.');
+      if (change.kind === 'status' && session.status === 'running') throw new Error('Stop the task before changing its status.');
       getDb().prepare('INSERT OR IGNORE INTO session_organization (session_id) VALUES (?)').run(change.sessionId);
     }
     const name = () => {
@@ -1332,6 +1335,10 @@ export function changeSessionOrganization(change: SessionOrganizationChange): Se
       case 'unread':
         if (typeof change.unread !== 'boolean') throw new Error('Invalid read state.');
         getDb().prepare('UPDATE session_organization SET unread = ? WHERE session_id = ?').run(+change.unread, change.sessionId);
+        break;
+      case 'status':
+        if (change.status !== null && change.status !== 'review' && change.status !== 'completed') throw new Error('Invalid task status.');
+        getDb().prepare('UPDATE session_organization SET manual_status = ? WHERE session_id = ?').run(change.status, change.sessionId);
         break;
       case 'section':
         if (change.sectionId !== null && (typeof change.sectionId !== 'string' || !getDb().prepare('SELECT id FROM session_sections WHERE id = ?').get(change.sectionId))) throw new Error('This section no longer exists.');
@@ -1865,6 +1872,16 @@ export function updateSessionStatus(sessionId: string, status: SessionStatus): v
       queueMicrotask(() => listener(row, previous));
     }
   }
+}
+
+/**
+ * A status set by hand describes the task as it stood then: once it runs again,
+ * its state is worked out from the new run. True when there was one to clear.
+ */
+export function clearSessionManualStatus(sessionId: string): boolean {
+  return getDb()
+    .prepare('UPDATE session_organization SET manual_status = NULL WHERE session_id = ? AND manual_status IS NOT NULL')
+    .run(sessionId).changes > 0;
 }
 
 /** Store (or clear) the agent's report of how its current turn ends. */

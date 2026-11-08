@@ -7,6 +7,7 @@ import {
   settleTurn as settleWorkflowMemberTurn,
 } from './libs/workflow/session-hooks';
 import { setupFollowUpIPC } from './ipc/follow-up';
+import { broadcastSessionOrganization } from './ipc/session-organization';
 import { FollowUpService } from './libs/follow-up/service';
 import { FollowUpStore } from './libs/follow-up/store';
 import { setFollowUpSessionCheck } from './libs/follow-up/registry';
@@ -5462,6 +5463,10 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
   // 全局 session 状态监听：session 完成/失败时发系统通知
   sessions.setSessionStatusListener((row, previousStatus) => {
     trackTaskPowerState(row.id, sessions.getSession(row.id)?.status === 'running');
+    // A new run takes over from a status set by hand.
+    if (row.status === 'running' && previousStatus !== 'running' && sessions.clearSessionManualStatus(row.id)) {
+      broadcastSessionOrganization();
+    }
     if (
       previousStatus === 'running' &&
       row.status !== 'running' &&

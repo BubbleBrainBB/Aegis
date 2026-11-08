@@ -1,3 +1,4 @@
+import type { ManualTaskStatus } from '../../shared/session-organization';
 import type { GitPullRequestSummary } from '../../shared/types';
 import { turnReportNeedsUser, turnReportTitle } from '../../shared/turn-report';
 import type { SessionView } from '../types';
@@ -110,8 +111,8 @@ export function sessionSortTime(session: Pick<SessionView, 'updatedAt' | 'create
 }
 
 /**
- * Where a session stands, most urgent first. Derived on every render and
- * never stored: reading a result or merging its PR is what moves it on.
+ * Where a session stands, most urgent first. Derived on every render: reading
+ * a result or merging its PR is what moves it on, unless you set it by hand.
  */
 export type SidebarSessionState = 'needs-input' | 'running' | 'review' | 'completed';
 
@@ -131,6 +132,49 @@ export const TASK_FILTERS: ReadonlyArray<{ id: TaskFilter; label: string }> = [
   ...SIDEBAR_STATE_ORDER.map((state) => ({ id: state, label: SIDEBAR_STATE_LABELS[state] })),
 ];
 
+/** The sidebar's Active list: what needs you first, then what waits for review, then what still runs. */
+export const ACTIVE_STATE_ORDER: SidebarSessionState[] = ['needs-input', 'review', 'running'];
+
+/** A task with the sub-tasks it started, listed together. */
+export interface TaskFamily<T> {
+  root: T;
+  children: T[];
+}
+
+/**
+ * The sidebar's Active list: every task that is not finished, with its family.
+ * Sub-tasks belong to the task that started them, so while any of them is
+ * unfinished the whole family shows, finished members too. A family stands
+ * where its most urgent member does, the latest activity first after that.
+ */
+export function listActiveTaskFamilies<T extends Pick<SessionView, 'id' | 'updatedAt' | 'createdAt'>>(
+  tasks: readonly T[],
+  rootOf: (id: string) => string | null,
+  stateOf: (task: T) => SidebarSessionState | null
+): TaskFamily<T>[] {
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  const families = new Map<string, TaskFamily<T>>();
+  for (const task of tasks) {
+    const root = rootOf(task.id);
+    if (root && byId.has(root)) continue;
+    families.set(task.id, { root: task, children: [] });
+  }
+  for (const task of tasks) {
+    const root = rootOf(task.id);
+    if (root && byId.has(root)) families.get(root)!.children.push(task);
+  }
+  const ranked = [...families.values()].flatMap((family) => {
+    const members = [family.root, ...family.children];
+    const ranks = members.map((task) => ACTIVE_STATE_ORDER.indexOf(stateOf(task) as SidebarSessionState)).filter((rank) => rank >= 0);
+    if (!ranks.length) return [];
+    family.children.sort((left, right) => (left.createdAt ?? left.updatedAt) - (right.createdAt ?? right.updatedAt));
+    return [{ family, rank: Math.min(...ranks), latest: Math.max(...members.map((task) => task.updatedAt)) }];
+  });
+  return ranked
+    .sort((left, right) => left.rank - right.rank || right.latest - left.latest)
+    .map((entry) => entry.family);
+}
+
 /** Where a conversation stands with the tasks it started: the most urgent of them all. */
 export function mostUrgentSidebarState(
   own: SidebarSessionState,
@@ -145,12 +189,19 @@ export function deriveSidebarSessionState(
     SessionView,
     'status' | 'permissionRequests' | 'runtimeNotice' | 'envMode' | 'worktreePath' | 'isDraft'
   > & Partial<Pick<SessionView, 'turnReport' | 'backgroundTasks'>>,
-  context: { unread?: boolean; pullRequest?: GitPullRequestSummary | null; worktreeSettled?: boolean }
+  context: {
+    unread?: boolean;
+    pullRequest?: GitPullRequestSummary | null;
+    worktreeSettled?: boolean;
+    /** Set by hand from the Change status menu; it outranks everything the last run left behind. */
+    manualStatus?: ManualTaskStatus | null;
+  }
 ): SidebarSessionState | null {
   if (session.isDraft) return null;
   const running = session.status === 'running' || session.status === 'stopping';
   if (session.permissionRequests.length > 0) return 'needs-input';
   if (running) return 'running';
+  if (context.manualStatus) return context.manualStatus;
   // Only a failure you have not looked at yet; an old one you already saw
   // would otherwise sit in Needs input forever.
   if (session.runtimeNotice === 'error') return 'needs-input';
@@ -203,11 +254,21 @@ export function getProjectLabel(path: string): string {
   return path.split('/').filter(Boolean).pop() || path;
 }
 
-/** A stable colour for a project's dot, the same wherever it appears. */
-export function getProjectHue(path: string): number {
-  let hash = 0;
-  for (const char of path) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
-  return hash % 360;
+/** How long ago, in one short word: now, 5m, 3h, 2d, 3w, 4mo, 1y. */
+export function formatAge(timestamp: number, now = Date.now()): string {
+  const seconds = Math.floor((now - timestamp) / 1000);
+  if (seconds < 60) return 'now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d`;
+  const weeks = Math.floor(days / 7);
+  if (weeks < 5) return `${weeks}w`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months}mo`;
+  return `${Math.floor(months / 12)}y`;
 }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -225,7 +286,7 @@ export function formatTaskDate(timestamp: number, now = Date.now()): string {
 }
 
 /**
- * The sidebar's Workspace list, most recently active first. Projects are not
+ * My Tasks' Project filter, most recently active first. Projects are not
  * stored: they come from their tasks, plus the one the user just picked.
  */
 export function listWorkspaceProjects(

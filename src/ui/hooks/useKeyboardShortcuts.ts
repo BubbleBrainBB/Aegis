@@ -5,6 +5,20 @@ import { useSidebarViewStore } from '../store/useSidebarViewStore';
 import { useAppPreferences } from '../store/useAppPreferences';
 import { matchesShortcut, SHORTCUT_COMMANDS, shortcutBindings, shortcutConflict } from '../../shared/keyboard-shortcuts';
 
+/**
+ * When an app shortcut must leave a key alone: something already handled it,
+ * an input method is composing, a terminal or editor owns the keys, or a
+ * dialog, menu or shortcut recorder is open.
+ */
+export function shortcutBlocked(event: KeyboardEvent): boolean {
+  if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.repeat) return true;
+  const target = event.target instanceof Element ? event.target : null;
+  return Boolean(
+    target?.closest('[data-shortcut-capture], .xterm, .cm-editor') ||
+      document.querySelector('[role="dialog"], [role="alertdialog"], [role="menu"]:not([data-hover-menu]), [data-shortcut-recording]')
+  );
+}
+
 /** One dispatcher for the keymap shown in Settings. Local editors handle keys first. */
 export function useKeyboardShortcuts(actions: { toggleRightPanel: () => void; toggleFullViewNewTab: () => void }) {
   const sidebarSearchRef = useRef<HTMLInputElement>(null);
@@ -12,9 +26,8 @@ export function useKeyboardShortcuts(actions: { toggleRightPanel: () => void; to
   actionsRef.current = actions;
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.repeat) return;
+      if (shortcutBlocked(event)) return;
       const target = event.target instanceof Element ? event.target : null;
-      if (target?.closest('[data-shortcut-capture], .xterm, .cm-editor') || document.querySelector('[role="dialog"], [role="alertdialog"], [role="menu"]:not([data-hover-menu]), [data-shortcut-recording]')) return;
       const state = useAppStore.getState();
       if (event.key === 'Escape') {
         if (state.searchPaletteOpen) state.setSearchPaletteOpen(false);

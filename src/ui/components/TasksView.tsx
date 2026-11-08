@@ -31,13 +31,12 @@ import { findProposalForChild, rootSessionOf, subSessionParents, useFollowUpStor
 import { sendEvent } from '../hooks/useIPC';
 import type { GitPullRequestSummary } from '../../shared/types';
 import { useSidebarViewOptions, useSidebarViewStore } from '../store/useSidebarViewStore';
-import { isWorktreeSettled, primaryPullRequest, useSidebarPullRequests, useSidebarPullRequestStore } from '../store/useSidebarPullRequests';
+import { primaryPullRequest, useSidebarPullRequests, useSidebarPullRequestStore } from '../store/useSidebarPullRequests';
 import { PULL_REQUEST_STATUS, pullRequestRepo, pullRequestStatus, type PullRequestStatus } from './pull-request-status';
 import {
   boardGroupBy,
-  deriveSidebarSessionState,
+  formatAge,
   formatTaskDate,
-  getProjectHue,
   getProjectLabel,
   isWithinActivityWindow,
   mostUrgentSidebarState,
@@ -52,6 +51,9 @@ import {
 } from '../utils/sidebar-view';
 import type { AgentProvider, SessionView } from '../types';
 import { AgentIcon } from './ComposerAgentControls';
+import { TaskStateIcon, TaskStatusMenu } from './TaskStatusMenu';
+import { ProjectChip, TaskProjectFilter } from './TaskProjectFilter';
+import { naturalTaskStateOf, openTask, taskStateOf, type TaskStateSources } from '../utils/task-state';
 import { SessionHandoffProviderRoute } from './SessionHandoffIndicator';
 
 const SESSION_BRANCH_CACHE_TTL_MS = 30_000;
@@ -126,40 +128,8 @@ function getGroupLabel(fullPath: string | null): string {
   return fullPath ? getProjectLabel(fullPath) : 'No Project';
 }
 
-function formatSidebarTime(timestamp: number): string {
-  const seconds = Math.floor((Date.now() - timestamp) / 1000);
-  if (seconds < 60) return 'now';
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d`;
-  const weeks = Math.floor(days / 7);
-  if (weeks < 5) return `${weeks}w`;
-  const months = Math.floor(days / 30);
-  if (months < 12) return `${months}mo`;
-  return `${Math.floor(months / 12)}y`;
-}
-
 function getSessionProjectPath(session: SessionView): string | null {
   return session.projectCwd?.trim() || session.cwd?.trim() || null;
-}
-
-type SidebarOrganization = ReturnType<typeof useSessionOrganization>;
-type SettledWorktrees = Parameters<typeof isWorktreeSettled>[1];
-
-function sidebarStateOf(
-  session: SessionView,
-  organization: SidebarOrganization,
-  prsBySession: Record<string, GitPullRequestSummary[] | null | undefined>,
-  worktrees: SettledWorktrees
-): SidebarSessionState | null {
-  return deriveSidebarSessionState(session, {
-    unread: organization.sessions[session.id]?.unread,
-    pullRequest: primaryPullRequest(prsBySession[session.id]),
-    worktreeSettled: isWorktreeSettled(session, worktrees),
-  });
 }
 
 /** One wait of a task on the user; a later wait of the same task comes after new activity. */
@@ -199,15 +169,6 @@ async function readSessionBranch(cwd: string): Promise<string | null> {
   return request;
 }
 
-function openTask(sessionId: string) {
-  const app = useAppStore.getState();
-  app.setShowSettings(false);
-  app.setActiveSession(sessionId);
-  app.setShowNewSession(false);
-  app.setActiveWorkspace('chat');
-  app.setChatSidebarView('threads');
-}
-
 function toggleTaskPin(sessionId: string) {
   sendEvent({ type: 'session.togglePin', payload: { sessionId } });
 }
@@ -218,7 +179,7 @@ function ProviderGlyph({ provider }: { provider?: AgentProvider }) {
 
 /**
  * My Tasks: every task in the main column, as a list or a board, filtered by
- * state, or by project when opened from the sidebar's Workspace list.
+ * state and by project.
  */
 export function TasksView() {
   const followUpsLoaded = useFollowUpStore(s => s.loaded);
@@ -236,7 +197,10 @@ export function TasksView() {
   const prsBySession = useSidebarPullRequests(true);
   const settledWorktrees = useSidebarPullRequestStore((state) => state.settledWorktrees);
   const settledCheckedAt = useSidebarPullRequestStore((state) => state.settledCheckedAt);
-  const worktrees = useMemo(() => ({ settledWorktrees, settledCheckedAt }), [settledWorktrees, settledCheckedAt]);
+  const sources = useMemo<TaskStateSources>(
+    () => ({ organization, prsBySession, worktrees: { settledWorktrees, settledCheckedAt } }),
+    [organization, prsBySession, settledWorktrees, settledCheckedAt]
+  );
   const collapsedGroups = useSidebarViewStore((state) => state.collapsedGroups);
   const toggleGroupExpanded = useSidebarViewStore((state) => state.toggleGroupCollapsed);
   const dismissedWaits = useSidebarViewStore((state) => state.dismissedWaits);
@@ -295,10 +259,10 @@ export function TasksView() {
     // A row stands where the most urgent of its tasks does.
     const rowStates = new Map<string, SidebarSessionState | null>();
     for (const session of sessionList) {
-      const own = sidebarStateOf(session, organization, prsBySession, worktrees);
+      const own = taskStateOf(session, sources);
       rowStates.set(session.id, own && mostUrgentSidebarState(
         own,
-        (subSessionsByRoot.get(session.id) ?? []).map((task) => sidebarStateOf(task, organization, prsBySession, worktrees))
+        (subSessionsByRoot.get(session.id) ?? []).map((task) => taskStateOf(task, sources))
       ));
     }
     if (taskFilter !== 'all') sessionList = sessionList.filter((session) => rowStates.get(session.id) === taskFilter);
@@ -357,7 +321,7 @@ export function TasksView() {
     sessions,
     organization,
     prsBySession,
-    worktrees,
+    sources,
     taskFilter,
     isBoard,
     groupBy,
@@ -384,7 +348,7 @@ export function TasksView() {
   ) => {
     const children = view.showSubSessions ? subSessionsByRoot.get(session.id) : undefined;
     if (!children?.length) return <Fragment key={key}>{renderRow(session, depth)}</Fragment>;
-    const childStates = children.map((child) => sidebarStateOf(child, organization, prsBySession, worktrees));
+    const childStates = children.map((child) => taskStateOf(child, sources));
     const waits = children
       .filter((_, index) => childStates[index] === 'needs-input')
       .map(subSessionWaitMark);
@@ -430,7 +394,8 @@ export function TasksView() {
     withSubSessions(session, 0, key, (row, rowDepth, nest) => (
       <SessionItem
         session={row}
-        state={sidebarStateOf(row, organization, prsBySession, worktrees)}
+        state={taskStateOf(row, sources)}
+        naturalState={naturalTaskStateOf(row, sources)}
         depth={rowDepth}
         nest={nest}
         pullRequests={view.properties.includes('pull-requests') ? prsBySession[row.id] : null}
@@ -444,7 +409,8 @@ export function TasksView() {
     <SessionItem
       key={session.id}
       session={session}
-      state={sidebarStateOf(session, organization, prsBySession, worktrees)}
+      state={taskStateOf(session, sources)}
+      naturalState={naturalTaskStateOf(session, sources)}
       depth={0}
       pullRequests={view.properties.includes('pull-requests') ? prsBySession[session.id] : null}
       showProject={showProject}
@@ -504,6 +470,7 @@ export function TasksView() {
     >
       <div className="flex min-h-0 flex-1 flex-col" data-tasks-view>
         <div className="flex h-12 flex-shrink-0 items-center justify-between gap-2 px-2">
+          <div className="flex min-w-0 items-center gap-1.5">
           <div className="flex min-w-0 items-center gap-1.5 overflow-x-auto" role="group" aria-label="Filter tasks">
             {TASK_FILTERS.map((filter) => (
               <button
@@ -520,6 +487,9 @@ export function TasksView() {
                 {filter.label}
               </button>
             ))}
+          </div>
+            <span aria-hidden="true" className="mx-1 h-4 w-px flex-shrink-0 bg-[var(--border)]" />
+            <TaskProjectFilter />
           </div>
           <TaskDisplayMenu />
         </div>
@@ -609,15 +579,6 @@ function TaskGroupMark({ group }: { group: TaskGroup }) {
   if (group.pullRequest) {
     const meta = PULL_REQUEST_STATUS[group.pullRequest];
     return <meta.Icon className={`h-3.5 w-3.5 flex-shrink-0 ${meta.className}`} aria-hidden="true" />;
-  }
-  if (group.path) {
-    return (
-      <span
-        className="mx-[3px] h-2 w-2 flex-shrink-0 rounded-full"
-        style={{ backgroundColor: `hsl(${getProjectHue(group.path)} 60% 55%)` }}
-        aria-hidden="true"
-      />
-    );
   }
   return null;
 }
@@ -766,55 +727,10 @@ function SubSessionSummary({ nest }: { nest: SubSessionNest }) {
 
 const ROW_INDENT = 24;
 
-function ProjectPill({ path }: { path: string }) {
-  return (
-    <span
-      className="inline-flex h-6 max-w-[180px] flex-shrink-0 items-center gap-1.5 rounded-full border border-[var(--border)] pl-2 pr-2.5 text-[12px] text-[var(--text-secondary)]"
-      title={path}
-      data-task-project
-    >
-      <span className="h-2 w-2 flex-shrink-0 rounded-full" style={{ backgroundColor: `hsl(${getProjectHue(path)} 60% 55%)` }} aria-hidden="true" />
-      <span className="truncate">{getProjectLabel(path)}</span>
-    </span>
-  );
-}
-
-/** Where a task stands: red or amber while it wants something, half green until reviewed, then a green check. */
-function TaskStateIcon({ state, failed }: { state: SidebarSessionState | null; failed: boolean }) {
-  if (state === 'running') {
-    return <Loader2 className="h-4 w-4 flex-shrink-0 animate-spin text-[var(--text-muted)]" role="img" aria-label="Running" />;
-  }
-  if (state === 'review') {
-    return (
-      <svg viewBox="0 0 16 16" className="h-4 w-4 flex-shrink-0" role="img" aria-label={SIDEBAR_STATE_LABELS.review} data-task-icon="half">
-        <circle cx="8" cy="8" r="5.75" fill="none" stroke="var(--success)" strokeWidth="1.5" />
-        <path d="M8 2.25a5.75 5.75 0 0 1 0 11.5z" fill="var(--success)" />
-      </svg>
-    );
-  }
-  const fill = failed
-    ? 'var(--error)'
-    : state === 'needs-input'
-      ? 'var(--warning)'
-      : 'var(--success)';
-  const label = failed ? 'Failed' : state ? SIDEBAR_STATE_LABELS[state] : 'Draft';
-  return (
-    <svg viewBox="0 0 16 16" className="h-4 w-4 flex-shrink-0" role="img" aria-label={label}>
-      <circle cx="8" cy="8" r="6.5" fill={fill} />
-      {failed ? (
-        <path d="M5.75 5.75l4.5 4.5m0-4.5l-4.5 4.5" fill="none" stroke="var(--bg-primary)" strokeWidth="1.5" strokeLinecap="round" />
-      ) : state === 'needs-input' ? (
-        <path d="M8 4.75v3.75m0 2.75v.01" fill="none" stroke="var(--bg-primary)" strokeWidth="1.5" strokeLinecap="round" />
-      ) : (
-        <path d="M5 8.25l2.1 2.1L11 6.1" fill="none" stroke="var(--bg-primary)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-      )}
-    </svg>
-  );
-}
-
 const SessionItem = memo(function SessionItem({
   session,
   state,
+  naturalState,
   depth,
   nest,
   nested = false,
@@ -826,6 +742,8 @@ const SessionItem = memo(function SessionItem({
 }: {
   session: SessionView;
   state: SidebarSessionState | null;
+  /** The state without one set by hand (see TaskStatusMenu). */
+  naturalState: SidebarSessionState | null;
   depth: number;
   /** Set on a row with sub-sessions under it. */
   nest?: SubSessionNest;
@@ -949,7 +867,7 @@ const SessionItem = memo(function SessionItem({
       ) : null}
     </>
   );
-  const projectPill = showProject && projectPath && !session.isChat ? <ProjectPill path={projectPath} /> : null;
+  const projectPill = showProject && projectPath && !session.isChat ? <ProjectChip path={projectPath} /> : null;
   const providerMark = !properties.includes('agent') ? null : session.handoffSourceProvider ? (
     <SessionHandoffProviderRoute
       sourceProvider={session.handoffSourceProvider}
@@ -1005,7 +923,7 @@ const SessionItem = memo(function SessionItem({
               <>
                 <span className="flex items-start gap-2">
                   <span className="flex h-5 flex-shrink-0 items-center">
-                    <TaskStateIcon state={state} failed={attention?.tone === 'error'} />
+                    <TaskStatusMenu session={session} state={state} naturalState={naturalState} failed={attention?.tone === 'error'} rowRef={rowRef} />
                   </span>
                   <span className="line-clamp-2 min-w-0 flex-1 text-[13px] leading-5">{session.title}</span>
                   {deviceMark ? <span className="flex h-5 flex-shrink-0 items-center">{deviceMark}</span> : null}
@@ -1024,7 +942,7 @@ const SessionItem = memo(function SessionItem({
               </>
             ) : (
               <>
-                <TaskStateIcon state={state} failed={attention?.tone === 'error'} />
+                <TaskStatusMenu session={session} state={state} naturalState={naturalState} failed={attention?.tone === 'error'} rowRef={rowRef} />
                 <span className={`flex min-w-0 items-center gap-2 ${summary ? 'max-w-[60%] flex-shrink-0' : 'flex-1'}`}>
                   <ScrollingTitle title={session.title} className="min-w-0 text-[13px] font-normal leading-[1.3]" />
                   {nest ? (
@@ -1082,7 +1000,7 @@ const SessionItem = memo(function SessionItem({
                 {session.title}
               </div>
               <div className="flex-shrink-0 text-[11px] tabular-nums text-[var(--text-muted)]">
-                {formatSidebarTime(session.updatedAt)}
+                {formatAge(session.updatedAt)}
               </div>
             </div>
 
