@@ -44,25 +44,36 @@ export const useSidebarPullRequestStore = create<SidebarPullRequestStore>()((set
   },
 }));
 
-/** Keeps the cache warm while the sidebar needs PR facts. */
+let watchers = 0;
+let stopWatching: (() => void) | undefined;
+
+/** Keeps the cache warm while the sidebar or My Tasks needs PR facts; they share one refresh. */
 export function useSidebarPullRequests(enabled: boolean): Record<string, GitPullRequestSummary[]> {
   const bySession = useSidebarPullRequestStore((state) => state.bySession);
   const load = useSidebarPullRequestStore((state) => state.load);
 
   useEffect(() => {
     if (!enabled) return;
-    void load(false).then(() => load(true));
-    const timer = window.setInterval(() => void load(true), REFRESH_INTERVAL_MS);
-    const onFocus = () => void load(true);
-    window.addEventListener('focus', onFocus);
-    const unsubscribe =
-      typeof window.electron?.onSessionPullRequestsChanged === 'function'
-        ? window.electron.onSessionPullRequestsChanged(() => void load(false))
-        : undefined;
+    if (watchers++ === 0) {
+      void load(false).then(() => load(true));
+      const timer = window.setInterval(() => void load(true), REFRESH_INTERVAL_MS);
+      const onFocus = () => void load(true);
+      window.addEventListener('focus', onFocus);
+      const unsubscribe =
+        typeof window.electron?.onSessionPullRequestsChanged === 'function'
+          ? window.electron.onSessionPullRequestsChanged(() => void load(false))
+          : undefined;
+      stopWatching = () => {
+        window.clearInterval(timer);
+        window.removeEventListener('focus', onFocus);
+        unsubscribe?.();
+      };
+    }
     return () => {
-      window.clearInterval(timer);
-      window.removeEventListener('focus', onFocus);
-      unsubscribe?.();
+      if (--watchers === 0) {
+        stopWatching?.();
+        stopWatching = undefined;
+      }
     };
   }, [enabled, load]);
 

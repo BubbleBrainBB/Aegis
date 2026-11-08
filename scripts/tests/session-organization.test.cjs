@@ -60,7 +60,7 @@ const invoke = (window, channel, ...args) => handlers.get(channel)({ sender: win
   await invoke(primary, 'change-session-organization', { kind: 'unread', sessionId: a.id, unread: true });
   await invoke(primary, 'change-session-organization', { kind: 'archive', sessionId: a.id, archived: true });
   sessions.close(); sessions.initialize();
-  assert.deepEqual(sessions.getSessionOrganization().sessions[a.id], { archived: true, unread: true, sectionId });
+  assert.deepEqual(sessions.getSessionOrganization().sessions[a.id], { archived: true, unread: true, sectionId, manualStatus: null });
   await invoke(primary, 'change-session-organization', { kind: 'rename-section', sectionId, name: 'Renamed' });
   assert.equal(sessions.getSessionOrganization().sections[0].name, 'Renamed');
   await invoke(primary, 'change-session-organization', { kind: 'remove-section', sectionId });
@@ -71,6 +71,24 @@ const invoke = (window, channel, ...args) => handlers.get(channel)({ sender: win
   sessions.updateSessionStatus(a.id, 'running');
   await assert.rejects(invoke(primary, 'change-session-organization', { kind: 'archive', sessionId: a.id, archived: true }), /Stop the task/);
   sessions.updateSessionStatus(a.id, 'idle');
+  // Change status: set by hand, kept across restarts, cleared by the next run.
+  snapshot = await invoke(primary, 'change-session-organization', { kind: 'status', sessionId: b.id, status: 'completed' });
+  assert.equal(snapshot.sessions[b.id].manualStatus, 'completed');
+  assert.deepEqual(primary.sent.at(-1), ['session-organization-changed', snapshot], 'every window hears about it');
+  sessions.close(); sessions.initialize();
+  assert.equal(sessions.getSessionOrganization().sessions[b.id].manualStatus, 'completed');
+  await invoke(primary, 'change-session-organization', { kind: 'status', sessionId: b.id, status: 'review' });
+  assert.equal(sessions.getSessionOrganization().sessions[b.id].manualStatus, 'review');
+  assert.equal(sessions.clearSessionManualStatus(b.id), true);
+  assert.equal(sessions.getSessionOrganization().sessions[b.id].manualStatus, null);
+  assert.equal(sessions.clearSessionManualStatus(b.id), false, 'nothing to clear, nothing to announce');
+  await invoke(primary, 'change-session-organization', { kind: 'status', sessionId: b.id, status: 'completed' });
+  await invoke(primary, 'change-session-organization', { kind: 'status', sessionId: b.id, status: null });
+  assert.equal(sessions.getSessionOrganization().sessions[b.id].manualStatus, null, 'null hands the state back to the task');
+  sessions.updateSessionStatus(b.id, 'running');
+  await assert.rejects(invoke(primary, 'change-session-organization', { kind: 'status', sessionId: b.id, status: 'completed' }), /Stop the task/);
+  sessions.updateSessionStatus(b.id, 'idle');
+  await assert.rejects(invoke(primary, 'change-session-organization', { kind: 'status', sessionId: b.id, status: 'running' }), /Invalid task status/);
   for (const change of [{kind:'unread',sessionId:a.id,unread:'yes'}, {kind:'section',sessionId:a.id,sectionId:'missing'}, {kind:'create-section',sessionId:a.id,name:' '}, {kind:'archive',sessionId:'missing',archived:true}]) {
     await assert.rejects(invoke(primary, 'change-session-organization', change));
   }

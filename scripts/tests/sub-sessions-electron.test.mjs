@@ -129,8 +129,8 @@ app.whenReady().then(async()=>{
   await screenshot('1-expanded');
 
   // On the page the chevron beside the parent's title folds them, as does the row menu.
-  assert.equal(await js('document.querySelector("[data-session-id=p1] [aria-expanded]")?.getAttribute("aria-expanded")'),'true','the parent has an open chevron');
-  assert.equal(await js('!!document.querySelector("[data-sub-sessions-of=p1] [aria-expanded]")'),false,'nested rows have none');
+  assert.equal(await js('document.querySelector("[data-session-id=p1] [aria-label$=sub-sessions][aria-expanded]")?.getAttribute("aria-expanded")'),'true','the parent has an open chevron');
+  assert.equal(await js('!!document.querySelector("[data-sub-sessions-of=p1] [aria-label$=sub-sessions][aria-expanded]")'),false,'nested rows have none');
 
   // Fold: the parent row sums its sub-sessions up (2 of 3 still running).
   await foldFromMenu('p1','Hide sub-sessions');

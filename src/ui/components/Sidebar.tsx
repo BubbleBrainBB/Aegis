@@ -14,7 +14,6 @@ import {
   Palette,
   HomeFilled,
   ListChecks,
-  Plus,
   Script,
   Search,
   SquarePen,
@@ -33,7 +32,7 @@ import { getMessageContentBlocks } from '../utils/message-content';
 import { MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH } from '../utils/sidebar-width';
 import { SessionHistoryButtons } from './SessionHistoryButtons';
 import { SidebarProfileMenu } from './sidebar/SidebarProfileMenu';
-import { SidebarWorkspaceProjects } from './sidebar/SidebarWorkspaceProjects';
+import { SidebarActiveTasks } from './sidebar/SidebarActiveTasks';
 import { useSessionOrganization } from '../store/useSessionOrganizationStore';
 import { useSidebarViewStore } from '../store/useSidebarViewStore';
 import { deriveSidebarSessionState } from '../utils/sidebar-view';
@@ -278,7 +277,10 @@ export function Sidebar() {
       visibleSessions.filter(
         (session) =>
           !organization.sessions[session.id]?.archived &&
-          deriveSidebarSessionState(session, { unread: organization.sessions[session.id]?.unread }) === 'needs-input'
+          deriveSidebarSessionState(session, {
+            unread: organization.sessions[session.id]?.unread,
+            manualStatus: organization.sessions[session.id]?.manualStatus,
+          }) === 'needs-input'
       ).length,
     [visibleSessions, organization]
   );
@@ -482,23 +484,14 @@ export function Sidebar() {
                 <SidebarNavRow
                   icon={<ListChecks className="h-[15px] w-[15px]" strokeWidth={1.5} />}
                   label="My Tasks"
-                  active={activeWorkspace === 'tasks' && !viewProject}
+                  active={activeWorkspace === 'tasks'}
                   badge={needsInputCount}
-                  onClick={() => openTasks(null)}
+                  onClick={() => goToWorkspace('tasks')}
                 />
               </div>
 
-              <div className="flex items-center justify-between pb-1.5 pl-4 pr-2 pt-5">
-                <div className="text-[13px] font-medium text-[var(--text-secondary)]">Workspace</div>
-                <button
-                  type="button"
-                  onClick={() => void handleProjectFolderSelect()}
-                  className="no-drag flex h-5 w-5 items-center justify-center rounded-md text-[var(--text-muted)] transition-colors duration-150 hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)]"
-                  aria-label="Open project folder"
-                  title="Open project folder"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                </button>
+              <div className="pb-1.5 pl-4 pr-2 pt-5 text-[13px] font-medium text-[var(--text-secondary)]" data-active-heading>
+                Active
               </div>
 
               <div className="relative min-h-0 flex-1">
@@ -516,16 +509,7 @@ export function Sidebar() {
                   className="sidebar-scrollbar h-full overflow-y-auto overflow-x-hidden px-2 pb-2"
                   data-sidebar-scroll-region
                 >
-                  <SidebarWorkspaceProjects
-                    onOpenProject={openTasks}
-                    onNewTask={(path) => {
-                      const channelId = getActiveChannelIdForProject(path);
-                      setProjectCwd(path);
-                      setActiveChannelForProject(path, channelId);
-                      goToWorkspace('chat');
-                      openDraftSession(path, channelId);
-                    }}
-                  />
+                  <SidebarActiveTasks />
                 </div>
 
                 <CappedScrollbar scrollRef={sidebarScrollRef} />
@@ -649,7 +633,7 @@ function SidebarNavRow({
   label: string;
   title?: string;
   active?: boolean;
-  /** Small trailing count (hidden when 0), e.g. Board cards waiting for review. */
+  /** Small trailing count (hidden when 0): tasks waiting on you. */
   badge?: number;
   onClick: () => void;
 }) {
@@ -673,7 +657,7 @@ function SidebarNavRow({
       </span>
       <span className="min-w-0 flex-1 truncate text-[13px] font-normal">{label}</span>
       {badge ? (
-        <span className="rounded-full bg-[var(--sidebar-segment-bg)] px-1.5 text-[11px] leading-[16px] text-[var(--text-muted)]">
+        <span className="text-[12px] tabular-nums text-[var(--warning)]" data-nav-badge>
           {badge}
         </span>
       ) : null}
