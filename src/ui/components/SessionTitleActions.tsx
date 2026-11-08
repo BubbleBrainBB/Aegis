@@ -72,13 +72,11 @@ export function SessionTitleActions({ session, className = '', showMenu = true, 
   /** Lead with the list the task sits in (the main title bar; split panes have no room). */
   tasksCrumb?: boolean;
 }) {
-  // Team is a place of its own, not a task in a list.
-  const isTeam = useAppStore((state) => Boolean(session) && state.teamSessionId === session?.id);
   return (
     // Without the menu beside it the title alone sets this group's width;
     // filling the row keeps its hover inset (negative margins) from clipping it.
     <div className={`flex min-w-0 items-center gap-2 ${showMenu ? '' : 'flex-1'}`} data-session-title-actions>
-      {session && tasksCrumb && !isTeam && !session.isDraft && !session.hiddenFromThreads && session.scope !== 'dm' ? <TasksCrumb session={session} /> : null}
+      {session && tasksCrumb && !session.isDraft && !session.hiddenFromThreads && session.scope !== 'dm' ? <TasksCrumb session={session} /> : null}
       {session ? <ParentCrumb sessionId={session.id} /> : null}
       <SessionTitleEditor session={session} className={className} />
       {session?.device ? (

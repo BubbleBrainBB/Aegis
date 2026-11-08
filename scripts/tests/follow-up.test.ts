@@ -21,7 +21,7 @@ type Session = {
   inWorktree?: boolean;
 };
 
-function setup(options: { startResult?: 'ok' | 'null-after-create' | 'throw'; provisionFails?: boolean; notGit?: string[]; team?: string; unavailable?: string[]; provisionGate?: Promise<void> } = {}) {
+function setup(options: { startResult?: 'ok' | 'null-after-create' | 'throw'; provisionFails?: boolean; notGit?: string[] } = {}) {
   const db = new DatabaseSync(':memory:') as unknown as FollowUpDb;
   let clock = 1_000;
   const store = new FollowUpStore(db, () => ++clock);
@@ -31,8 +31,6 @@ function setup(options: { startResult?: 'ok' | 'null-after-create' | 'throw'; pr
   const starts: SessionStartPayload[] = [];
   const continues: SessionContinuePayload[] = [];
   const broadcasts: FollowUpProposalView[] = [];
-  const moves: Array<{ sessionId: string; provider: string }> = [];
-  const inherited: Array<{ provider: string; model: string | null } | undefined> = [];
   let provisions = 0;
   let nextChild = 0;
   const worktrees = new Set<string>();
@@ -41,7 +39,7 @@ function setup(options: { startResult?: 'ok' | 'null-after-create' | 'throw'; pr
       starts.push(payload);
       if (options.startResult === 'throw') throw new Error('runtime missing');
       const id = `child-${++nextChild}`;
-      sessions.set(id, { title: payload.title, cwd: payload.cwd ?? null, provider: payload.provider ?? 'claude', model: null, status: 'running' });
+      sessions.set(id, { title: payload.title, cwd: payload.cwd ?? null, provider: 'claude', model: null, status: 'running' });
       onCreated(id);
       return options.startResult === 'null-after-create' ? null : id;
     },
@@ -55,12 +53,7 @@ function setup(options: { startResult?: 'ok' | 'null-after-create' | 'throw'; pr
     isBusy: (id) => sessions.get(id)?.status === 'running',
     getSession: (id) => sessions.get(id) ?? null,
     history: (id) => histories.get(id) ?? [],
-    inheritedOptions: (_parent, target) => {
-      inherited.push(target);
-      return target
-        ? { provider: target.provider as SessionStartPayload['provider'] }
-        : { provider: 'claude', claudeAccessMode: 'acceptEdits' as SessionStartPayload['claudeAccessMode'] };
-    },
+    inheritedOptions: () => ({ provider: 'claude', claudeAccessMode: 'acceptEdits' as SessionStartPayload['claudeAccessMode'] }),
     permissionMode: () => 'acceptEdits',
     sharedWorkspace: (id) => {
       const session = sessions.get(id);
@@ -71,7 +64,6 @@ function setup(options: { startResult?: 'ok' | 'null-after-create' | 'throw'; pr
     },
     async provision(projectCwd, label) {
       provisions++;
-      if (options.provisionGate) await options.provisionGate;
       if (options.provisionFails) throw new Error('not a git repository');
       const worktreePath = `${projectCwd}/.worktrees/${provisions}`;
       worktrees.add(worktreePath);
@@ -82,18 +74,9 @@ function setup(options: { startResult?: 'ok' | 'null-after-create' | 'throw'; pr
     isGitRepo: async (cwd) => !options.notGit?.includes(cwd),
     uncommitted: async () => [' M src/export.ts'],
     broadcast: (view) => broadcasts.push(view),
-    isTeam: (id) => id === options.team,
-    checkProvider: async (provider) =>
-      options.unavailable?.includes(provider) ? { ok: false, error: `${provider} can't take work right now` } : { ok: true },
-    async moveSession(sessionId, provider) {
-      moves.push({ sessionId, provider });
-      const session = sessions.get(sessionId);
-      if (session) session.provider = provider;
-      return true;
-    },
   };
   const service = new FollowUpService(store, host);
-  return { db, store, service, sessions, histories, starts, continues, broadcasts, worktrees, moves, inherited, provisions: () => provisions };
+  return { db, store, service, sessions, histories, starts, continues, broadcasts, worktrees, provisions: () => provisions };
 }
 
 function typed(prompt: string, workflowPrompt?: string): StreamMessage {
@@ -690,231 +673,6 @@ test('a lost-id retry after a failed start tries again', async () => {
   assert.equal(failed.ok, false);
   await t.service.startSession('parent', null, { ...sessionArgs, use_worktree: true });
   assert.equal(t.provisions(), 2, 'the failed row is not taken for a retry');
-});
-
-function teamSetup(options: { unavailable?: string[]; provisionGate?: Promise<void> } = {}) {
-  const t = setup({ team: 'team', ...options });
-  t.sessions.set('team', { title: 'Team', cwd: '/chats/Team', provider: 'claude', model: 'haiku', status: 'idle' });
-  t.histories.set('team', [typed('fix the black screen after rotation')]);
-  return t;
-}
-
-const teamTask = { ...sessionArgs, project: '/repo', provider: 'codex' };
-
-test('Team: a task runs on the agent the coordinator picked, with that agent\'s own settings', async () => {
-  const t = teamSetup();
-  const started = startedSession(await t.service.startSession('team', 'toolu_t1', teamTask));
-  assert.equal(t.store.get(started.proposalId)?.provider, 'codex');
-  assert.equal(t.starts[0].provider, 'codex');
-  assert.deepEqual(t.inherited.at(-1), { provider: 'codex', model: null });
-});
-
-test('Team: a task needs a project and an agent, and the agent must be able to take it', async () => {
-  const t = teamSetup({ unavailable: ['kimi'] });
-  const noProject = await t.service.startSession('team', 'toolu_t1', { ...sessionArgs, provider: 'codex' });
-  assert.equal(noProject.ok, false);
-  assert.match((noProject as { error: string }).error, /project/);
-  const noAgent = await t.service.startSession('team', 'toolu_t2', { ...sessionArgs, project: '/repo' });
-  assert.equal(noAgent.ok, false);
-  assert.match((noAgent as { error: string }).error, /provider/);
-  const busy = await t.service.startSession('team', 'toolu_t3', { ...teamTask, provider: 'kimi' });
-  assert.equal(busy.ok, false);
-  const unknown = await t.service.startSession('team', 'toolu_t4', { ...teamTask, provider: 'nobody' });
-  assert.equal(unknown.ok, false);
-  assert.equal(t.starts.length, 0);
-});
-
-test('Team: the coordinator starts work on a turn a report opened, and owners split their task', async () => {
-  const t = teamSetup();
-  t.histories.set('team', [typed('Sub-session finished: X', 'follow-up')]);
-  const task = startedSession(await t.service.startSession('team', 'toolu_t1', teamTask));
-  // The task's own turn began with its brief, not with the user's words.
-  t.histories.set(task.sessionId, [typed('brief', 'sub-session')]);
-  const split = await t.service.startSession(task.sessionId, 'toolu_c1', { ...sessionArgs, title: 'Windows build', project: '/repo', provider: 'claude' });
-  startedSession(split);
-  // Outside Team the old rule holds: a brief does not start sessions.
-  t.histories.set('parent', [typed('brief', 'sub-session')]);
-  assert.equal((await t.service.startSession('parent', 'toolu_p1', sessionArgs)).ok, false);
-});
-
-test('Team: splitting stops four levels down and at eight tasks per turn', async () => {
-  const t = teamSetup();
-  let caller = 'team';
-  for (let level = 1; level <= 4; level += 1) {
-    const started = startedSession(await t.service.startSession(caller, `toolu_d${level}`, { ...teamTask, title: `Level ${level}` }));
-    caller = started.sessionId;
-    t.histories.set(caller, [typed('brief', 'sub-session')]);
-  }
-  const tooDeep = await t.service.startSession(caller, 'toolu_d5', { ...teamTask, title: 'Level 5' });
-  assert.equal(tooDeep.ok, false);
-  assert.match((tooDeep as { error: string }).error, /levels/);
-
-  const wide = teamSetup();
-  for (let index = 1; index <= 8; index += 1) {
-    startedSession(await wide.service.startSession('team', `toolu_w${index}`, { ...teamTask, title: `Task ${index}` }));
-  }
-  const ninth = await wide.service.startSession('team', 'toolu_w9', { ...teamTask, title: 'Task 9' });
-  assert.equal(ninth.ok, false);
-  assert.match((ninth as { error: string }).error, /per turn/);
-});
-
-test('Team: add_to_task sends the user\'s words to the task, by title or id; other callers are refused', async () => {
-  const t = teamSetup();
-  const task = startedSession(await t.service.startSession('team', 'toolu_t1', teamTask));
-  t.sessions.get(task.sessionId)!.status = 'idle';
-  const added = await t.service.addToTask('team', { task: teamTask.title.toUpperCase(), message: 'Also cover rotating while quitting.' });
-  assert.equal(added.ok, true, added.ok ? '' : (added as { error: string }).error);
-  assert.deepEqual(t.continues.at(-1), { sessionId: task.sessionId, prompt: 'Also cover rotating while quitting.' });
-  assert.equal((await t.service.addToTask('team', { task: task.sessionId, message: 'And iPad.' })).ok, true);
-  assert.equal((await t.service.addToTask('team', { task: 'Something else', message: 'x' })).ok, false);
-  assert.equal((await t.service.addToTask('parent', { task: task.sessionId, message: 'x' })).ok, false);
-});
-
-test('Team: the coordinator\'s own agent must be able to take work too', async () => {
-  const t = teamSetup({ unavailable: ['claude'] });
-  const refused = await t.service.startSession('team', 'toolu_t1', { ...teamTask, provider: 'claude' });
-  assert.equal(refused.ok, false);
-  assert.equal(t.starts.length, 0);
-});
-
-test('Team: parallel starts in one turn still stop at eight', async () => {
-  const t = teamSetup();
-  const results = await Promise.all(
-    Array.from({ length: 9 }, (_, index) => t.service.startSession('team', `toolu_p${index}`, { ...teamTask, title: `Parallel ${index}` })),
-  );
-  assert.equal(results.filter((result) => result.ok).length, 8);
-  assert.equal(t.starts.length, 8);
-});
-
-test('Team: starts still making their worktree count toward the eight', async () => {
-  let open!: () => void;
-  const gate = new Promise<void>((resolve) => { open = resolve; });
-  const t = teamSetup({ provisionGate: gate });
-  const pending = Array.from({ length: 8 }, (_, index) => t.service.startSession('team', `toolu_s${index}`, { ...teamTask, title: `Staggered ${index}` }));
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  const ninth = await t.service.startSession('team', 'toolu_s9', { ...teamTask, title: 'Staggered 9' });
-  assert.equal(ninth.ok, false, 'the ninth is refused while the others make their worktrees');
-  open();
-  assert.equal((await Promise.all(pending)).filter((result) => result.ok).length, 8);
-});
-
-test('Team: a stopped task keeps its queued message until its next turn ends', async () => {
-  const t = teamSetup();
-  const task = startedSession(await t.service.startSession('team', 'toolu_q1', teamTask));
-  assert.equal((await t.service.addToTask('team', { task: task.sessionId, message: 'Also cover iPad.' })).ok, true);
-  t.sessions.get(task.sessionId)!.status = 'idle';
-  await t.service.deliverAfterTurn(task.sessionId, 'stopped');
-  assert.equal(t.continues.filter((payload) => payload.sessionId === task.sessionId).length, 0, 'Stop starts nothing');
-  await t.service.deliverAfterTurn(task.sessionId, 'completed');
-  assert.deepEqual(t.continues.filter((payload) => payload.sessionId === task.sessionId).at(-1), { sessionId: task.sessionId, prompt: 'Also cover iPad.' });
-});
-
-test('Team: a late delivery for an older turn does not restart a task the user stopped since', async () => {
-  const t = teamSetup();
-  const task = startedSession(await t.service.startSession('team', 'toolu_l1', teamTask));
-  assert.equal((await t.service.addToTask('team', { task: task.sessionId, message: 'Also cover iPad.' })).ok, true);
-  t.sessions.get(task.sessionId)!.status = 'idle';
-  // The completed turn's delivery is scheduled, then a newer turn ends stopped before it runs.
-  const older = t.service.noteTurnEnd(task.sessionId, 'completed');
-  t.service.noteTurnEnd(task.sessionId, 'stopped');
-  await t.service.deliverAfterTurn(task.sessionId, 'completed', older);
-  assert.equal(t.continues.filter((payload) => payload.sessionId === task.sessionId).length, 0, 'the stale delivery sends nothing');
-  // The queue is kept for the next turn that ends normally.
-  const next = t.service.noteTurnEnd(task.sessionId, 'completed');
-  await t.service.deliverAfterTurn(task.sessionId, 'completed', next);
-  assert.equal(t.continues.filter((payload) => payload.sessionId === task.sessionId).length, 1);
-});
-
-test('Team: a queued message survives a send that throws and is delivered once later', async () => {
-  const t = teamSetup();
-  const task = startedSession(await t.service.startSession('team', 'toolu_r1', teamTask));
-  assert.equal((await t.service.addToTask('team', { task: task.sessionId, message: 'Also cover iPad.' })).ok, true);
-  t.sessions.get(task.sessionId)!.status = 'idle';
-  const service = t.service as unknown as { host: { continue: (payload: unknown) => Promise<boolean> } };
-  const original = service.host.continue;
-  service.host.continue = async () => { throw new Error('the referenced conversation was removed'); };
-  await t.service.deliverAfterTurn(task.sessionId, 'completed');
-  service.host.continue = original;
-  assert.equal(t.continues.filter((payload) => payload.sessionId === task.sessionId).length, 0);
-  await t.service.deliverAfterTurn(task.sessionId, 'completed');
-  await t.service.deliverAfterTurn(task.sessionId, 'completed');
-  const sent = t.continues.filter((payload) => payload.sessionId === task.sessionId);
-  assert.equal(sent.length, 1, 'delivered exactly once');
-  assert.equal(sent[0].prompt, 'Also cover iPad.');
-});
-
-test('Team: a message waiting after a failed send goes ahead of a newer one sent to an idle task', async () => {
-  for (const failure of ['throws', 'false'] as const) {
-    const t = teamSetup();
-    const task = startedSession(await t.service.startSession('team', `toolu_o_${failure}`, teamTask));
-    assert.equal((await t.service.addToTask('team', { task: task.sessionId, message: 'Do X.' })).ok, true);
-    t.sessions.get(task.sessionId)!.status = 'idle';
-    const service = t.service as unknown as { host: { continue: (payload: unknown) => Promise<boolean> } };
-    const original = service.host.continue;
-    service.host.continue = async () => { if (failure === 'throws') throw new Error('gone'); return false; };
-    await t.service.deliverAfterTurn(task.sessionId, 'completed');
-    service.host.continue = original;
-    assert.equal((await t.service.addToTask('team', { task: task.sessionId, message: 'Actually, do Y instead.' })).ok, true);
-    const sent = t.continues.filter((payload) => payload.sessionId === task.sessionId);
-    assert.equal(sent.length, 1, failure);
-    assert.equal(sent[0].prompt, 'Do X.\n\nActually, do Y instead.', failure);
-    await t.service.deliverAfterTurn(task.sessionId, 'completed');
-    assert.equal(t.continues.filter((payload) => payload.sessionId === task.sessionId).length, 1, `${failure}: nothing is sent twice`);
-  }
-});
-
-test('the model a start names is the model it runs, for the same agent too', async () => {
-  const t = teamSetup();
-  startedSession(await t.service.startSession('team', 'toolu_m1', { ...teamTask, provider: 'claude', model: 'opus' }));
-  assert.deepEqual(t.inherited.at(-1), { provider: 'claude', model: 'opus' }, 'Team gives the owner its own defaults with the named model');
-  const plain = setup({ notGit: ['/repo'] });
-  startedSession(await plain.service.startSession('parent', 'toolu_m2', { ...sessionArgs, model: 'sonnet' }));
-  assert.equal(plain.starts[0].model, 'sonnet', 'outside Team the caller\'s settings carry over, with the named model');
-});
-
-test('Team: a message for a working task waits for its turn to end instead of interrupting it', async () => {
-  const t = teamSetup();
-  const task = startedSession(await t.service.startSession('team', 'toolu_t1', teamTask));
-  const sentBefore = t.continues.length;
-  const held = await t.service.addToTask('team', { task: task.sessionId, message: 'Also cover iPad.' });
-  assert.equal(held.ok, true);
-  assert.match((held as { text: string }).text, /current turn ends/);
-  assert.equal(t.continues.length, sentBefore, 'nothing sent while it works');
-  t.sessions.get(task.sessionId)!.status = 'idle';
-  t.histories.set(task.sessionId, [typed('brief', 'sub-session'), { type: 'assistant', message: { content: [{ type: 'text', text: 'Done.' }] } } as unknown as StreamMessage]);
-  t.service.onTurnSettled(task.sessionId, 'completed');
-  await t.service.deliverAfterTurn(task.sessionId, 'completed');
-  const toTask = t.continues.filter((payload) => payload.sessionId === task.sessionId);
-  assert.deepEqual(toTask.at(-1), { sessionId: task.sessionId, prompt: 'Also cover iPad.' });
-  // Its report still went up to Team, naming the agent that ran it.
-  const report = t.continues.find((payload) => payload.sessionId === 'team');
-  assert.match(report?.effectivePrompt ?? '', /with codex/);
-});
-
-test('Team: move_task hands the task to another agent once', async () => {
-  const t = teamSetup({ unavailable: ['kimi'] });
-  const task = startedSession(await t.service.startSession('team', 'toolu_t1', { ...teamTask, provider: 'claude' }));
-  const moved = await t.service.moveTask('team', { task: task.sessionId, provider: 'codex' });
-  assert.equal(moved.ok, true, moved.ok ? '' : (moved as { error: string }).error);
-  assert.deepEqual(t.moves, [{ sessionId: task.sessionId, provider: 'codex' }]);
-  assert.equal(t.store.get(task.proposalId)?.provider, 'codex');
-  // Already its owner: nothing to do.
-  assert.equal((await t.service.moveTask('team', { task: task.sessionId, provider: 'codex' })).ok, true);
-  assert.equal(t.moves.length, 1);
-  assert.equal((await t.service.moveTask('team', { task: task.sessionId, provider: 'kimi' })).ok, false);
-});
-
-test('Team hears from each task as it finishes, without waiting for the others', async () => {
-  const t = teamSetup();
-  const first = startedSession(await t.service.startSession('team', 'toolu_t1', { ...teamTask, title: 'First' }));
-  startedSession(await t.service.startSession('team', 'toolu_t2', { ...teamTask, title: 'Second' }));
-  t.sessions.get(first.sessionId)!.status = 'idle';
-  t.histories.set(first.sessionId, [typed('brief', 'sub-session'), { type: 'assistant', message: { content: [{ type: 'text', text: 'Done.' }] } } as unknown as StreamMessage]);
-  t.service.onTurnSettled(first.sessionId, 'completed');
-  await t.service.deliverAfterTurn(first.sessionId, 'completed');
-  // The second task is still running; Team got the first result anyway.
-  assert.equal(t.continues.at(-1)?.sessionId, 'team');
-  assert.match(t.continues.at(-1)?.prompt ?? '', /First/);
 });
 
 async function main() {

@@ -259,11 +259,6 @@ contextBridge.exposeInMainWorld('electron', {
     detach: (childSessionId: string) => ipcRenderer.invoke('follow-up-detach', childSessionId),
   },
 
-  openTeamSession: () => ipcRenderer.invoke('team-open'),
-  getTeamSessionId: () => ipcRenderer.invoke('team-session-id'),
-  getTeamCandidates: () => ipcRenderer.invoke('team-candidates'),
-  getTeamModels: (provider: string) => ipcRenderer.invoke('team-models', provider),
-
   sessionHandoff: (payload: { sessionId: string; targetProvider: string }) => {
     return ipcRenderer.invoke('session-handoff', payload);
   },

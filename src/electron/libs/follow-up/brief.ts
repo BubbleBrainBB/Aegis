@@ -70,8 +70,6 @@ export interface SubSessionBriefInput {
   projectFolder?: string | null;
   /** The repository a worktree belongs to. */
   repoRoot?: string | null;
-  /** Set for a Team task: the owner may split off parts as tasks of their own. */
-  split?: { depthLeft: number; perTurn: number } | null;
 }
 
 /**
@@ -112,14 +110,6 @@ export function buildSubSessionBrief(input: SubSessionBriefInput): string {
       '- Stay within this task. If you find another separate problem, mention it in your reply instead of fixing it.',
       '- Read the starting session with read_session only if you need more context.',
     ].join('\n'),
-    ...(input.split && input.split.depthLeft > 0
-      ? [[
-          '## Owning this task',
-          '- You own this task. Do it yourself, using subagents for parallel parts of your own work.',
-          '- Split a part off with start_session only when it needs another machine, another agent\'s strengths or should run on its own; pass `provider` to pick the agent.',
-          `- At most ${input.split.perTurn} per turn. Their results come back to you; put them together before you report.`,
-        ].join('\n')]
-      : []),
   ].join('\n\n');
 }
 
@@ -134,7 +124,7 @@ export function buildHereBrief(proposal: Pick<FollowUpRow, 'title' | 'reason' | 
   ].join('\n\n');
 }
 
-type ReportedResult = { proposal: Pick<FollowUpRow, 'title' | 'worktree_branch'> & Partial<Pick<FollowUpRow, 'kind' | 'provider'>>; summary: string; turnStatus?: string };
+type ReportedResult = { proposal: Pick<FollowUpRow, 'title' | 'worktree_branch'> & Partial<Pick<FollowUpRow, 'kind'>>; summary: string; turnStatus?: string };
 
 /**
  * The line the conversation shows for a delivered result. Sub-session results
@@ -170,8 +160,7 @@ export function buildReportPrompt(results: ReadonlyArray<ReportedResult>): strin
     const where = proposal.worktree_branch ? ` on branch \`${proposal.worktree_branch}\`` : proposal.kind === 'session' ? ' in this folder' : '';
     const how = turnStatus === 'error' ? ' It stopped with an error.' : '';
     const what = proposal.kind === 'session' ? 'Session' : 'Follow-up task';
-    const by = proposal.kind === 'session' && proposal.provider ? ` with ${proposal.provider}` : '';
-    parts.push(`${what} "${proposal.title}" ran${where}${by}.${how} Its report, written by the agent that ran it:`, fenced(summary));
+    parts.push(`${what} "${proposal.title}" ran${where}.${how} Its report, written by the agent that ran it:`, fenced(summary));
   }
   parts.push(
     [

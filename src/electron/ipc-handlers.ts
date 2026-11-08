@@ -20,7 +20,7 @@ import { getAppPreferences, setAppPreferences, getTerminalShellOptions, trackTas
 import { setupSessionGoalIPC, getCachedSessionGoal, publishSessionGoal, rejectSessionGoalStart } from './ipc/session-goal';
 import { setupWorkflowIPC } from './ipc/workflows';
 import { WorkflowService } from './libs/workflow/workflow-service';
-import { catalogEffortLevels, catalogOptions } from './libs/workflow/model-catalogs';
+import { catalogEffortLevels } from './libs/workflow/model-catalogs';
 import { CLAUDE_REASONING_EFFORT_OPTIONS } from '../shared/claude-reasoning';
 import { findPendingStartWorkflowCall, setWorkflowChatEntry, workflowTargetFolder } from './libs/workflow/chat-entry';
 import { isFullAccessMode } from '../shared/workflow';
@@ -44,8 +44,6 @@ import { sanitizeDesignPromptRef } from '../shared/design-comment';
 import { sanitizeDesignSelectionRef } from '../shared/design-selection';
 import { designContextText } from './design/focus';
 import { chatFolderInstructions, chatsFolderInfo, createChatFolder, noteChatFolderInstructionsDelivered, takeChatFolderInstructions } from './libs/chat-folders';
-import { canTakeWork, ensureTeamSession, isTeamSession, pickCoordinator, teamCandidates, teamSession, teamTurnContext } from './libs/team';
-import { isAgentProvider, teamFallbackAction } from '../shared/team';
 import { setDesignProjectRoot } from './design/styles';
 import { setDesignAgentNamer, setDesignPromptSource } from './design/tools';
 import { setDesignFollowUp } from './design/project/tools';
@@ -5256,7 +5254,6 @@ function settleWorkflowTurn(sessionId: string, status: 'completed' | 'error' | '
   settleWorkflowMemberTurn(sessionId, status, error);
   const service = followUps;
   if (!service) return;
-  const turn = service.noteTurnEnd(sessionId, status);
   try {
     service.onTurnSettled(sessionId, status, error);
   } catch (failure) {
@@ -5264,58 +5261,10 @@ function settleWorkflowTurn(sessionId: string, status: 'completed' | 'error' | '
   }
   // After the rest of this turn's teardown, so the parent reads as idle only once it is.
   setTimeout(() => {
-    service.deliverAfterTurn(sessionId, status, turn).catch((failure) => {
+    service.deliverAfterTurn(sessionId, status).catch((failure) => {
       console.error('[follow-up] could not deliver a result:', failure);
     });
   }, 0);
-}
-
-/**
- * A task given to another agent than its parent's: that agent's own defaults,
- * except that full access carries over, so the task does not stop for
- * approvals the parent would not have asked for.
- */
-function fullAccessFieldsFor(provider: AgentProvider): Partial<SessionStartPayload> {
-  switch (provider) {
-    case 'claude': return { claudeAccessMode: 'fullAccess' };
-    case 'codex': return { codexPermissionMode: 'fullAccess' };
-    case 'opencode': return { opencodePermissionMode: 'fullAccess' };
-    case 'kimi': return { kimiPermissionMode: 'yolo' };
-    case 'grok': return { grokPermissionMode: 'yolo' };
-    case 'deepseek': return { deepseekPermissionMode: 'danger-full-access' };
-    case 'devin': return { devinPermissionMode: 'bypass' };
-    case 'mimo': return { mimoPermissionMode: 'build' };
-    case 'minimax': return { minimaxPermissionMode: 'bypassPermissions' };
-    case 'bubble': return { bubblePermissionMode: 'bypassPermissions' };
-    case 'qoder': return { qoderPermissionMode: 'bypassPermissions' };
-    default: return {};
-  }
-}
-
-/** Whether a session runs with its agent's "run anything without asking" mode. */
-function sessionHasFullAccess(sessionId: string): boolean {
-  const row = sessions.getSession(sessionId);
-  if (!row) return false;
-  const provider = (row.provider || 'claude') as AgentProvider;
-  if (provider === 'claude') return isFullAccessMode(provider, row.claude_access_mode);
-  const settings = providerSettingsOf(row, provider, runnerHandles.get(sessionId));
-  const mode = Object.entries(settings).find(([key]) => key.endsWith('PermissionMode'))?.[1];
-  return isFullAccessMode(provider, typeof mode === 'string' ? mode : null);
-}
-
-/** Team asks each agent's plan limit where Aegis can read one. */
-async function teamLimitReached(provider: AgentProvider): Promise<boolean> {
-  if (provider === 'claude') {
-    const usage = await getClaudePlanUsage().catch(() => null);
-    if (!usage?.rateLimitsAvailable) return false;
-    return [usage.fiveHour, usage.sevenDay].some((window) => (window?.utilization ?? 0) >= 100);
-  }
-  if (provider === 'codex') {
-    ensureProviderService();
-    const report = await getProviderService().getRateLimits('codex').catch(() => null);
-    return Boolean(report?.rateLimits?.rateLimitReachedType);
-  }
-  return false;
 }
 
 /** Follow-up proposals (docs/collaboration/follow-up-sessions.md): Claude sessions propose, the user starts. */
@@ -5342,18 +5291,9 @@ function setupFollowUps(mainWindow: BrowserWindow): void {
         : null;
     },
     history: (sessionId) => sessions.getSessionHistory(sessionId),
-    inheritedOptions: (parentSessionId, target) => {
+    inheritedOptions: (parentSessionId) => {
       const row = sessions.getSession(parentSessionId);
       if (!row) return {};
-      if (target) {
-        const targetProvider = target.provider as AgentProvider;
-        return {
-          provider: targetProvider,
-          ...(target.model ? { model: target.model } : {}),
-          channelId: row.workspace_channel_id ?? undefined,
-          ...(sessionHasFullAccess(parentSessionId) ? fullAccessFieldsFor(targetProvider) : {}),
-        };
-      }
       const provider = (row.provider || 'claude') as AgentProvider;
       return {
         provider,
@@ -5406,34 +5346,6 @@ function setupFollowUps(mainWindow: BrowserWindow): void {
     isGitRepo: (cwd) => assertGitRepo(cwd).then(() => true, () => false),
     uncommitted: (cwd) => getShortStatus(cwd),
     broadcast: (view) => broadcast(mainWindow, { type: 'follow-up.updated', payload: view }),
-    isTeam: (sessionId) => isTeamSession(sessionId),
-    checkProvider: async (provider, { team }) => {
-      const candidates = await teamCandidates(teamLimitReached, true);
-      if (team) return canTakeWork(provider as AgentProvider, candidates);
-      const candidate = candidates.find((entry) => entry.provider === provider);
-      return candidate && !candidate.unavailable
-        ? { ok: true }
-        : { ok: false, error: `${candidate?.label ?? provider} can't take work right now${candidate?.unavailable ? `: ${candidate.unavailable}` : ''}.` };
-    },
-    moveSession: async (sessionId, provider, note) => {
-      const row = sessions.getSession(sessionId);
-      if (!row) return false;
-      const from = (row.provider || 'claude') as AgentProvider;
-      // Read before the old runner goes: some agents keep their mode only there.
-      const fullAccess = sessionHasFullAccess(sessionId);
-      // An idle runner of the old agent goes quietly: nobody stopped a turn.
-      if (row.status !== 'running') retireSessionRunner(sessionId);
-      // Keep the id, the sidebar place and the reports; the next prompt carries a handoff brief.
-      sessions.setSessionHandoff(sessionId, from, sessionId);
-      return handleSessionContinue(mainWindow, {
-        sessionId,
-        prompt: note,
-        provider: provider as AgentProvider,
-        model: '',
-        ...(fullAccess ? fullAccessFieldsFor(provider as AgentProvider) : {}),
-        workflowPrompt: 'event',
-      } as SessionContinuePayload);
-    },
   });
   service.recoverOnStartup();
   followUps = service;
@@ -5441,8 +5353,6 @@ function setupFollowUps(mainWindow: BrowserWindow): void {
   setFollowUpToolEntry({
     propose: (callerSessionId, toolUseId, args) => service.propose(callerSessionId, toolUseId, args),
     startSession: (callerSessionId, toolUseId, args) => service.startSession(callerSessionId, toolUseId, args),
-    addToTask: (callerSessionId, args) => service.addToTask(callerSessionId, args),
-    moveTask: (callerSessionId, args) => service.moveTask(callerSessionId, args),
     withdraw: (callerSessionId, proposalId) => service.withdraw(callerSessionId, proposalId),
     history: (sessionId) => sessions.getSessionHistory(sessionId),
   });
@@ -6266,15 +6176,6 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
     const result = await forkSessionInternal(sourceSessionId, options);
     if (result.ok) handleSessionList(mainWindow);
     return result;
-  });
-
-  // Team: the one conversation whose agent hands out work (libs/team.ts).
-  ipcMainHandle('team-open', async (): Promise<SessionInfo> => buildSessionInfoFromRow(ensureTeamSession()));
-  ipcMainHandle('team-session-id', async (): Promise<string | null> => teamSession()?.id ?? null);
-  ipcMainHandle('team-candidates', async () => teamCandidates(teamLimitReached, true));
-  ipcMainHandle('team-models', async (_event, provider: string) => {
-    if (!isAgentProvider(provider)) return [];
-    return catalogOptions(await workflowModelCatalog(provider).catch(() => null));
   });
 
   // Provider handoff: sessions are locked to one agent; switching creates a
@@ -10560,91 +10461,8 @@ async function handleSessionContinue(
     return false;
   }
   sessionDispatchLeases.add(payload.sessionId);
-  try {
-    if (isTeamSession(payload.sessionId)) {
-      const prepared = await prepareTeamTurn(mainWindow, payload);
-      if (prepared === 'handled') return true;
-      payload = prepared;
-    }
-    return await handleSessionContinueImpl(mainWindow, payload, internal);
-  }
+  try { return await handleSessionContinueImpl(mainWindow, payload, internal); }
   finally { sessionDispatchLeases.delete(payload.sessionId); }
-}
-
-/** The coordinator context each Team turn reads, set just before the turn starts. */
-const teamTurnContexts = new Map<string, string>();
-
-function takeTeamTurnContext(sessionId: string): string {
-  const context = teamTurnContexts.get(sessionId) ?? '';
-  teamTurnContexts.delete(sessionId);
-  return context;
-}
-
-/**
- * A Team message: run it on the coordinator the user picked (or the
- * fallback), with the roster and rules; with neither, a short follow-up still
- * reaches the task it is about and anything else gets a plain answer.
- */
-async function prepareTeamTurn(
-  mainWindow: BrowserWindow,
-  payload: SessionContinuePayload,
-): Promise<SessionContinuePayload | 'handled'> {
-  const row = sessions.getSession(payload.sessionId);
-  if (!row) return payload;
-  const candidates = await teamCandidates(teamLimitReached).catch(() => []);
-  const coordinator = pickCoordinator(candidates);
-  if (!coordinator?.provider) return teamWithoutCoordinator(mainWindow, payload, candidates);
-  const current = (row.provider || 'claude') as AgentProvider;
-  const same = current === coordinator.provider;
-  // A new coordinator carries on from the conversation so far.
-  if (!same && collectHandoffTurns(sessions.getSessionHistory(row.id)).length > 0) {
-    sessions.setSessionHandoff(row.id, current, row.id);
-  }
-  teamTurnContexts.set(row.id, teamTurnContext(candidates));
-  return {
-    ...payload,
-    provider: coordinator.provider,
-    // The setting decides, an empty one meaning the agent's default model.
-    model: coordinator.model,
-    ...(same ? {} : sessionHasFullAccess(row.id) ? fullAccessFieldsFor(coordinator.provider) : {}),
-  };
-}
-
-async function teamWithoutCoordinator(
-  mainWindow: BrowserWindow,
-  payload: SessionContinuePayload,
-  candidates: Awaited<ReturnType<typeof teamCandidates>>,
-): Promise<'handled'> {
-  const prompt = payload.prompt.trim();
-  const createdAt = Date.now();
-  // Aegis's own messages (a task's result) are shown as what they are, never
-  // taken for something the user typed.
-  const internal = Boolean(payload.workflowPrompt);
-  sessions.updateLastPrompt(payload.sessionId, prompt);
-  broadcast(mainWindow, { type: 'stream.user_prompt', payload: { sessionId: payload.sessionId, prompt, attachments: payload.attachments, createdAt, ...(internal ? { workflowPrompt: payload.workflowPrompt } : {}) } });
-  sessions.addMessage(payload.sessionId, { type: 'user_prompt', prompt, attachments: payload.attachments, createdAt, ...(internal ? { workflowPrompt: payload.workflowPrompt } : {}) });
-  const { coordinator } = getAppPreferences().team;
-  const why = coordinator.provider
-    ? `${candidates.find((entry) => entry.provider === coordinator.provider)?.label ?? coordinator.provider} can't run right now`
-    : 'no coordinator is set';
-  const last = followUps?.lastTaskActivity(payload.sessionId) ?? null;
-  const action = teamFallbackAction({ prompt, internal }, last ? { taskId: last.taskId, at: last.at } : null, createdAt);
-  let reply: string;
-  if (action.kind === 'show') {
-    reply = `The coordinator is unavailable (${why}), so nobody summed this up. Open the task to read its report.`;
-  } else if (action.kind === 'add' && last && followUps) {
-    // The same path the coordinator uses: a working task gets it when its turn ends.
-    const added = await followUps.addToTask(payload.sessionId, { task: action.taskId, message: prompt });
-    reply = added.ok
-      ? `The coordinator is unavailable (${why}), so I added this to “${last.title}”, the task you were just talking about.`
-      : `The coordinator is unavailable (${why}), and “${last.title}” could not take the message.`;
-  } else {
-    reply = `The coordinator is unavailable (${why}). Pick one that works in Settings › Team.`;
-  }
-  const message = buildLocalAssistantMessage(reply);
-  sessions.addMessage(payload.sessionId, message);
-  broadcast(mainWindow, { type: 'stream.message', payload: { sessionId: payload.sessionId, message } });
-  return 'handled';
 }
 
 async function handleSessionContinueImpl(
@@ -10839,7 +10657,7 @@ async function handleSessionContinueImpl(
   // Goal commands reach the agent verbatim: Claude's, and Kimi's `/goal --`
   // start prompt (context appended would become part of the objective).
   const runnerPrompt = (nextProvider === 'claude' || nextProvider === 'kimi') && parseGoalInput(prompt, false).isGoal ? prompt.trim() : augmentPromptForLiveWidgetProtocol(
-    await buildRunnerPromptWithMemory(nextProvider, effectiveRunnerPrompt + referenceContext + designContextText(sessionId, designSelection) + sessions.buildProjectSourcesContext(session.project_cwd || session.cwd, session.cwd, session.env_mode === 'worktree' && Boolean(session.worktree_path)) + takeChatFolderInstructions(sessionId, session.cwd, session.is_chat === 1) + takeTeamTurnContext(sessionId), session.cwd || undefined),
+    await buildRunnerPromptWithMemory(nextProvider, effectiveRunnerPrompt + referenceContext + designContextText(sessionId, designSelection) + sessions.buildProjectSourcesContext(session.project_cwd || session.cwd, session.cwd, session.env_mode === 'worktree' && Boolean(session.worktree_path)) + takeChatFolderInstructions(sessionId, session.cwd, session.is_chat === 1), session.cwd || undefined),
     historyBeforeContinue
   );
   const previousOpenCodePermissionMode = normalizeOpenCodePermissionMode(session.opencode_permission_mode);

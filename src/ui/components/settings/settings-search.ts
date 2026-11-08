@@ -10,7 +10,6 @@ export const SETTINGS_SEARCH_ENTRIES: SettingsSearchEntry[] = [
     ['general', 'General', 'preferences 通用'], ['profile', 'Profile', 'account avatar name 个人资料 头像'], ['appearance', 'Appearance', 'theme 外观'],
     ['browser', 'Browser', 'cookies browsing 浏览器'], ['providers', 'Providers', 'api key models 模型 密钥'],
     ['mcp', 'MCP Servers', 'tools 工具'], ['usage', 'Usage', 'cost tokens 费用 用量'], ['bridge', 'Bridge', 'channels remote 远程'],
-    ['team', 'Team', 'coordinator agents dispatch 团队 协调 派发'],
   ].map(([tab, label, keywords]) => ({ tab: tab as SettingsTab, label, keywords })),
   ...[
     ['Default open destination', 'editor finder vscode folder 默认 打开 编辑器'],
@@ -38,9 +37,6 @@ export const SETTINGS_SEARCH_ENTRIES: SettingsSearchEntry[] = [
     ['bridge', 'Default project', 'feishu cwd directory folder project 工作目录 项目'],
     ['bridge', 'Who can use it', 'feishu invite access allowlist owner 邀请 权限 白名单'],
     ['bridge', 'App ID', 'feishu lark credentials secret existing app 飞书 凭证 密钥'],
-    ['team', 'Model', 'coordinator team agent 协调者 模型'],
-    ['team', 'If it doesn’t answer', 'fallback coordinator 备用 模型'],
-    ['team', 'Ask when unsure', 'question team 拿不准 提问'],
     ['usage', 'Usage provider', 'cost tokens limits agent 用量 费用 额度'],
     ['mcp', 'Add server', 'connect command url 添加 服务器'],
     ['providers', 'Claude Code', 'anthropic api key 密钥'],

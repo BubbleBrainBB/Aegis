@@ -81,12 +81,11 @@ app.whenReady().then(async()=>{
  try{
   await win.loadURL(process.env.QA_URL);await until('!!'+heading+'&&!!document.querySelector("[data-active-tasks] [data-session-id]")');
   // The sidebar: three actions, then the tasks you are working through.
-  const newTask=await rect(nav('New Task')),search=await rect(nav('Search')),team=await rect(nav('Team')),myTasks=await rect(nav('My Tasks')),label=await js('(()=>{const r=document.createRange();r.selectNodeContents('+heading+');const b=r.getBoundingClientRect();return {y:b.y,bottom:b.bottom}})()'),list=await rect(scroller);
+  const newTask=await rect(nav('New Task')),search=await rect(nav('Search')),myTasks=await rect(nav('My Tasks')),label=await js('(()=>{const r=document.createRange();r.selectNodeContents('+heading+');const b=r.getBoundingClientRect();return {y:b.y,bottom:b.bottom}})()'),list=await rect(scroller);
   assert.equal(search.x,newTask.x,'Search lines up with New Task');
   assert.equal(myTasks.x,newTask.x,'My Tasks lines up with New Task');
   assert.ok(search.y>=newTask.bottom&&search.y-newTask.bottom<=4,'Search sits right under New Task: '+JSON.stringify({newTask,search}));
-  assert.ok(team.y>=search.bottom&&team.y-search.bottom<=4,'Team sits right under Search');
-  assert.ok(myTasks.y>=team.bottom&&myTasks.y-team.bottom<=4,'My Tasks sits right under Team');
+  assert.ok(myTasks.y>=search.bottom&&myTasks.y-search.bottom<=4,'My Tasks sits right under Search');
   assert.ok(label.y-myTasks.bottom>=20,'Active sits clearly apart from the actions: '+JSON.stringify({myTasks,label}));
   assert.ok(label.bottom<=list.y,'Active stays above the scrolling list');
   const sidebarRows=await active();

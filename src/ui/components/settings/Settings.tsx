@@ -4,8 +4,7 @@ import './settings-controls.css';
 import { AppearanceControls } from './AppearanceControls';
 import { findSettings, type SettingsSearchEntry } from './settings-search';
 import { useEffect, useLayoutEffect, useState, type CSSProperties, type ReactNode } from 'react';
-import { ArrowLeft, Keyboard, Server, Settings as SettingsIcon, Sun, ChartColumn, User, PlugZap, Bot, Image, Trash2, Globe, Monitor, Messages } from '../icons';
-import { TeamSettingsContent } from './TeamSettings';
+import { ArrowLeft, Keyboard, Server, Settings as SettingsIcon, Sun, ChartColumn, User, PlugZap, Bot, Image, Trash2, Globe, Monitor } from '../icons';
 import { useAppStore } from '../../store/useAppStore';
 import { ClaudeUsageSettingsContent } from './ClaudeUsageSettings';
 import { AgentRuntimeSettings } from './AgentRuntimeSettings';
@@ -60,7 +59,6 @@ const SETTINGS_TABS = {
     description: '',
     icon: <ChartColumn className="w-4 h-4" />,
   },
-  team: { label: 'Team', title: 'Team', description: '', icon: <Messages className="w-4 h-4" /> },
   bridge: {
     label: 'Bridge',
     title: 'Bridge',
@@ -72,7 +70,7 @@ const SETTINGS_TABS = {
 type SettingsTabKey = keyof typeof SETTINGS_TABS;
 
 const SETTINGS_NAV_GROUPS: { label: string; tabs: SettingsTabKey[] }[] = [
-  { label: 'Personal', tabs: ['general', 'appearance', 'shortcuts', 'profile', 'usage', 'team'] },
+  { label: 'Personal', tabs: ['general', 'appearance', 'shortcuts', 'profile', 'usage'] },
   { label: 'Integrations', tabs: ['connections', 'browser', 'mcp', 'providers', 'bridge'] },
 ];
 
@@ -309,7 +307,6 @@ export function Settings() {
           {resolvedActiveSettingsTab === 'usage' && <ClaudeUsageSettingsContent />}
           {resolvedActiveSettingsTab === 'profile' && <ProfileSettingsGroup />}
           {resolvedActiveSettingsTab === 'bridge' && <BridgeSettingsContent />}
-          {resolvedActiveSettingsTab === 'team' && <TeamSettingsContent />}
         </div>
       </main>
       </div>

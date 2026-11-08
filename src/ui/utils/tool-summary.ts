@@ -1,17 +1,11 @@
 import { isStartWorkflowToolName } from '../../shared/workflow';
 import { isShowWidgetToolName, isWidgetGuideToolName, widgetFromToolInput } from '../../shared/widget';
-import { isAddToTaskToolName, isMoveTaskToolName, isProposeFollowUpToolName, isStartSessionToolName, isWithdrawFollowUpToolName } from '../../shared/follow-up';
+import { isProposeFollowUpToolName, isStartSessionToolName, isWithdrawFollowUpToolName } from '../../shared/follow-up';
 import { isReportStatusToolName, TURN_REPORT_OUTCOMES, turnReportLabel, type TurnReportOutcome } from '../../shared/turn-report';
 
 const followUpTitle = (input: unknown) => {
   const title = (input as { title?: unknown } | null)?.title;
   return typeof title === 'string' && title.trim() ? title.trim() : 'a follow-up task';
-};
-
-/** The task a Team call names: its title, or its id until the result says. */
-const teamTaskOf = (input: unknown) => {
-  const task = input && typeof input === 'object' ? (input as { task?: unknown }).task : null;
-  return typeof task === 'string' && task.trim() ? task.trim() : 'a task';
 };
 import { designToolDisplay } from './design-tool-display';
 import type { CanonicalToolKind, ToolStatus } from '../types';
@@ -74,8 +68,6 @@ export function getToolSummary(name: string, input: unknown): string {
   if (isProposeFollowUpToolName(name)) return `Follow-up: ${followUpTitle(input)}`;
   if (isWithdrawFollowUpToolName(name)) return 'Withdrew a follow-up task';
   if (isStartSessionToolName(name)) return `Sub-session: ${followUpTitle(input)}`;
-  if (isAddToTaskToolName(name)) return `Added to ${teamTaskOf(input)}`;
-  if (isMoveTaskToolName(name)) return `Moved ${teamTaskOf(input)}`;
   if (isReportStatusToolName(name)) return reportedStatus(input);
   const design = designToolDisplay(name, input, 'success');
   if (design) return design.target;
@@ -394,12 +386,6 @@ export function deriveReadableToolDisplay(
   if (isStartSessionToolName(name)) {
     return { verb: status === 'pending' ? 'Starting session' : 'Started session', target: followUpTitle(input) };
   }
-  if (isAddToTaskToolName(name)) {
-    return { verb: status === 'pending' ? 'Adding to' : 'Added to', target: teamTaskOf(input) };
-  }
-  if (isMoveTaskToolName(name)) {
-    return { verb: status === 'pending' ? 'Moving' : 'Moved', target: teamTaskOf(input) };
-  }
   if (isReportStatusToolName(name)) {
     return { verb: status === 'pending' ? 'Reporting' : 'Reported', target: reportedStatus(input) };
   }
@@ -585,8 +571,6 @@ export function classifyToolUse(toolName: string, input: unknown): CanonicalTool
   if (isStartWorkflowToolName(normalized)) return 'subagent';
   // Sub-sessions draw as their own row in the same place, for the same reason.
   if (isStartSessionToolName(normalized)) return 'subagent';
-  // Team's add_to_task / move_task draw as a line in the same place.
-  if (isAddToTaskToolName(normalized) || isMoveTaskToolName(normalized)) return 'subagent';
   if (
     normalized === 'image_gen' ||
     normalized === 'image_edit' ||

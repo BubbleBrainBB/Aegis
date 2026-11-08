@@ -8,9 +8,8 @@ import { DESIGN_TOOL_NAMES } from '../../../shared/design-tools';
 import { getWorkflowSessionPolicy } from '../workflow/session-hooks';
 import { WidgetDraftTracker } from '../widget-draft';
 import { START_WORKFLOW_TOOL } from '../../../shared/workflow';
-import { ADD_TO_TASK_TOOL, MOVE_TASK_TOOL, START_SESSION_TOOL } from '../../../shared/follow-up';
-import { createPiStartSession, createPiTeamTools } from '../follow-up/tool';
-import { isTeamSession } from '../team';
+import { START_SESSION_TOOL } from '../../../shared/follow-up';
+import { createPiStartSession } from '../follow-up/tool';
 import { SHOW_WIDGET_TOOL, WIDGET_GUIDE_TOOL } from '../../../shared/widget';
 import { EventEmitter } from 'events';
 import { readFile } from 'fs/promises';
@@ -350,8 +349,6 @@ export class PiSdkAdapter implements ProviderAdapter {
     const selectedModel = this.resolveModel(modelRegistry, input.model);
     const sessionManager = await this.createSessionManager(input.resumeSessionId, cwd, sdk.SessionManager);
     const offersWorkflows = !getWorkflowSessionPolicy(input.threadId);
-    // Team's coordinator also hands work to tasks it started.
-    const offersTeamTools = offersWorkflows && isTeamSession(input.threadId);
 
     const { session: piSession } = await sdk.createAgentSession({
       cwd,
@@ -360,8 +357,8 @@ export class PiSdkAdapter implements ProviderAdapter {
       sessionManager,
       // Workflow members do not get the workflow entry (no nested workflows)
       // or status reports (their workflow reads their turns).
-      tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls', 'read_session', SHOW_WIDGET_TOOL, WIDGET_GUIDE_TOOL, ...DESIGN_TOOL_NAMES, ...(offersWorkflows ? [START_WORKFLOW_TOOL, REPORT_STATUS_TOOL, START_SESSION_TOOL] : []), ...(offersTeamTools ? [ADD_TO_TASK_TOOL, MOVE_TASK_TOOL] : [])],
-      customTools: [createPiSessionReader(), createPiShowWidget(), createPiWidgetGuide(), ...createPiDesignTools(input.threadId), ...(offersWorkflows ? [createPiStartSession(input.threadId), createPiStartWorkflow(input.threadId), createPiReportStatus(input.threadId)] : []), ...(offersTeamTools ? createPiTeamTools(input.threadId) : [])],
+      tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls', 'read_session', SHOW_WIDGET_TOOL, WIDGET_GUIDE_TOOL, ...DESIGN_TOOL_NAMES, ...(offersWorkflows ? [START_WORKFLOW_TOOL, REPORT_STATUS_TOOL, START_SESSION_TOOL] : [])],
+      customTools: [createPiSessionReader(), createPiShowWidget(), createPiWidgetGuide(), ...createPiDesignTools(input.threadId), ...(offersWorkflows ? [createPiStartSession(input.threadId), createPiStartWorkflow(input.threadId), createPiReportStatus(input.threadId)] : [])],
       ...(selectedModel ? { model: selectedModel } : {}),
     });
 
