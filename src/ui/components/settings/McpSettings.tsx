@@ -3,7 +3,7 @@ import { ArrowLeft, ChevronDown, MoreHorizontal, Plus, Trash2 } from '../icons';
 import * as Menu from '../ui/dropdown-menu';
 import { PreferenceSelect } from './GeneralSettingsContent';
 import { toast } from 'sonner';
-import { useAppStore } from '../../store/useAppStore';
+import { MCP_SAVE_TOAST_ID, useAppStore } from '../../store/useAppStore';
 import { sendEvent } from '../../hooks/useIPC';
 import type { McpServerConfig, McpServerStatus, McpSettingsRuntime } from '../../types';
 import type { CodexMcpServerRuntimeStatus } from '../../../shared/types';
@@ -307,7 +307,7 @@ export function McpSettingsContent() {
     dispatchSave(group.id, rest);
 
     setView({ kind: 'list' });
-    toast.success(`Deleted "${name}".`);
+    toast.success(`Deleted "${name}".`, { id: MCP_SAVE_TOAST_ID });
   };
 
   const handleSave = (name: string, config: McpServerConfig, group: ServerGroup) => {
@@ -326,7 +326,7 @@ export function McpSettingsContent() {
     dispatchSave(group.id, nextServers);
 
     setView({ kind: 'list' });
-    toast.success(`${originalName ? 'Updated' : 'Saved'} "${trimmedName}".`);
+    toast.success(`${originalName ? 'Updated' : 'Saved'} "${trimmedName}".`, { id: MCP_SAVE_TOAST_ID });
   };
 
   // Codex only: `enabled = false` disables the server in Aegis' private catalog.
@@ -341,7 +341,7 @@ export function McpSettingsContent() {
       nextConfig.enabled = false;
     }
     dispatchSave(group.id, { ...group.servers, [name]: nextConfig });
-    toast.success(`${nextEnabled ? 'Enabled' : 'Disabled'} "${name}".`);
+    toast.success(`${nextEnabled ? 'Enabled' : 'Disabled'} "${name}".`, { id: MCP_SAVE_TOAST_ID });
   };
 
   const visibleGroups = useMemo(

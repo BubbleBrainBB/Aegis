@@ -1,7 +1,8 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { homedir } from 'os';
-import { dirname, join } from 'path';
+import { join } from 'path';
 import type { McpServerConfig } from './claude-settings';
+import { readJsonConfigForUpdate, writeJsonConfigAtomic } from './json-config-file';
 
 // Kimi Code CLI 的 MCP 配置使用标准的 "mcpServers" 结构，与 Claude 的 mcpServers 基本一致：
 // stdio 用 command/args/env，http 用 url/headers，不带 type 字段（按是否有 url 推断）。
@@ -50,15 +51,9 @@ function readConfig(configPath: string): KimiMcpFile {
 
 function writeConfig(configPath: string, config: KimiMcpFile): void {
   try {
-    mkdirSync(dirname(configPath), { recursive: true });
-    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf-8');
     // May carry the delegate/browser-use bearer token in headers — restrict
     // to the owning user (matches ~/.aegis permissions).
-    try {
-      chmodSync(configPath, 0o600);
-    } catch {
-      // best-effort on exotic filesystems
-    }
+    writeJsonConfigAtomic(configPath, config, { mode: 0o600 });
   } catch (error) {
     console.warn(`Failed to write Kimi MCP config at ${configPath}:`, error);
     throw error;
@@ -80,7 +75,7 @@ function kimiCodeMcpPath(): string {
  * kimi-cli file, where earlier versions also wrote it.
  */
 export function upsertKimiMcpServerRaw(name: string, entry: KimiMcpEntry): void {
-  const config = readConfig(kimiCodeMcpPath());
+  const config = readJsonConfigForUpdate<KimiMcpFile>(kimiCodeMcpPath());
   config.mcpServers = { ...(config.mcpServers || {}), [name]: entry };
   writeConfig(kimiCodeMcpPath(), config);
   removeFrom(legacyMcpPath(), name, () => true);
@@ -94,7 +89,7 @@ export function removeKimiMcpServerRaw(name: string, shouldRemove: (entry: KimiM
 
 function removeFrom(configPath: string, name: string, shouldRemove: (entry: KimiMcpEntry) => boolean): void {
   if (!existsSync(configPath)) return;
-  const config = readConfig(configPath);
+  const config = readJsonConfigForUpdate<KimiMcpFile>(configPath);
   const entry = config.mcpServers?.[name];
   if (!entry || !shouldRemove(entry)) return;
   delete config.mcpServers![name];
@@ -129,7 +124,7 @@ function readMcpServers(configPath: string): Record<string, McpServerConfig> {
 
 // 写回指定 mcp.json 的 MCP 服务器：整体替换 "mcpServers" 块，保留文件中其它字段。
 function writeMcpServers(configPath: string, servers: Record<string, McpServerConfig>): void {
-  const config = readConfig(configPath);
+  const config = readJsonConfigForUpdate<KimiMcpFile>(configPath);
   const next: Record<string, KimiMcpEntry> = {};
 
   for (const [name, cfg] of Object.entries(servers)) {

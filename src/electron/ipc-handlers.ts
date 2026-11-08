@@ -13240,21 +13240,34 @@ function handleMcpSaveConfig(
     projectPath?: string;
   }
 ): void {
+  // A file Aegis refused to write (unparseable, unwritable) is reported back
+  // so the settings page can say so instead of only logging it here.
+  const saveErrors: string[] = [];
+  const noteSaveError = (label: string, error: unknown) => {
+    console.warn(`Failed to save ${label} MCP servers:`, error);
+    saveErrors.push(error instanceof Error ? error.message : String(error));
+  };
+
   // 保存 Claude 全局配置
   let claudeMcpChanged = false;
-  if (payload.globalServers !== undefined) {
-    saveMcpServers(payload.globalServers);
-    claudeMcpChanged = true;
-  } else if (payload.servers !== undefined) {
-    // 向后兼容
-    saveMcpServers(payload.servers);
-    claudeMcpChanged = true;
+  const claudeGlobalServers = payload.globalServers ?? payload.servers; // servers：向后兼容
+  if (claudeGlobalServers !== undefined) {
+    try {
+      saveMcpServers(claudeGlobalServers);
+      claudeMcpChanged = true;
+    } catch (error) {
+      noteSaveError('Claude', error);
+    }
   }
 
   // 保存 Claude 项目级配置
   if (payload.projectPath && payload.projectServers !== undefined) {
-    saveProjectMcpServers(payload.projectPath, payload.projectServers);
-    claudeMcpChanged = true;
+    try {
+      saveProjectMcpServers(payload.projectPath, payload.projectServers);
+      claudeMcpChanged = true;
+    } catch (error) {
+      noteSaveError('Claude project', error);
+    }
   }
 
   if (claudeMcpChanged) {
@@ -13268,7 +13281,7 @@ function handleMcpSaveConfig(
     try {
       saveCodexMcpServers(payload.codexGlobalServers);
     } catch (error) {
-      console.warn('Failed to save Codex MCP servers:', error);
+      noteSaveError('Codex', error);
     }
   }
 
@@ -13281,7 +13294,7 @@ function handleMcpSaveConfig(
       delete incoming[BROWSER_USE_SERVER_NAME];
       saveOpencodeMcpServers(incoming);
     } catch (error) {
-      console.warn('Failed to save OpenCode MCP servers:', error);
+      noteSaveError('OpenCode', error);
     }
   }
 
@@ -13290,7 +13303,7 @@ function handleMcpSaveConfig(
     try {
       saveOpencodeProjectMcpServers(payload.projectPath, payload.opencodeProjectServers);
     } catch (error) {
-      console.warn('Failed to save OpenCode project MCP servers:', error);
+      noteSaveError('OpenCode project', error);
     }
   }
 
@@ -13299,7 +13312,7 @@ function handleMcpSaveConfig(
     try {
       saveKimiMcpServers(payload.kimiGlobalServers);
     } catch (error) {
-      console.warn('Failed to save Kimi MCP servers:', error);
+      noteSaveError('Kimi', error);
     }
   }
 
@@ -13308,7 +13321,7 @@ function handleMcpSaveConfig(
     try {
       saveKimiProjectMcpServers(payload.projectPath, payload.kimiProjectServers);
     } catch (error) {
-      console.warn('Failed to save Kimi project MCP servers:', error);
+      noteSaveError('Kimi project', error);
     }
   }
 
@@ -13321,7 +13334,7 @@ function handleMcpSaveConfig(
       delete incoming[BROWSER_USE_SERVER_NAME];
       saveQoderMcpServers(incoming);
     } catch (error) {
-      console.warn('Failed to save Qoder MCP servers:', error);
+      noteSaveError('Qoder', error);
     }
   }
 
@@ -13334,7 +13347,7 @@ function handleMcpSaveConfig(
       delete incoming[BROWSER_USE_SERVER_NAME];
       saveBubbleMcpServers(incoming);
     } catch (error) {
-      console.warn('Failed to save Bubble MCP servers:', error);
+      noteSaveError('Bubble', error);
     }
   }
 
@@ -13389,6 +13402,7 @@ function handleMcpSaveConfig(
       bubbleGlobalServers,
       deepseekGlobalServers,
       deepseekProjectServers,
+      ...(saveErrors.length > 0 ? { saveErrors } : {}),
     },
   });
 }

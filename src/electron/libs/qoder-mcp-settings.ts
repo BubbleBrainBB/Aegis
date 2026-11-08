@@ -1,7 +1,8 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { homedir } from 'os';
-import { dirname, join } from 'path';
+import { join } from 'path';
 import type { McpServerConfig } from './claude-settings';
+import { readJsonConfigForUpdate, writeJsonConfigAtomic } from './json-config-file';
 
 // Qoder CLI 的 MCP 配置使用标准的 "mcpServers" 结构，与 Claude 的 mcpServers 基本一致：
 // stdio 用 command/args/env，http 用 url/headers，不带 type 字段（按是否有 url 推断）。
@@ -35,8 +36,7 @@ function readConfig(configPath: string): QoderMcpFile {
 
 function writeConfig(configPath: string, config: QoderMcpFile): void {
   try {
-    mkdirSync(dirname(configPath), { recursive: true });
-    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf-8');
+    writeJsonConfigAtomic(configPath, config);
   } catch (error) {
     console.warn(`Failed to write Qoder MCP config at ${configPath}:`, error);
     throw error;
@@ -71,7 +71,7 @@ function readMcpServers(configPath: string): Record<string, McpServerConfig> {
 
 // 写回 mcp.json 的 MCP 服务器：整体替换 "mcpServers" 块，保留文件中其它字段。
 function writeMcpServers(configPath: string, servers: Record<string, McpServerConfig>): void {
-  const config = readConfig(configPath);
+  const config = readJsonConfigForUpdate<QoderMcpFile>(configPath);
   const next: Record<string, QoderMcpEntry> = {};
 
   for (const [name, cfg] of Object.entries(servers)) {

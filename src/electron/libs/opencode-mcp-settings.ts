@@ -1,7 +1,8 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { homedir } from 'os';
-import { dirname, join } from 'path';
+import { join } from 'path';
 import type { McpServerConfig } from './claude-settings';
+import { readJsonConfigForUpdate, writeJsonConfigAtomic } from './json-config-file';
 
 // OpenCode 的 MCP 配置写在 opencode.json 的顶层 "mcp" 字段里：
 //   - 全局：~/.config/opencode/opencode.json
@@ -50,8 +51,7 @@ function readConfig(configPath: string): OpencodeConfigFile {
 
 function writeConfig(configPath: string, config: OpencodeConfigFile): void {
   try {
-    mkdirSync(dirname(configPath), { recursive: true });
-    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf-8');
+    writeJsonConfigAtomic(configPath, config);
   } catch (error) {
     console.warn(`Failed to write OpenCode config at ${configPath}:`, error);
     throw error;
@@ -91,7 +91,7 @@ function readMcpServers(configPath: string): Record<string, McpServerConfig> {
 
 // 写回指定 opencode.json 的 MCP 服务器：整体替换 "mcp" 块，保留文件中其它字段（model/provider 等）。
 function writeMcpServers(configPath: string, servers: Record<string, McpServerConfig>): void {
-  const config = readConfig(configPath);
+  const config = readJsonConfigForUpdate<OpencodeConfigFile>(configPath);
   const existing = config.mcp || {};
   const next: Record<string, OpencodeMcpEntry> = {};
 

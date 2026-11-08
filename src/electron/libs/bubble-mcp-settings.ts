@@ -1,7 +1,8 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { homedir } from 'os';
-import { dirname, join } from 'path';
+import { join } from 'path';
 import type { McpServerConfig } from './claude-settings';
+import { readJsonConfigForUpdate, writeJsonConfigAtomic } from './json-config-file';
 
 // Bubble 的 MCP 配置内嵌在 ~/.bubble/settings.json 的 "mcpServers" 键里（仅全局，
 // 无项目级配置）。结构与 Claude 的 mcpServers 基本一致：stdio 用 command/args/env，
@@ -39,8 +40,7 @@ function readSettings(configPath: string): BubbleSettingsFile {
 
 function writeSettings(configPath: string, config: BubbleSettingsFile): void {
   try {
-    mkdirSync(dirname(configPath), { recursive: true });
-    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf-8');
+    writeJsonConfigAtomic(configPath, config);
   } catch (error) {
     console.warn(`Failed to write Bubble settings at ${configPath}:`, error);
     throw error;
@@ -76,7 +76,7 @@ function readMcpServers(configPath: string): Record<string, McpServerConfig> {
 // 写回 settings.json 的 MCP 服务器：先读整个文件，只替换 "mcpServers" 块再写回，
 // settings.json 中的其它顶层设置（模型、主题等）绝不能丢。
 function writeMcpServers(configPath: string, servers: Record<string, McpServerConfig>): void {
-  const config = readSettings(configPath);
+  const config = readJsonConfigForUpdate<BubbleSettingsFile>(configPath);
   const next: Record<string, BubbleMcpEntry> = {};
 
   for (const [name, cfg] of Object.entries(servers)) {
