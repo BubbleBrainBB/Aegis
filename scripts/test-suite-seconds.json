@@ -110,6 +110,7 @@
   "verify:design-core": 73,
   "verify:design-canvas": 105,
   "verify:transcript-file-paths": 2,
+  "verify:markdown-file-links": 2,
   "verify:project-file-navigation": 15,
   "verify:new-tab-menu": 10
 }

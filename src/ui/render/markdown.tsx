@@ -33,6 +33,14 @@ import {
   stripGeneratedMediaEmbeds,
 } from '../utils/generated-media';
 import { markdownRemarkPlugins } from '../utils/markdown-math';
+import {
+  getProjectFileLink,
+  isLocalFileUrl,
+  looksLikeRevealablePath,
+  normalizeSlashPath,
+  parseLineSuffix,
+  type ProjectFileLink,
+} from '../utils/markdown-file-links';
 import { DesignBoardLinksContext, DesignLinkSessionContext, remarkDesignBoardLinks } from '../utils/design-board-links';
 
 async function statProjectFile(cwd: string, relativePath: string): Promise<string | null> {
@@ -68,13 +76,6 @@ interface MDContentProps {
   content: string;
   className?: string;
   allowHtml?: boolean;
-}
-
-interface ProjectFileLink {
-  path: string;
-  line?: number;
-  /** 不在任何已知项目根下的真实绝对路径：面板按外部文件打开 */
-  external?: boolean;
 }
 
 function extractTextContent(node: ReactNode): string {
@@ -134,117 +135,6 @@ function extractCodeChild(children: ReactNode): {
     className: props.className,
     codeChildren: props.children,
   };
-}
-
-function looksLikeRevealablePath(value: string): boolean {
-  const text = value.trim();
-  if (!text || /[\r\n\t]/.test(text)) {
-    return false;
-  }
-
-  return (
-    text === '~' ||
-    text.startsWith('~/') ||
-    text.startsWith('~\\') ||
-    /^\/(Users|home|tmp|var|etc|opt|private|Volumes|mnt)\//.test(text) ||
-    /^[A-Za-z]:[\\/]/.test(text)
-  );
-}
-
-function stripHashAndQuery(value: string): string {
-  const queryIndex = value.indexOf('?');
-  const hashIndex = value.indexOf('#');
-  const cutPoints = [queryIndex, hashIndex].filter((index) => index >= 0);
-  if (cutPoints.length === 0) return value;
-  return value.slice(0, Math.min(...cutPoints));
-}
-
-function extractLineHint(value: string): number | undefined {
-  const match = /(?:#L|[?&#]line=)(\d+)/i.exec(value);
-  if (!match) return undefined;
-
-  const line = Number(match[1]);
-  return Number.isInteger(line) && line > 0 ? line : undefined;
-}
-
-function normalizeSlashPath(value: string): string {
-  return value.replace(/\\/g, '/').replace(/\/+/g, '/');
-}
-
-function parseLineSuffix(path: string): ProjectFileLink {
-  // Model answers often cite files as README.md:3 or src/App.tsx:120:8.
-  // Keep the display line while preventing it from becoming part of the filename.
-  const match = /:(\d+)(?::\d+)?$/.exec(path);
-  if (!match) {
-    return { path };
-  }
-
-  const line = Number(match[1]);
-  return {
-    path: path.slice(0, match.index ?? path.length),
-    line: Number.isInteger(line) && line > 0 ? line : undefined,
-  };
-}
-
-function getProjectFileLink(
-  href: string | undefined,
-  roots: Array<string | null | undefined>
-): ProjectFileLink | null {
-  const cwds = roots
-    .map((root) => (root ? normalizeSlashPath(root).replace(/\/$/, '') : ''))
-    .filter(Boolean);
-  if (!href || cwds.length === 0) return null;
-
-  const raw = href.trim();
-  if (!raw || raw.startsWith('#')) return null;
-  if (/^(?:https?|mailto|tel|javascript|data|blob):/i.test(raw)) return null;
-  if (/^[a-z][a-z\d+.-]*:/i.test(raw) && !raw.toLowerCase().startsWith('file:')) {
-    return null;
-  }
-
-  const lineHint = extractLineHint(raw);
-  let path = raw;
-  if (raw.toLowerCase().startsWith('file:')) {
-    try {
-      path = decodeURIComponent(new URL(raw).pathname);
-    } catch {
-      return null;
-    }
-  } else {
-    path = stripHashAndQuery(raw);
-    try {
-      path = decodeURIComponent(path);
-    } catch {
-      // Keep the raw path if it contains a partial percent escape.
-    }
-  }
-
-  const parsed = parseLineSuffix(normalizeSlashPath(path.trim()));
-  path = parsed.path;
-  if (!path || path.includes('\0')) return null;
-
-  const line = parsed.line ?? lineHint;
-  if (path.startsWith('/')) {
-    // 依次对齐已知根（session cwd、项目根）：worktree 会话里模型常引用
-    // 主工作区的绝对路径，相对化后在 worktree 检出里打开同一文件。
-    let relative: string | null = null;
-    for (const normalizedCwd of cwds) {
-      if (path === normalizedCwd) return null;
-      if (path.startsWith(`${normalizedCwd}/`)) {
-        relative = path.slice(normalizedCwd.length + 1);
-        break;
-      }
-    }
-    if (relative === null) {
-      // 不属于任何根、但确实像本机文件的绝对路径 → 面板按外部文件打开，
-      // 而不是丢给系统浏览器；网页式的 /pricing 之类保持原有外链行为。
-      return looksLikeRevealablePath(path) ? { path, line, external: true } : null;
-    }
-    path = relative;
-  }
-
-  path = path.replace(/^\.\//, '');
-  return path && path !== '.' ? { path, line } : null;
 }
 
 /** Hostname for http(s) links, without leading www. */
@@ -920,7 +810,7 @@ function MDContentImpl({ content, className = '', allowHtml = false }: MDContent
     <div className={`markdown-content ${className}`}>
       <ErrorBoundary fallback={fallback} resetKey={renderedContent}>
         <ReactMarkdown
-          urlTransform={url => parseSessionLink(url) || parseDesignLink(url) ? url : defaultUrlTransform(url)}
+          urlTransform={url => parseSessionLink(url) || parseDesignLink(url) || isLocalFileUrl(url) ? url : defaultUrlTransform(url)}
           remarkPlugins={remarkPlugins}
           rehypePlugins={rehypePlugins}
           disallowedElements={disallowedElements}
