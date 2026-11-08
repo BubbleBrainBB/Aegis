@@ -796,6 +796,10 @@ function extractLatestClaudeModelUsage(
   return undefined;
 }
 
+/** The MCP settings page confirms a save before the main process answers; a
+ * save that left a file unchanged replaces that toast instead of following it. */
+export const MCP_SAVE_TOAST_ID = 'mcp-save';
+
 export const useAppStore = create<Store>()(
   persist<Store, [], [], unknown>(
     (set, get) => ({
@@ -1427,6 +1431,9 @@ export const useAppStore = create<Store>()(
           mcpDeepseekGlobalServers: event.payload.deepseekGlobalServers || {},
           mcpDeepseekProjectServers: event.payload.deepseekProjectServers || {},
         });
+        if (event.payload.saveErrors?.length) {
+          toast.error(event.payload.saveErrors.join('\n'), { id: MCP_SAVE_TOAST_ID });
+        }
         break;
 
       case 'mcp.status':

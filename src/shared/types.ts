@@ -1071,6 +1071,8 @@ export type ServerEvent =
       bubbleGlobalServers?: Record<string, McpServerConfig>;
       deepseekGlobalServers?: Record<string, McpServerConfig>;
       deepseekProjectServers?: Record<string, McpServerConfig>;
+      /** Why a save left a config file unchanged, one message per file. */
+      saveErrors?: string[];
     } }
   | { type: 'mcp.status'; payload: { servers: McpServerStatus[] } }
   | { type: 'skills.list'; payload: {

@@ -1,6 +1,7 @@
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
+import { readJsonConfigForUpdate, writeJsonConfigAtomic } from './json-config-file';
 import type { ClaudeModelConfig } from '../../shared/types';
 
 function canonicalizeClaudeModel(model?: string | null): string | null {
@@ -359,15 +360,15 @@ export function getProjectMcpServers(projectPath: string): Record<string, McpSer
 
 // 保存全局 MCP 服务器配置
 export function saveMcpServers(servers: Record<string, McpServerConfig>): void {
-  const config = loadClaudeJson();
+  const config = readJsonConfigForUpdate<ClaudeJsonConfig>(CLAUDE_JSON_PATH);
   config.mcpServers = servers;
 
-  writeFileSync(CLAUDE_JSON_PATH, JSON.stringify(config, null, 2), 'utf-8');
+  writeJsonConfigAtomic(CLAUDE_JSON_PATH, config);
 }
 
 // 保存项目级 MCP 服务器配置
 export function saveProjectMcpServers(projectPath: string, servers: Record<string, McpServerConfig>): void {
-  const config = loadClaudeJson();
+  const config = readJsonConfigForUpdate<ClaudeJsonConfig>(CLAUDE_JSON_PATH);
 
   if (!config.projects) {
     config.projects = {};
@@ -377,5 +378,5 @@ export function saveProjectMcpServers(projectPath: string, servers: Record<strin
   }
   config.projects[projectPath].mcpServers = servers;
 
-  writeFileSync(CLAUDE_JSON_PATH, JSON.stringify(config, null, 2), 'utf-8');
+  writeJsonConfigAtomic(CLAUDE_JSON_PATH, config);
 }
