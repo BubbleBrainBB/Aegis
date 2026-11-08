@@ -41,6 +41,7 @@ import {
   parseLineSuffix,
   type ProjectFileLink,
 } from '../utils/markdown-file-links';
+import { renderDeliverAssets } from '../utils/deliver-assets';
 import { DesignBoardLinksContext, DesignLinkSessionContext, remarkDesignBoardLinks } from '../utils/design-board-links';
 
 async function statProjectFile(cwd: string, relativePath: string): Promise<string | null> {
@@ -776,7 +777,10 @@ function MDContentImpl({ content, className = '', allowHtml = false }: MDContent
     [sessionMessages]
   );
   const renderedContent = useMemo(
-    () => stripGeneratedMediaEmbeds(content, generatedMedia),
+    () => stripGeneratedMediaEmbeds(
+      renderDeliverAssets(content, (path) => Boolean(findGeneratedMediaForPath(path, generatedMedia))),
+      generatedMedia
+    ),
     [content, generatedMedia]
   );
   const disallowedElements = ['script', 'style', 'iframe', 'object', 'embed', 'link', 'meta', 'base'];

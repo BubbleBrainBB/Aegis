@@ -102,6 +102,7 @@
   "verify:work-disclosure-scope": 2,
   "verify:design-mode": 2,
   "verify:generated-media": 2,
+  "verify:deliver-assets": 2,
   "verify:project-tree-visibility": 2,
   "verify:file-preview-readonly": 10,
   "verify:grok-session-files": 2,

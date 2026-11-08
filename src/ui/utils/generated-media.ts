@@ -8,6 +8,7 @@ import {
   type GeneratedMediaItem,
 } from '../../shared/generated-media';
 import { getMessageContentBlocks } from './message-content';
+import { extractDeliveredMedia } from './deliver-assets';
 
 export type { GeneratedMediaItem, GeneratedMediaKind } from '../../shared/generated-media';
 export { getGeneratedMediaKind, isMediaGenerationTool } from '../../shared/generated-media';
@@ -57,6 +58,14 @@ export function extractGeneratedMediaFromMessages(messages: StreamMessage[], opt
       for (const item of readGeneratedMediaFromToolInput(block.input)) {
         addItem({ ...item, toolUseId: block.id, prompt: item.prompt || prompt });
       }
+    }
+  }
+
+  // Files an answer hands over in a <deliver-assets> block (MiniMax Code).
+  for (const message of messages) {
+    if (message.type !== 'assistant') continue;
+    for (const block of getMessageContentBlocks(message)) {
+      if (block.type === 'text' && block.text) extractDeliveredMedia(block.text).forEach(addItem);
     }
   }
 
