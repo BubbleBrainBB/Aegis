@@ -70,9 +70,8 @@ import { SubagentAvatar } from './SubagentAvatar';
 import { getSubagentPersona } from '../utils/subagent-persona';
 import { ProviderIcon } from './AgentModelPicker';
 import { WorkflowBoard } from './workflow/WorkflowBoard';
-import { isAddToTaskToolName, isMoveTaskToolName, isStartSessionToolName } from '../../shared/follow-up';
+import { isStartSessionToolName } from '../../shared/follow-up';
 import { SubSessionCard } from './follow-up/SubSessionCard';
-import { TeamTaskLine } from './follow-up/TeamTaskLine';
 import { isShowWidgetToolName, widgetFromToolInput } from '../../shared/widget';
 import { InlineWidget } from './widget/InlineWidget';
 import { ImageStudioSessionContext } from '../lib/image-studio';
@@ -852,17 +851,6 @@ function TraceWidget({ entry, draft }: { entry?: WidgetEntry; draft?: WidgetDraf
 /** A start_workflow call: the workflow it started, live, in place of a subagent lane. A start_session call: the session's row. */
 function WorkflowEntryBoard({ entry }: { entry: TaskEntry }) {
   const resultText = entry.result ? getToolResultOutputContent(entry.result) : null;
-  if (isAddToTaskToolName(entry.toolName) || isMoveTaskToolName(entry.toolName)) {
-    return (
-      <TeamTaskLine
-        toolName={entry.toolName}
-        input={entry.block.input}
-        resultText={resultText}
-        failed={entry.status === 'error' || entry.result?.is_error === true}
-        pending={!entry.result && entry.status !== 'error'}
-      />
-    );
-  }
   if (isStartSessionToolName(entry.toolName)) {
     return (
       <SubSessionCard

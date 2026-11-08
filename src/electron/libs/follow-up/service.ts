@@ -29,7 +29,6 @@ import {
   SUB_SESSION_LIMITS,
 } from './brief';
 import type { FollowUpRow, FollowUpStore } from './store';
-import { isAgentProvider, TEAM_LIMITS } from '../../../shared/team';
 
 /** Open proposals one conversation may have before it must wait for the user. */
 export const MAX_OPEN_FOLLOW_UPS = 5;
@@ -88,11 +87,8 @@ export interface FollowUpHost {
   isBusy(sessionId: string): boolean;
   getSession(sessionId: string): FollowUpSessionInfo | null;
   history(sessionId: string): StreamMessage[];
-  /**
-   * The parent's provider, model and permission settings, for the new session;
-   * with `target`, another agent's own defaults instead.
-   */
-  inheritedOptions(parentSessionId: string, target?: { provider: string; model: string | null }): Partial<SessionStartPayload>;
+  /** The parent's provider, model and permission settings, for the new session. */
+  inheritedOptions(parentSessionId: string): Partial<SessionStartPayload>;
   /** A short label for the permission mode the new session would get. */
   permissionMode(parentSessionId: string): string | null;
   /** The parent's own folder, for a sub-session that shares it. */
@@ -101,12 +97,6 @@ export interface FollowUpHost {
   worktreeExists(worktreePath: string): boolean;
   /** The project folders the user has in Aegis. */
   listProjects(): string[];
-  /** Whether a session is the Team conversation. */
-  isTeam(sessionId: string): boolean;
-  /** Whether an agent may take a task: ready, and on in Team when `team` is set. */
-  checkProvider(provider: string, options: { team: boolean }): Promise<{ ok: true } | { ok: false; error: string }>;
-  /** Hand a running or finished session to another agent, keeping its id and conversation. */
-  moveSession(sessionId: string, provider: string, note: string): Promise<boolean>;
   isGitRepo(cwd: string): Promise<boolean>;
   /** `git status --short` of a folder; null when unknown. */
   uncommitted(cwd: string): Promise<string[] | null>;
@@ -127,34 +117,12 @@ export interface StartSessionArgs {
   project?: string;
   /** true: a new worktree; false: no worktree; omitted: a worktree wherever git allows one. */
   use_worktree?: boolean;
-  /** The agent that runs it; omitted: the caller's own. */
-  provider?: string;
-  /** That agent's model; omitted: its default. */
-  model?: string;
-}
-
-export interface AddToTaskArgs {
-  /** The task: its session id or its exact title. */
-  task: string;
-  message: string;
-}
-
-export interface MoveTaskArgs {
-  task: string;
-  provider: string;
 }
 
 export type ToolOutcome = { ok: true; text: string } | { ok: false; error: string };
 
 export class FollowUpService {
   private readonly children: Set<string>;
-  /** Team starts admitted but not yet recorded, per caller: the per-turn cap counts them. */
-  private readonly startsInFlight = new Map<string, number>();
-  /** Team messages for a task that was working; it gets them when its turn ends. */
-  private readonly heldForTask = new Map<string, string[]>();
-  /** Each session's latest turn end, numbered, so a late delivery can tell it is stale. */
-  private readonly turnEnds = new Map<string, { turn: number; status: 'completed' | 'error' | 'stopped' }>();
-  private turnCounter = 0;
   /** Parents a delivery is being sent to right now. */
   private readonly delivering = new Set<string>();
 
@@ -255,11 +223,9 @@ export class FollowUpService {
       ? null
       : this.store.findRecentSession(callerSessionId, title, prompt, RETRY_WINDOW_MS, targetProject ? [targetProject] : [callerProject, session.cwd]);
     if (existing) return this.startSessionOutcome(existing);
-    const team = this.teamPlace(callerSessionId);
     // Only words the user typed start sessions: never a turn that a report,
-    // a workflow or the starting session's brief began. Team is the exception:
-    // its coordinator hands out work on any turn, and task owners split theirs.
-    if (!team && !this.userTypedLatest(callerSessionId)) {
+    // a workflow or the starting session's brief began.
+    if (!this.userTypedLatest(callerSessionId)) {
       return {
         ok: false,
         error: this.children.has(callerSessionId)
@@ -271,70 +237,8 @@ export class FollowUpService {
     if (!prompt) return { ok: false, error: '"prompt" is required.' };
     if (title.length > SUB_SESSION_LIMITS.title) return { ok: false, error: `"title" is longer than ${SUB_SESSION_LIMITS.title} characters.` };
     if (prompt.length > SUB_SESSION_LIMITS.prompt) return { ok: false, error: `"prompt" is longer than ${SUB_SESSION_LIMITS.prompt} characters.` };
-    if (team) {
-      if (team.depth >= TEAM_LIMITS.maxSplitDepth) {
-        return { ok: false, error: `Tasks can be split ${TEAM_LIMITS.maxSplitDepth} levels deep at most. Do this part yourself.` };
-      }
-      if (this.startedThisTurn(callerSessionId) + (this.startsInFlight.get(callerSessionId) ?? 0) >= TEAM_LIMITS.maxStartsPerTurn) {
-        return { ok: false, error: `At most ${TEAM_LIMITS.maxStartsPerTurn} tasks per turn. Do the rest yourself or start them next turn.` };
-      }
-      if (team.depth === 0 && !targetProject) {
-        const projects = this.host.listProjects();
-        return {
-          ok: false,
-          error: projects.length
-            ? `Name the project the task runs in with "project". The user's projects: ${projects.join(', ')}.`
-            : 'The user has no projects in Aegis yet. Ask them to add one.',
-        };
-      }
-      if (team.depth === 0 && !args.provider?.trim()) {
-        return { ok: false, error: 'Pass "provider": the agent from the roster whose description fits this task.' };
-      }
-    }
-    const provider = args.provider?.trim() || session.provider;
-    if (!isAgentProvider(provider)) return { ok: false, error: `"${provider}" is not an agent Aegis knows.` };
-    // Admitted now, before anything is awaited: parallel calls in one turn
-    // count against the cap even while their checks run.
-    if (team) this.startsInFlight.set(callerSessionId, (this.startsInFlight.get(callerSessionId) ?? 0) + 1);
-    let reserved = Boolean(team);
-    const release = () => {
-      if (!reserved) return;
-      reserved = false;
-      const left = (this.startsInFlight.get(callerSessionId) ?? 1) - 1;
-      if (left > 0) this.startsInFlight.set(callerSessionId, left);
-      else this.startsInFlight.delete(callerSessionId);
-    };
-    try {
-      // In Team every owner must be able to take work, the caller's own agent too.
-      if (team || provider !== session.provider) {
-        const allowed = await this.host.checkProvider(provider, { team: Boolean(team) });
-        if (!allowed.ok) return { ok: false, error: allowed.error };
-      }
-      return await this.insertAndStart(callerSessionId, toolUseId, session, {
-        title, prompt, provider, targetProject, callerProject, useWorktree: args.use_worktree,
-        // Team's coordinator picks an owner, not a copy of itself: the owner runs on
-        // its own defaults unless a model is named. Elsewhere the caller's carries over.
-        model: team?.depth === 0 || provider !== session.provider ? (args.model?.trim() || null) : (args.model?.trim() || session.model),
-        ownDefaults: team?.depth === 0 || provider !== session.provider,
-      }, release);
-    } finally {
-      release();
-    }
-  }
-
-  private async insertAndStart(
-    callerSessionId: string,
-    toolUseId: string | null,
-    session: FollowUpSessionInfo,
-    input: {
-      title: string; prompt: string; provider: string; model: string | null; ownDefaults: boolean;
-      targetProject: string | null; callerProject: string; useWorktree: boolean | undefined;
-    },
-    recorded: () => void,
-  ): Promise<ToolOutcome> {
-    const { title, prompt, provider, model, targetProject, callerProject } = input;
     const project = targetProject ?? callerProject;
-    const place = await this.chooseSubSessionPlace(session, project, targetProject !== null && targetProject !== callerProject, input.useWorktree);
+    const place = await this.chooseSubSessionPlace(session, project, targetProject !== null && targetProject !== callerProject, args.use_worktree);
     const { row, created } = this.store.insert({
       id: randomUUID(),
       kind: 'session',
@@ -347,13 +251,11 @@ export class FollowUpService {
       plan: prompt,
       acceptance_criteria: '',
       // A worktree comes from the project, not from the parent's own worktree.
-      project_cwd: place === 'shared' ? session.cwd! : project,
-      provider,
-      model,
-      permission_mode: input.ownDefaults ? null : this.host.permissionMode(callerSessionId),
+      project_cwd: place === 'shared' ? session.cwd : project,
+      provider: session.provider,
+      model: session.model,
+      permission_mode: this.host.permissionMode(callerSessionId),
     });
-    // Recorded: the row counts toward the per-turn cap from here on.
-    recorded();
     this.publish(row.id);
     // A call that lost the race to insert this tool_use leaves the start to the winner.
     if (created && row.status === 'starting' && !row.child_session_id) await this.runStart(row.id);
@@ -377,129 +279,6 @@ export class FollowUpService {
     if (session.inWorktree) return otherProject && !(await this.host.isGitRepo(project)) ? stay : 'worktree';
     if (session.isChat && !otherProject) return stay;
     return (await this.host.isGitRepo(project)) ? 'worktree' : stay;
-  }
-
-  /**
-   * Where a session sits in Team: depth 0 for the Team conversation, 1 for a
-   * task it started, and so on; null when it is not part of Team.
-   */
-  private teamPlace(sessionId: string): { depth: number } | null {
-    let current = sessionId;
-    for (let depth = 0; depth <= TEAM_LIMITS.maxSplitDepth + 8; depth += 1) {
-      if (this.host.isTeam(current)) return { depth };
-      const row = this.store.findByChild(current);
-      if (!row || row.detached_at !== null && row.detached_at !== undefined) return null;
-      current = row.parent_session_id;
-    }
-    return null;
-  }
-
-  /** Sessions the caller started since its current turn began. */
-  private startedThisTurn(sessionId: string): number {
-    const history = this.host.history(sessionId);
-    let since = 0;
-    for (let index = history.length - 1; index >= 0; index -= 1) {
-      if (opensTurn(history[index])) {
-        since = Number(history[index].createdAt ?? 0);
-        break;
-      }
-    }
-    return this.store.countSessionsStartedSince(sessionId, since);
-  }
-
-  /** A task this conversation started, by its session id, proposal id or exact title. */
-  private findTask(callerSessionId: string, task: string): FollowUpRow | { error: string } {
-    const wanted = task?.trim() ?? '';
-    const rows = this.store
-      .childrenOf(callerSessionId)
-      .filter((row) => row.kind === 'session' && row.child_session_id && (row.detached_at === null || row.detached_at === undefined));
-    if (!wanted) return { error: '"task" is required: the task\'s session id or its exact title.' };
-    const byId = rows.find((row) => row.child_session_id === wanted || row.id === wanted);
-    if (byId) return byId;
-    const byTitle = rows.filter((row) => row.title.toLowerCase() === wanted.toLowerCase());
-    if (byTitle.length === 1) return byTitle[0];
-    const titles = rows.map((row) => `"${row.title}" (${row.child_session_id})`).join(', ');
-    if (byTitle.length > 1) return { error: `Several tasks are called "${wanted}". Pass the session id of one: ${titles}.` };
-    return { error: rows.length ? `No task "${wanted}" here. The tasks: ${titles}.` : 'This conversation has not started any tasks yet.' };
-  }
-
-  /** The task that last started or reported here, for a follow-up sent without a coordinator. */
-  lastTaskActivity(parentSessionId: string): { taskId: string; title: string; at: number } | null {
-    let latest: { taskId: string; title: string; at: number } | null = null;
-    for (const row of this.store.childrenOf(parentSessionId)) {
-      if (row.kind !== 'session' || !row.child_session_id || (row.detached_at !== null && row.detached_at !== undefined)) continue;
-      const reported = this.store.reports(row.id).at(-1)?.createdAt ?? 0;
-      const at = Math.max(Number(row.created_at), reported);
-      if (!latest || at > latest.at) latest = { taskId: row.child_session_id, title: row.title, at };
-    }
-    return latest;
-  }
-
-  /** add_to_task: Team passes the user's message to a task; a finished one reopens. */
-  async addToTask(callerSessionId: string, args: AddToTaskArgs): Promise<ToolOutcome> {
-    if (!this.host.isTeam(callerSessionId)) return { ok: false, error: 'Only the Team coordinator can add to a task.' };
-    const found = this.findTask(callerSessionId, args.task);
-    if ('error' in found) return { ok: false, error: found.error };
-    const message = args.message?.trim() ?? '';
-    if (!message) return { ok: false, error: '"message" is required: the user\'s words for the task.' };
-    if (message.length > SUB_SESSION_LIMITS.prompt) return { ok: false, error: `"message" is longer than ${SUB_SESSION_LIMITS.prompt} characters.` };
-    const child = found.child_session_id!;
-    // A working task is not interrupted: it gets the message once its turn ends.
-    if (this.host.isBusy(child)) {
-      this.heldForTask.set(child, [...(this.heldForTask.get(child) ?? []), message]);
-      return {
-        ok: true,
-        text: JSON.stringify({
-          sessionId: child,
-          title: found.title,
-          note: 'The task is working; it gets this as soon as its current turn ends.',
-        }),
-      };
-    }
-    // Anything still waiting from an earlier send that failed goes first, in order.
-    const waiting = this.heldForTask.get(child) ?? [];
-    this.heldForTask.delete(child);
-    let sent = false;
-    try {
-      sent = await this.host.continue({ sessionId: child, prompt: [...waiting, message].join('\n\n') });
-    } finally {
-      if (!sent && waiting.length) this.heldForTask.set(child, [...waiting, ...(this.heldForTask.get(child) ?? [])]);
-    }
-    if (!sent) return { ok: false, error: `The message could not be sent to "${found.title}".` };
-    this.publish(found.id);
-    return {
-      ok: true,
-      text: JSON.stringify({ sessionId: child, title: found.title, note: 'Sent; the task picks it up now. A finished task is open again.' }),
-    };
-  }
-
-  /** move_task: one owner at a time, so this replaces the agent running the task. */
-  async moveTask(callerSessionId: string, args: MoveTaskArgs): Promise<ToolOutcome> {
-    if (!this.host.isTeam(callerSessionId)) return { ok: false, error: 'Only the Team coordinator can move a task.' };
-    const found = this.findTask(callerSessionId, args.task);
-    if ('error' in found) return { ok: false, error: found.error };
-    const provider = args.provider?.trim() ?? '';
-    if (!isAgentProvider(provider)) return { ok: false, error: `"${provider}" is not an agent Aegis knows.` };
-    const current = this.host.getSession(found.child_session_id!)?.provider ?? found.provider;
-    if (provider === current) return { ok: true, text: JSON.stringify({ title: found.title, note: `${provider} already owns this task.` }) };
-    const allowed = await this.host.checkProvider(provider, { team: true });
-    if (!allowed.ok) return { ok: false, error: allowed.error };
-    const moved = await this.host.moveSession(
-      found.child_session_id!,
-      provider,
-      `This task was moved to you from ${current} at the user's request. Continue it from where it stands.`,
-    );
-    if (!moved) return { ok: false, error: `"${found.title}" could not be moved. Try again once it stops working.` };
-    this.store.setProvider(found.id, provider, null);
-    this.publish(found.id);
-    return {
-      ok: true,
-      text: JSON.stringify({
-        sessionId: found.child_session_id,
-        title: found.title,
-        note: `${provider} owns it now, with the conversation so far.`,
-      }),
-    };
   }
 
   /** Take a session out from under the one that started it: it stops reporting back. */
@@ -595,42 +374,12 @@ export class FollowUpService {
    * parent's own turn ending flushes what arrived while it worked. A turn the
    * user stopped starts nothing new.
    */
-  /**
-   * Record a turn end as it happens, before any delivery is scheduled. The
-   * number it returns tells the scheduled delivery whether a newer turn ended since.
-   */
-  noteTurnEnd(sessionId: string, status: 'completed' | 'error' | 'stopped'): number {
-    const turn = ++this.turnCounter;
-    this.turnEnds.set(sessionId, { turn, status });
-    return turn;
-  }
-
-  async deliverAfterTurn(sessionId: string, status: 'completed' | 'error' | 'stopped', turn?: number): Promise<void> {
-    // Without a number (a caller that did not note the turn end), this is the latest.
-    const ended = turn ?? this.noteTurnEnd(sessionId, status);
+  async deliverAfterTurn(sessionId: string, status: 'completed' | 'error' | 'stopped'): Promise<void> {
     // Its own report goes up first, while it is idle: once its sessions' results
     // wake it, it counts as working and would hold its parent's delivery back.
     if (this.children.has(sessionId)) {
       const parent = this.store.findByChild(sessionId)?.parent_session_id;
       if (parent) await this.deliverPending(parent);
-    }
-    // Then what Team added while it worked, as the user's next message to it.
-    // A turn the user stopped starts nothing, and neither does a late delivery
-    // for a turn a newer one (maybe stopped) has replaced: the messages wait.
-    const latest = this.turnEnds.get(sessionId);
-    const current = !latest || (latest.turn === ended && latest.status !== 'stopped');
-    const held = this.heldForTask.get(sessionId);
-    if (held?.length && status !== 'stopped' && current && !this.host.isBusy(sessionId)) {
-      this.heldForTask.delete(sessionId);
-      let sent = false;
-      try {
-        sent = await this.host.continue({ sessionId, prompt: held.join('\n\n') });
-      } catch (error) {
-        console.error('[follow-up] could not pass Team messages to a task:', error);
-      }
-      // Not delivered: back in front of anything queued meanwhile, for the next turn end.
-      if (!sent) this.heldForTask.set(sessionId, [...held, ...(this.heldForTask.get(sessionId) ?? [])]);
-      return;
     }
     // Then what its own sessions reported while it worked (a sub-session can start some too).
     if (status !== 'stopped') await this.deliverPending(sessionId);
@@ -640,9 +389,8 @@ export class FollowUpService {
   async deliverPending(parentSessionId: string): Promise<boolean> {
     if (this.delivering.has(parentSessionId) || this.host.isBusy(parentSessionId)) return false;
     if (!this.host.getSession(parentSessionId)) return false;
-    // Sessions it started that are still working report later, all at once;
-    // Team hears from each task as it finishes.
-    if (!this.host.isTeam(parentSessionId) && this.store.childrenOf(parentSessionId).some((child) => child.kind === 'session' && this.host.isBusy(child.child_session_id!))) {
+    // Sessions it started that are still working report later, all at once.
+    if (this.store.childrenOf(parentSessionId).some((child) => child.kind === 'session' && this.host.isBusy(child.child_session_id!))) {
       return false;
     }
     const pending = this.store.undeliveredReports(parentSessionId);
@@ -829,28 +577,14 @@ export class FollowUpService {
         worktree,
         projectFolder: row.place === 'project' ? row.project_cwd : null,
         repoRoot: worktree ? row.repo_root : null,
-        split: this.splitAllowance(row.parent_session_id),
       }),
       workflowPrompt: 'sub-session',
     };
   }
 
-  /** For a Team task: how much further it may split its work. */
-  private splitAllowance(parentSessionId: string): { depthLeft: number; perTurn: number } | null {
-    const place = this.teamPlace(parentSessionId);
-    if (!place) return null;
-    return { depthLeft: TEAM_LIMITS.maxSplitDepth - (place.depth + 1), perTurn: TEAM_LIMITS.maxStartsPerTurn };
-  }
-
   private async launch(row: FollowUpRow, fields: Partial<SessionStartPayload> & Pick<SessionStartPayload, 'prompt'>): Promise<void> {
-    // The owner the row names runs as recorded: another agent, or a task Team
-    // gave out, on its own defaults; the parent's own agent with any model named.
-    const parentProvider = this.host.getSession(row.parent_session_id)?.provider;
-    const ownDefaults = row.provider !== parentProvider || this.host.isTeam(row.parent_session_id);
-    const target = ownDefaults ? { provider: row.provider, model: row.model } : undefined;
     const payload: SessionStartPayload = {
-      ...this.host.inheritedOptions(row.parent_session_id, target),
-      ...(!ownDefaults && row.model ? { model: row.model } : {}),
+      ...this.host.inheritedOptions(row.parent_session_id),
       title: row.title,
       skipTitleGeneration: true,
       background: true,
@@ -893,9 +627,8 @@ export class FollowUpService {
         proposalId: row.id,
         status: row.status,
         note:
-          `Started session "${row.title}" ${where}${row.provider ? ` with ${row.provider}` : ''}. It runs on its own; its result comes back here as a message when its turn ends ` +
-          (this.host.isTeam(row.parent_session_id) ? '. ' : '(after the other sessions you started finish too). ') +
-          'At most one line on that, then continue or end your turn; do not wait for it.',
+          `Started session "${row.title}" ${where}. It runs on its own; its result comes back here as a message when its turn ends ` +
+          '(after the other sessions you started finish too). At most one line on that, then continue or end your turn; do not wait for it.',
       }),
     };
   }

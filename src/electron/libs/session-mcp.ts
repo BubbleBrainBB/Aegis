@@ -2,20 +2,14 @@ import { z } from 'zod';
 import { READ_SESSION_DESCRIPTION, readSessionTool } from './session-reference';
 import { START_WORKFLOW_DESCRIPTION, startWorkflowSchema, startWorkflowTool, type StartWorkflowArgs } from './workflow/chat-entry';
 import { START_WORKFLOW_TOOL } from '../../shared/workflow';
-import {
-  ADD_TO_TASK_TOOL, isAddToTaskToolName, isMoveTaskToolName, isStartSessionToolName, MOVE_TASK_TOOL,
-  PROPOSE_FOLLOW_UP_TOOL, START_SESSION_TOOL, WITHDRAW_FOLLOW_UP_TOOL,
-} from '../../shared/follow-up';
+import { isStartSessionToolName, PROPOSE_FOLLOW_UP_TOOL, START_SESSION_TOOL, WITHDRAW_FOLLOW_UP_TOOL } from '../../shared/follow-up';
 import { getWorkflowSessionPolicy } from './workflow/session-hooks';
 import {
   PROPOSE_FOLLOW_UP_DESCRIPTION, proposeFollowUpSchema, proposeFollowUpTool,
   WITHDRAW_FOLLOW_UP_DESCRIPTION, withdrawFollowUpSchema, withdrawFollowUpTool,
   START_SESSION_DESCRIPTION, startSessionSchema, startSessionTool,
-  ADD_TO_TASK_DESCRIPTION, addToTaskSchema, addToTaskTool,
-  MOVE_TASK_DESCRIPTION, moveTaskSchema, moveTaskTool,
 } from './follow-up/tool';
-import type { AddToTaskArgs, MoveTaskArgs, ProposeArgs, StartSessionArgs } from './follow-up/service';
-import { isTeamSession } from './team';
+import type { ProposeArgs, StartSessionArgs } from './follow-up/service';
 import {
   SHOW_WIDGET_DESCRIPTION, SHOW_WIDGET_TOOL, showWidgetAnnotations, showWidgetSchema, showWidgetTool,
   WIDGET_GUIDE_DESCRIPTION, WIDGET_GUIDE_TOOL, widgetGuideSchema, widgetGuideTool,
@@ -130,25 +124,6 @@ export function buildSessionMcpServer(options: {
       return startSessionTool(sessionId, args, context);
     });
   }
-  // Team's coordinator tools, found the same way as start_session; the
-  // service refuses any caller that is not the Team conversation.
-  const teamTools: Array<[string, string, typeof addToTaskSchema | typeof moveTaskSchema, (name: unknown) => boolean, (id: string, args: never) => ReturnType<typeof addToTaskTool>]> = [
-    [ADD_TO_TASK_TOOL, ADD_TO_TASK_DESCRIPTION, addToTaskSchema, isAddToTaskToolName, (id, args: AddToTaskArgs) => addToTaskTool(id, args)],
-    [MOVE_TASK_TOOL, MOVE_TASK_DESCRIPTION, moveTaskSchema, isMoveTaskToolName, (id, args: MoveTaskArgs) => moveTaskTool(id, args)],
-  ];
-  for (const [name, description, inputSchema, matches, run] of teamTools) {
-    if (!offers(name) || !startSessionCaller || !(options.callerSessionId || options.resolveFromMeta || options.only)) continue;
-    if (options.callerSessionId && !isTeamSession(options.callerSessionId)) continue;
-    server.registerTool(name, { description, inputSchema, annotations: workflowAnnotations }, async (args: never, context?: { signal?: AbortSignal; _meta?: Record<string, unknown> }) => {
-      const sessionId = options.callerSessionId
-        ?? await options.resolveFromMeta?.(context?._meta, { direct: true }).catch(() => null)
-        ?? (options.only ? await findToolCallerSessionId(matches, args, context?.signal) : null);
-      if (!sessionId) {
-        return { content: [{ type: 'text', text: 'Only the Team coordinator can do this.' }], isError: true };
-      }
-      return run(sessionId, args);
-    });
-  }
   for (const spec of DESIGN_TOOL_SPECS) {
     if (!offers(spec.name)) continue;
     server.registerTool(spec.name, {
@@ -208,16 +183,6 @@ export async function createSessionSdkMcpServer(
         ? [sdk.tool(START_SESSION_TOOL, START_SESSION_DESCRIPTION, startSessionSchema,
           (args: StartSessionArgs, extra: unknown) => startSessionTool(options.callerSessionId!, args, extra),
           { annotations: workflowAnnotations, alwaysLoad: true })]
-        : []),
-      ...(options.subSessions && options.callerSessionId && isTeamSession(options.callerSessionId)
-        ? [
-          sdk.tool(ADD_TO_TASK_TOOL, ADD_TO_TASK_DESCRIPTION, addToTaskSchema,
-            (args: AddToTaskArgs) => addToTaskTool(options.callerSessionId!, args),
-            { annotations: workflowAnnotations, alwaysLoad: true }),
-          sdk.tool(MOVE_TASK_TOOL, MOVE_TASK_DESCRIPTION, moveTaskSchema,
-            (args: MoveTaskArgs) => moveTaskTool(options.callerSessionId!, args),
-            { annotations: workflowAnnotations, alwaysLoad: true }),
-        ]
         : []),
       ...(options.turnReports && options.callerSessionId
         // Claude's background tasks wake the session, so it may report "in_progress".

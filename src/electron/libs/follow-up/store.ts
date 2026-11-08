@@ -240,20 +240,6 @@ export class FollowUpStore {
       .all(parentSessionId) as FollowUpRow[];
   }
 
-  /**
-   * Sessions one session started since a moment, bound or still starting:
-   * one whose worktree is still being made counts too. Failed starts don't.
-   */
-  countSessionsStartedSince(parentSessionId: string, since: number): number {
-    const row = this.db
-      .prepare(
-        `SELECT COUNT(*) AS n FROM follow_up_proposals
-         WHERE parent_session_id = ? AND kind = 'session' AND status != 'start_failed' AND detached_at IS NULL AND created_at >= ?`,
-      )
-      .get(parentSessionId, since) as { n: number } | undefined;
-    return Number(row?.n ?? 0);
-  }
-
   /** Take a session out from under its parent; returns false when it was not nested. */
   detach(childSessionId: string): boolean {
     const result = this.db
@@ -302,13 +288,6 @@ export class FollowUpStore {
       )
       .run(childSessionId, this.now(), id);
     return Number(result.changes) > 0;
-  }
-
-  /** The agent that runs a task now, after the user moved it. */
-  setProvider(id: string, provider: string, model: string | null): void {
-    this.db
-      .prepare('UPDATE follow_up_proposals SET provider = ?, model = ?, revision = revision + 1, updated_at = ? WHERE id = ?')
-      .run(provider, model, this.now(), id);
   }
 
   /** Record where the worktree landed, so a retry reuses it. */

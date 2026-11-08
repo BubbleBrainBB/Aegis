@@ -3,7 +3,6 @@ import { startFailed, startSucceeded } from '../utils/start-lease';
 import { useFollowUpStore } from './useFollowUpStore';
 import { useSessionOrganizationStore, changeSessionOrganization } from './useSessionOrganizationStore';
 import { create } from 'zustand';
-import { saveAppPreferences, useAppPreferences } from './useAppPreferences';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import { rendererStateStorage } from '../utils/renderer-state-storage';
 import { toast } from 'sonner';
@@ -808,7 +807,6 @@ export const useAppStore = create<Store>()(
       workspaceChannelsByProject: {},
       activeChannelByProject: {},
       activeSessionId: initialUiResumeState?.activeSessionId ?? null,
-      teamSessionId: null,
       activeWorkspace: 'chat' as ActiveWorkspace,
       chatSidebarView: 'threads' as ChatSidebarView,
       workspaceLayout: initialWorkspaceLayout,
@@ -1862,28 +1860,6 @@ export const useAppStore = create<Store>()(
     toast.success('Forked into a new pane');
   },
 
-  setTeamSessionId: (sessionId) => set({ teamSessionId: sessionId }),
-
-  openTeam: async () => {
-    let info: import('../../shared/types').SessionInfo;
-    try {
-      info = await window.electron.openTeamSession();
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Team could not be opened.');
-      return;
-    }
-    set((state) => ({
-      teamSessionId: info.id,
-      sessions: state.sessions[info.id] ? state.sessions : { ...state.sessions, [info.id]: freshSessionViewFromInfo(info) },
-    }));
-    const store = get();
-    store.setShowSettings(false);
-    store.setActiveSession(info.id);
-    store.setShowNewSession(false);
-    store.setActiveWorkspace('chat');
-    store.setChatSidebarView('threads');
-  },
-
   handoffSessionToProvider: async (sessionId, targetProvider) => {
     const result = await window.electron.sessionHandoff({ sessionId, targetProvider });
     if (!result?.ok || !result.session) {
@@ -2482,11 +2458,6 @@ export const useAppStore = create<Store>()(
       const session = state.sessions[sessionId];
       if (!session) {
         return state;
-      }
-      // Team's composer picks the coordinator: the same setting as Settings › Team.
-      if (sessionId === state.teamSessionId) {
-        const team = useAppPreferences.getState().team;
-        void saveAppPreferences({ team: { ...team, coordinator: { provider: selection.provider, model: selection.model ?? '' } } });
       }
       return {
         sessions: {

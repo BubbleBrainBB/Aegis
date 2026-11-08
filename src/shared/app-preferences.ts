@@ -1,5 +1,4 @@
 import { normalizeShortcutOverrides, type ShortcutOverrides } from './keyboard-shortcuts';
-import { DEFAULT_TEAM_SETTINGS, normalizeTeamSettings, type TeamSettings } from './team';
 
 export type EnterBehavior = 'enter' | 'multiline' | 'modifier';
 export interface AppPreferences {
@@ -19,8 +18,6 @@ export interface AppPreferences {
   diffMarkers: 'color' | 'signs';
   /** Where chats without a project get their folders; empty means ~/Documents/Aegis. */
   chatsFolder: string;
-  /** Team: the coordinator and what each agent takes. */
-  team: TeamSettings;
 }
 
 export const DEFAULT_APP_PREFERENCES: AppPreferences = {
@@ -31,15 +28,13 @@ export const DEFAULT_APP_PREFERENCES: AppPreferences = {
   uiFontSize: 13, codeFontSize: 12, reduceMotion: 'system',
   fontSmoothing: true, pointerCursors: true, diffMarkers: 'color',
   chatsFolder: '',
-  team: DEFAULT_TEAM_SETTINGS,
 };
 
 export function normalizeAppPreferences(value: unknown): AppPreferences {
-  const result = { ...DEFAULT_APP_PREFERENCES, keyboardShortcuts: {}, team: normalizeTeamSettings(null) };
+  const result = { ...DEFAULT_APP_PREFERENCES, keyboardShortcuts: {} };
   if (!value || typeof value !== 'object') return result;
   const input = value as Record<string, unknown>;
   result.keyboardShortcuts = normalizeShortcutOverrides(input.keyboardShortcuts);
-  result.team = normalizeTeamSettings(input.team);
   for (const key of ['preventSleep', 'showContextUsage', 'plainTextComposer', 'fontSmoothing', 'pointerCursors'] as const) {
     if (typeof input[key] === 'boolean') result[key] = input[key];
   }
