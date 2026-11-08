@@ -3,11 +3,11 @@
 // closure, never taken from the model's input or guessed across sessions.
 
 import { z } from 'zod';
-import { isProposeFollowUpToolName, isStartSessionToolName, START_SESSION_TOOL } from '../../../shared/follow-up';
+import { ADD_TO_TASK_TOOL, isProposeFollowUpToolName, isStartSessionToolName, MOVE_TASK_TOOL, START_SESSION_TOOL } from '../../../shared/follow-up';
 import type { StreamMessage } from '../../types';
 import { findPendingToolUse } from '../tool-caller-attribution';
 import { FOLLOW_UP_LIMITS, SUB_SESSION_LIMITS } from './brief';
-import type { ProposeArgs, StartSessionArgs, ToolOutcome } from './service';
+import type { AddToTaskArgs, MoveTaskArgs, ProposeArgs, StartSessionArgs, ToolOutcome } from './service';
 
 export const PROPOSE_FOLLOW_UP_DESCRIPTION = [
   'Propose a separate follow-up task to the user: a problem you found that is outside your current task,',
@@ -31,6 +31,8 @@ export const START_SESSION_DESCRIPTION = [
   'out unless the user asks otherwise or the task needs this session\'s uncommitted changes. Write the prompt for someone who has not seen this conversation:',
   'the task, the files or area, what done looks like. The session starts at once and runs on its own; each time it finishes a',
   'turn its reply comes back to you as a message, after every session you started has finished. Do not wait for it.',
+  'In Team (its coordinator and the tasks it started) the rules differ: you may start tasks without the user asking, pass provider to',
+  'pick the agent that runs it (it starts on that agent\'s own defaults), and Team hears from each task as soon as it finishes.',
 ].join(' ');
 
 export const startSessionSchema = {
@@ -49,6 +51,28 @@ export const startSessionSchema = {
     .boolean()
     .optional()
     .describe('Leave this out: the session gets a worktree wherever git allows one, and small tasks are no exception. Set false only when the user asks for no worktree or the task needs this session\'s uncommitted changes; true only when the user asks for a worktree in a folder that would not get one.'),
+  provider: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('The agent that runs the task, by id (claude, codex, kimi, ...). Omit to use your own. In Team, pick from the roster by its description.'),
+  model: z.string().min(1).optional().describe('That agent\'s model id. Omit for its default.'),
+};
+
+export const ADD_TO_TASK_DESCRIPTION =
+  'Team only: pass the user\'s message to a task you started, because it is about that task (a correction, more requirements, "it broke again"). A finished task opens again; a working one gets it as soon as its current turn ends, without being interrupted. Use this instead of starting a new task for the same work.';
+
+export const addToTaskSchema = {
+  task: z.string().min(1).describe('The task: its session id from start_session, or its exact title.'),
+  message: z.string().min(1).max(SUB_SESSION_LIMITS.prompt).describe('The user\'s words for the task, with any context it needs from this conversation.'),
+};
+
+export const MOVE_TASK_DESCRIPTION =
+  'Team only: give a task to another agent because the user asked ("let Codex do this one"). One owner at a time: the new agent replaces the old one and continues with the conversation so far.';
+
+export const moveTaskSchema = {
+  task: z.string().min(1).describe('The task: its session id from start_session, or its exact title.'),
+  provider: z.string().min(1).describe('The agent to take it, by id (claude, codex, kimi, ...), from the roster.'),
 };
 
 export const proposeFollowUpSchema = {
@@ -76,12 +100,36 @@ export const START_SESSION_JSON_SCHEMA = {
     prompt: { type: 'string', maxLength: SUB_SESSION_LIMITS.prompt, description: startSessionSchema.prompt.description },
     project: { type: 'string', description: startSessionSchema.project.description },
     use_worktree: { type: 'boolean', description: startSessionSchema.use_worktree.description },
+    provider: { type: 'string', description: startSessionSchema.provider.description },
+    model: { type: 'string', description: startSessionSchema.model.description },
+  },
+};
+
+export const ADD_TO_TASK_JSON_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['task', 'message'],
+  properties: {
+    task: { type: 'string', description: addToTaskSchema.task.description },
+    message: { type: 'string', maxLength: SUB_SESSION_LIMITS.prompt, description: addToTaskSchema.message.description },
+  },
+};
+
+export const MOVE_TASK_JSON_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['task', 'provider'],
+  properties: {
+    task: { type: 'string', description: moveTaskSchema.task.description },
+    provider: { type: 'string', description: moveTaskSchema.provider.description },
   },
 };
 
 export interface FollowUpToolEntry {
   propose(callerSessionId: string, toolUseId: string | null, args: ProposeArgs): ToolOutcome;
   startSession(callerSessionId: string, toolUseId: string | null, args: StartSessionArgs): Promise<ToolOutcome>;
+  addToTask(callerSessionId: string, args: AddToTaskArgs): Promise<ToolOutcome>;
+  moveTask(callerSessionId: string, args: MoveTaskArgs): Promise<ToolOutcome>;
   withdraw(callerSessionId: string, proposalId: string): ToolOutcome;
   history(sessionId: string): StreamMessage[];
 }
@@ -144,6 +192,24 @@ export async function startSessionTool(callerSessionId: string, args: StartSessi
   }
 }
 
+export async function addToTaskTool(callerSessionId: string, args: AddToTaskArgs): Promise<ToolText> {
+  if (!entry) return text({ ok: false, error: 'Team is not available right now.' });
+  try {
+    return text(await entry.addToTask(callerSessionId, args));
+  } catch (error) {
+    return text({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+export async function moveTaskTool(callerSessionId: string, args: MoveTaskArgs): Promise<ToolText> {
+  if (!entry) return text({ ok: false, error: 'Team is not available right now.' });
+  try {
+    return text(await entry.moveTask(callerSessionId, args));
+  } catch (error) {
+    return text({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
 export async function withdrawFollowUpTool(callerSessionId: string, args: { proposal_id: string }): Promise<ToolText> {
   if (!entry) return text({ ok: false, error: 'Follow-up tasks are not available right now.' });
   try {
@@ -181,4 +247,47 @@ export function createPiStartSession(sessionId: string) {
       return { content: result.content, details: {} };
     },
   };
+}
+
+/** Team's coordinator tools as native host tools (Bubble), which carry their session. */
+export function createNativeTeamTools(sessionId: string) {
+  const run = async (result: Promise<ToolText>) => {
+    const done = await result;
+    return { content: done.content.map((item) => item.text).join('\n'), isError: done.isError === true };
+  };
+  return [
+    {
+      name: ADD_TO_TASK_TOOL, description: ADD_TO_TASK_DESCRIPTION,
+      parameters: ADD_TO_TASK_JSON_SCHEMA, readOnly: false, effect: 'unknown' as const, requiresApproval: true,
+      execute: (args: AddToTaskArgs) => run(addToTaskTool(sessionId, args)),
+    },
+    {
+      name: MOVE_TASK_TOOL, description: MOVE_TASK_DESCRIPTION,
+      parameters: MOVE_TASK_JSON_SCHEMA, readOnly: false, effect: 'unknown' as const, requiresApproval: true,
+      execute: (args: MoveTaskArgs) => run(moveTaskTool(sessionId, args)),
+    },
+  ];
+}
+
+/** The same for Pi, whose custom tools take a call id first. */
+export function createPiTeamTools(sessionId: string) {
+  const run = async (result: Promise<ToolText>) => {
+    const done = await result;
+    if (done.isError) throw new Error(done.content[0].text);
+    return { content: done.content, details: {} };
+  };
+  return [
+    {
+      name: ADD_TO_TASK_TOOL, label: 'Add to task', description: ADD_TO_TASK_DESCRIPTION,
+      promptSnippet: 'Team: pass the user\'s message to a task you started.',
+      parameters: ADD_TO_TASK_JSON_SCHEMA,
+      execute: (_callId: string, args: AddToTaskArgs) => run(addToTaskTool(sessionId, args)),
+    },
+    {
+      name: MOVE_TASK_TOOL, label: 'Move task', description: MOVE_TASK_DESCRIPTION,
+      promptSnippet: 'Team: give a task to another agent when the user asks.',
+      parameters: MOVE_TASK_JSON_SCHEMA,
+      execute: (_callId: string, args: MoveTaskArgs) => run(moveTaskTool(sessionId, args)),
+    },
+  ];
 }

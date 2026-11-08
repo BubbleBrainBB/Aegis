@@ -14,6 +14,7 @@ import {
   Palette,
   HomeFilled,
   ListChecks,
+  Messages,
   Script,
   Search,
   SquarePen,
@@ -122,7 +123,15 @@ export function Sidebar() {
     openDraftSession,
     searchPaletteOpen,
     setSearchPaletteOpen,
+    showNewSession,
+    teamSessionId,
+    setTeamSessionId,
+    openTeam,
   } = useAppStore();
+  // Team's conversation, if one was made, so the row can show it is open.
+  useEffect(() => {
+    void window.electron.getTeamSessionId().then(setTeamSessionId).catch(() => undefined);
+  }, [setTeamSessionId]);
   const organization = useSessionOrganization();
   const viewProject = useSidebarViewStore((state) => state.project);
   const setViewOption = useSidebarViewStore((state) => state.setOption);
@@ -480,6 +489,12 @@ export function Sidebar() {
                   label="Search"
                   title={['Search', shortcutLabel('search', shortcuts)].filter(Boolean).join(' · ')}
                   onClick={() => setSearchPaletteOpen(true)}
+                />
+                <SidebarNavRow
+                  icon={<Messages className="h-[15px] w-[15px]" strokeWidth={1.5} />}
+                  label="Team"
+                  active={activeWorkspace === 'chat' && !showNewSession && Boolean(teamSessionId) && activeSessionId === teamSessionId}
+                  onClick={() => void openTeam()}
                 />
                 <SidebarNavRow
                   icon={<ListChecks className="h-[15px] w-[15px]" strokeWidth={1.5} />}

@@ -9,6 +9,9 @@
 export const PROPOSE_FOLLOW_UP_TOOL = 'propose_follow_up';
 export const WITHDRAW_FOLLOW_UP_TOOL = 'withdraw_follow_up';
 export const START_SESSION_TOOL = 'start_session';
+/** Team's coordinator: pass the user's words to a task, or give a task to another agent. */
+export const ADD_TO_TASK_TOOL = 'add_to_task';
+export const MOVE_TASK_TOOL = 'move_task';
 
 /** True for `tool` bare or namespaced by a runtime (`mcp__server__tool`, `server.tool`, `server/tool`). */
 export function matchesTool(name: unknown, tool: string): boolean {
@@ -25,6 +28,8 @@ export function matchesTool(name: unknown, tool: string): boolean {
 export const isProposeFollowUpToolName = (name: unknown) => matchesTool(name, PROPOSE_FOLLOW_UP_TOOL);
 export const isWithdrawFollowUpToolName = (name: unknown) => matchesTool(name, WITHDRAW_FOLLOW_UP_TOOL);
 export const isStartSessionToolName = (name: unknown) => matchesTool(name, START_SESSION_TOOL);
+export const isAddToTaskToolName = (name: unknown) => matchesTool(name, ADD_TO_TASK_TOOL);
+export const isMoveTaskToolName = (name: unknown) => matchesTool(name, MOVE_TASK_TOOL);
 
 /** A proposal the user accepts on a card, or a sub-session started because the user asked. */
 export type FollowUpKind = 'proposal' | 'session';

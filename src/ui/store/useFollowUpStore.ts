@@ -78,11 +78,20 @@ export function findProposalForChild(
   return Object.values(proposals).find((proposal) => proposal.childSessionId === childSessionId) ?? null;
 }
 
-/** Each nested session's direct parent: sessions started by another and not detached since. */
-export function subSessionParents(proposals: Record<string, FollowUpProposalView>): Map<string, string> {
+/**
+ * Each nested session's direct parent: sessions started by another and not
+ * detached since. Tasks Team started are top-level tasks of their own, so
+ * they have no parent here (`topLevelUnder`), and their own tasks nest under them.
+ */
+export function subSessionParents(
+  proposals: Record<string, FollowUpProposalView>,
+  topLevelUnder: string | null = null,
+): Map<string, string> {
   const parents = new Map<string, string>();
   for (const proposal of Object.values(proposals)) {
-    if (proposal.childSessionId && proposal.detachedAt === null) parents.set(proposal.childSessionId, proposal.parentSessionId);
+    if (!proposal.childSessionId || proposal.detachedAt !== null) continue;
+    if (topLevelUnder && proposal.parentSessionId === topLevelUnder) continue;
+    parents.set(proposal.childSessionId, proposal.parentSessionId);
   }
   return parents;
 }
