@@ -23,6 +23,8 @@ const fakeAgentPath = path.join(dir, 'mcode');
 const FLASH = 'm:minimax:MiniMax-M3.1-Flash:v:thinking';
 const FLASH_PLAIN = 'm:minimax:MiniMax-M3.1-Flash:v:';
 const M3 = 'm:minimax:MiniMax-M3:v:';
+/** The catalog default, without booting a probe through the fake agent. */
+const withDefault = { readDefaultModel: async () => FLASH };
 
 writeFileSync(
   fakeAgentPath,
@@ -32,6 +34,8 @@ const path = require('node:path');
 const LOG = ${JSON.stringify(logPath)};
 const DATA = ${JSON.stringify(dataDir)};
 const FAIL_RESUME = process.env.FAKE_MCODE_FAIL_RESUME === '1';
+// mcode restores a resumed session's saved model (observed on 0.6.12).
+const RESUME_MODEL = process.env.FAKE_MCODE_RESUME_MODEL;
 const SLOW_INIT = process.env.FAKE_MCODE_SLOW_INIT === '1';
 const NEW_SESSION_ID = process.env.FAKE_MCODE_NEW_SESSION_ID || 'mvs_fresh';
 const FAIL_INIT = process.env.FAKE_MCODE_FAIL_INIT === '1';
@@ -100,6 +104,7 @@ async function handle(message) {
       send({ id, error: { code: -32002, message: 'Session not found' } });
       return;
     }
+    if (RESUME_MODEL) state.model = RESUME_MODEL;
     commands(params.sessionId);
     update(params.sessionId, { sessionUpdate: 'usage_update', used: 4321, size: 512000 });
     send({ id, result: { modes: modes(), configOptions: config() } });
@@ -368,7 +373,7 @@ async function main(): Promise<void> {
   }
 
   // ── New session + one turn ────────────────────────────────────────────────
-  const adapter = new MinimaxAcpAdapter();
+  const adapter = new MinimaxAcpAdapter(withDefault);
   const events: Event[] = [];
   let answer: (event: Event) => void = () => {};
   adapter.events.on('event', (event: Event) => {
@@ -681,7 +686,7 @@ async function main(): Promise<void> {
   // ── Stopping a batch still reports the usage it already incurred ──────────
   {
     resetCalls();
-    const stopping = new MinimaxAcpAdapter();
+    const stopping = new MinimaxAcpAdapter(withDefault);
     const stoppingEvents: Event[] = [];
     stopping.events.on('event', (event: Event) => {
       stoppingEvents.push(event);
@@ -732,7 +737,7 @@ async function main(): Promise<void> {
   // ── Stopping a turn whose usage is still being read, then resuming at once ─
   {
     resetCalls();
-    const finalizing = new MinimaxAcpAdapter();
+    const finalizing = new MinimaxAcpAdapter(withDefault);
     const finalizingEvents: Event[] = [];
     finalizing.events.on('event', (event: Event) => {
       finalizingEvents.push(event);
@@ -769,7 +774,7 @@ async function main(): Promise<void> {
   // ── An error in a batch: one error result, usage of every turn ────────────
   {
     resetCalls();
-    const erring = new MinimaxAcpAdapter();
+    const erring = new MinimaxAcpAdapter(withDefault);
     const erringEvents: Event[] = [];
     erring.events.on('event', (event: Event) => {
       erringEvents.push(event);
@@ -798,7 +803,7 @@ async function main(): Promise<void> {
   // ── A turn that fails before its prompt goes out counts no usage ──────────
   {
     resetCalls();
-    const failing = new MinimaxAcpAdapter();
+    const failing = new MinimaxAcpAdapter(withDefault);
     const failingEvents: Event[] = [];
     failing.events.on('event', (event: Event) => failingEvents.push(event));
     await failing.startSession({ threadId: 't5', cwd: dir, prompt: '' } as never);
@@ -826,7 +831,7 @@ async function main(): Promise<void> {
   // ── Stopping while a reconnect is still starting kills it ─────────────────
   {
     resetCalls();
-    const reconnecting = new MinimaxAcpAdapter();
+    const reconnecting = new MinimaxAcpAdapter(withDefault);
     await reconnecting.startSession({ threadId: 't6', cwd: dir, prompt: '' } as never);
     await withTimeout(reconnecting.sendTurn({ threadId: 't6', prompt: 'EXIT afterwards' } as never), 'turn before the exit');
     await new Promise((resolve) => setTimeout(resolve, 300));
@@ -860,7 +865,7 @@ async function main(): Promise<void> {
     resetCalls();
     process.env.FAKE_MCODE_SLOW_INIT = '1';
     try {
-      const starting = new MinimaxAcpAdapter();
+      const starting = new MinimaxAcpAdapter(withDefault);
       const start = starting.startSession({ threadId: 't4', cwd: dir, prompt: 'should never run' } as never);
       await new Promise((resolve) => setTimeout(resolve, 300));
       await starting.stopSession('t4');
@@ -873,11 +878,63 @@ async function main(): Promise<void> {
     }
   }
 
+  // ── Default: an empty model request returns to the session's default ─────
+  {
+    resetCalls();
+    let catalogReads = 0;
+    const fresh = new MinimaxAcpAdapter({
+      readDefaultModel: async () => {
+        catalogReads += 1;
+        return FLASH;
+      },
+    });
+    const results: Array<{ model?: string }> = [];
+    fresh.events.on('event', (event: Event) => {
+      const message = event.type === 'message' ? (event.message as { type?: string; model?: string }) : undefined;
+      if (message?.type === 'result') results.push(message);
+    });
+    const modelSwitches = () =>
+      readCalls()
+        .filter((call) => call.method === 'session/set_config_option' && call.params.configId === 'model')
+        .map((call) => call.params.value);
+    await fresh.startSession({ threadId: 't10', cwd: dir, prompt: '', model: M3 } as never);
+    await withTimeout(fresh.sendTurn({ threadId: 't10', prompt: 'LATE on M3', model: M3 } as never), 'turn on the explicit model');
+    resetCalls();
+    await withTimeout(fresh.sendTurn({ threadId: 't10', prompt: 'LATE on Default', model: undefined } as never), 'turn back on Default');
+    assert.deepEqual(modelSwitches(), [FLASH], 'Default switches back to the model session/new reported');
+    assert.equal(results.at(-1)?.model, FLASH, 'the turn runs on the default model');
+    resetCalls();
+    await withTimeout(fresh.sendTurn({ threadId: 't10', prompt: 'LATE again', model: '' } as never), 'second turn on Default');
+    assert.deepEqual(modelSwitches(), [], 'already on the default: no switch');
+    assert.equal(catalogReads, 0, 'a fresh session knows its default without the catalog');
+    await fresh.stopAll();
+
+    // A resumed session comes back on its saved model; Default reads the catalog once.
+    resetCalls();
+    process.env.FAKE_MCODE_RESUME_MODEL = M3;
+    const resumed = new MinimaxAcpAdapter({
+      readDefaultModel: async () => {
+        catalogReads += 1;
+        return FLASH;
+      },
+    });
+    try {
+      const session = await resumed.startSession({ threadId: 't11', cwd: dir, prompt: '', resumeSessionId: 'mvs_old' } as never);
+      assert.equal(session.model, FLASH, 'the resumed Default session leaves the saved model');
+      assert.deepEqual(modelSwitches(), [FLASH]);
+      await withTimeout(resumed.sendTurn({ threadId: 't11', prompt: 'LATE resumed', model: undefined } as never), 'turn on Default');
+      assert.equal(catalogReads, 1, 'the catalog default is read once per session');
+    } finally {
+      delete process.env.FAKE_MCODE_RESUME_MODEL;
+      await resumed.stopAll();
+    }
+  }
+
   // ── Resume (no replay) and a resume that fails ────────────────────────────
   {
     resetCalls();
     events.length = 0;
-    const resumed = new MinimaxAcpAdapter();
+    const resumed = new MinimaxAcpAdapter(withDefault);
     const resumedEvents: Event[] = [];
     resumed.events.on('event', (event: Event) => resumedEvents.push(event));
     const session = await resumed.startSession({ threadId: 't2', cwd: dir, prompt: '', resumeSessionId: 'mvs_old' } as never);
@@ -892,7 +949,7 @@ async function main(): Promise<void> {
     const warn = console.warn;
     console.warn = () => {};
     try {
-      const fallback = new MinimaxAcpAdapter();
+      const fallback = new MinimaxAcpAdapter(withDefault);
       const fresh = await fallback.startSession({ threadId: 't3', cwd: dir, prompt: '', resumeSessionId: 'mvs_gone' } as never);
       assert.equal(fresh.providerSessionId, 'mvs_fresh', 'a session mcode no longer has continues in a fresh one');
       await fallback.stopAll();

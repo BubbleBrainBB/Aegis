@@ -6,7 +6,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import { EventEmitter } from 'events';
 import { readFileSync } from 'fs';
 import { v4 as uuidv4 } from 'uuid';
-import { buildDevinEnv, listDevinSkills, resolveDevinBinary } from '../devin-cli';
+import { buildDevinEnv, getDevinModelConfig, listDevinSkills, resolveDevinBinary } from '../devin-cli';
 import { AcpJsonRpcClient, AcpJsonRpcError, type AcpJsonRpcIncomingRequest } from './acp-json-rpc-client';
 import type {
   ProviderAdapter,
@@ -142,6 +142,12 @@ interface ActiveDevinSession {
   status: ProviderSessionStatus;
   cwd: string;
   model?: string;
+  /**
+   * The model a fresh ACP session starts on: what an empty (Default) request
+   * returns to. A loaded session reports its saved model instead, so its
+   * default comes from the catalog; null once that read came back empty.
+   */
+  defaultModel?: string | null;
   /** Model ids this session's config select accepts (empty until known). */
   modelIds: Set<string>;
   /** Last requested model the session rejected; not retried every turn. */
@@ -191,6 +197,8 @@ interface DevinConnection {
   binding: SessionBinding;
   providerSessionId: string;
   sessionRecord: Record<string, unknown> | null;
+  /** Opened with session/new (not session/load). */
+  fresh: boolean;
 }
 
 /**
@@ -564,6 +572,8 @@ export class DevinAcpAdapter implements ProviderAdapter {
   readonly events = new EventEmitter();
 
   private sessions = new Map<string, ActiveDevinSession>();
+  /** The account's default model, for sessions Devin reloaded. A parameter so tests need no probe. */
+  private readonly readDefaultModel: () => Promise<string | null>;
   private skillsCache = new Map<string, { skills: ProviderSkillDescriptor[]; fetchedAt: number }>();
   private skillsProbes = new Map<string, Promise<ProviderSkillDescriptor[]>>();
   /** Tool approvals and Devin's questions (elicitation/create) awaiting the UI. */
@@ -580,6 +590,10 @@ export class DevinAcpAdapter implements ProviderAdapter {
   >();
 
   private starting = new Map<string, PendingStart>();
+
+  constructor(options: { readDefaultModel?: () => Promise<string | null> } = {}) {
+    this.readDefaultModel = options.readDefaultModel ?? (async () => (await getDevinModelConfig()).defaultModel);
+  }
 
   /**
    * Spawns `devin acp`, initializes it and opens (or loads) the ACP session.
@@ -689,7 +703,7 @@ export class DevinAcpAdapter implements ProviderAdapter {
         fail(new Error('Devin ACP did not return a sessionId.'));
       }
     }
-    return { proc, rpc, binding, providerSessionId, sessionRecord };
+    return { proc, rpc, binding, providerSessionId, sessionRecord, fresh: providerSessionId !== resumeSessionId };
   }
 
   /** Session config as the (re)opened ACP session reports it. */
@@ -697,6 +711,7 @@ export class DevinAcpAdapter implements ProviderAdapter {
     const configOptions = connection.sessionRecord?.configOptions;
     const thought = extractThoughtLevels(configOptions);
     session.model = extractConfigValue(configOptions, 'model');
+    if (connection.fresh) session.defaultModel = session.model;
     session.modelIds = extractModelIds(configOptions);
     session.rejectedModel = undefined;
     session.thoughtLevel = thought.current;
@@ -1108,8 +1123,16 @@ export class DevinAcpAdapter implements ProviderAdapter {
 
   // ── Session config ───────────────────────────────────────────────────────
 
+  /** An empty request means Default: the model a fresh session starts on. */
+  private async resolveDefaultModel(session: ActiveDevinSession): Promise<string | undefined> {
+    if (session.defaultModel === undefined) {
+      session.defaultModel = (await this.readDefaultModel().catch(() => null)) || null;
+    }
+    return session.defaultModel || undefined;
+  }
+
   private async applyModel(session: ActiveDevinSession, model: string | undefined): Promise<void> {
-    const requested = model?.trim();
+    const requested = model?.trim() || (await this.resolveDefaultModel(session));
     if (!requested || requested === session.model || requested === session.rejectedModel) {
       return;
     }
