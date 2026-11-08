@@ -29,6 +29,8 @@ const LOG = ${JSON.stringify(logPath)};
 const FAIL_SWITCH = ${JSON.stringify(failSwitchPath)};
 const BARE_SWITCH = ${JSON.stringify(bareSwitchPath)};
 const FAIL_LOAD = process.env.FAKE_DEVIN_FAIL_LOAD === '1';
+// Devin restores a loaded session's saved model (observed on 3000.6.14).
+const LOAD_MODEL = process.env.FAKE_DEVIN_LOAD_MODEL;
 const SLOW_INIT = process.env.FAKE_DEVIN_SLOW_INIT === '1';
 const HANG_INIT = process.env.FAKE_DEVIN_HANG_INIT === '1';
 appendFileSync(${JSON.stringify(pidsPath)}, process.pid + '\\n');
@@ -82,6 +84,10 @@ async function handle(message) {
       return;
     }
     const sid = params.sessionId;
+    if (LOAD_MODEL) {
+      state.model = LOAD_MODEL;
+      state.level = LEVELS[LOAD_MODEL]?.[0];
+    }
     update(sid, { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'old prompt' } });
     update(sid, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'REPLAYED ANSWER' } });
     update(sid, { sessionUpdate: 'tool_call', toolCallId: 'old-call', title: 'Ran ls', kind: 'execute', rawInput: { command: 'ls' }, _meta: { 'cognition.ai/inferenceToolName': 'exec' } });
@@ -710,6 +716,73 @@ async function main(): Promise<void> {
     await adapter.stopAll();
   }
 
+  // ── Default: an empty model request returns to the session's default ─────
+  {
+    resetCalls();
+    const catalogReads: string[] = [];
+    const adapter = new DevinAcpAdapter({
+      readDefaultModel: async () => {
+        catalogReads.push('read');
+        return 'swe-2-high';
+      },
+    });
+    const resultModels: Array<string | undefined> = [];
+    adapter.events.on('event', (event: Event) => {
+      if (event.type === 'permission_request') {
+        void adapter.respondToRequest('t11', event.requestId as string, { behavior: 'allow', updatedInput: {} });
+      }
+      const message = event.type === 'message' ? (event.message as { type?: string; model?: string }) : undefined;
+      if (message?.type === 'result') resultModels.push(message.model);
+    });
+    const modelSwitches = () =>
+      readCalls()
+        .filter((call) => call.method === 'session/set_config_option' && call.params.configId === 'model')
+        .map((call) => call.params.value);
+    await adapter.startSession({ threadId: 't11', cwd: dir, prompt: '', model: 'claude-opus-5-5-high' } as never);
+    await withTimeout(adapter.sendTurn({ threadId: 't11', prompt: 'x', model: 'claude-opus-5-5-high' } as never), 'turn on the explicit model');
+
+    resetCalls();
+    await withTimeout(adapter.sendTurn({ threadId: 't11', prompt: 'x', model: undefined } as never), 'turn back on Default');
+    assert.deepEqual(modelSwitches(), ['swe-2-high'], 'Default switches back to the model session/new reported');
+    assert.equal(resultModels.at(-1), 'swe-2-high', 'the turn runs on the default model');
+
+    resetCalls();
+    await withTimeout(adapter.sendTurn({ threadId: 't11', prompt: 'x', model: '' } as never), 'second turn on Default');
+    assert.deepEqual(modelSwitches(), [], 'already on the default: no switch');
+    assert.deepEqual(catalogReads, [], 'a fresh session knows its default without the catalog');
+    await adapter.stopAll();
+  }
+
+  // ── Default on a loaded session: Devin restores the saved model ─────────
+  {
+    resetCalls();
+    process.env.FAKE_DEVIN_LOAD_MODEL = 'claude-opus-5-5-high';
+    let catalogReads = 0;
+    const adapter = new DevinAcpAdapter({
+      readDefaultModel: async () => {
+        catalogReads += 1;
+        return 'swe-2-high';
+      },
+    });
+    try {
+      const session = await adapter.startSession({ threadId: 't12', cwd: dir, prompt: '', resumeSessionId: 'old-session' } as never);
+      assert.equal(session.model, 'swe-2-high', 'the resumed Default session leaves the saved model');
+      assert.deepEqual(
+        readCalls()
+          .filter((call) => call.method === 'session/set_config_option')
+          .map((call) => [call.params.configId, call.params.value]),
+        [['model', 'swe-2-high']]
+      );
+      resetCalls();
+      await withTimeout(adapter.sendTurn({ threadId: 't12', prompt: 'DROP', model: undefined } as never), 'turn on Default');
+      await withTimeout(adapter.sendTurn({ threadId: 't12', prompt: 'DROP', model: undefined } as never), 'another turn on Default');
+      assert.equal(catalogReads, 1, 'the catalog default is read once per session');
+    } finally {
+      delete process.env.FAKE_DEVIN_LOAD_MODEL;
+      await adapter.stopAll();
+    }
+  }
+
   // ── Questions: elicitation/create ↔ AskUserQuestion card ─────────────────
   {
     const answerWith = async (decision: Record<string, unknown>) => {
@@ -892,7 +965,7 @@ async function main(): Promise<void> {
   // ── Resume: load replay is dropped, startup state is kept ────────────────
   {
     resetCalls();
-    const adapter = new DevinAcpAdapter();
+    const adapter = new DevinAcpAdapter({ readDefaultModel: async () => 'swe-2-high' });
     const events: Event[] = [];
     adapter.events.on('event', (event: Event) => events.push(event));
     const session = await adapter.startSession({

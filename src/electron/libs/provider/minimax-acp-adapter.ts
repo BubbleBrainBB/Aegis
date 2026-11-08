@@ -12,7 +12,7 @@ import { EventEmitter } from 'events';
 import { readdirSync, readFileSync, statSync } from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
-import { buildMinimaxEnv, minimaxDataDir, resolveMinimaxBinary } from '../minimax-cli';
+import { buildMinimaxEnv, getMinimaxModelConfig, minimaxDataDir, resolveMinimaxBinary } from '../minimax-cli';
 import { addAgentCost, costFields, emptyCostDetails } from '../agent-cost';
 import { AcpJsonRpcClient, type AcpJsonRpcIncomingRequest } from './acp-json-rpc-client';
 import type {
@@ -93,6 +93,12 @@ interface ActiveMinimaxSession {
   status: ProviderSessionStatus;
   cwd: string;
   model?: string;
+  /**
+   * The model a fresh ACP session starts on: what an empty (Default) request
+   * returns to. A resumed session reports its saved model instead, so its
+   * default comes from the catalog; null once that read came back empty.
+   */
+  defaultModel?: string | null;
   /** Model values this session's config select offers (empty until known). */
   modelIds: Set<string>;
   /** Last requested model the session rejected; not retried every turn. */
@@ -158,6 +164,8 @@ interface MinimaxConnection {
   imagePrompts: boolean;
   providerSessionId: string;
   sessionRecord: Record<string, unknown> | null;
+  /** Opened with session/new (not session/resume). */
+  fresh: boolean;
 }
 
 /** Startup state that arrives before the session is bound, applied once it is. */
@@ -642,6 +650,8 @@ export class MinimaxAcpAdapter implements ProviderAdapter {
   readonly events = new EventEmitter();
 
   private sessions = new Map<string, ActiveMinimaxSession>();
+  /** The account's default model, for sessions mcode resumed. A parameter so tests need no probe. */
+  private readonly readDefaultModel: () => Promise<string | null>;
   /** Tool approvals and questions (elicitation/create) awaiting the UI. */
   private pendingPermissions = new Map<
     string,
@@ -657,6 +667,9 @@ export class MinimaxAcpAdapter implements ProviderAdapter {
 
   private starting = new Map<string, PendingStart>();
 
+  constructor(options: { readDefaultModel?: () => Promise<string | null> } = {}) {
+    this.readDefaultModel = options.readDefaultModel ?? (async () => (await getMinimaxModelConfig()).defaultModel);
+  }
 
   /**
    * Spawns `mcode acp`, initializes it and opens (or resumes) the ACP session.
@@ -772,13 +785,24 @@ export class MinimaxAcpAdapter implements ProviderAdapter {
         fail(new Error('MiniMax Code ACP did not return a sessionId.'));
       }
     }
-    return { proc, rpc, binding, disposeMcp, imagePrompts, providerSessionId, sessionRecord };
+    return {
+      proc,
+      rpc,
+      binding,
+      disposeMcp,
+      imagePrompts,
+      providerSessionId,
+      sessionRecord,
+      fresh: providerSessionId !== resumeSessionId,
+    };
   }
 
   /** Session config as the (re)opened ACP session reports it. */
-  private adoptSessionRecord(session: ActiveMinimaxSession, record: Record<string, unknown> | null): void {
+  private adoptSessionRecord(session: ActiveMinimaxSession, connection: MinimaxConnection): void {
+    const record = connection.sessionRecord;
     const efforts = extractEfforts(record?.configOptions);
     session.model = extractConfigValue(record?.configOptions, 'model');
+    if (connection.fresh) session.defaultModel = session.model;
     session.modelIds = extractModelIds(record?.configOptions);
     session.rejectedModel = undefined;
     session.effort = efforts.current;
@@ -850,7 +874,7 @@ export class MinimaxAcpAdapter implements ProviderAdapter {
         queued: 0,
         steering: 0,
       };
-      this.adoptSessionRecord(active, connection.sessionRecord);
+      this.adoptSessionRecord(active, connection);
       try {
         await this.applyModel(active, input.model);
         await this.applyEffort(active, active.requestedEffort);
@@ -919,7 +943,7 @@ export class MinimaxAcpAdapter implements ProviderAdapter {
     const replaced = connection.providerSessionId !== session.providerSessionId;
     session.providerSessionId = connection.providerSessionId;
     session.messagesFile = undefined;
-    this.adoptSessionRecord(session, connection.sessionRecord);
+    this.adoptSessionRecord(session, connection);
     // mcode no longer had the session and a fresh one replaced it: announce
     // it, since system_init is what stores the id the next cold start resumes.
     if (replaced) {
@@ -1340,8 +1364,16 @@ export class MinimaxAcpAdapter implements ProviderAdapter {
     session.currentPermission = extractConfigValue(configOptions, 'permissionMode', '_permission') || session.currentPermission;
   }
 
+  /** An empty request means Default: the model a fresh session starts on. */
+  private async resolveDefaultModel(session: ActiveMinimaxSession): Promise<string | undefined> {
+    if (session.defaultModel === undefined) {
+      session.defaultModel = (await this.readDefaultModel().catch(() => null)) || null;
+    }
+    return session.defaultModel || undefined;
+  }
+
   private async applyModel(session: ActiveMinimaxSession, model: string | undefined): Promise<void> {
-    const requested = model?.trim();
+    const requested = model?.trim() || (await this.resolveDefaultModel(session));
     if (!requested || requested === session.model || requested === session.rejectedModel) {
       return;
     }

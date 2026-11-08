@@ -5,7 +5,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import { EventEmitter } from 'events';
 import { readFileSync } from 'fs';
 import { v4 as uuidv4 } from 'uuid';
-import { buildMimoEnv, listMimoSkills, readMimoLastTurnError, readMimoTurnUsage, resolveMimoBinary, type MimoTurnUsage } from '../mimo-cli';
+import { buildMimoEnv, getMimoModelConfig, listMimoSkills, readMimoLastTurnError, readMimoTurnUsage, resolveMimoBinary, type MimoTurnUsage } from '../mimo-cli';
 import { AcpJsonRpcClient, type AcpJsonRpcIncomingRequest } from './acp-json-rpc-client';
 import type {
   ProviderAdapter,
@@ -83,8 +83,13 @@ interface ActiveMimoSession {
   modelValues: Set<string>;
   /** Last requested value the session rejected; not retried every turn. */
   rejectedModelValue?: string;
-  /** Composer choices, reconciled before every turn. */
-  requestedModel?: string;
+  /**
+   * Base model a fresh ACP session starts on: what an empty (Default) request
+   * returns to. A loaded session reports its saved model instead, so its
+   * default comes from the catalog; null once that read came back empty.
+   */
+  defaultModel?: string | null;
+  /** Composer level, reconciled before every turn. */
   requestedEffort?: string;
   currentMode?: string;
   permissionMode?: MimoPermissionMode;
@@ -115,6 +120,8 @@ interface MimoConnection {
   binding: SessionBinding;
   providerSessionId: string;
   sessionRecord: Record<string, unknown> | null;
+  /** Opened with session/new (not session/load). */
+  fresh: boolean;
 }
 
 /** See DevinAcpAdapter: pre-bind notifications are startup state or load replay. */
@@ -376,6 +383,8 @@ export class MimoAcpAdapter implements ProviderAdapter {
   readonly events = new EventEmitter();
 
   private sessions = new Map<string, ActiveMimoSession>();
+  /** The configured default model, for sessions MiMo reloaded. A parameter so tests need no CLI. */
+  private readonly readDefaultModel: () => Promise<string | null>;
   private skillsCache = new Map<string, { skills: ProviderSkillDescriptor[]; fetchedAt: number }>();
   private skillsProbes = new Map<string, Promise<ProviderSkillDescriptor[]>>();
   private pendingPermissions = new Map<
@@ -384,6 +393,10 @@ export class MimoAcpAdapter implements ProviderAdapter {
   >();
 
   private starting = new Map<string, PendingStart>();
+
+  constructor(options: { readDefaultModel?: () => Promise<string | null> } = {}) {
+    this.readDefaultModel = options.readDefaultModel ?? (async () => (await getMimoModelConfig()).defaultModel);
+  }
 
   /**
    * Spawns `mimo acp`, initializes it and opens (or loads) the ACP session.
@@ -489,7 +502,7 @@ export class MimoAcpAdapter implements ProviderAdapter {
         fail(new Error('MiMo ACP did not return a sessionId.'));
       }
     }
-    return { proc, rpc, binding, providerSessionId, sessionRecord };
+    return { proc, rpc, binding, providerSessionId, sessionRecord, fresh: providerSessionId !== resumeSessionId };
   }
 
   /** Session config as the (re)opened ACP session reports it. */
@@ -498,6 +511,7 @@ export class MimoAcpAdapter implements ProviderAdapter {
     session.modelValue = extractConfigValue(configOptions, 'model');
     session.modelValues = extractModelValues(configOptions);
     session.rejectedModelValue = undefined;
+    if (connection.fresh) session.defaultModel = this.currentModel(session);
     session.currentMode =
       extractConfigValue(configOptions, 'mode') ||
       getString(getRecord(connection.sessionRecord?.modes)?.currentModeId) ||
@@ -554,7 +568,6 @@ export class MimoAcpAdapter implements ProviderAdapter {
         status: 'running',
         cwd: input.cwd,
         modelValues: new Set(),
-        requestedModel: input.model?.trim() || undefined,
         requestedEffort: normalizeMimoReasoningEffort(input.mimoReasoningEffort),
         permissionMode: normalizeMimoPermissionMode(input.mimoPermissionMode),
         sessionCostUsd: 0,
@@ -896,19 +909,27 @@ export class MimoAcpAdapter implements ProviderAdapter {
     return splitMimoModelValue(session.modelValue, session.modelValues).model;
   }
 
+  /** An empty request means Default: the model a fresh session starts on. */
+  private async resolveDefaultModel(session: ActiveMimoSession): Promise<string | undefined> {
+    if (session.defaultModel === undefined) {
+      session.defaultModel = (await this.readDefaultModel().catch(() => null)) || null;
+    }
+    return session.defaultModel || undefined;
+  }
+
   /**
    * Model and reasoning level are one select value (`model/variant`), so both
-   * are reconciled together. Without a requested model the session's own
-   * model keeps the requested level when it offers it.
+   * are reconciled together. Without a requested model the default model (or,
+   * when it is unknown, the session's own) keeps the requested level when it
+   * offers it.
    */
   private async applyModel(
     session: ActiveMimoSession,
     model: string | undefined,
     effort: string | undefined
   ): Promise<void> {
-    session.requestedModel = model?.trim() || session.requestedModel;
     session.requestedEffort = normalizeMimoReasoningEffort(effort) ?? session.requestedEffort;
-    const base = session.requestedModel || this.currentModel(session);
+    const base = model?.trim() || (await this.resolveDefaultModel(session)) || this.currentModel(session);
     if (!base) return;
     const withEffort = session.requestedEffort ? `${base}/${session.requestedEffort}` : '';
     const target =

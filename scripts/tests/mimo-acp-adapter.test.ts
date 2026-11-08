@@ -23,6 +23,8 @@ const logPath = path.join(dir, 'calls.jsonl');
 const pidsPath = path.join(dir, 'pids');
 const fakeAgentPath = path.join(dir, 'mimo');
 const dbPath = path.join(dir, 'mimocode.db');
+/** The configured default, without running the fake CLI's model list. */
+const withDefault = { readDefaultModel: async () => 'xiaomi/mimo-v2.6-pro' };
 
 writeFileSync(
   fakeAgentPath,
@@ -30,6 +32,8 @@ writeFileSync(
 const { appendFileSync } = require('node:fs');
 const LOG = ${JSON.stringify(logPath)};
 const SLOW_INIT = process.env.FAKE_MIMO_SLOW_INIT === '1';
+// A loaded session comes back on its saved model.
+const LOAD_MODEL = process.env.FAKE_MIMO_LOAD_MODEL;
 appendFileSync(${JSON.stringify(pidsPath)}, process.pid + '\\n');
 let buffer = '';
 const pending = new Map();
@@ -67,6 +71,7 @@ async function handle(message) {
     update('ses_fresh', { sessionUpdate: 'usage_update', used: 0, size: 1048576, cost: { amount: state.cost, currency: 'USD' } });
   } else if (method === 'session/load') {
     const sid = params.sessionId;
+    if (LOAD_MODEL) state.model = LOAD_MODEL;
     update(sid, { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'old prompt' } });
     update(sid, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'REPLAYED ANSWER' } });
     update(sid, { sessionUpdate: 'usage_update', used: 4321, size: 1048576, cost: { amount: 0.5, currency: 'USD' } });
@@ -290,7 +295,7 @@ async function main(): Promise<void> {
   // ── New session + one turn ────────────────────────────────────────────────
   {
     resetCalls();
-    const adapter = new MimoAcpAdapter();
+    const adapter = new MimoAcpAdapter(withDefault);
     const events: Event[] = [];
     adapter.events.on('event', (event: Event) => {
       events.push(event);
@@ -472,7 +477,7 @@ async function main(): Promise<void> {
   // ── Resume: the load replay is dropped, startup usage kept ────────────────
   {
     resetCalls();
-    const adapter = new MimoAcpAdapter();
+    const adapter = new MimoAcpAdapter(withDefault);
     const events: Event[] = [];
     adapter.events.on('event', (event: Event) => events.push(event));
     const session = await withTimeout(
@@ -491,6 +496,55 @@ async function main(): Promise<void> {
     await adapter.stopAll();
   }
 
+  // ── Default: an empty model request returns to the session's default ─────
+  {
+    resetCalls();
+    let catalogReads = 0;
+    const readDefaultModel = async () => {
+      catalogReads += 1;
+      return 'xiaomi/mimo-v2.6-pro';
+    };
+    const modelSwitches = () =>
+      readCalls()
+        .filter((call) => call.method === 'session/set_config_option' && call.params.configId === 'model')
+        .map((call) => call.params.value);
+    const fresh = new MimoAcpAdapter({ readDefaultModel });
+    const results: Array<{ model?: string }> = [];
+    fresh.events.on('event', (event: Event) => {
+      const message = event.type === 'message' ? (event.message as { type?: string; model?: string }) : undefined;
+      if (message?.type === 'result') results.push(message);
+    });
+    await fresh.startSession({ threadId: 't8', cwd: dir, prompt: '', model: 'xiaomi/mimo-v2.6-flash' });
+    await withTimeout(fresh.sendTurn({ threadId: 't8', prompt: 'FAIL', model: 'xiaomi/mimo-v2.6-flash' }), 'turn on the explicit model');
+    resetCalls();
+    await withTimeout(fresh.sendTurn({ threadId: 't8', prompt: 'FAIL', model: undefined, mimoReasoningEffort: 'high' }), 'turn back on Default');
+    assert.deepEqual(modelSwitches(), ['xiaomi/mimo-v2.6-pro/high'], 'Default (at the requested level) is the model session/new reported');
+    assert.equal(results.at(-1)?.model, 'xiaomi/mimo-v2.6-pro', 'the turn runs on the default model');
+    resetCalls();
+    await withTimeout(fresh.sendTurn({ threadId: 't8', prompt: 'FAIL', model: '' }), 'second turn on Default');
+    assert.deepEqual(modelSwitches(), [], 'already on the default: no switch');
+    assert.equal(catalogReads, 0, 'a fresh session knows its default without the catalog');
+    await fresh.stopAll();
+
+    // A loaded session comes back on its saved model; Default reads the catalog once.
+    resetCalls();
+    process.env.FAKE_MIMO_LOAD_MODEL = 'xiaomi/mimo-v2.6-flash';
+    const loaded = new MimoAcpAdapter({ readDefaultModel });
+    try {
+      const session = await withTimeout(
+        loaded.startSession({ threadId: 't9', cwd: dir, prompt: '', resumeSessionId: 'ses_old' }),
+        'resume on a saved model'
+      );
+      assert.equal(session.model, 'xiaomi/mimo-v2.6-pro', 'the resumed Default session leaves the saved model');
+      assert.deepEqual(modelSwitches(), ['xiaomi/mimo-v2.6-pro']);
+      await withTimeout(loaded.sendTurn({ threadId: 't9', prompt: 'FAIL', model: undefined }), 'turn on Default');
+      assert.equal(catalogReads, 1, 'the catalog default is read once per session');
+    } finally {
+      delete process.env.FAKE_MIMO_LOAD_MODEL;
+      await loaded.stopAll();
+    }
+  }
+
   // ── Stopping a session while it is still starting ─────────────────────────
   {
     process.env.FAKE_MIMO_SLOW_INIT = '1';
@@ -498,7 +552,7 @@ async function main(): Promise<void> {
       for (const teardown of ['stop', 'dispose'] as const) {
         resetCalls();
         writeFileSync(pidsPath, '');
-        const adapter = new MimoAcpAdapter();
+        const adapter = new MimoAcpAdapter(withDefault);
         const start = adapter.startSession({ threadId: 't3', cwd: dir, prompt: 'should never run' });
         start.catch(() => undefined);
         await waitFor(() => readCalls().some((call) => call.method === 'initialize'), 'initialize reaching the CLI');
@@ -521,7 +575,7 @@ async function main(): Promise<void> {
   {
     resetCalls();
     writeFileSync(pidsPath, '');
-    const adapter = new MimoAcpAdapter();
+    const adapter = new MimoAcpAdapter(withDefault);
     const events: Event[] = [];
     adapter.events.on('event', (event: Event) => {
       events.push(event);
@@ -559,7 +613,7 @@ async function main(): Promise<void> {
   {
     resetCalls();
     writeFileSync(pidsPath, '');
-    const adapter = new MimoAcpAdapter();
+    const adapter = new MimoAcpAdapter(withDefault);
     adapter.events.on('event', (event: Event) => {
       if (event.type === 'permission_request') {
         void adapter.respondToRequest('t5', event.requestId as string, { behavior: 'allow', updatedInput: {} });
@@ -592,7 +646,7 @@ async function main(): Promise<void> {
   {
     resetCalls();
     writeFileSync(pidsPath, '');
-    const adapter = new MimoAcpAdapter();
+    const adapter = new MimoAcpAdapter(withDefault);
     const events: Event[] = [];
     adapter.events.on('event', (event: Event) => {
       events.push(event);
@@ -648,7 +702,7 @@ async function main(): Promise<void> {
     assert.equal(messages(events).filter((message) => message.type === 'result').length, 0, 'the stopped turn has no result');
 
     // A stop between turns reports nothing: the finished turn's steps were in its result.
-    const quiet = new MimoAcpAdapter();
+    const quiet = new MimoAcpAdapter(withDefault);
     const quietEvents: Event[] = [];
     quiet.events.on('event', (event: Event) => quietEvents.push(event));
     await withTimeout(quiet.startSession({ threadId: 't7', cwd: dir, prompt: '' }), 'startSession');
