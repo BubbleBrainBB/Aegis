@@ -6,6 +6,7 @@ import { normalizeCodexReasoningEffort } from '../../../shared/codex-reasoning';
 import { validateGoalAction, type GoalAction, type ThreadGoal } from '../../../shared/session-goal';
 import { getSessionProjectSources } from '../session-store';
 import { getSessionReaderCodexArgs, SESSION_CALLER_ENV_VAR, SESSION_TOKEN_ENV_VAR } from '../session-http-server';
+import { BROWSER_USE_CALLER_ENV_VAR, getBrowserUseCodexCallerArgs } from '../browser-use-http-server';
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import { EventEmitter } from 'events';
 import { existsSync, promises as fsPromises, readFileSync } from 'fs';
@@ -413,13 +414,15 @@ export class CodexAppServerManager extends EventEmitter {
     const launchEnv = { ...process.env };
     const configArgs = buildCodexMcpConfigOverrideArgs({ computerUsePolicy: this.computerUsePolicy });
     const reader = await getSessionReaderCodexArgs(this.callerSessionId);
-    const readerArgs = reader.args;
+    const browser = this.callerSessionId ? await getBrowserUseCodexCallerArgs(this.callerSessionId) : { args: [], env: {} };
+    const readerArgs = [...reader.args, ...browser.args];
     recordSpawnDefinedMcpServers([...configArgs, ...readerArgs]);
     if (epoch !== this.lifecycleEpoch || signal?.aborted) throw new CodexRpcTransportError('stopped', 'initialize');
     launchEnv[SESSION_TOKEN_ENV_VAR] = process.env[SESSION_TOKEN_ENV_VAR];
     // Only this runtime's own caller value, never one inherited from Aegis's environment.
     delete launchEnv[SESSION_CALLER_ENV_VAR];
-    Object.assign(launchEnv, reader.env);
+    delete launchEnv[BROWSER_USE_CALLER_ENV_VAR];
+    Object.assign(launchEnv, reader.env, browser.env);
 
     const child = spawn(
       this.binaryPath,

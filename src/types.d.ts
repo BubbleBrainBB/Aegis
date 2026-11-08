@@ -6,6 +6,17 @@ import type {
   WorkflowStartRequest,
 } from './shared/workflow';
 import type { FollowUpAction, FollowUpActionResult, FollowUpProposalView } from './shared/follow-up';
+import type {
+  IosDeviceChrome,
+  IosSimulatorDevice,
+  IosSimulatorFrameEvent,
+  IosSimulatorInput,
+  IosSimulatorProjectInfo,
+  IosSimulatorSessionInput,
+  IosSimulatorStatus,
+  IosSimulatorTouch,
+  IosSimulatorView,
+} from './shared/ios-simulator';
 // 全局类型声明（Window 扩展）
 // 实际类型定义在 src/shared/types.ts
 
@@ -534,6 +545,24 @@ declare global {
     readBackgroundTaskOutput: (sessionId: string, taskId: string) => Promise<import('./shared/background-task-output').BackgroundTaskOutput | null>;
     subscribeStatistics: (callback: (data: StatisticsData) => void) => () => void;
     getStaticData: () => Promise<StaticData>;
+    iosSimulator: {
+      status: (options?: { fresh?: boolean }) => Promise<IosSimulatorStatus>;
+      project: (cwd: string) => Promise<IosSimulatorProjectInfo>;
+      devices: () => Promise<IosSimulatorDevice[]>;
+      view: (udid: string) => Promise<IosSimulatorView>;
+      boot: (input: IosSimulatorSessionInput) => Promise<IosSimulatorView>;
+      shutdown: (udid: string) => Promise<void>;
+      attach: (input: IosSimulatorSessionInput) => Promise<IosSimulatorView>;
+      detach: (input: IosSimulatorSessionInput) => Promise<void>;
+      input: (udid: string, input: IosSimulatorInput) => Promise<void>;
+      touch: (touch: IosSimulatorTouch) => void;
+      requestKeyFrame: (udid: string) => void;
+      screenshot: (udid: string) => Promise<string>;
+      chrome: (udid: string) => Promise<IosDeviceChrome | null>;
+      setAgentAccess: (udid: string, allowed: boolean) => Promise<void>;
+      onFrame: (callback: (event: IosSimulatorFrameEvent) => void) => () => void;
+      onState: (callback: (view: IosSimulatorView) => void) => () => void;
+    };
     browser: {
       open: (input: BrowserOpenInput) => Promise<BrowserSessionState>;
       close: (input: BrowserSessionInput) => Promise<BrowserSessionState>;

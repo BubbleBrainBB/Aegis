@@ -399,8 +399,11 @@ function buildCommandTitle(commands: WorkstreamStageCommand[], entries: Workstre
 export function getWorkstreamToolSource(entry: WorkstreamEntry): string | null {
   if (!('toolName' in entry)) return null;
   const input = getToolInputRecord(entry);
-  const source = getString(input.__aegisMcpServer) || parseMcpToolName(entry.toolName)?.server;
+  const parsed = parseMcpToolName(entry.toolName);
+  const source = getString(input.__aegisMcpServer) || parsed?.server;
   if (!source) return null;
+  // The simulator tool rides the browser's server.
+  if (parsed?.tool === 'ios_simulator' || entry.toolName === 'ios_simulator') return 'Simulator';
   const names: Record<string, string> = { github: 'GitHub', slack: 'Slack', notion: 'Notion', figma: 'Figma', 'google-drive': 'Google Drive', 'aegis-browser': 'Browser', browser: 'Browser' };
   return names[source] || source.replace(/[-_]+/g, ' ').replace(/\b\w/g, letter => letter.toUpperCase());
 }

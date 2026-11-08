@@ -84,6 +84,11 @@
     "gatekeeperAssess": false,
     "entitlements": "build/entitlements.mac.plist",
     "entitlementsInherit": "build/entitlements.mac.plist",
+    // The iOS Simulator pane's native helper (npm run build:ios-sim-helper,
+    // universal). Signed with the app like any nested code.
+    "extraResources": [
+      { "from": "native/ios-sim-helper/dist", "to": "ios-sim-helper", "filter": ["**/*"] }
+    ],
     "extendInfo": {
       "NSAppleEventsUsageDescription": "Aegis agents can control other apps when you ask them to."
     }

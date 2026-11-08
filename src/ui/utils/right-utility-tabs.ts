@@ -48,6 +48,15 @@ export function createTerminalTabId(): ProjectUtilityPanelTarget {
   return `terminal:${Date.now().toString(36)}-${terminalTabCounter}`;
 }
 
+export function isRightUtilitySimulatorTab(
+  target: ProjectUtilityPanelTarget | null | undefined
+): target is `simulator:${string}` {
+  return Boolean(target?.startsWith('simulator:'));
+}
+
+/** The simulator pane opened from New tab, before a device is chosen. */
+export const SIMULATOR_PICK_TAB: ProjectUtilityPanelTarget = 'simulator:pick';
+
 export function isRightUtilityLauncherTab(
   target: ProjectUtilityPanelTarget | null | undefined
 ): target is `launcher:${string}` {
@@ -118,6 +127,7 @@ export function getRightUtilityTabKind(
   if (target.startsWith('workflow-member:')) return 'workflow-member';
   if (target.startsWith('design:')) return 'design';
   if (isRightUtilityLauncherTab(target)) return 'launcher';
+  if (isRightUtilitySimulatorTab(target)) return 'simulator';
   if (isRightUtilityFileTab(target)) return 'files';
   if (isRightUtilityBrowserTab(target)) return 'browser';
   if (isRightUtilitySubagentTab(target)) return 'subagent';

@@ -309,9 +309,9 @@ assert.ok(
 );
 const grok = read('src/electron/libs/provider/grok-acp-adapter.ts');
 assert.ok(
-  grok.includes('getBrowserUseMcpDescriptor()') &&
+  grok.includes('getBrowserUseMcpDescriptor(input.threadId)') &&
     grok.includes("createGrokAcpHttpMcpServer('aegis-browser', browserUseDescriptor)"),
-  'grok ACP converts browser-use into the typed HTTP session descriptor'
+  'grok ACP converts browser-use into the typed HTTP session descriptor, signed for its session'
 );
 assert.ok(
   /\.catch\(\(error\) => \{\s*terminateSpawnedGrokProcess\(proc\);/.test(grok),
@@ -330,7 +330,7 @@ assert.ok(
   'settings page exposes the master switch'
 );
 assert.ok(
-  consent.includes('.browser_use') || consent.includes("`.${BROWSER_USE_TOOL_NAME}`"),
+  consent.includes('.browser_use') || consent.includes("`.${BROWSER_USE_TOOL_NAME}`") || consent.includes("`.${toolName}`"),
   'attribution matches OpenCode dot-notation tool names'
 );
 

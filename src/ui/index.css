@@ -3256,6 +3256,30 @@ button.aegis-mdx-metadata-key:hover {
   animation: aegis-browser-progress 1.1s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 
+/* iOS Simulator pane: where a click landed, while the tap travels to the device. */
+@keyframes aegis-sim-ripple {
+  0% {
+    opacity: 0.28;
+    transform: translate(-50%, -50%) scale(0.4);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.3);
+  }
+}
+
+.aegis-sim-ripple {
+  opacity: 0;
+  animation: aegis-sim-ripple 0.55s ease-out forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aegis-sim-ripple {
+    animation: none;
+    opacity: 0.2;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .aegis-browser-progress {
     animation: none;

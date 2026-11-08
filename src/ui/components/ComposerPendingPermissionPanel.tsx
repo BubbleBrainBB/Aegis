@@ -101,6 +101,13 @@ export const ComposerPendingPermissionPanel = memo(function ComposerPendingPermi
           </p>
           <ComposerPendingPermissionActions request={request} onSubmit={onSubmit} />
         </div>
+      ) : isIosSimulatorDeviceInput(request.input) && request.input.question ? (
+        <div className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+          <p data-ios-simulator-consent className="text-sm text-[var(--text-primary)]">
+            {request.input.question}
+          </p>
+          <ComposerPendingPermissionActions request={request} onSubmit={onSubmit} />
+        </div>
       ) : parsed.mode === 'computer-use' && isComputerUsePermissionInput(request.input) ? (
         <div className="flex flex-col gap-3 px-4 py-3 sm:px-5">
           <ComputerUseApprovalBody input={request.input} />
@@ -365,6 +372,19 @@ function parsePermissionRequest(request: PermissionRequestPayload): ParsedPermis
     };
   }
 
+  if (isIosSimulatorDeviceInput(input)) {
+    return {
+      kindLabel: 'SIMULATOR',
+      tool: 'ios_simulator',
+      fileName: null,
+      fileDir: null,
+      command: input.device || null,
+      fallback: input.question || 'Allow the agent to use this simulator?',
+      canAllowForSession: false,
+      mode: 'approval',
+    };
+  }
+
   if (isAcpPermissionInput(input)) {
     return {
       kindLabel:
@@ -411,6 +431,16 @@ interface BrowserNavigationPermissionInput {
 
 function isBrowserNavigationInput(input: unknown): input is BrowserNavigationPermissionInput {
   return (input as { kind?: unknown }).kind === 'browser-navigation';
+}
+
+interface IosSimulatorDevicePermissionInput {
+  kind: 'ios-simulator-device';
+  question?: string;
+  device?: string;
+}
+
+function isIosSimulatorDeviceInput(input: unknown): input is IosSimulatorDevicePermissionInput {
+  return (input as { kind?: unknown }).kind === 'ios-simulator-device';
 }
 
 function codexKindLabel(input: CodexApprovalPermissionInput): string {

@@ -22,6 +22,13 @@ import {
   requestBrowserUseNavigationConsent,
 } from './browser-use-consent';
 import type { BrowserManager } from '../browserManager';
+import {
+  IOS_SIMULATOR_TOOL_DESCRIPTION,
+  IOS_SIMULATOR_TOOL_NAME,
+  iosSimulatorInputSchema,
+  isIosSimulatorToolAvailable,
+  runIosSimulatorTool,
+} from './ios-simulator/tool';
 
 export { BROWSER_USE_SERVER_NAME };
 
@@ -93,8 +100,21 @@ function buildBrowserUseSdkServer(
   z: ZodModule['z'],
   sessionId: string,
   manager: BrowserManager,
-  allowNavigation: (url: string) => Promise<boolean>
+  allowNavigation: (url: string) => Promise<boolean>,
+  includeSimulator: boolean
 ) {
+  // The iOS Simulator rides this server on Macs that can run simulators, so
+  // every provider that drives the browser can drive a device too.
+  const simulatorTools = includeSimulator
+    ? [
+        sdk.tool(IOS_SIMULATOR_TOOL_NAME, IOS_SIMULATOR_TOOL_DESCRIPTION, iosSimulatorInputSchema(z), async (args, extra) => {
+          // The MCP request's signal: stopping the chat stops a build too.
+          const signal = (extra as { signal?: AbortSignal } | undefined)?.signal;
+          const result = await runIosSimulatorTool(sessionId, args, { inlineImage: true, signal });
+          return { content: result.content, ...(result.isError ? { isError: true } : {}) };
+        }),
+      ]
+    : [];
   return sdk.createSdkMcpServer({
     name: BROWSER_USE_SERVER_NAME,
     version: '0.1.0',
@@ -113,6 +133,7 @@ function buildBrowserUseSdkServer(
           ...(result.ok ? {} : { isError: true }),
         };
       }),
+      ...simulatorTools,
     ],
   });
 }
@@ -125,8 +146,13 @@ export async function createBrowserUseMcpServer(
 ) {
   const sdk = await loadSdk();
   const { z } = await loadZod();
-  return buildBrowserUseSdkServer(sdk, z, parentSessionId, manager, (url) =>
-    askNavigationConsent(parentSessionId, url, askPermission)
+  return buildBrowserUseSdkServer(
+    sdk,
+    z,
+    parentSessionId,
+    manager,
+    (url) => askNavigationConsent(parentSessionId, url, askPermission),
+    await isIosSimulatorToolAvailable()
   );
 }
 
@@ -141,7 +167,12 @@ export async function createQoderBrowserUseMcpServer(
   sdk: BrowserUseSdkMcpModule
 ) {
   const { z } = await loadZod();
-  return buildBrowserUseSdkServer(sdk, z, sessionId, manager, (url) =>
-    requestBrowserUseNavigationConsent(sessionId, url)
+  return buildBrowserUseSdkServer(
+    sdk,
+    z,
+    sessionId,
+    manager,
+    (url) => requestBrowserUseNavigationConsent(sessionId, url),
+    await isIosSimulatorToolAvailable()
   );
 }

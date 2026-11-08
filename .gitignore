@@ -47,3 +47,8 @@ dev-fixtures/deepseek-harness/.sessions/
 .playwright-cli/
 output/
 promo/
+
+# aegis-sim-helper build (scripts/build-ios-sim-helper.mjs)
+native/ios-sim-helper/.idb/
+native/ios-sim-helper/.build/
+native/ios-sim-helper/dist/

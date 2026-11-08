@@ -14,6 +14,7 @@
 
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from 'http';
 import { randomUUID } from 'crypto';
+import { sessionCallerValue, verifySessionCaller } from './session-http-server';
 import { BROWSER_USE_SERVER_NAME, finishBrowserUseTurn, runBrowserUseAction } from './browser-use';
 import {
   BROWSER_USE_TOOL_DESCRIPTION,
@@ -41,12 +42,29 @@ import {
   saveDeepseekGlobalMcpServers,
 } from './deepseek-mcp-settings';
 import {
+  IOS_SIMULATOR_TOOL_DESCRIPTION,
+  IOS_SIMULATOR_ARG_KEYS,
+  IOS_SIMULATOR_TOOL_NAME,
+  iosSimulatorInputSchema,
+  isIosSimulatorToolAvailableNow,
+  runIosSimulatorTool,
+  type IosSimulatorToolArgs,
+} from './ios-simulator/tool';
+import {
+  AMBIGUOUS_CALLER,
   findBrowserUseCallerSessionId,
+  findIosSimulatorCallerSessionId,
   requestBrowserUseNavigationConsent,
 } from './browser-use-consent';
 
 export const BROWSER_USE_TOKEN_ENV_VAR = 'AEGIS_BROWSER_USE_TOKEN';
 export const BROWSER_USE_SESSION_HEADER = 'x-aegis-browser-session';
+/** A provider runtime serving one Aegis session names it here, signed with
+ * the server token (`<sessionId>.<hmac>`, as x-aegis-session), so a call is
+ * that session's without matching transcripts. Never model-visible. */
+export const BROWSER_USE_CALLER_HEADER = 'x-aegis-browser-caller';
+/** The environment variable a Codex runtime reads the caller value from. */
+export const BROWSER_USE_CALLER_ENV_VAR = 'AEGIS_BROWSER_USE_CALLER';
 /** A provider runtime that serves many Aegis sessions from one MCP config
  * (OpenCode) sends this; its calls are attributed from their request meta. */
 export const BROWSER_USE_PROVIDER_HEADER = 'x-aegis-browser-provider';
@@ -78,11 +96,35 @@ const providerCapabilities = new Map<string, BrowserUseSessionResolver>();
 
 /** Current server descriptor for adapters that pass MCP entries per session
  * (grok ACP session/new). Null when not started / disabled. */
-export function getBrowserUseMcpDescriptor(): { url: string; headers: Record<string, string> } | null {
+export function getBrowserUseMcpDescriptor(callerSessionId?: string): { url: string; headers: Record<string, string> } | null {
   if (!isBrowserUseEnabled()) return null;
   const cached = serverInfoCache;
   if (!cached) return null;
-  return { url: cached.url, headers: { Authorization: `Bearer ${cached.token}` } };
+  return {
+    url: cached.url,
+    headers: {
+      Authorization: `Bearer ${cached.token}`,
+      ...(callerSessionId ? { [BROWSER_USE_CALLER_HEADER]: sessionCallerValue(cached.token, callerSessionId) } : {}),
+    },
+  };
+}
+
+/**
+ * For a Codex app-server serving one Aegis session: the browser entry again,
+ * now sending that session's signed caller header (read from the process
+ * environment, like the token, so neither is in the argv). Empty when
+ * Browser Use is off.
+ */
+export async function getBrowserUseCodexCallerArgs(callerSessionId: string): Promise<{ args: string[]; env: Record<string, string> }> {
+  if (!isBrowserUseEnabled()) return { args: [], env: {} };
+  const info = await ensureBrowserUseHttpServer();
+  return {
+    args: [
+      '-c',
+      `mcp_servers.${BROWSER_USE_SERVER_NAME}={url=${JSON.stringify(info.url)},bearer_token_env_var="${BROWSER_USE_TOKEN_ENV_VAR}",env_http_headers={${JSON.stringify(BROWSER_USE_CALLER_HEADER)}="${BROWSER_USE_CALLER_ENV_VAR}"},tool_timeout_sec=${CODEX_TOOL_TIMEOUT_SEC},enabled=true}`,
+    ],
+    env: { [BROWSER_USE_CALLER_ENV_VAR]: sessionCallerValue(info.token, callerSessionId) },
+  };
 }
 
 /** Create a non-model-visible capability that binds every request from one
@@ -232,6 +274,46 @@ function buildMcpServer(
       };
     }
   );
+  if (isIosSimulatorToolAvailableNow()) {
+    server.registerTool(
+      IOS_SIMULATOR_TOOL_NAME,
+      {
+        description: IOS_SIMULATOR_TOOL_DESCRIPTION,
+        inputSchema: iosSimulatorInputSchema(z),
+      },
+      async (args, context) => {
+        const signal = mergeRequestSignals(requestSignal, context?.signal);
+        const fromMeta = !scopedSessionId && resolveFromMeta ? await resolveFromMeta(context?._meta).catch(() => null) : null;
+        const sessionId =
+          scopedSessionId ??
+          fromMeta ??
+          (await findIosSimulatorCallerSessionId(args, IOS_SIMULATOR_ARG_KEYS, IOS_SIMULATOR_TOOL_NAME, signal));
+        if (sessionId === AMBIGUOUS_CALLER) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: 'Another chat has the same ios_simulator call in flight, so this one could not be told apart. Call again with device set to your device id.',
+              },
+            ],
+            isError: true,
+          };
+        }
+        if (!sessionId) {
+          return {
+            content: [{ type: 'text' as const, text: 'No Aegis session has this ios_simulator call in flight.' }],
+            isError: true,
+          };
+        }
+        // Screenshots travel as a saved file, as with browser_use.
+        return runIosSimulatorTool(sessionId, args as unknown as IosSimulatorToolArgs, {
+          inlineImage: false,
+          signal,
+          verifiedCaller: scopedSessionId !== null || fromMeta !== null,
+        });
+      }
+    );
+  }
   return server;
 }
 
@@ -282,6 +364,22 @@ async function handleMcpRequest(req: IncomingMessage, res: ServerResponse, token
       return;
     }
     scopedSessionId = binding.sessionId;
+  }
+  const callerHeader = req.headers[BROWSER_USE_CALLER_HEADER];
+  const callerValue = Array.isArray(callerHeader) ? callerHeader[0] : callerHeader;
+  if (callerValue && !scopedSessionId) {
+    const callerSessionId = verifySessionCaller(token, callerValue);
+    if (!callerSessionId) {
+      res.writeHead(403, { 'Content-Type': 'application/json' }).end(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          error: { code: -32001, message: 'Invalid browser caller' },
+          id: null,
+        })
+      );
+      return;
+    }
+    scopedSessionId = callerSessionId;
   }
   const providerHeader = req.headers[BROWSER_USE_PROVIDER_HEADER];
   const providerCapability = Array.isArray(providerHeader) ? providerHeader[0] : providerHeader;

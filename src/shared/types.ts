@@ -1088,7 +1088,9 @@ export type ServerEvent =
   | { type: 'automation.changed'; payload: AutomationSnapshot }
   // 系统通知点击后的回位事件（主进程 → 聚焦窗口后广播）
   | { type: 'app.focusSession'; payload: { sessionId: string } }
-  | { type: 'browser.open-panel'; payload: { sessionId: string; tab?: string } };
+  | { type: 'browser.open-panel'; payload: { sessionId: string; tab?: string } }
+  // An agent booted or launched an app on a simulator: show its pane.
+  | { type: 'ios-simulator.open-panel'; payload: { sessionId: string; udid: string } };
 
 // Payload 类型
 /**
@@ -1824,6 +1826,14 @@ export interface BrowserNavigationPermissionInput {
   url: string;
 }
 
+/** The first time an agent uses a simulator device. */
+export interface IosSimulatorDevicePermissionInput {
+  kind: 'ios-simulator-device';
+  question: string;
+  /** "iPhone 17 Pro · iOS 26.1" */
+  device: string;
+}
+
 export interface ComputerUsePermissionInput {
   kind: 'computer-use';
   question: string;
@@ -1846,6 +1856,7 @@ export type PermissionRequestInput =
   | CodexApprovalPermissionInput
   | AcpPermissionInput
   | BrowserNavigationPermissionInput
+  | IosSimulatorDevicePermissionInput
   | ComputerUsePermissionInput;
 
 export interface RetryOutputSnapshot {
