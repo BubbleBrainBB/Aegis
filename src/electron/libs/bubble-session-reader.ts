@@ -1,6 +1,7 @@
 import { extractSessionLinks } from '../../shared/session-links';
 import { createNativeSessionReader, createNativeShowWidget, createNativeStartWorkflow, createNativeWidgetGuide } from './session-native-tool';
-import { createBubbleBrowserUseTool } from './bubble-browser-use-tool';
+import { createBubbleBrowserUseTool, createBubbleIosSimulatorTool } from './bubble-browser-use-tool';
+import { isIosSimulatorToolAvailableNow } from './ios-simulator/tool';
 import { isBrowserUseEnabled } from './browser-use-permissions';
 import { createNativeDesignTools } from '../design/tools';
 import { createNativeReportStatus } from './turn-report-tool';
@@ -18,6 +19,8 @@ export function bubbleHostTools(sessionId?: string): object[] {
   // The workflow entry (start_workflow); member sessions are refused at call time.
   const tools: object[] = [createNativeSessionReader(), createNativeStartWorkflow(), createNativeShowWidget(), createNativeWidgetGuide()];
   if (sessionId && isBrowserUseEnabled()) tools.push(createBubbleBrowserUseTool(sessionId));
+  // On a Mac with Xcode and AXe: the iOS Simulator.
+  if (sessionId && isBrowserUseEnabled() && isIosSimulatorToolAvailableNow()) tools.push(createBubbleIosSimulatorTool(sessionId));
   // Design tools act on this session's designs.
   if (sessionId) tools.push(...createNativeDesignTools(sessionId));
   if (sessionId) tools.push(createNativeReportStatus(sessionId));

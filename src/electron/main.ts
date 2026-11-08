@@ -17,6 +17,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { setupIPCHandlers, cleanup } from './ipc-handlers';
 import { registerBrowserIpc, disposeBrowserIpc, runBrowserShortcut } from './browser-ipc';
+import { disposeIosSimulatorIpc } from './ios-simulator-ipc';
 import { registerDesignModeIpc } from './design-mode-ipc';
 import { browserManager } from './browserManager';
 import { setPageBackgrounds } from './browser/page-view';
@@ -216,6 +217,7 @@ function flushPendingProjectEditorDraftForTermination(signal: NodeJS.Signals): v
   }
   devFileWatcher = null;
   disposeBrowserIpc();
+  disposeIosSimulatorIpc();
   cleanup();
   process.exit(0);
 }
@@ -1243,6 +1245,7 @@ app.on('before-quit', () => {
   devFileWatcher?.close();
   devFileWatcher = null;
   disposeBrowserIpc();
+  disposeIosSimulatorIpc();
   cleanup();
 });
 

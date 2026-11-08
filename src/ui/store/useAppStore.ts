@@ -89,6 +89,7 @@ import { useWidgetDraftStore } from './useWidgetDraftStore';
 import { useDesignDraftStore } from './useDesignDraftStore';
 import {
   SIDE_CHAT_PENDING_TAB,
+  SIMULATOR_PICK_TAB,
   addRightUtilityTab,
   getRightUtilityTabKind,
   isRightUtilityBrowserTab,
@@ -99,6 +100,7 @@ import {
   createLauncherTabId,
   replaceLauncherTab,
 } from '../utils/right-utility-tabs';
+import { iosSimulatorTabId } from '../../shared/ios-simulator';
 import {
   captureLiveRightPanel,
   emptyRightPanelSnapshot,
@@ -1488,6 +1490,23 @@ export const useAppStore = create<Store>()(
           now: Date.now(),
         });
         if (decision === 'reveal') reveal();
+        break;
+      }
+
+      // An agent booted a simulator or launched its app: show the device in
+      // the chat's pane, in place of a pane still waiting for a device.
+      case 'ios-simulator.open-panel': {
+        const target = iosSimulatorTabId(event.payload.udid) as ProjectUtilityPanelTarget;
+        const decision = agentBrowserRevealDecision({
+          sessionId: event.payload.sessionId,
+          activeSessionId: get().activeSessionId,
+          browserTabShown: get().activeRightUtilityTab === target && !get().rightUtilityPanelHidden,
+          settingsOpen: get().showSettings,
+          now: Date.now(),
+        });
+        if (decision !== 'reveal') break;
+        const waiting = get().rightUtilityTabs.includes(SIMULATOR_PICK_TAB) ? SIMULATOR_PICK_TAB : undefined;
+        get().openRightUtilityTab(target, { instantReveal: true, ...(waiting ? { replace: waiting } : {}) });
         break;
       }
     }

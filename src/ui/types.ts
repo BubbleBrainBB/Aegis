@@ -201,7 +201,7 @@ export interface SessionStreamingState {
 export type ActiveWorkspace = 'chat' | 'tasks' | 'design' | 'skills' | 'automations' | 'prs';
 export type ChatSidebarView = 'threads' | 'skills';
 export type ProjectPanelView = 'files' | 'changes';
-export type ProjectUtilityPanelKind = 'files' | 'side-chat' | 'browser' | 'review' | 'terminal' | 'subagent' | 'goal' | 'images' | 'sources' | 'workflow-member' | 'launcher' | 'design';
+export type ProjectUtilityPanelKind = 'files' | 'side-chat' | 'browser' | 'review' | 'terminal' | 'subagent' | 'goal' | 'images' | 'sources' | 'workflow-member' | 'launcher' | 'design' | 'simulator';
 export type ProjectUtilityPanelTarget =
   | ProjectUtilityPanelKind
   | `files:${string}`
@@ -228,7 +228,10 @@ export type ProjectUtilityPanelTarget =
   // A terminal with its own shell (a fresh id after the colon), so several
   // can be open. Plain `terminal` is the first terminal from before there
   // could be more than one.
-  | `terminal:${string}`;
+  | `terminal:${string}`
+  // An iOS Simulator device pane (its udid after the colon); `simulator:pick`
+  // is a pane that has no device yet. Never persisted: devices come and go.
+  | `simulator:${string}`;
 export interface ProjectFileOpenInput {
   cwd: string;
   path: string;

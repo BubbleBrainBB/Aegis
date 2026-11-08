@@ -132,6 +132,9 @@ import {
   setBrowserUsePanelOpener,
 } from './libs/browser-use';
 import { forgetBrowserUseApprovals, initializeBrowserUseConsent } from './libs/browser-use-consent';
+import { registerIosSimulatorIpc } from './ios-simulator-ipc';
+import { releaseSessionDevices } from './libs/ios-simulator/service';
+import { IOS_SIMULATOR_TOOL_NAME, setIosSimulatorConsent, setIosSimulatorSessionFolder } from './libs/ios-simulator/tool';
 import {
   getBrowserUsePermissionSettings,
   setBrowserUseOriginPolicy,
@@ -4058,6 +4061,70 @@ function sendSessionReply(win: BrowserWindow, event: ServerEvent): void {
   if (!win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.send('server-event', JSON.stringify(event));
 }
 
+/**
+ * Ask the user through the session's permission card for something a host
+ * tool does (browser navigation, a simulator device). Resolves true when
+ * allowed; rejects when the card times out or the call is cancelled.
+ */
+function requestHostPermission(
+  mainWindow: BrowserWindow,
+  sessionId: string,
+  request: {
+    toolName: string;
+    input: import('../shared/types').PermissionRequestInput;
+    label: string;
+    timeoutMs: number;
+    idPrefix: string;
+    signal?: AbortSignal;
+  }
+): Promise<boolean> {
+  const { signal } = request;
+  return new Promise<boolean>((resolve, reject) => {
+    const toolUseId = `${request.idPrefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const state = getSessionState(sessionId);
+    let settled = false;
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      state.pendingPermissions.delete(toolUseId);
+    };
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      callback();
+    };
+    const dismiss = () => {
+      broadcast(mainWindow, {
+        type: 'permission.dismissed',
+        payload: { sessionId, toolUseId },
+      });
+    };
+    const onAbort = () =>
+      finish(() => {
+        dismiss();
+        reject(new Error(`${request.label} was cancelled.`));
+      });
+    const timer = setTimeout(() => {
+      finish(() => {
+        dismiss();
+        reject(new Error(`${request.label} timed out after ${request.timeoutMs}ms.`));
+      });
+    }, request.timeoutMs);
+    timer.unref?.();
+    state.pendingPermissions.set(toolUseId, {
+      resolve: (result) => finish(() => resolve(result.behavior === 'allow')),
+      reject: (error) => finish(() => reject(error)),
+    });
+    signal?.addEventListener('abort', onAbort, { once: true });
+    broadcast(mainWindow, {
+      type: 'permission.request',
+      payload: { sessionId, toolUseId, toolName: request.toolName, input: request.input },
+    });
+    if (signal?.aborted) onAbort();
+  });
+}
+
 function broadcast(mainWindow: BrowserWindow, event: ServerEvent): void {
   captureRemoteEvent(event);
   captureFeishuEvent(event);
@@ -5648,61 +5715,47 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
       return false;
     },
     requestPermission: (sessionId, question, url, signal) =>
-      new Promise<boolean>((resolve, reject) => {
-        const toolUseId = `browser-use-nav-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-        const state = getSessionState(sessionId);
-        let settled = false;
-        const cleanup = () => {
-          clearTimeout(timer);
-          signal?.removeEventListener('abort', onAbort);
-          state.pendingPermissions.delete(toolUseId);
-        };
-        const finish = (callback: () => void) => {
-          if (settled) return;
-          settled = true;
-          cleanup();
-          callback();
-        };
-        const dismiss = () => {
-          broadcast(mainWindow, {
-            type: 'permission.dismissed',
-            payload: { sessionId, toolUseId },
-          });
-        };
-        const onAbort = () =>
-          finish(() => {
-            dismiss();
-            reject(new Error('Browser navigation approval was cancelled.'));
-          });
-        const timer = setTimeout(() => {
-          finish(() => {
-            dismiss();
-            reject(new Error('Browser navigation approval timed out after 20000ms.'));
-          });
-        }, 20_000);
-        timer.unref?.();
-        state.pendingPermissions.set(toolUseId, {
-          resolve: (result) => finish(() => resolve(result.behavior === 'allow')),
-          reject: (error) => finish(() => reject(error)),
-        });
-        signal?.addEventListener('abort', onAbort, { once: true });
-        broadcast(mainWindow, {
-          type: 'permission.request',
-          payload: {
-            sessionId,
-            toolUseId,
-            toolName: 'browser_use',
-            input: {
-              kind: 'browser-navigation',
-              question,
-              url,
-              toolName: 'browser_use',
-            } as unknown as import('../shared/types').PermissionRequestInput,
-          },
-        });
-        if (signal?.aborted) onAbort();
+      requestHostPermission(mainWindow, sessionId, {
+        toolName: 'browser_use',
+        input: {
+          kind: 'browser-navigation',
+          question,
+          url,
+          toolName: 'browser_use',
+        } as unknown as import('../shared/types').PermissionRequestInput,
+        label: 'Browser navigation approval',
+        timeoutMs: 20_000,
+        idPrefix: 'browser-use-nav',
+        signal,
       }),
   });
+  // iOS Simulator pane: frames and input over its own channels; the agent
+  // tool opens the pane and asks once per device through the permission card.
+  registerIosSimulatorIpc(mainWindow, (sessionId, udid) => {
+    broadcast(mainWindow, {
+      type: 'ios-simulator.open-panel',
+      payload: { sessionId, udid },
+    });
+  });
+  // build_and_run builds the app in the folder the chat's agent works in.
+  setIosSimulatorSessionFolder((sessionId) => {
+    const session = sessions.getSession(sessionId);
+    return session?.cwd || session?.project_cwd || null;
+  });
+  setIosSimulatorConsent((sessionId, device, signal) =>
+    requestHostPermission(mainWindow, sessionId, {
+      toolName: IOS_SIMULATOR_TOOL_NAME,
+      input: {
+        kind: 'ios-simulator-device',
+        question: `Allow the agent to use the ${device.name} simulator? It can tap, type and take screenshots on this device.`,
+        device: `${device.name} · ${device.runtime}`,
+      },
+      label: 'Simulator access approval',
+      timeoutMs: 40_000,
+      idPrefix: 'ios-simulator-device',
+      signal,
+    })
+  );
   // All six HTTP-config providers (codex/kimi/bubble/qoder/opencode/deepseek) get
   // their entry written inside ensureBrowserUseHttpServer; disabled boots
   // clean their entries instead.
@@ -13077,6 +13130,7 @@ function handleSessionDelete(mainWindow: BrowserWindow, sessionId: string): void
   }
   forgetBrowserUseApprovals(sessionId);
   browserManager.closeChat(sessionId);
+  void releaseSessionDevices(sessionId).catch(() => {});
   void forgetBrowserUseScreenshots(sessionId).catch(() => {});
 
   // 先停止运行中的会话

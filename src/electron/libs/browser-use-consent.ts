@@ -126,15 +126,17 @@ export function decideBrowserUseNavigation(sessionId: string, url: string): Brow
   return policy;
 }
 
-function isBrowserUseToolName(name: unknown): boolean {
+/** A transcript tool name for one of this server's tools (browser_use, or
+ * ios_simulator, which rides the same server). */
+function isServerToolName(name: unknown, toolName: string): boolean {
   if (typeof name !== 'string') return false;
   const normalized = name.trim().toLowerCase();
   return (
-    normalized === BROWSER_USE_TOOL_NAME ||
-    normalized.endsWith(`__${BROWSER_USE_TOOL_NAME}`) ||
+    normalized === toolName ||
+    normalized.endsWith(`__${toolName}`) ||
     // OpenCode composes server.tool with a dot; Codex with double underscore.
-    normalized.endsWith(`.${BROWSER_USE_TOOL_NAME}`) ||
-    normalized === `mcp__aegis-browser__${BROWSER_USE_TOOL_NAME}`
+    normalized.endsWith(`.${toolName}`) ||
+    normalized === `mcp__aegis-browser__${toolName}`
   );
 }
 
@@ -159,7 +161,10 @@ function contentBlocksOf(message: StreamMessage): Record<string, unknown>[] {
  */
 export function findPendingBrowserUseSessionId(
   args: { action?: string; url?: string },
-  history: StreamMessage[]
+  history: StreamMessage[],
+  toolName: string = BROWSER_USE_TOOL_NAME,
+  /** Match on these arguments, all of them, instead of action (and url). */
+  matchKeys?: readonly string[]
 ): string | null {
   const resolved = new Set<string>();
   const candidates: string[] = [];
@@ -167,13 +172,17 @@ export function findPendingBrowserUseSessionId(
     if (message.parentToolUseId) continue;
     if (message.type === 'assistant') {
       for (const block of contentBlocksOf(message)) {
-        if (block.type !== 'tool_use' || !isBrowserUseToolName(block.name)) continue;
+        if (block.type !== 'tool_use' || !isServerToolName(block.name, toolName)) continue;
         const input = asRecord(block.input);
         if (!input) continue;
-        if (input.action !== args.action) continue;
-        // Navigate is the consent-gated action; match on url so two sessions
-        // navigating concurrently attribute correctly.
-        if (args.action === 'navigate' && input.url !== args.url) continue;
+        if (matchKeys) {
+          if (!sameArguments(args as Record<string, unknown>, input, matchKeys)) continue;
+        } else {
+          if (input.action !== args.action) continue;
+          // Navigate is the consent-gated action; match on url so two sessions
+          // navigating concurrently attribute correctly.
+          if (args.action === 'navigate' && input.url !== args.url) continue;
+        }
         if (typeof block.id === 'string' && block.id) candidates.push(block.id);
       }
     } else if (message.type === 'user') {
@@ -191,6 +200,12 @@ export function findPendingBrowserUseSessionId(
   return null;
 }
 
+/** The HTTP call's arguments equal the tool_use's on every key (absent and
+ * null alike). */
+function sameArguments(args: Record<string, unknown>, input: Record<string, unknown>, keys: readonly string[]): boolean {
+  return keys.every((key) => JSON.stringify(args[key] ?? null) === JSON.stringify(input[key] ?? null));
+}
+
 /**
  * Resolve which running session made this HTTP browser_use call. Waits
  * (delegate-service attribution pattern: poll until deadline) for the
@@ -205,13 +220,41 @@ const CLAIM_TTL_MS = 2 * 60_000;
 
 export function findBrowserUseCallerSessionId(
   args: { action?: string; url?: string },
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  toolName: string = BROWSER_USE_TOOL_NAME
 ): Promise<string | null> {
+  return pollForCaller((history) => findPendingBrowserUseSessionId(args, history, toolName), signal, false).then((found) =>
+    found === AMBIGUOUS_CALLER ? null : found
+  );
+}
+
+export const AMBIGUOUS_CALLER = 'ambiguous' as const;
+
+/**
+ * The same for ios_simulator, which acts on a chat's own device when the
+ * call names none: every argument must match, and two sessions with the
+ * same call pending are AMBIGUOUS_CALLER rather than a guess that could
+ * drive (or screenshot) the other chat's simulator.
+ */
+export function findIosSimulatorCallerSessionId(
+  args: Record<string, unknown>,
+  matchKeys: readonly string[],
+  toolName: string,
+  signal?: AbortSignal
+): Promise<string | typeof AMBIGUOUS_CALLER | null> {
+  return pollForCaller((history) => findPendingBrowserUseSessionId(args, history, toolName, matchKeys), signal, true);
+}
+
+function pollForCaller(
+  findIn: (history: StreamMessage[]) => string | null,
+  signal: AbortSignal | undefined,
+  rejectAmbiguous: boolean
+): Promise<string | typeof AMBIGUOUS_CALLER | null> {
   const deadline = Date.now() + ATTRIBUTION_TIMEOUT_MS;
   return new Promise((resolve) => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     let settled = false;
-    const finish = (sessionId: string | null) => {
+    const finish = (sessionId: string | typeof AMBIGUOUS_CALLER | null) => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
@@ -228,17 +271,27 @@ export function findBrowserUseCallerSessionId(
         finish(null);
         return;
       }
+      const matches: Array<{ sessionId: string; toolUseId: string }> = [];
       for (const sessionId of host.listRunningSessionIds()) {
         const history = host.getSessionHistory(sessionId);
         if (!history?.length) continue;
-        const toolUseId = findPendingBrowserUseSessionId(args, history);
+        const toolUseId = findIn(history);
         if (toolUseId && !claimedToolUseIds.has(toolUseId)) {
-          claimedToolUseIds.add(toolUseId);
-          const claimTimer = setTimeout(() => claimedToolUseIds.delete(toolUseId), CLAIM_TTL_MS);
-          claimTimer.unref?.();
-          finish(sessionId);
-          return;
+          matches.push({ sessionId, toolUseId });
+          if (!rejectAmbiguous) break;
         }
+      }
+      if (rejectAmbiguous && matches.length > 1) {
+        finish(AMBIGUOUS_CALLER);
+        return;
+      }
+      if (matches.length > 0) {
+        const { sessionId, toolUseId } = matches[0];
+        claimedToolUseIds.add(toolUseId);
+        const claimTimer = setTimeout(() => claimedToolUseIds.delete(toolUseId), CLAIM_TTL_MS);
+        claimTimer.unref?.();
+        finish(sessionId);
+        return;
       }
       if (Date.now() >= deadline) {
         finish(null);

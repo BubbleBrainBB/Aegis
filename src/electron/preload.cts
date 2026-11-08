@@ -49,6 +49,17 @@ import type {
   BrowserFindResult,
   BrowserZoomInput,
 } from '../shared/browser-types';
+import type {
+  IosDeviceChrome,
+  IosSimulatorDevice,
+  IosSimulatorFrameEvent,
+  IosSimulatorInput,
+  IosSimulatorProjectInfo,
+  IosSimulatorSessionInput,
+  IosSimulatorStatus,
+  IosSimulatorTouch,
+  IosSimulatorView,
+} from '../shared/ios-simulator';
 
 // IPC 通道常量（与 browser-ipc.ts 中 BROWSER_CHANNELS 保持一致，避免在 preload 里引入主进程模块）
 const BROWSER_CHANNELS = {
@@ -1389,6 +1400,40 @@ contextBridge.exposeInMainWorld('electron', {
       ipcRenderer.on(BROWSER_CHANNELS.sendSelection, handler);
       return () => {
         ipcRenderer.removeListener(BROWSER_CHANNELS.sendSelection, handler);
+      };
+    },
+  },
+  // ===== iOS Simulator pane (channels mirror IOS_SIMULATOR_CHANNELS) =====
+  iosSimulator: {
+    status: (options?: { fresh?: boolean }): Promise<IosSimulatorStatus> =>
+      ipcRenderer.invoke('ios-simulator:status', options),
+    project: (cwd: string): Promise<IosSimulatorProjectInfo> => ipcRenderer.invoke('ios-simulator:project', cwd),
+    devices: (): Promise<IosSimulatorDevice[]> => ipcRenderer.invoke('ios-simulator:devices'),
+    view: (udid: string): Promise<IosSimulatorView> => ipcRenderer.invoke('ios-simulator:view', udid),
+    boot: (input: IosSimulatorSessionInput): Promise<IosSimulatorView> => ipcRenderer.invoke('ios-simulator:boot', input),
+    shutdown: (udid: string): Promise<void> => ipcRenderer.invoke('ios-simulator:shutdown', udid),
+    attach: (input: IosSimulatorSessionInput): Promise<IosSimulatorView> =>
+      ipcRenderer.invoke('ios-simulator:attach', input),
+    detach: (input: IosSimulatorSessionInput): Promise<void> => ipcRenderer.invoke('ios-simulator:detach', input),
+    input: (udid: string, input: IosSimulatorInput): Promise<void> => ipcRenderer.invoke('ios-simulator:input', udid, input),
+    touch: (touch: IosSimulatorTouch): void => ipcRenderer.send('ios-simulator:touch', touch),
+    requestKeyFrame: (udid: string): void => ipcRenderer.send('ios-simulator:keyframe', udid),
+    screenshot: (udid: string): Promise<string> => ipcRenderer.invoke('ios-simulator:screenshot', udid),
+    chrome: (udid: string): Promise<IosDeviceChrome | null> => ipcRenderer.invoke('ios-simulator:chrome', udid),
+    setAgentAccess: (udid: string, allowed: boolean): Promise<void> =>
+      ipcRenderer.invoke('ios-simulator:set-agent-access', udid, allowed),
+    onFrame: (callback: (event: IosSimulatorFrameEvent) => void) => {
+      const handler = (_: unknown, event: IosSimulatorFrameEvent) => callback(event);
+      ipcRenderer.on('ios-simulator:frame', handler);
+      return () => {
+        ipcRenderer.removeListener('ios-simulator:frame', handler);
+      };
+    },
+    onState: (callback: (view: IosSimulatorView) => void) => {
+      const handler = (_: unknown, view: IosSimulatorView) => callback(view);
+      ipcRenderer.on('ios-simulator:state', handler);
+      return () => {
+        ipcRenderer.removeListener('ios-simulator:state', handler);
       };
     },
   },

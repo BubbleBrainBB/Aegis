@@ -414,8 +414,9 @@ export class GrokAcpAdapter implements ProviderAdapter {
 
     const permissionMode = normalizeGrokPermissionMode(input.grokPermissionMode);
     // Built-in browser use: hand grok the loopback HTTP MCP server when the
-    // feature is on (ACP session/new mcpServers, http variant).
-    const browserUseDescriptor = getBrowserUseMcpDescriptor();
+    // feature is on (ACP session/new mcpServers, http variant), naming this
+    // session so its calls are not matched by transcript.
+    const browserUseDescriptor = getBrowserUseMcpDescriptor(input.threadId);
     const mcpServers = [
       createGrokAcpHttpMcpServer(SESSION_MCP_SERVER_NAME, await getSessionReaderHttpConfig({ sessionId: input.threadId })),
       ...(browserUseDescriptor ? [createGrokAcpHttpMcpServer('aegis-browser', browserUseDescriptor)] : []),

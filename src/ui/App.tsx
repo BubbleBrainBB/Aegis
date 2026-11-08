@@ -37,6 +37,7 @@ import {
   Plus,
   Sparkles,
   SquareTerminal,
+  Smartphone,
   Target,
   ChevronDown,
   RefreshCw,
@@ -78,6 +79,9 @@ import {
   useBrowserNativeOverlayRegistration,
 } from './components/browser/browser-native-overlay';
 import { RightTerminalPanel } from './components/RightTerminalPanel';
+import { IosSimulatorPanel } from './components/IosSimulatorPanel';
+import { useIosSimulatorStore } from './store/useIosSimulatorStore';
+import { iosSimulatorTabId, iosSimulatorTabUdid } from '../shared/ios-simulator';
 import { SubagentPanel } from './components/SubagentPanel';
 import { SubagentAvatar } from './components/SubagentAvatar';
 import { DesignAnnotateBridge } from './components/browser/DesignAnnotateBridge';
@@ -92,7 +96,9 @@ import {
   createTerminalTabId,
   getRightUtilityTabKind,
   isRightUtilityLauncherTab,
+  isRightUtilitySimulatorTab,
   isRightUtilityTerminalTab,
+  SIMULATOR_PICK_TAB,
   sessionSourceTabPath,
 } from './utils/right-utility-tabs';
 import { openSessionSource } from './lib/image-studio';
@@ -764,6 +770,24 @@ export function App() {
   );
   useEffect(subscribeDesignChanges, []);
   const designTitles = useDesignStore((s) => s.titles);
+  const simulatorViews = useIosSimulatorStore((s) => s.views);
+  // New tab offers the simulator only in iOS app work.
+  const simulatorCwd = activeSession?.cwd || projectCwd || '';
+  const [iosProject, setIosProject] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    setIosProject(false);
+    if (!simulatorCwd || !window.electron?.iosSimulator) return;
+    void window.electron.iosSimulator
+      .project(simulatorCwd)
+      .then((info) => {
+        if (!cancelled) setIosProject(info.isIosProject);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [simulatorCwd]);
   const rightUtilityTabDescriptors = useMemo<ProjectUtilityTabDescriptor[]>(() => {
     const workspaceLeaf = getPathLeaf(activeSession?.cwd || projectCwd || '');
     return rightUtilityTabs.map((tab) => {
@@ -772,6 +796,10 @@ export function App() {
       if (kind === 'goal') return { id: tab, kind, label: 'Edit goal' };
       if (kind === 'design') return { id: tab, kind, label: tab.startsWith('design:') ? designTitles[tab.slice(7)] || 'Design' : 'Designs' };
       if (kind === 'launcher') return { id: tab, kind, label: 'New tab' };
+      if (kind === 'simulator') {
+        const udid = iosSimulatorTabUdid(tab);
+        return { id: tab, kind, label: (udid && simulatorViews[udid]?.device.name) || 'iOS Simulator' };
+      }
       if (kind === 'workflow-member') {
         const memberSessionId = getWorkflowMemberSessionId(tab);
         return {
@@ -830,6 +858,7 @@ export function App() {
     });
   }, [
     activeProjectFileTabs,
+    simulatorViews,
     activeSession?.cwd,
     activeSessionId,
     browserSessionStates,
@@ -1338,6 +1367,9 @@ export function App() {
             onOpenReview={() => openRightUtilityTab('review', { replace: activeLauncherTab })}
             onOpenTerminal={() => openRightUtilityTab(createTerminalTabId(), { replace: activeLauncherTab })}
             onOpenDesign={() => openRightUtilityTab('design', { replace: activeLauncherTab })}
+            onOpenSimulator={
+              iosProject ? () => openRightUtilityTab(SIMULATOR_PICK_TAB, { replace: activeLauncherTab }) : undefined
+            }
             onOpenUrl={(typed) => {
               openRightUtilityTab('browser', { newTab: true, replace: activeLauncherTab });
               const browserTab = useAppStore.getState().activeRightUtilityTab ?? 'browser';
@@ -1433,6 +1465,19 @@ export function App() {
               sessionId={activeSessionId}
               cwd={activeSession?.cwd || projectCwd || null}
               tabId={tab}
+            />
+          ))}
+          {rightUtilityTabs.filter(isRightUtilitySimulatorTab).map((tab) => (
+            <IosSimulatorPanel
+              key={`${activeSessionId ?? 'new'}:${tab}`}
+              sessionId={activeSessionId}
+              udid={iosSimulatorTabUdid(tab)}
+              hidden={activeUtilityPanel !== 'simulator' || activeRightUtilityTab !== tab}
+              onSelectDevice={(udid) => {
+                const next = udid === 'pick' ? SIMULATOR_PICK_TAB : iosSimulatorTabId(udid);
+                if (next === tab) return;
+                openRightUtilityTab(next, { replace: tab });
+              }}
             />
           ))}
           {subagentUtilityTabs.map((tabId) => (
@@ -1582,6 +1627,7 @@ function getUtilityTabIcon(target: ProjectUtilityPanelKind) {
   if (target === 'design') return DesignIcon;
   if (target === 'goal') return Target;
   if (target === 'terminal') return SquareTerminal;
+  if (target === 'simulator') return Smartphone;
   if (target === 'browser' || target === 'launcher') return Globe;
   if (target === 'side-chat') return MessageCircle;
   if (target === 'review') return FileDiff;
@@ -2013,6 +2059,7 @@ function getPanelLauncherItems({
   onOpenReview,
   onOpenTerminal,
   onOpenDesign,
+  onOpenSimulator,
 }: {
   browserAvailable: boolean;
   onOpenFiles: () => void;
@@ -2021,7 +2068,12 @@ function getPanelLauncherItems({
   onOpenReview: () => void;
   onOpenTerminal: () => void;
   onOpenDesign: () => void;
+  /** Only in iOS app work. */
+  onOpenSimulator?: () => void;
 }): PanelLauncherItem[] {
+  const simulator: PanelLauncherItem[] = onOpenSimulator
+    ? [{ id: 'simulator', label: 'iOS Simulator', icon: Smartphone, onSelect: onOpenSimulator }]
+    : [];
   return [
     {
       id: 'files' as const,
@@ -2061,6 +2113,7 @@ function getPanelLauncherItems({
       icon: DesignIcon,
       onSelect: onOpenDesign,
     },
+    ...simulator,
   ];
 }
 
@@ -2077,6 +2130,7 @@ function RightPanelLauncherContent({
   onOpenReview,
   onOpenTerminal,
   onOpenDesign,
+  onOpenSimulator,
   onOpenUrl,
 }: {
   hidden: boolean;
@@ -2088,6 +2142,7 @@ function RightPanelLauncherContent({
   /** Opens a new terminal tab with its own shell. */
   onOpenTerminal: () => void;
   onOpenDesign: () => void;
+  onOpenSimulator?: () => void;
   onOpenUrl: (typed: string) => void;
 }) {
   const items = getPanelLauncherItems({
@@ -2098,6 +2153,7 @@ function RightPanelLauncherContent({
     onOpenReview,
     onOpenTerminal,
     onOpenDesign,
+    onOpenSimulator,
   });
   const [address, setAddress] = useState('');
 

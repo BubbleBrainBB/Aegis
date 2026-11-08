@@ -13,6 +13,13 @@ import {
   browserUseResultContent,
   type BrowserUseToolArgs,
 } from './browser-use-tool';
+import {
+  IOS_SIMULATOR_TOOL_DESCRIPTION,
+  IOS_SIMULATOR_TOOL_NAME,
+  iosSimulatorInputSchema,
+  runIosSimulatorTool,
+  type IosSimulatorToolArgs,
+} from './ios-simulator/tool';
 
 /**
  * The name the MCP tool had, so approval rules, the workstream's "Browser"
@@ -62,6 +69,40 @@ export function createBubbleBrowserUseTool(sessionId: string) {
       } catch (error) {
         return { content: error instanceof Error ? error.message : String(error), isError: true };
       }
+    },
+  };
+}
+
+/** The simulator tool under the MCP name it has on every other provider. */
+export const BUBBLE_IOS_SIMULATOR_TOOL = `mcp__${BROWSER_USE_SERVER_NAME}__${IOS_SIMULATOR_TOOL_NAME}`;
+
+let simulatorParameters: Record<string, unknown> | null = null;
+
+function iosSimulatorJsonSchema(): Record<string, unknown> {
+  if (!simulatorParameters) {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { z } = require('zod') as typeof import('zod');
+    const { $schema: _dialect, ...schema } = z.toJSONSchema(z.object(iosSimulatorInputSchema(z))) as Record<string, unknown>;
+    simulatorParameters = schema;
+  }
+  return simulatorParameters;
+}
+
+export function createBubbleIosSimulatorTool(sessionId: string) {
+  return {
+    name: BUBBLE_IOS_SIMULATOR_TOOL,
+    description: IOS_SIMULATOR_TOOL_DESCRIPTION,
+    parameters: iosSimulatorJsonSchema(),
+    readOnly: false,
+    effect: 'unknown' as const,
+    requiresApproval: true,
+    async execute(args: IosSimulatorToolArgs, ctx?: { abortSignal?: AbortSignal }) {
+      const result = await runIosSimulatorTool(sessionId, args, { inlineImage: true, signal: ctx?.abortSignal });
+      const text = result.content.map((part) => (part.type === 'text' ? part.text : '')).join('\n').trim();
+      const images: BubbleImage[] = result.content.flatMap((part) =>
+        part.type === 'image' ? [{ mimeType: part.mimeType as BubbleImage['mimeType'], data: part.data }] : []
+      );
+      return { content: text, ...(images.length ? { images } : {}), isError: Boolean(result.isError) };
     },
   };
 }
