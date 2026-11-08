@@ -1901,6 +1901,8 @@ export function ChatPane({
   const isSideChatPane = paneId.startsWith('sidechat:');
   // A freshly created draft thread with no messages shows the centered landing
   // (title + composer + starter suggestions), matching the first-entry screen.
+  // Team works across projects: its folder is not one to pick or change.
+  const isTeamPane = useAppStore((state) => Boolean(sessionId) && state.teamSessionId === sessionId);
   const showThreadStarter = Boolean(
     session &&
       !isSideChatPane &&
@@ -2015,7 +2017,7 @@ export function ChatPane({
             </div>
           ) : null}
           {showThreadStarter ? (
-            <NewThreadLanding heading={<NewThreadProjectHeading cwd={threadStarterCwd} sessionId={sessionId} onSelectProject={switchDraftFolder} onSelectNoProject={switchDraftToChat} disabled={pendingStart} />}>
+            <NewThreadLanding heading={isTeamPane ? <>What should the team work on?</> : <NewThreadProjectHeading cwd={threadStarterCwd} sessionId={sessionId} onSelectProject={switchDraftFolder} onSelectNoProject={switchDraftToChat} disabled={pendingStart} />}>
               <div className="mx-auto w-full max-w-3xl">
                 {/* One composer per draft: a draft's unsent or starting message is its own. */}
                 <PromptInput
@@ -2023,7 +2025,7 @@ export function ChatPane({
                   sessionId={sessionId}
                   menuSide="top"
                   composerSurface="landing"
-                  footer={
+                  footer={isTeamPane ? undefined : (
                     <ComposerContextPills
                       cwd={threadStarterCwd || null}
                       projectName={threadStarterProject}
@@ -2037,7 +2039,7 @@ export function ChatPane({
                         if (sessionId) setDraftStartMode(sessionId, mode);
                       }}
                     />
-                  }
+                  )}
                 />
               </div>
             </NewThreadLanding>

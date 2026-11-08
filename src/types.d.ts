@@ -159,6 +159,13 @@ declare global {
       sessionId: string,
       options?: { hiddenFromThreads?: boolean; copyHistory?: boolean }
     ) => Promise<{ ok: boolean; session?: SessionInfo; message?: string }>;
+    /** The Team conversation, made on first use. */
+    openTeamSession: () => Promise<SessionInfo>;
+    getTeamSessionId: () => Promise<string | null>;
+    /** Every agent and why it can't take Team work right now (null when it can). */
+    getTeamCandidates: () => Promise<import('./shared/team').TeamCandidate[]>;
+    /** An agent's models, from its own catalog. */
+    getTeamModels: (provider: string) => Promise<Array<{ id: string; label?: string }>>;
     sessionHandoff: (payload: {
       sessionId: string;
       targetProvider: import('./shared/types').AgentProvider;

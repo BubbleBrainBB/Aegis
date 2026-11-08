@@ -44,6 +44,8 @@ export const ComposerPendingPermissionPanel = memo(function ComposerPendingPermi
 }: ComposerPendingPermissionPanelProps) {
   const parsed = useMemo(() => parsePermissionRequest(request), [request]);
   const provider = useAppStore((s) => s.sessions[request.sessionId]?.provider);
+  // In Team the coordinator asks for Aegis, not as the agent that happens to run it.
+  const isTeam = useAppStore((s) => s.teamSessionId !== null && s.teamSessionId === request.sessionId);
 
   // A question is its own card: who asks, one question at a time.
   if (parsed.mode === 'question' && isAskUserQuestionInput(request.input)) {
@@ -51,7 +53,7 @@ export const ComposerPendingPermissionPanel = memo(function ComposerPendingPermi
       <DecisionPanel
         key={request.toolUseId}
         input={request.input}
-        agentName={PROVIDERS.find((p) => p.id === provider)?.label ?? 'The agent'}
+        agentName={isTeam ? 'Aegis' : PROVIDERS.find((p) => p.id === provider)?.label ?? 'The agent'}
         pendingCount={pendingCount}
         onSubmit={(result) => onSubmit(request.toolUseId, result)}
       />

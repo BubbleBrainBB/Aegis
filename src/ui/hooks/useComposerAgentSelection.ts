@@ -30,6 +30,7 @@ import {
   buildClaudeModelOptions,
   formatClaudeModelLabel,
   isOfficialClaudeModel,
+  listedClaudeAliasFor,
   loadPreferredClaudeModel,
   savePreferredClaudeModel,
 } from '../utils/claude-model';
@@ -330,7 +331,10 @@ function resolveConfiguredClaudeModel(
   const officialOptions = buildConfiguredClaudeModelValues(config);
   const selectCandidate = (candidateModel: string | null | undefined): string | null => {
     const normalized = canonicalizeClaudeModel(candidateModel);
-    return normalized && officialOptions.includes(normalized) ? normalized : null;
+    if (!normalized) return null;
+    if (officialOptions.includes(normalized)) return normalized;
+    // The id a listed alias resolved to reads as that alias, not as Default.
+    return listedClaudeAliasFor(normalized, officialOptions);
   };
   return (
     selectCandidate(requestedModel) ||

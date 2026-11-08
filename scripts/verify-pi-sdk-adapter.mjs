@@ -27,8 +27,9 @@ assert.ok(
 const adapter = read('src/electron/libs/provider/pi-sdk-adapter.ts');
 assert.ok(
   adapter.includes("readonly provider: ProviderKind = 'pi'") &&
-    adapter.includes("tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls', 'read_session', SHOW_WIDGET_TOOL, WIDGET_GUIDE_TOOL, ...DESIGN_TOOL_NAMES, ...(offersWorkflows ? [START_WORKFLOW_TOOL, REPORT_STATUS_TOOL, START_SESSION_TOOL] : [])]") &&
-    adapter.includes('customTools: [createPiSessionReader(), createPiShowWidget(), createPiWidgetGuide(), ...createPiDesignTools(input.threadId), ...(offersWorkflows ? [createPiStartSession(input.threadId), createPiStartWorkflow(input.threadId), createPiReportStatus(input.threadId)] : [])]') &&
+    adapter.includes("tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls', 'read_session', SHOW_WIDGET_TOOL, WIDGET_GUIDE_TOOL, ...DESIGN_TOOL_NAMES, ...(offersWorkflows ? [START_WORKFLOW_TOOL, REPORT_STATUS_TOOL, START_SESSION_TOOL] : []), ...(offersTeamTools ? [ADD_TO_TASK_TOOL, MOVE_TASK_TOOL] : [])]") &&
+    adapter.includes('customTools: [createPiSessionReader(), createPiShowWidget(), createPiWidgetGuide(), ...createPiDesignTools(input.threadId), ...(offersWorkflows ? [createPiStartSession(input.threadId), createPiStartWorkflow(input.threadId), createPiReportStatus(input.threadId)] : []), ...(offersTeamTools ? createPiTeamTools(input.threadId) : [])]') &&
+    adapter.includes('const offersTeamTools = offersWorkflows && isTeamSession(input.threadId);') &&
     adapter.includes('const offersWorkflows = !getWorkflowSessionPolicy(input.threadId);') &&
     adapter.includes('modelRuntime') &&
     adapter.includes('agentDir: resolvePiAgentDir()'),

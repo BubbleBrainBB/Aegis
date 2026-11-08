@@ -187,7 +187,8 @@ export function TasksView() {
     if (!followUpsLoaded) void useFollowUpStore.getState().load();
   }, [followUpsLoaded]);
   const followUpProposals = useFollowUpStore(s => s.proposals);
-  const subSessionParentMap = useMemo(() => subSessionParents(followUpProposals), [followUpProposals]);
+  const teamSessionId = useAppStore((state) => state.teamSessionId);
+  const subSessionParentMap = useMemo(() => subSessionParents(followUpProposals, teamSessionId), [followUpProposals, teamSessionId]);
   const sessions = useAppStore((s) => s.sessions);
   const organization = useSessionOrganization();
   const view = useSidebarViewOptions();
@@ -222,7 +223,7 @@ export function TasksView() {
     // A chat nothing has been sent from is not a task yet: it shows on screen,
     // not in any list. New Task goes back to it (openDraftSession).
     const allSessions = Object.values(sessions).filter(
-      (session) => !session.hiddenFromThreads && session.scope !== 'dm' && !session.isDraft
+      (session) => !session.hiddenFromThreads && session.id !== teamSessionId && session.scope !== 'dm' && !session.isDraft
     );
     let sessionList = allSessions.filter((session) => {
       const archived = Boolean(organization.sessions[session.id]?.archived);
@@ -318,6 +319,7 @@ export function TasksView() {
     };
   }, [
     subSessionParentMap,
+    teamSessionId,
     sessions,
     organization,
     prsBySession,

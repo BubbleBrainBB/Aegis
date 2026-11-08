@@ -5,7 +5,8 @@ import { isIosSimulatorToolAvailableNow } from './ios-simulator/tool';
 import { isBrowserUseEnabled } from './browser-use-permissions';
 import { createNativeDesignTools } from '../design/tools';
 import { createNativeReportStatus } from './turn-report-tool';
-import { createNativeStartSession } from './follow-up/tool';
+import { createNativeStartSession, createNativeTeamTools } from './follow-up/tool';
+import { isTeamSession } from './team';
 import type { BubbleContentPart } from './provider/bubble-sdk-loader';
 
 export const BUBBLE_SESSION_TOOL = 'read_session';
@@ -26,6 +27,7 @@ export function bubbleHostTools(sessionId?: string): object[] {
   if (sessionId) tools.push(createNativeReportStatus(sessionId));
   // Workflow members are refused at call time.
   if (sessionId) tools.push(createNativeStartSession(sessionId));
+  if (sessionId && isTeamSession(sessionId)) tools.push(...createNativeTeamTools(sessionId));
   return tools;
 }
 

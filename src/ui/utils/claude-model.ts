@@ -143,6 +143,24 @@ function collapseClaudeFamiliesToLatest(
   });
 }
 
+/**
+ * The listed family alias a concrete model id stands for. A session records
+ * the id the CLI resolved an alias to ("haiku" → "claude-haiku-5-5"); the
+ * picker lists the alias, so the id would otherwise match nothing. Only when
+ * no listed version of that family is newer: an older pinned id stays itself.
+ */
+export function listedClaudeAliasFor(model: string | null | undefined, listed: readonly string[]): string | null {
+  const parsed = parseClaudeModelFamily(model);
+  if (!parsed) return null;
+  const alias = listed.find((value) => parseClaudeShortAlias(value) === parsed.family);
+  if (!alias) return null;
+  const newer = listed.some((value) => {
+    const other = parseClaudeModelFamily(value);
+    return other?.family === parsed.family && (other.major > parsed.major || (other.major === parsed.major && other.minor > parsed.minor));
+  });
+  return newer ? null : alias;
+}
+
 export function buildClaudeModelOptions(
   config: ClaudeModelConfig,
   extraModels: Array<string | null | undefined> = []

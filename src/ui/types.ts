@@ -1,7 +1,7 @@
 // UI 层类型定义
 
 // Settings 标签类型
-export type SettingsTab = 'connections' | 'mcp' | 'general' | 'shortcuts' | 'appearance' | 'browser' | 'providers' | 'usage' | 'profile' | 'bridge';
+export type SettingsTab = 'connections' | 'mcp' | 'general' | 'shortcuts' | 'appearance' | 'browser' | 'providers' | 'usage' | 'profile' | 'bridge' | 'team';
 /** Agent runtime whose MCP servers the settings pane is showing. */
 export type McpSettingsRuntime = 'claude' | 'codex' | 'opencode' | 'kimi' | 'qoder' | 'bubble' | 'deepseek';
 
@@ -453,6 +453,8 @@ export interface AppState {
   workspaceChannelsByProject: Record<string, WorkspaceChannel[]>;
   activeChannelByProject: Record<string, string>;
   activeSessionId: string | null;
+  /** The Team conversation's session, once it exists. */
+  teamSessionId: string | null;
   activeWorkspace: ActiveWorkspace;
   /** The last draft chat that became a real session (views holding the draft id follow it). */
   draftPromotion: { from: string; to: string } | null;
@@ -612,6 +614,9 @@ export interface AppActions {
   // Fork a session's conversation and open the fork in a new pane.
   forkSessionToPane: (sessionId: string, destination?: 'pane' | 'local' | 'worktree') => Promise<void>;
   handoffSessionToProvider: (sessionId: string, targetProvider: AgentProvider) => Promise<void>;
+  setTeamSessionId: (sessionId: string | null) => void;
+  /** Open Team, making its conversation on first use. */
+  openTeam: () => Promise<void>;
   setSessionAgentSelection: (
     sessionId: string,
     selection: import('./utils/session-model').AgentModelSelection

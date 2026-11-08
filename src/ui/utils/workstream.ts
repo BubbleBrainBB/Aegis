@@ -1,5 +1,5 @@
 import { isStartWorkflowToolName } from '../../shared/workflow';
-import { isStartSessionToolName } from '../../shared/follow-up';
+import { isAddToTaskToolName, isMoveTaskToolName, isStartSessionToolName } from '../../shared/follow-up';
 import { opensTurn } from '../../shared/turn-boundary';
 import { deriveCompactionEntries, type CompactionEntry, type WorkstreamMessage } from './compaction';
 import { backgroundTaskEndedEntry, isBackgroundTaskEndedMessage, type BackgroundTaskEndedEntry } from './background-task-ended';
@@ -333,6 +333,7 @@ export function isSubagentTaskBlock(block: ContentBlock): boolean {
   // is not a subagent (no child trace, returns at once), so subagent lists,
   // tabs and "still running" checks leave it out.
   if (isStartWorkflowToolName(normalized.name) || isStartSessionToolName(normalized.name)) return false;
+  if (isAddToTaskToolName(normalized.name) || isMoveTaskToolName(normalized.name)) return false;
   if (classifyToolUse(normalized.name, normalized.input) === 'subagent') return true;
   const input = normalized.input as Record<string, unknown> | undefined;
   return typeof input?.subagent_type === 'string' && input.subagent_type.trim().length > 0;
