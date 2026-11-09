@@ -77,7 +77,8 @@ app.whenReady().then(async()=>{
  const rect=s=>js('(()=>{const r=('+s+').getBoundingClientRect();return {x:r.x,y:r.y,bottom:r.bottom}})()');
  const state=()=>js(edge+'.dataset.sidebarScrollEdge');
  const opacity=()=>js('getComputedStyle('+edge+').opacity');
- const scrollTo=async top=>{await js(scroller+'.scrollTop='+top);await until(edge+'.dataset.sidebarScrollEdge==='+JSON.stringify(top>0?'visible':'hidden'));await delay(220)};
+ // The edge fades over 150ms; a slow runner can still be mid-fade after a fixed wait, so wait for the fade to end.
+ const scrollTo=async top=>{await js(scroller+'.scrollTop='+top);await until(edge+'.dataset.sidebarScrollEdge==='+JSON.stringify(top>0?'visible':'hidden'));await until('getComputedStyle('+edge+').opacity==='+JSON.stringify(top>0?'1':'0'))};
  const rows=()=>js('[...document.querySelectorAll("[data-task-list] [data-session-id]")].map(e=>e.dataset.sessionId)');
  const title=()=>js('document.querySelector("[data-main-titlebar] h1").textContent');
  try{
