@@ -51,6 +51,27 @@ export async function captureGitTreeSnapshot(cwd: string): Promise<string | null
 }
 
 /**
+ * Pathspecs leaving out the repository's own linked worktrees that sit inside
+ * it (an agent's `.worktrees/x`): `git add -A` records each as a gitlink, a
+ * "Subproject commit" that is no change to the folder.
+ */
+async function nestedWorktreeExcludes(cwd: string): Promise<string[]> {
+  try {
+    const [{ stdout: top }, { stdout: list }] = await Promise.all([
+      execFileAsync('git', ['rev-parse', '--show-toplevel'], { cwd, timeout: 5000 }),
+      execFileAsync('git', ['worktree', 'list', '--porcelain'], { cwd, timeout: 5000 }),
+    ]);
+    const root = top.trim();
+    return [...list.matchAll(/^worktree (.+)$/gm)]
+      .map((match) => path.relative(root, match[1]))
+      .filter((rel) => rel && !rel.startsWith('..') && !path.isAbsolute(rel))
+      .map((rel) => `:(top,exclude,literal)${rel.split(path.sep).join('/')}`);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Unified diff between two tree snapshots produced by
  * captureGitTreeSnapshot. Tree-to-tree diff covers modified, deleted and
  * (because the snapshots `git add -A`) newly created untracked files alike.
@@ -58,11 +79,14 @@ export async function captureGitTreeSnapshot(cwd: string): Promise<string | null
 export async function diffGitTreeSnapshots(
   cwd: string,
   beforeTree: string,
-  afterTree: string
+  afterTree: string,
+  /** Folder put in front of every path, e.g. `worktree/` for `a/worktree/src/x.ts`. */
+  pathPrefix = ''
 ): Promise<TurnTreeDiff> {
   if (beforeTree === afterTree) {
     return { patch: '', truncated: false };
   }
+  const excludes = await nestedWorktreeExcludes(cwd);
   try {
     const { stdout } = await execFileAsync(
       'git',
@@ -73,8 +97,10 @@ export async function diffGitTreeSnapshots(
         '--no-color',
         '--no-ext-diff',
         '--unified=3',
+        ...(pathPrefix ? [`--src-prefix=a/${pathPrefix}`, `--dst-prefix=b/${pathPrefix}`] : []),
         beforeTree,
         afterTree,
+        ...(excludes.length ? ['--', ...excludes] : []),
       ],
       { cwd, timeout: 15000, maxBuffer: TURN_PATCH_MAX_BUFFER_BYTES }
     );
@@ -85,5 +111,22 @@ export async function diffGitTreeSnapshots(
     };
   } catch {
     return { patch: '', truncated: false };
+  }
+}
+
+/**
+ * The commit a linked worktree had checked out when it was added: the oldest
+ * entry of its own HEAD reflog. Null when git can't tell.
+ */
+export async function worktreeStartCommit(cwd: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync('git', ['reflog', 'show', 'HEAD', '--format=%H'], {
+      cwd,
+      timeout: 5000,
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    return stdout.trim().split('\n').pop()?.trim() || null;
+  } catch {
+    return null;
   }
 }

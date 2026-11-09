@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { extractUnifiedDiffFilePath } from '../../src/shared/unified-diff';
-import { buildTurnChangeContext } from '../../src/ui/utils/turn-change-records';
+import { buildSubagentChangeSummary, buildTurnChangeContext, isPathInsideCwd } from '../../src/ui/utils/turn-change-records';
 import {
   formatWorkstreamStageSummary,
   getStageChangeRecords,
@@ -523,6 +523,68 @@ assert.deepEqual(
   ['/Users/me/repo/src/inside.ts'],
   'turn cards must leave out files written outside the session cwd'
 );
+assert.deepEqual(
+  buildTurnChangeContext(outsideCwdMessages, ['/Users/me/repo', '/Users/me/sibling', null])
+    .turns[0].records.map((record) => record.filePath)
+    .sort(),
+  ['/Users/me/repo/../sibling/stray.txt', '/Users/me/repo/src/inside.ts'],
+  'files in the worktree the agent moved its work into stay on the turn card'
+);
+const siblingWorktreeMessages = [
+  { type: 'user_prompt', prompt: 'Work in a sibling worktree' },
+  {
+    type: 'assistant',
+    uuid: 'assistant-sibling-worktree',
+    message: {
+      content: [
+        {
+          type: 'tool_use',
+          id: 'sibling-worktree-bash',
+          name: 'Bash',
+          input: { command: 'cd ../work && printf hi > hello.txt && cd ../elsewhere && touch stray.txt' },
+        },
+        { type: 'tool_result', tool_use_id: 'sibling-worktree-bash', content: 'ok' },
+      ],
+    },
+  },
+] as Parameters<typeof buildTurnChangeContext>[0];
+assert.deepEqual(
+  buildTurnChangeContext(siblingWorktreeMessages, ['/repo', '/work']).turns[0]?.records.map((record) => record.filePath),
+  ['../work/hello.txt'],
+  'a relative path into the sibling worktree resolves against the session folder'
+);
+assert.equal(
+  buildTurnChangeContext(siblingWorktreeMessages, '/repo').turns.length,
+  0,
+  'without a followed worktree, sibling folders stay off the card'
+);
+const aboveDriveMessages = [
+  { type: 'user_prompt', prompt: 'Write above the drive root' },
+  {
+    type: 'assistant',
+    uuid: 'assistant-above-drive',
+    message: {
+      content: [
+        { type: 'tool_use', id: 'above-drive-write', name: 'Write', input: { file_path: '../../elsewhere/x.txt', content: 'x\n' } },
+        { type: 'tool_result', tool_use_id: 'above-drive-write', content: 'ok' },
+      ],
+    },
+  },
+] as Parameters<typeof buildTurnChangeContext>[0];
+for (const roots of ['C:/repo', ['C:/repo', 'C:/work']]) {
+  assert.equal(
+    buildTurnChangeContext(aboveDriveMessages, roots).turns.length,
+    0,
+    `a path climbing above the drive root stays off the card (${JSON.stringify(roots)})`
+  );
+  assert.equal(
+    buildSubagentChangeSummary(aboveDriveMessages, roots),
+    null,
+    `and off the subagent card (${JSON.stringify(roots)})`
+  );
+}
+assert.equal(isPathInsideCwd('C:/repo/../../elsewhere/x.txt', 'C:/repo'), false);
+assert.equal(isPathInsideCwd('C:\\repo\\..\\work\\a.txt', 'C:/work'), true);
 const outsideOnlyContext = buildTurnChangeContext(
   [
     outsideCwdMessages[0],

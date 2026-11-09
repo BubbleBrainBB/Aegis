@@ -34,12 +34,13 @@ export interface TurnChangeContext {
   changeRecordsByToolUseId: Map<string, ChangeRecord[]>;
 }
 
-/** Forward slashes, `.`/`..` collapsed; null when `..` climbs above the start. */
+/** Forward slashes, `.`/`..` collapsed; null when `..` climbs above the start or a drive root. */
 function normalizePath(path: string): string | null {
   const parts: string[] = [];
   for (const part of path.replaceAll('\\', '/').split('/')) {
     if (part === '..') {
-      if (parts.length === 0 || parts[parts.length - 1] === '') return null;
+      const last = parts[parts.length - 1];
+      if (last === undefined || last === '' || /^[A-Za-z]:$/.test(last)) return null;
       parts.pop();
     } else if (part !== '.' && (part || parts.length === 0)) {
       parts.push(part);
@@ -66,19 +67,40 @@ export function isPathInsideCwd(filePath: string, cwd: string): boolean {
 }
 
 /**
+ * The folders whose files a turn's card lists: the session's own and the
+ * worktree its agent moved its work into. None given lists every file.
+ */
+export type TurnChangeRoots = string | readonly (string | null | undefined)[] | null | undefined;
+
+function insideRoots(roots: TurnChangeRoots): ((filePath: string) => boolean) | null {
+  const list = (typeof roots === 'string' ? [roots] : roots ?? []).filter((root): root is string => Boolean(root));
+  if (list.length === 0) return null;
+  const [cwd] = list;
+  return (filePath) => {
+    // Relative paths are the session folder's, even when they climb into a
+    // sibling worktree (`cd ../work && printf hi > hello.txt`).
+    const relative = !/^([\\/~]|[A-Za-z]:[\\/])/.test(filePath);
+    const resolved = relative ? `${cwd.replace(/[\\/]+$/, '')}/${filePath}` : filePath;
+    return list.some((root) => isPathInsideCwd(resolved, root));
+  };
+}
+
+/**
  * Walks messages and groups tool-induced change records by "turn", where a turn
  * is every message between two consecutive `user_prompt` entries (including the
  * leading prompt of each segment).
  *
  * With `cwd`, tool records outside it are left out of the turn summaries: the
  * card and review describe what the turn did to the project, and the git
- * snapshot that normally wins already ignores files outside the repo. The
+ * snapshot that normally wins already ignores files outside the repo. Pass
+ * the agent's worktree with the session's folder to keep its files in. The
  * per-tool maps keep every record for trace-row hints.
  */
 export function buildTurnChangeContext(
   messages: StreamMessage[],
-  cwd?: string | null
+  cwd?: TurnChangeRoots
 ): TurnChangeContext {
+  const isInside = insideRoots(cwd);
   const turns: TurnChangeSummary[] = [];
   const changeRecordByToolUseId = new Map<string, ChangeRecord>();
   const changeRecordsByToolUseId = new Map<string, ChangeRecord[]>();
@@ -111,7 +133,7 @@ export function buildTurnChangeContext(
     }
 
     const merged = mergeRecordsByPath(
-      cwd ? mainRecords.filter((record) => isPathInsideCwd(record.filePath, cwd)) : mainRecords
+      isInside ? mainRecords.filter((record) => isInside(record.filePath)) : mainRecords
     );
 
     // The runner emits one `turn_changes` message per completed turn (git
@@ -173,11 +195,12 @@ export function buildTurnChangeContext(
  */
 export function buildSubagentChangeSummary(
   messages: StreamMessage[],
-  cwd?: string | null
+  cwd?: TurnChangeRoots
 ): TurnChangeSummary | null {
   if (messages.length === 0) return null;
+  const isInside = insideRoots(cwd);
   const records = extractToolChangeRecords(messages).filter(
-    (record) => !cwd || isPathInsideCwd(record.filePath, cwd)
+    (record) => !isInside || isInside(record.filePath)
   );
   if (records.length === 0) return null;
   const merged = mergeRecordsByPath(records);
