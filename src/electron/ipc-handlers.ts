@@ -5530,8 +5530,8 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
   // 全局 session 状态监听：session 完成/失败时发系统通知
   sessions.setSessionStatusListener((row, previousStatus) => {
     trackTaskPowerState(row.id, sessions.getSession(row.id)?.status === 'running');
-    // A new run takes over from a status set by hand.
-    if (row.status === 'running' && previousStatus !== 'running' && sessions.clearSessionManualStatus(row.id)) {
+    // A run opens the task until you close it, and takes over from a status set by hand.
+    if (row.status === 'running' && previousStatus !== 'running' && sessions.reopenSessionTask(row.id)) {
       broadcastSessionOrganization();
     }
     if (

@@ -19,7 +19,7 @@ import {useFollowUpStore} from '/src/ui/store/useFollowUpStore';
 import '/src/ui/index.css';
 const emptyResult=()=>{const done=()=>{};const result=Promise.resolve([]);for(const key of ['then','catch','finally'])done[key]=result[key].bind(result);return done};
 const autoStub=()=>new Proxy(function(){},{get:(_,k)=>k==='then'?undefined:autoStub(),apply:emptyResult});
-const org={sessions:{},sections:[],projectSources:{}};const changes=[];
+const org={sessions:{seen:{archived:false,unread:false,sectionId:null,manualStatus:null,keptOpen:true}},sections:[],projectSources:{}};const changes=[];
 const stubs={getUserProfile:async()=>({displayName:'BubbleBrain',handle:'bubblebrain',customized:true}),getBubbleProvidersConfig:async()=>({providers:[]}),getGitBranch:async()=>({ok:false}),
  getSessionOrganization:async()=>structuredClone(org),onSessionOrganizationChanged:()=>()=>{},
  changeSessionOrganization:async change=>{changes.push(change);if(change.kind==='status')org.sessions[change.sessionId]={archived:false,unread:false,sectionId:null,...org.sessions[change.sessionId],manualStatus:change.status};return structuredClone(org)}};
@@ -33,6 +33,8 @@ const fixed=[
  task('running','Rewrite the sidebar as a task page','coworker',{status:'running',provider:'codex',updatedAt:now-60000}),
  task('review','Move Search below New Task','coworker',{runtimeNotice:'completed',updatedAt:now-day*2}),
  task('done','Give this article a cyberpunk title','test',{updatedAt:now-day*4}),
+ // Ran since you last closed it and you have read the answer: still yours to close.
+ task('seen','Explain why the build is slow','insight-daily',{updatedAt:now-day*5.5}),
  // A finished task whose sub-task still waits for review: the whole family stays in Active.
  task('parent','Ship the sidebar redesign','launch-site',{updatedAt:now-day*3.5}),
  task('child-a','Draw the tree line','launch-site',{runtimeNotice:'completed',updatedAt:now-day*3,createdAt:now-day*3.4}),
@@ -89,13 +91,14 @@ app.whenReady().then(async()=>{
   assert.ok(label.y-myTasks.bottom>=20,'Active sits clearly apart from the actions: '+JSON.stringify({myTasks,label}));
   assert.ok(label.bottom<=list.y,'Active stays above the scrolling list');
   const sidebarRows=await active();
-  assert.deepEqual(sidebarRows.slice(0,3),['failed','waiting','review'],'what needs you first, then what waits for review');
-  assert.equal(sidebarRows.at(-1),'running','what still runs comes last');
+  assert.deepEqual(sidebarRows.slice(0,2),['running','review'],'latest activity first: a task you just started is on top');
+  assert.equal(sidebarRows.at(-1),'waiting','an old task that needs you stays where its last activity puts it');
   assert.equal(sidebarRows.includes('done'),false,'finished work leaves the list');
+  assert.equal(sidebarRows.includes('seen'),true,'a result you have read stays until you close it');
   assert.deepEqual(await js('[...document.querySelectorAll("[data-active-family=parent] [data-session-id]")].map(e=>e.dataset.sessionId)'),['parent','child-b','child-a'],
    'a finished parent stays with all its sub-tasks, in the order they started');
   assert.equal(await js('document.querySelectorAll("[data-active-family=parent] [class*=rounded-bl]").length'),1,'the last sub-task hooks the tree line');
-  assert.ok(sidebarRows.indexOf('parent')>sidebarRows.indexOf('review'),'a family stands where its most urgent member does, by latest activity');
+  assert.equal(sidebarRows.indexOf('parent'),sidebarRows.indexOf('review')+1,'a family stands where its latest member does');
   await shot('sidebar');
   assert.equal(await js('document.querySelector("[data-active-tasks] [data-session-id=review] [data-task-age]").textContent'),'2d');
   assert.equal(await js(nav('My Tasks')+'.textContent.trim()'),'My Tasks2','the row counts tasks waiting on you');
@@ -147,7 +150,7 @@ app.whenReady().then(async()=>{
   assert.equal(await js('!!document.querySelector("[data-task-list] [data-task-project]")'),false);
   assert.equal(await js('document.querySelector("[data-task-project-filter]").getAttribute("aria-label")'),'Project: coworker');
   assert.equal(await js('qa.store.getState().projectCwd'),'/projects/coworker');
-  assert.deepEqual((await active()).slice(0,2),['failed','waiting'],'the sidebar is not filtered');
+  assert.deepEqual((await active()).slice(0,2),['running','review'],'the sidebar is not filtered');
   await shot('project');
   assert.equal(await js('[...document.querySelectorAll("[data-main-titlebar] button")].some(e=>e.textContent.trim()==="New task")'),false,'the sidebar has New Task, the page does not repeat it');
   // The sidebar's New Task starts in the project on screen, not the last task's.
@@ -204,12 +207,14 @@ app.whenReady().then(async()=>{
   // S also works on the row under the pointer.
   await js('document.activeElement.blur()');
   assert.equal(await js('!!'+sideRow('waiting')+'.querySelector("[data-task-status-trigger]")'),false,'an approval the agent waits on is answered, not closed');
+  await js(sideRow('failed')+'.scrollIntoView({block:"nearest"})');await delay(60);
   const r=await rect(sideRow('failed'));win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(r.x+60),y:Math.round(r.y+8)});await delay(120);
   await key('s');await until('!!'+statusMenu);
   await key('2');await until('!'+sideRow('failed'));
   assert.deepEqual(qaLast(await js('qa.changes')),{kind:'status',sessionId:'failed',status:'completed'});
   assert.equal(await js(nav('My Tasks')+'.textContent.trim()'),'My Tasks1','a task closed by hand stops counting as waiting on you');
   // S keeps working on the row under the pointer after that row re-renders.
+  await js(sideRow('review')+'.scrollIntoView({block:"nearest"})');await delay(60);
   const hovered=await rect(sideRow('review'));win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(hovered.x+60),y:Math.round(hovered.y+8)});await delay(120);
   await js('qa.store.setState(s=>({sessions:{...s.sessions,review:{...s.sessions.review,title:"Move Search below New Task again"}}}))');await delay(120);
   await key('s');await until('!!'+statusMenu);await key('Escape');await until('!'+statusMenu);
@@ -226,6 +231,11 @@ app.whenReady().then(async()=>{
   await js(sideRow('done')+'.querySelector("[data-task-status-trigger]").click()');await until('!!'+statusMenu);
   await js(statusMenu+'.querySelector("[data-task-status-option=review]").click()');await until('!'+statusMenu);await delay(150);
   assert.deepEqual(qaLast(await js('qa.changes')),{kind:'status',sessionId:'done',status:null},'picking the state the task has anyway clears the hand-set one');
+  // Reading a result does not close it: marking it Completed does.
+  await js(sideRow('seen')+'.scrollIntoView({block:"nearest"})');
+  await js(sideRow('seen')+'.querySelector("[data-task-status-trigger]").click()');await until('!!'+statusMenu);
+  await js(statusMenu+'.querySelector("[data-task-status-option=completed]").click()');await until('!'+sideRow('seen'));
+  assert.deepEqual(qaLast(await js('qa.changes')),{kind:'status',sessionId:'seen',status:'completed'});
   await js('qa.store.getState().setActiveWorkspace("chat")');await until('!!document.querySelector("[data-chat-stub]")');
   // New task from a project in the filter starts there.
   await js('qa.store.getState().setActiveWorkspace("tasks")');await until('!!document.querySelector("[data-task-project-filter]")');

@@ -553,6 +553,8 @@ export function initialize(): void {
   `);
 
   ensureColumn('session_organization', 'manual_status', 'TEXT');
+  // Tasks closed before this column existed stay closed: only a run from now on opens one.
+  ensureColumn('session_organization', 'kept_open', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn('sessions', 'codex_session_id', 'TEXT');
   ensureColumn('sessions', 'opencode_session_id', 'TEXT');
   ensureColumn('sessions', 'kimi_session_id', 'TEXT');
@@ -1297,7 +1299,7 @@ export function moveSessionWithProjectSources(sessionId: string, projectCwd: str
 }
 
 export function getSessionOrganization(): SessionOrganizationSnapshot {
-  const entries = getDb().prepare('SELECT * FROM session_organization').all() as { session_id: string; archived: number; unread: number; section_id: string | null; manual_status: string | null }[];
+  const entries = getDb().prepare('SELECT * FROM session_organization').all() as { session_id: string; archived: number; unread: number; section_id: string | null; manual_status: string | null; kept_open: number }[];
   const sections = getDb().prepare('SELECT id, name FROM session_sections ORDER BY rowid').all() as SessionOrganizationSnapshot['sections'];
   const roots = getDb().prepare('SELECT DISTINCT project_cwd FROM project_sources').all() as { project_cwd: string }[];
   const projectSources = Object.fromEntries(roots.map(row => [row.project_cwd, getProjectSources(row.project_cwd)]));
@@ -1309,6 +1311,7 @@ export function getSessionOrganization(): SessionOrganizationSnapshot {
   return { projectSources, sessions: Object.fromEntries(entries.map(row => [row.session_id, {
     archived: !!row.archived, unread: !!row.unread, sectionId: row.section_id,
     manualStatus: row.manual_status === 'review' || row.manual_status === 'completed' ? row.manual_status : null,
+    keptOpen: !!row.kept_open,
   }])), sections };
 }
 
@@ -1875,13 +1878,18 @@ export function updateSessionStatus(sessionId: string, status: SessionStatus): v
 }
 
 /**
- * A status set by hand describes the task as it stood then: once it runs again,
- * its state is worked out from the new run. True when there was one to clear.
+ * A run opens the task: it stays open, seen or not, until you close it by hand.
+ * A status set by hand describes the task as it stood then, so it gives way to
+ * the new run. True when anything changed.
  */
-export function clearSessionManualStatus(sessionId: string): boolean {
-  return getDb()
-    .prepare('UPDATE session_organization SET manual_status = NULL WHERE session_id = ? AND manual_status IS NOT NULL')
-    .run(sessionId).changes > 0;
+export function reopenSessionTask(sessionId: string): boolean {
+  return getDb().transaction(() => {
+    const inserted = getDb().prepare('INSERT OR IGNORE INTO session_organization (session_id) VALUES (?)').run(sessionId).changes;
+    const updated = getDb()
+      .prepare('UPDATE session_organization SET manual_status = NULL, kept_open = 1 WHERE session_id = ? AND (manual_status IS NOT NULL OR kept_open = 0)')
+      .run(sessionId).changes;
+    return inserted + updated > 0;
+  })();
 }
 
 /** Store (or clear) the agent's report of how its current turn ends. */
