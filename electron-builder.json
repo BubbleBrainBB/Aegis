@@ -112,7 +112,9 @@
   },
   "publish": [
     {
-      "provider": "github"
+      "provider": "github",
+      "owner": "BubbleBrainBB",
+      "repo": "Aegis"
     }
   ]
 }

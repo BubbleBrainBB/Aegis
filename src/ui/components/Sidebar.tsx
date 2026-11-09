@@ -33,6 +33,7 @@ import { MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH } from '../utils/sidebar-width';
 import { SessionHistoryButtons } from './SessionHistoryButtons';
 import { SidebarProfileMenu } from './sidebar/SidebarProfileMenu';
 import { SidebarActiveTasks } from './sidebar/SidebarActiveTasks';
+import { SidebarUpdateButton } from './sidebar/SidebarUpdateButton';
 import { useSessionOrganization } from '../store/useSessionOrganizationStore';
 import { useSidebarViewStore } from '../store/useSidebarViewStore';
 import { deriveSidebarSessionState } from '../utils/sidebar-view';
@@ -616,6 +617,7 @@ function SidebarRail({
       <div aria-hidden="true" className="my-1 h-px w-[22px] bg-[var(--panel-soft-divider)]" />
       {item('prs', 'Pull Requests', <GitPullRequest className="h-[17px] w-[17px]" strokeWidth={1.6} />)}
       <div className="flex-1" />
+      <SidebarUpdateButton />
       <SidebarProfileMenu variant="rail" onOpenSettings={onOpenSettings} />
     </nav>
   );

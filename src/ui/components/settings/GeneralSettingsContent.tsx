@@ -3,6 +3,7 @@ import { toast } from 'sonner';
 import { Check, ChevronDown } from '../icons';
 import * as DropdownMenu from '../ui/dropdown-menu';
 import type { AppPreferences } from '../../../shared/app-preferences';
+import type { AppUpdateStatus } from '../../../shared/types';
 import { useAppPreferences, saveAppPreferences, subscribeAppPreferences, refreshAppPreferences } from '../../store/useAppPreferences';
 import { useAppStore } from '../../store/useAppStore';
 import { useChatsFolder } from '../../hooks/useChatsFolder';
@@ -29,6 +30,17 @@ export function PreferenceSelect({ label, value, options, disabled, onChange }: 
       </DropdownMenu.Item>)}
     </DropdownMenu.Content></DropdownMenu.Portal>
   </DropdownMenu.Root>;
+}
+
+function updateSummary(status: AppUpdateStatus): string {
+  const next = status.version || 'Update';
+  switch (status.phase) {
+    case 'available': return ` · ${next} available`;
+    case 'downloading': return (status.progress ?? 0) >= 100 ? ` · Preparing ${next}` : ` · Downloading ${next} (${status.progress ?? 0}%)`;
+    case 'downloaded': return ` · ${next} ready to install`;
+    case 'error': return ` · ${next} download failed`;
+    default: return '';
+  }
 }
 
 export function GeneralSettingsContent() {
@@ -112,13 +124,17 @@ export function GeneralSettingsContent() {
       <SettingsRow variant="card" label="Approval required" description="Notify when Aegis is in the background."><SettingsToggle ariaLabel="Approval required" checked={notifications?.approvalRequired ?? true} disabled={disabled} onChange={value => void saveNotifications({ approvalRequired: value })} /></SettingsRow>
     </SettingsGroup>
     <SettingsGroup title="Application">
-      <SettingsRow variant="card" label="Updates" description={version ? `Version ${version}${updateStatus.available ? ` · ${updateStatus.version || 'Update'} available` : ''}` : 'Loading version…'}>
-        <button className={selectClass} disabled={checking} onClick={async () => {
-          setChecking(true);
-          try { await window.electron.checkForUpdates(); }
-          catch (error) { toast.error(error instanceof Error ? error.message : 'Could not check for updates.'); }
-          finally { setChecking(false); }
-        }}>{checking ? 'Checking…' : 'Check for updates'}</button>
+      <SettingsRow variant="card" label="Updates" description={version ? `Version ${version}${updateSummary(updateStatus)}` : 'Loading version…'}>
+        {updateStatus.phase === 'downloaded'
+          ? <button className={selectClass} onClick={() => void window.electron.installUpdate()}>Restart to update</button>
+          : updateStatus.phase === 'available' || updateStatus.phase === 'error'
+            ? <button className={selectClass} onClick={() => void window.electron.downloadUpdate()}>{updateStatus.phase === 'error' ? 'Retry download' : 'Download update'}</button>
+            : <button className={selectClass} disabled={checking || updateStatus.phase === 'downloading'} onClick={async () => {
+              setChecking(true);
+              try { await window.electron.checkForUpdates(); }
+              catch (error) { toast.error(error instanceof Error ? error.message : 'Could not check for updates.'); }
+              finally { setChecking(false); }
+            }}>{checking ? 'Checking…' : 'Check for updates'}</button>}
       </SettingsRow>
     </SettingsGroup>
   </div>;

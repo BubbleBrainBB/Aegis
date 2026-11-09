@@ -1,5 +1,5 @@
 import { setupSessionWindowsIPC, sessionWindows } from './ipc/session-windows';
-import { app, BrowserWindow, Menu, dialog, shell, ipcMain, nativeTheme, session } from 'electron';
+import { app, autoUpdater as nativeUpdater, BrowserWindow, Menu, dialog, shell, ipcMain, nativeTheme, session } from 'electron';
 import { queueSessionLink } from './ipc/session-links';
 import {
   applyWindowMaterial,
@@ -33,7 +33,7 @@ import {
 import { ensureShellEnvironment } from './libs/shell-environment';
 import { preloadClaudeAgentSdk } from './libs/runner';
 import { listRunningSessions } from './libs/session-store';
-import type { AppUpdateStatus } from '../shared/types';
+import { createAppUpdater } from './libs/app-updater';
 import { guardWidgetFrameNavigation, installWidgetProtocol, registerWidgetIpc, registerWidgetSchemePrivileged } from './widget-protocol';
 import { guardSandboxFrameNavigation, guardSandboxFrameRequests } from './libs/frame-navigation-guard';
 import { BROWSER_SESSION_PARTITION } from '../shared/browser-types';
@@ -124,15 +124,8 @@ if (app.isPackaged && !process.env.AEGIS_USER_DATA_DIR) {
   });
   app.setAsDefaultProtocolClient('aegis');
 }
-let updaterInitialized = false;
 let devFileWatcher: fs.FSWatcher | null = null;
 let updateCheckStarted = false;
-let pendingManualUpdateCheck = false;
-let latestUpdateStatus: AppUpdateStatus = {
-  available: false,
-  version: null,
-  autoDetected: false,
-};
 let latestUiResumeState: import('../shared/types').UiResumeState | null = null;
 let isQuitting = false;
 let allowCloseAfterProjectEditorFlush = false;
@@ -225,7 +218,8 @@ function flushPendingProjectEditorDraftForTermination(signal: NodeJS.Signals): v
 process.once('SIGINT', flushPendingProjectEditorDraftForTermination);
 process.once('SIGTERM', flushPendingProjectEditorDraftForTermination);
 
-const RELEASES_URL = 'https://github.com/DylanDDeng/Aegis/releases';
+const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
+const RELEASES_URL = 'https://github.com/BubbleBrainBB/Aegis/releases';
 const PROJECT_EDITOR_FLUSH_REQUEST_CHANNEL = 'project-editor-flush-request';
 const PROJECT_EDITOR_FLUSH_RESPONSE_CHANNEL = 'project-editor-flush-response';
 
@@ -388,10 +382,10 @@ function normalizeReleaseNotes(
 function buildUpdateDetail(info: { releaseNotes?: unknown }): string {
   const notes = normalizeReleaseNotes(info.releaseNotes);
   if (!notes) {
-    return 'This build uses manual updates. Open the GitHub Releases page to download the latest package.';
+    return 'Aegis downloads the update in the background, then asks you to restart.';
   }
 
-  return `${notes}\n\nOpen the GitHub Releases page to download the latest package.`;
+  return notes;
 }
 
 // 窗口状态持久化
@@ -829,106 +823,31 @@ function showMainWindow(): void {
   mainWindow.focus();
 }
 
-function broadcastUpdateStatus(): void {
-  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) {
-    return;
-  }
-
-  mainWindow.webContents.send(
-    'server-event',
-    JSON.stringify({
-      type: 'app.update',
-      payload: latestUpdateStatus,
-    } satisfies import('../shared/types').ServerEvent)
-  );
-}
-
-function setupAutoUpdater(): void {
-  if (!app.isPackaged || updaterInitialized) {
-    return;
-  }
-  updaterInitialized = true;
-  autoUpdater.autoDownload = false;
-
-  autoUpdater.on('error', (error) => {
-    const shouldNotify = pendingManualUpdateCheck;
-    pendingManualUpdateCheck = false;
-    if (!shouldNotify) {
-      console.warn('[Updater] Background update check failed:', error);
-      return;
+const appUpdater = createAppUpdater({
+  // Reading electron-updater's autoUpdater creates it, so wait until needed.
+  updater: () => autoUpdater,
+  nativeUpdater: () => nativeUpdater,
+  platform: process.platform,
+  isPackaged: app.isPackaged,
+  canInstallInApp: () => !process.env.PORTABLE_EXECUTABLE_FILE,
+  showMessageBox: options => dialog.showMessageBox(options),
+  openReleasesPage: () => void shell.openExternal(RELEASES_URL),
+  // Session windows show the rail too, and outlive a closed main window on
+  // Windows and Linux.
+  broadcast: status => {
+    const event: import('../shared/types').ServerEvent = { type: 'app.update', payload: status };
+    const targets = [mainWindow, ...[...sessionWindows.values()].map(entry => entry.window)];
+    for (const win of new Set(targets)) {
+      if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) {
+        win.webContents.send('server-event', JSON.stringify(event));
+      }
     }
-    dialog.showMessageBox({
-      type: 'error',
-      title: 'Update error',
-      message: 'Failed to check for updates.',
-      detail: error?.message || String(error),
-    });
-  });
-
-  autoUpdater.on('update-available', async (info) => {
-    const shouldNotify = pendingManualUpdateCheck;
-    latestUpdateStatus = {
-      available: true,
-      version: info?.version || null,
-      autoDetected: !pendingManualUpdateCheck || latestUpdateStatus.autoDetected,
-    };
-    broadcastUpdateStatus();
-    pendingManualUpdateCheck = false;
-    if (!shouldNotify) {
-      return;
-    }
-    const result = await dialog.showMessageBox({
-      type: 'info',
-      title: 'Update available',
-      message: `A new version${info?.version ? ` (${info.version})` : ''} is available.`,
-      detail: buildUpdateDetail(info),
-      buttons: ['Open Release Page', 'Later'],
-      defaultId: 0,
-      cancelId: 1,
-    });
-    if (result.response === 0) {
-      void shell.openExternal(RELEASES_URL);
-    }
-  });
-
-  autoUpdater.on('update-not-available', () => {
-    latestUpdateStatus = {
-      available: false,
-      version: null,
-      autoDetected: false,
-    };
-    broadcastUpdateStatus();
-    const shouldNotify = pendingManualUpdateCheck;
-    pendingManualUpdateCheck = false;
-    if (!shouldNotify) {
-      return;
-    }
-    dialog.showMessageBox({
-      type: 'info',
-      title: 'Up to date',
-      message: 'You are already using the latest version.',
-    });
-  });
-
-  autoUpdater.on('update-downloaded', () => {
-    void shell.openExternal(RELEASES_URL);
-  });
-}
-
-function checkForUpdates(options?: { manual?: boolean }): void {
-  if (!app.isPackaged) {
-    pendingManualUpdateCheck = false;
-    dialog.showMessageBox({
-      type: 'info',
-      title: 'Updates',
-      message: 'Updates are only available in the packaged app.',
-    });
-    return;
-  }
-
-  pendingManualUpdateCheck = options?.manual === true;
-  autoUpdater.checkForUpdates();
-}
+  },
+  setQuitting: quitting => {
+    isQuitting = quitting;
+  },
+  updateDetail: buildUpdateDetail,
+});
 
 function scheduleAutomaticUpdateCheck(): void {
   if (!app.isPackaged || updateCheckStarted) {
@@ -936,9 +855,9 @@ function scheduleAutomaticUpdateCheck(): void {
   }
 
   updateCheckStarted = true;
-  setTimeout(() => {
-    checkForUpdates({ manual: false });
-  }, 8000);
+  const check = () => appUpdater.check({ manual: false });
+  setTimeout(check, 8000);
+  setInterval(check, UPDATE_CHECK_INTERVAL_MS);
 }
 
 function setupMenu(): void {
@@ -954,7 +873,7 @@ function setupMenu(): void {
       role('about'),
       {
         label: 'Check for Updates...',
-        click: () => checkForUpdates({ manual: true }),
+        click: () => appUpdater.check({ manual: true }),
       },
       separator(),
       role('services'),
@@ -1056,7 +975,7 @@ function setupMenu(): void {
     const helpSubmenu: Electron.MenuItemConstructorOptions[] = [
       {
         label: 'Check for Updates...',
-        click: () => checkForUpdates({ manual: true }),
+        click: () => appUpdater.check({ manual: true }),
       },
     ];
     template.push({
@@ -1103,13 +1022,21 @@ app.whenReady().then(() => {
   // message doesn't pay it (P0b of the streaming/cold-start optimization).
   preloadClaudeAgentSdk();
   setupMenu();
-  setupAutoUpdater();
+  appUpdater.setup();
   ipcMainHandle('check-for-updates', async () => {
-    checkForUpdates({ manual: true });
+    appUpdater.check({ manual: true });
     return { ok: true };
   });
   ipcMainHandle('get-update-status', async () => {
-    return latestUpdateStatus;
+    return appUpdater.status();
+  });
+  ipcMainHandle('download-update', async () => {
+    appUpdater.download();
+    return { ok: true };
+  });
+  ipcMainHandle('install-update', async () => {
+    appUpdater.install();
+    return { ok: true };
   });
   ipcMainHandle('get-ui-resume-state', async event => {
     return sessionWindows.has(event.sender.id) ? null : latestUiResumeState;

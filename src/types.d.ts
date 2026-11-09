@@ -236,6 +236,8 @@ declare global {
     ) => Promise<import('./shared/types').SessionHistoryPayload>;
     checkForUpdates: () => Promise<{ ok: boolean }>;
     getUpdateStatus: () => Promise<AppUpdateStatus>;
+    downloadUpdate: () => Promise<{ ok: boolean }>;
+    installUpdate: () => Promise<{ ok: boolean }>;
     getClaudeModelConfig: () => Promise<ClaudeModelConfig>;
     getWechatHtmlGeneratorConfig: () => Promise<WechatMarkdownHtmlGeneratorConfig>;
     saveWechatHtmlGeneratorConfig: (config: WechatMarkdownHtmlGeneratorConfig) => Promise<WechatMarkdownHtmlGeneratorConfig>;
