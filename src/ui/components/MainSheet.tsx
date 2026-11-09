@@ -1,6 +1,5 @@
 import type { ReactNode } from 'react';
-import { useAppStore } from '../store/useAppStore';
-import { TitlebarControls } from './Sidebar';
+import { TitlebarControls, useSidebarCollapsed } from './Sidebar';
 
 /**
  * A main-column view, Codex-style: two tones only. The view's title and
@@ -19,7 +18,7 @@ export function MainSheet({
   sheetClassName?: string;
   children: ReactNode;
 }) {
-  const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed);
+  const sidebarCollapsed = useSidebarCollapsed();
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -40,7 +39,7 @@ export function MainSheet({
  * also clears the traffic lights and hosts the sidebar toggle and history.
  */
 export function MainTitlebarRow({ children }: { children?: ReactNode }) {
-  const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed);
+  const sidebarCollapsed = useSidebarCollapsed();
 
   return (
     <div

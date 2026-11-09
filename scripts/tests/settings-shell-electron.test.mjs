@@ -1,9 +1,9 @@
 // Settings in the full app, Codex-style: the rail stays, the sidebar panel
 // holds the Settings nav and the page sits on the main sheet like any other
 // section. Back (button or shortcut) leaves Settings for the view you came
-// from and Forward is off; a search or a revealed result lasts one visit; with
-// the sidebar collapsed the page fills the sheet; at the window's minimum
-// width nothing overflows.
+// from and Forward is off; a search or a revealed result lasts one visit; the
+// title bar has no sidebar toggle and a collapsed sidebar opens for Settings,
+// then collapses again after; at the window's minimum width nothing overflows.
 import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -114,13 +114,22 @@ app.whenReady().then(async()=>{
   assert.equal(await js('document.activeElement?.dataset?.settingsLabel??null'),null,'the old result is not revealed again');
   assert.equal(await js('!!document.querySelector("[data-search-match]")'),false);
 
-  // Collapsed sidebar: the nav goes with it and the page fills the sheet; expanding brings it back.
+  // Codex keeps the sidebar open in Settings: no toggle, just Back and Forward. A collapsed sidebar opens for Settings and collapses again after.
+  const titlebar='[...document.querySelectorAll("[data-titlebar-controls] button")].map(b=>b.getAttribute("aria-label"))';
+  assert.deepEqual(await js(titlebar),['Back','Forward'],'Settings shows only Back and Forward');
+  await click(back);
+  assert.deepEqual(await js(titlebar),['Collapse sidebar','Back','Forward'],'the toggle is back outside Settings');
   await js('qa.app.getState().setSidebarCollapsed(true)');await delay(450);
-  const collapsed=await js('(()=>{const rail=document.querySelector("nav[aria-label=Sections]").getBoundingClientRect(),sheet=document.querySelector(".aegis-sheet").getBoundingClientRect();return {navHidden:document.querySelector(".aegis-sidebar-panel").getAttribute("aria-hidden")==="true",fills:Math.round(sheet.left-rail.right)<=1,toggle:!!document.querySelector("[data-main-titlebar] button[aria-label=\\"Back\\"]")}})()');
-  assert.deepEqual(collapsed,{navHidden:true,fills:true,toggle:true});
-  await shot('settings-collapsed');
+  assert.equal(await js('document.querySelector(".aegis-sidebar-panel").getAttribute("aria-hidden")'),'true');
+  await openSettings();await delay(450);
+  const opened=await js('(()=>{const panel=document.querySelector(".aegis-sidebar-panel"),box=panel.getBoundingClientRect(),sheet=document.querySelector(".aegis-sheet").getBoundingClientRect();return {navShown:panel.getAttribute("aria-hidden")==="false"&&box.width>200,joined:Math.round(sheet.left-box.right),controls:'+titlebar+',inMain:!!document.querySelector("[data-main-titlebar] [data-titlebar-controls]")}})()');
+  assert.deepEqual(opened,{navShown:true,joined:0,controls:['Back','Forward'],inMain:false},'a collapsed sidebar opens for Settings');
+  await shot('settings-from-collapsed');
+  await click(back);await delay(450);
+  assert.equal(await js('document.querySelector(".aegis-sidebar-panel").getAttribute("aria-hidden")'),'true','the sidebar collapses again after Settings');
+  assert.equal(await js('qa.app.getState().sidebarCollapsed'),true);
   await js('qa.app.getState().setSidebarCollapsed(false)');await delay(450);
-  assert.equal(await js('document.querySelector(".aegis-sidebar-panel").getAttribute("aria-hidden")'),'false');
+  await openSettings();
 
   // The window's minimum width: every page fits beside the expanded nav.
   win.setContentSize(560,800);await delay(300);
