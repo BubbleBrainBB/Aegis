@@ -20,7 +20,7 @@ import '/src/ui/index.css';
 const emptyResult=()=>{const done=()=>{};const result=Promise.resolve([]);for(const key of ['then','catch','finally'])done[key]=result[key].bind(result);return done};
 const autoStub=()=>new Proxy(function(){},{get:(_,k)=>k==='then'?undefined:autoStub(),apply:emptyResult});
 const org={sessions:{seen:{archived:false,unread:false,sectionId:null,manualStatus:null,keptOpen:true}},sections:[],projectSources:{}};const changes=[];
-const stubs={getUserProfile:async()=>({displayName:'BubbleBrain',handle:'bubblebrain',customized:true}),getBubbleProvidersConfig:async()=>({providers:[]}),getGitBranch:async()=>({ok:false}),
+const stubs={getUserProfile:async()=>({displayName:'BubbleBrain',handle:'bubblebrain',customized:true}),getBubbleProvidersConfig:async()=>({providers:[]}),getGitBranch:async cwd=>cwd==='/projects/coworker'?{ok:true,branch:'feat/search-row'}:{ok:false},
  listSidebarPullRequests:async()=>({review:[{number:41,title:'Move Search',state:'merged',url:'https://github.com/acme/coworker/pull/41'},{number:42,title:'Search follow-up',state:'open',url:'https://github.com/acme/coworker/pull/42'}]}),onSessionPullRequestsChanged:()=>()=>{},
  getSessionOrganization:async()=>structuredClone(org),onSessionOrganizationChanged:()=>()=>{},
  changeSessionOrganization:async change=>{changes.push(change);if(change.kind==='status')org.sessions[change.sessionId]={archived:false,unread:false,sectionId:null,...org.sessions[change.sessionId],manualStatus:change.status};return structuredClone(org)}};
@@ -122,6 +122,8 @@ app.whenReady().then(async()=>{
   await until('!!document.querySelector("[data-session-hover-card]")');await shot('sidebar-hover-card');
   const hoverCard=await js('document.querySelector("[data-session-hover-card]").textContent');
   assert.ok(hoverCard.includes('Move Search below New Task')&&hoverCard.includes('coworker'),'the hover card names the task and its project: '+hoverCard);
+  await until('document.querySelector("[data-session-hover-card]").textContent.includes("feat/search-row")');await shot('sidebar-hover-card-branch');
+  assert.equal(await js('(()=>{const c=document.querySelector("[data-session-hover-card]").getBoundingClientRect(),r=document.querySelector("[data-active-tasks] [data-session-id=review]").getBoundingClientRect();return c.left>=r.right&&Math.abs(c.top-r.top)<2})()'),true,'the card opens beside the row, level with it, and covers no other task');
   win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(cardRow.x+60),y:4});
   await until('!document.querySelector("[data-session-hover-card]")');
   assert.equal(await js(nav('My Tasks')+'.textContent.trim()'),'My Tasks2','the row counts tasks waiting on you');
