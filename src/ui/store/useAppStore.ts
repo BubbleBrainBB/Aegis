@@ -1017,6 +1017,9 @@ export const useAppStore = create<Store>()(
         available: false,
         version: null,
         autoDetected: false,
+        phase: 'idle',
+        progress: null,
+        error: null,
       },
       pendingChatInjection: null,
       // 文件夹
@@ -1409,13 +1412,7 @@ export const useAppStore = create<Store>()(
         break;
 
       case 'app.update':
-        set({
-          updateStatus: {
-            available: event.payload.available,
-            version: event.payload.version || null,
-            autoDetected: event.payload.autoDetected,
-          },
-        });
+        set({ updateStatus: event.payload });
         break;
 
       case 'mcp.config':

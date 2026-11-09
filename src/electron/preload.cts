@@ -487,6 +487,14 @@ contextBridge.exposeInMainWorld('electron', {
     return ipcRenderer.invoke('get-update-status');
   },
 
+  downloadUpdate: () => {
+    return ipcRenderer.invoke('download-update');
+  },
+
+  installUpdate: () => {
+    return ipcRenderer.invoke('install-update');
+  },
+
   // 获取 Claude 模型配置
   getClaudeModelConfig: () => {
     return ipcRenderer.invoke('get-claude-model-config');

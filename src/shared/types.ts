@@ -985,10 +985,17 @@ export type ClientEvent =
   | { type: 'session.setChannel'; payload: { sessionId: string; channelId: string } }
   | { type: 'session.setTeam'; payload: { sessionId: string; teamMode: SessionTeamMode; teamId?: string | null } };
 
+export type AppUpdatePhase = 'idle' | 'available' | 'downloading' | 'downloaded' | 'error';
+
 export interface AppUpdateStatus {
   available: boolean;
   version: string | null;
   autoDetected: boolean;
+  /** available → downloading → downloaded; error when the download failed. */
+  phase: AppUpdatePhase;
+  /** Whole percent while downloading, otherwise null. */
+  progress: number | null;
+  error: string | null;
 }
 
 // Server -> Client 事件
