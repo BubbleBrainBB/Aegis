@@ -78,7 +78,7 @@ export function useAegisDiffPanelData({
   });
 
   const turnOptions = useMemo<AegisDiffTurnOption[]>(() => {
-    const context = buildTurnChangeContext(session?.messages || [], session?.cwd);
+    const context = buildTurnChangeContext(session?.messages || [], [session?.cwd, session?.agentWorktreePath]);
     const currentKey = context.turns.length > 0
       ? getTurnDiffKey(context.turns[context.turns.length - 1])
       : null;
@@ -88,12 +88,13 @@ export function useAegisDiffPanelData({
       summary,
       current: getTurnDiffKey(summary) === currentKey,
     }));
-  }, [session?.messages, session?.cwd]);
+  }, [session?.messages, session?.cwd, session?.agentWorktreePath]);
 
   // Until the user picks a source explicitly, default to the last captured
   // turn's diff (what the agent just changed); fall back to Uncommitted when
-  // the session has no captured turns, or follows the agent's worktree: turns
-  // are captured in the session's folder, so they would miss the work there.
+  // the session has no captured turns, or follows the agent's worktree: the
+  // Environment card's Changes row there counts that worktree's uncommitted
+  // work, and older turns may predate the move.
   const followsAgentWorktree = Boolean(session?.agentWorktreePath);
   const defaultSelection = useMemo<ReviewDiffSelection>(() => {
     const lastTurn = turnOptions.length > 0 ? turnOptions[turnOptions.length - 1] : null;

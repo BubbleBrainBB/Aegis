@@ -5,7 +5,8 @@ const root=path.resolve(__dirname,'../..');
 const base=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'aegis-agent-worktree-test-')));
 app.setPath('userData',path.join(base,'profile'));
 const sessions=require(path.join(root,'dist-electron/electron/libs/session-store.js'));
-const {observeAgentWorktree,worktreeBranchesAddedBy}=require(path.join(root,'dist-electron/electron/libs/agent-worktrees.js'));
+const {observeAgentWorktree,worktreeBranchesAddedBy,createAgentWorktreeTurns}=require(path.join(root,'dist-electron/electron/libs/agent-worktrees.js'));
+const {captureGitTreeSnapshot,diffGitTreeSnapshots}=require(path.join(root,'dist-electron/electron/libs/git-turn-snapshot.js'));
 const gitIn=(cwd,...args)=>execFileSync('git',args,{cwd,encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
 const newRepo=name=>{
  const repo=path.join(base,name);fs.mkdirSync(repo);
@@ -174,6 +175,45 @@ app.whenReady().then(async()=>{
   await settled();
   assert.equal(sessions.getSession(plain.id).agent_worktree_path,null,'no repository');
 
+  // Turn cards: what each turn changed in the worktree the agent moved into.
+  const t=session('Turn diffs');
+  const turns=createAgentWorktreeTurns(t.id);
+  await turns.start();
+  assert.equal(await turns.end(false),null,'no worktree, no diff');
+  const wtT=path.join(base,'wt-turns');
+  ran(t.id,t.followed,`git worktree add -q -b feat/turns ${wtT} HEAD`);
+  work(wtT,'first.txt');gitIn(wtT,'add','.');gitIn(wtT,'commit','-q','-m','first');
+  fs.writeFileSync(path.join(wtT,'a.txt'),'one\ntwo\n');
+  ran(t.id,t.followed,'ls');
+  // No settled(): the turn ends right after the tool result and waits for the check itself.
+  const first=await turns.end(false);
+  assert.ok(first,'the turn the worktree appeared in has a diff');
+  assert.match(first.patch,/^diff --git a\/first\.txt b\/first\.txt$/m,'work committed in the same turn still counts');
+  assert.match(first.patch,/^\+two$/m);
+  assert.equal(await turns.end(false),null,'a turn that changed nothing there');
+  work(wtT,'second.txt');
+  const second=await turns.end(true);
+  assert.match(second.patch,/^diff --git a\/wt-turns\/second\.txt b\/wt-turns\/second\.txt$/m,'paths named by folder when the session folder changed too');
+  assert.doesNotMatch(second.patch,/first\.txt/,'each turn starts where the last one ended');
+  const restarted=createAgentWorktreeTurns(t.id);
+  await restarted.start();
+  work(wtT,'third.txt');
+  const third=await restarted.end(false);
+  assert.match(third.patch,/third\.txt/);
+  assert.doesNotMatch(third.patch,/second\.txt/,'a new runner starts from its own snapshot');
+  // A worktree made inside the session's folder is no change to that folder.
+  const nest=newRepo('nested');
+  const nestBefore=await captureGitTreeSnapshot(nest);
+  gitIn(nest,'worktree','add','-q','-b','nested/x','.worktrees/x','HEAD');
+  work(path.join(nest,'.worktrees/x'));
+  work(nest,'own.txt');
+  const nestDiff=await diffGitTreeSnapshots(nest,nestBefore,await captureGitTreeSnapshot(nest));
+  assert.match(nestDiff.patch,/^diff --git a\/own\.txt b\/own\.txt$/m);
+  assert.doesNotMatch(nestDiff.patch,/Subproject|\.worktrees/,'no gitlink for the nested worktree');
+  sessions.setSessionAgentWorktree(t.id,null);
+  work(wtT,'fourth.txt');
+  assert.equal(await restarted.end(false),null,'back to Local: the worktree is no longer diffed');
+
   // Leaving: the user going back is not undone by the next tool result, and an
   // explicit move of the session (handoff) clears it too.
   sessions.setSessionAgentWorktree(a.id,null);
@@ -186,7 +226,7 @@ app.whenReady().then(async()=>{
   sessions.updateSessionWorkspace(b.id,{envMode:'local',worktreePath:null});
   assert.equal(b.path(),null,'moving the session clears it');
   sessions.close();
-  console.log('agent-worktrees: detection, git confirmation, false positives, going back passed');
+  console.log('agent-worktrees: detection, git confirmation, false positives, turn diffs, going back passed');
   process.exitCode=0;
  }catch(error){console.error(error);process.exitCode=1}
  fs.rmSync(base,{recursive:true,force:true});

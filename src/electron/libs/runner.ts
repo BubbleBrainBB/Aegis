@@ -36,6 +36,7 @@ import { createPromptCancellation } from './claude-prompt-cancellation';
 import { ClaudeTurnOriginTracker } from './claude-turn-origin';
 import { ClaudePromptLifecycle } from './claude-prompt-lifecycle';
 import { captureGitTreeSnapshot, diffGitTreeSnapshots } from './git-turn-snapshot';
+import { createAgentWorktreeTurns } from './agent-worktrees';
 import { createAegisMemoryMcpServer, buildMemoryContext, MEMORY_SYSTEM_PROMPT } from './memory-mcp';
 import { isDelegateExecutionSession } from './delegate-service';
 import { isFollowUpSession } from './follow-up/registry';
@@ -902,6 +903,9 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
       // touched. Resolves to null outside a git repo (turn diffs then fall
       // back to tool-change records).
       const initialTurnTreePromise = captureGitTreeSnapshot(sessionCwd);
+      // The same for a worktree the agent already moved its work into.
+      const agentWorktreeTurns = createAgentWorktreeTurns(session.id);
+      const agentWorktreeStart = agentWorktreeTurns.start();
       const memoryAppend = [
         AEGIS_INTERACTIVE_NOTE,
         ...(ENABLE_AEGIS_MEMORY_FOR_NATIVE_PROVIDERS ? [await buildMemoryContext(session.cwd ?? undefined), MEMORY_SYSTEM_PROMPT] : []),
@@ -1338,6 +1342,7 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
       // is the previous turn's "after"), so queued prompts attribute changes
       // to the turn that actually ran, not the one that was enqueued first.
       let previousTurnTree = await initialTurnTreePromise;
+      await agentWorktreeStart;
 
       // Before the goal controller: it swallows its control turns' frames.
       const turnOrigin = new ClaudeTurnOriginTracker();
@@ -1515,25 +1520,29 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
           // the result lands in the transcript first. A null previousTurnTree
           // means "not a git repo" and stays sticky; a transient snapshot
           // failure keeps the old baseline so the changes roll into the next
-          // turn's diff instead of being lost.
-          if (streamMessage.type === 'result' && previousTurnTree) {
-            const afterTree = await captureGitTreeSnapshot(sessionCwd);
-            if (afterTree) {
-              const { patch, truncated } = await diffGitTreeSnapshots(
-                sessionCwd,
-                previousTurnTree,
-                afterTree
-              );
+          // turn's diff instead of being lost. Edits in a worktree the agent
+          // moved its work into join the same patch.
+          if (streamMessage.type === 'result') {
+            let patch = '';
+            let truncated = false;
+            const afterTree = previousTurnTree ? await captureGitTreeSnapshot(sessionCwd) : null;
+            if (previousTurnTree && afterTree) {
+              ({ patch, truncated } = await diffGitTreeSnapshots(sessionCwd, previousTurnTree, afterTree));
               previousTurnTree = afterTree;
-              if (patch.trim()) {
-                onMessage({
-                  type: 'system',
-                  subtype: 'turn_changes',
-                  uuid: uuidv4(),
-                  session_id: currentSessionId,
-                  turnChanges: { patch, truncated },
-                });
-              }
+            }
+            const worktreeDiff = await agentWorktreeTurns.end(Boolean(patch.trim()));
+            if (worktreeDiff) {
+              patch = patch.trim() ? `${patch.replace(/\n*$/, '\n')}${worktreeDiff.patch}` : worktreeDiff.patch;
+              truncated ||= worktreeDiff.truncated;
+            }
+            if (patch.trim()) {
+              onMessage({
+                type: 'system',
+                subtype: 'turn_changes',
+                uuid: uuidv4(),
+                session_id: currentSessionId,
+                turnChanges: { patch, truncated },
+              });
             }
           }
 

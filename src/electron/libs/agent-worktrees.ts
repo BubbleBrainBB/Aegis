@@ -3,6 +3,7 @@ import { basename } from 'node:path';
 import { promisify } from 'node:util';
 import type { StreamMessage } from '../../shared/types';
 import { commandOf } from './agent-pull-requests';
+import { captureGitTreeSnapshot, diffGitTreeSnapshots, worktreeStartCommit, type TurnTreeDiff } from './git-turn-snapshot';
 import * as sessions from './session-store';
 
 const exec = promisify(execFile);
@@ -21,6 +22,8 @@ const pendingAdds = new Map<string, { sessionId: string; branches: string[] }>()
 const unworked = new Map<string, Map<string, boolean>>();
 /** Sessions being checked; true when another check should follow. */
 const checking = new Map<string, boolean>();
+/** The check running for a session, settled once no other check follows. */
+const checks = new Map<string, Promise<void>>();
 
 /**
  * The branch a `git worktree add` argument list leaves checked out, as git
@@ -103,11 +106,30 @@ async function runCheck(sessionId: string, onFollow: (path: string) => void) {
     checking.set(sessionId, true);
     return;
   }
-  do {
-    checking.set(sessionId, false);
-    await checkUnworked(sessionId, onFollow).catch(() => undefined);
-  } while (checking.get(sessionId));
-  checking.delete(sessionId);
+  const check = (async () => {
+    do {
+      checking.set(sessionId, false);
+      await checkUnworked(sessionId, onFollow).catch(() => undefined);
+    } while (checking.get(sessionId));
+    checking.delete(sessionId);
+    checks.delete(sessionId);
+  })();
+  checks.set(sessionId, check);
+  await check;
+}
+
+/**
+ * The worktree a session's agent works in, once the checks its latest tool
+ * results started are done, so a turn ending right after the agent's first
+ * edit there already sees it.
+ */
+export async function settledAgentWorktree(sessionId: string): Promise<string | null> {
+  await checks.get(sessionId);
+  try {
+    return sessions.getSession(sessionId)?.agent_worktree_path || null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -137,4 +159,48 @@ export function observeAgentWorktree(sessionId: string, message: StreamMessage, 
     }
   }
   if (sawResult && unworked.has(sessionId)) void runCheck(sessionId, onFollow);
+}
+
+/**
+ * Turn diffs for the worktree a session's agent works in. The runner's turn
+ * snapshots are taken in the session's folder, which the agent left, so its
+ * turns would show no changes. Each turn starts from the last one's snapshot;
+ * a worktree first seen at the end of a turn starts from the commit it was
+ * added at.
+ */
+export function createAgentWorktreeTurns(sessionId: string) {
+  let path: string | null = null;
+  let tree: string | null = null;
+  return {
+    /** Before the first turn: the snapshot a worktree followed already starts from. */
+    async start(): Promise<void> {
+      const worktree = await settledAgentWorktree(sessionId);
+      const snapshot = worktree ? await captureGitTreeSnapshot(worktree) : null;
+      if (worktree && snapshot) {
+        path = worktree;
+        tree = snapshot;
+      }
+    },
+    /**
+     * What this turn changed in the worktree, null when nothing. With
+     * `namePaths`, its paths start with the worktree's folder name, for a
+     * turn that changed the session's folder too.
+     */
+    async end(namePaths: boolean): Promise<TurnTreeDiff | null> {
+      const worktree = await settledAgentWorktree(sessionId);
+      if (!worktree) {
+        path = tree = null;
+        return null;
+      }
+      const after = await captureGitTreeSnapshot(worktree);
+      // A failed snapshot keeps the baseline: the changes roll into the next turn.
+      if (!after) return null;
+      const before = worktree === path ? tree : await worktreeStartCommit(worktree);
+      path = worktree;
+      tree = after;
+      if (!before) return null;
+      const diff = await diffGitTreeSnapshots(worktree, before, after, namePaths ? `${basename(worktree)}/` : '');
+      return diff.patch.trim() ? diff : null;
+    },
+  };
 }

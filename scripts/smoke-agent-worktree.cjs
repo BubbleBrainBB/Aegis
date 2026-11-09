@@ -214,6 +214,14 @@ function drive({ fs, path, out, profile, repo, other, work }) {
       assert.equal(rows.find((r) => r.text === 'agent-work').title, wt, 'the row names the full path');
       assert.equal(row(moved).cwd, repo, 'the session folder itself did not move');
       assert.equal(report.steps.at(-1).rows.find((r) => r.text.startsWith('Changes'))?.text, 'Changes +2 -0', 'the changes are the agent\'s');
+      // The turn's changes card lists the agent's file, though the session's folder did not change.
+      if (provider === 'claude') {
+        const patches = query(`SELECT data FROM messages WHERE session_id=? AND data LIKE '%"turn_changes"%'`, moved).map((r) => JSON.parse(r.data).turnChanges.patch);
+        assert.ok(patches.some((p) => /^diff --git a\/hello\.txt b\/hello\.txt$/m.test(p)), 'the turn diff covers the worktree, got: ' + JSON.stringify(patches).slice(0, 300));
+        assert.ok(!patches.some((p) => /README\.md/.test(p)), 'the user\'s own notes are not the turn\'s');
+      }
+      await until(`[...document.querySelectorAll('button')].some(b=>/^1 file changed/.test(b.innerText.trim()))`, 'the turn changes card');
+      await shot('1b-turn-changes-card');
 
       // False positives.
       const reader = await start('Reads another repo', READ_ONLY);
