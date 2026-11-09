@@ -114,8 +114,8 @@ const ActiveTaskRow = memo(function ActiveTaskRow({
     <SessionHoverCard
       session={session}
       disabled={menuOpen || pullRequestsOpen}
-      side="bottom"
-      sideOffset={2}
+      side="right"
+      sideOffset={8}
       trigger={
         <div
           ref={rowRef}
