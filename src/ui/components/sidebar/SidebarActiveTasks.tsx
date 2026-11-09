@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useAppStore } from '../../store/useAppStore';
 import { useSessionOrganization } from '../../store/useSessionOrganizationStore';
 import { useSidebarPullRequests, useSidebarPullRequestStore } from '../../store/useSidebarPullRequests';
@@ -9,6 +9,8 @@ import { formatAge, listActiveTaskFamilies, taskAttention, type SidebarSessionSt
 import { naturalTaskStateOf, openTask, taskStateOf, type TaskStateSources } from '../../utils/task-state';
 import { TaskStatusMenu } from '../TaskStatusMenu';
 import { TaskTitleLoading, useTaskTitleReveal } from '../TaskTitleLoading';
+import { SessionHoverCard, SessionWorktreeMarks } from '../SessionHoverCard';
+import type { GitPullRequestSummary } from '../../../shared/types';
 import type { SessionView } from '../../types';
 
 const CHILD_INDENT = 24;
@@ -55,13 +57,19 @@ export function SidebarActiveTasks() {
     <div className="space-y-px" data-active-tasks>
       {families.map(({ root, children }) => (
         <div key={root.id} data-active-family={root.id}>
-          <ActiveTaskRow session={root} state={taskStateOf(root, sources)} naturalState={naturalTaskStateOf(root, sources)} />
+          <ActiveTaskRow
+            session={root}
+            state={taskStateOf(root, sources)}
+            naturalState={naturalTaskStateOf(root, sources)}
+            pullRequests={prsBySession[root.id]}
+          />
           {children.map((child, index) => (
             <div key={child.id} className="relative">
               <ActiveTaskRow
                 session={child}
                 state={taskStateOf(child, sources)}
                 naturalState={naturalTaskStateOf(child, sources)}
+                pullRequests={prsBySession[child.id]}
                 nested
               />
               <span
@@ -82,61 +90,78 @@ const ActiveTaskRow = memo(function ActiveTaskRow({
   session,
   state,
   naturalState,
+  pullRequests,
   nested = false,
 }: {
   session: SessionView;
   state: SidebarSessionState | null;
   naturalState: SidebarSessionState | null;
+  pullRequests?: GitPullRequestSummary[];
   nested?: boolean;
 }) {
   const rowRef = useRef<HTMLDivElement>(null);
   const selected = useAppStore(
     (s) => s.activeSessionId === session.id && s.activeWorkspace === 'chat' && !s.showSettings
   );
-  const { openMenu } = useSessionActionsMenu(session);
+  const { openMenu, menuOpen, worktreeAction } = useSessionActionsMenu(session);
+  // The PR list replaces the task preview while it is open.
+  const [pullRequestsOpen, setPullRequestsOpen] = useState(false);
   const now = useMinuteClock();
   const failed = state === 'needs-input' && taskAttention(session)?.tone === 'error';
   const titleReveal = useTaskTitleReveal(session.titlePending);
 
   return (
-    <div
-      ref={rowRef}
-      role="button"
-      tabIndex={0}
-      data-session-id={session.id}
-      data-task-state={state ?? undefined}
-      aria-current={selected ? 'page' : undefined}
-      title={session.title}
-      onClick={() => openTask(session.id)}
-      onKeyDown={(event) => {
-        if (event.target !== event.currentTarget) return;
-        if (event.key === 'Enter') openTask(session.id);
-        else if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
-          event.preventDefault();
-          const rect = event.currentTarget.getBoundingClientRect();
-          void openMenu({ x: rect.left + 12, y: rect.bottom });
-        }
-      }}
-      onContextMenu={(event) => {
-        event.preventDefault();
-        void openMenu({ x: event.clientX, y: event.clientY });
-      }}
-      className={`no-drag flex h-7 cursor-pointer items-center gap-2 rounded-md pl-2 pr-1.5 text-[13px] transition-colors duration-150 focus-visible:outline-none ${
-        selected
-          ? 'bg-[var(--sidebar-item-active)] text-[var(--text-primary)]'
-          : 'text-[var(--text-secondary)] hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)] focus-visible:bg-[var(--sidebar-item-hover)]'
-      }`}
-      style={nested ? { marginLeft: CHILD_INDENT } : undefined}
-    >
-      <TaskStatusMenu session={session} state={state} naturalState={naturalState} failed={failed} rowRef={rowRef} />
-      {session.titlePending ? (
-        <span className="flex min-w-0 flex-1 items-center"><TaskTitleLoading /></span>
-      ) : (
-        <span className={`min-w-0 flex-1 truncate ${titleReveal}`}>{session.title}</span>
-      )}
-      <span className="flex-shrink-0 text-[12px] tabular-nums text-[var(--text-muted)]" data-task-age>
-        {formatAge(session.updatedAt, Math.max(now, session.updatedAt))}
-      </span>
-    </div>
+    <SessionHoverCard
+      session={session}
+      disabled={menuOpen || pullRequestsOpen}
+      side="bottom"
+      sideOffset={2}
+      trigger={
+        <div
+          ref={rowRef}
+          role="button"
+          tabIndex={0}
+          data-session-id={session.id}
+          data-task-state={state ?? undefined}
+          aria-current={selected ? 'page' : undefined}
+          onClick={() => openTask(session.id)}
+          onKeyDown={(event) => {
+            if (event.target !== event.currentTarget) return;
+            if (event.key === 'Enter') openTask(session.id);
+            else if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+              event.preventDefault();
+              const rect = event.currentTarget.getBoundingClientRect();
+              void openMenu({ x: rect.left + 12, y: rect.bottom });
+            }
+          }}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            void openMenu({ x: event.clientX, y: event.clientY });
+          }}
+          className={`no-drag flex h-7 cursor-pointer items-center gap-2 rounded-md pl-2 pr-1.5 text-[13px] transition-colors duration-150 focus-visible:outline-none ${
+            selected
+              ? 'bg-[var(--sidebar-item-active)] text-[var(--text-primary)]'
+              : 'text-[var(--text-secondary)] hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)] focus-visible:bg-[var(--sidebar-item-hover)]'
+          }`}
+          style={nested ? { marginLeft: CHILD_INDENT } : undefined}
+        >
+          <TaskStatusMenu session={session} state={state} naturalState={naturalState} failed={failed} rowRef={rowRef} />
+          {session.titlePending ? (
+            <span className="flex min-w-0 flex-1 items-center"><TaskTitleLoading /></span>
+          ) : (
+            <span className={`min-w-0 flex-1 truncate ${titleReveal}`}>{session.title}</span>
+          )}
+          <SessionWorktreeMarks
+            session={session}
+            worktreeAction={worktreeAction}
+            pullRequests={pullRequests}
+            onPullRequestsOpenChange={setPullRequestsOpen}
+          />
+          <span className="flex-shrink-0 text-[12px] tabular-nums text-[var(--text-muted)]" data-task-age>
+            {formatAge(session.updatedAt, Math.max(now, session.updatedAt))}
+          </span>
+        </div>
+      }
+    />
   );
 });
