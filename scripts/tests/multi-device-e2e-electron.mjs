@@ -110,7 +110,8 @@ app.whenReady().then(async () => {
       await until(async () => /Connected · (Relay|Direct)/.test(await text()), 'status row', 15000);
       await delay(600);
       await shot('0-connections-paired');
-      await until(() => press('Back to app'), 'back to app', 10000);
+      // Back in the title bar leaves Settings.
+      await until(() => page(() => { const back = document.querySelector('button[aria-label="Back"]:not(:disabled)'); back?.click(); return Boolean(back); }), 'back to app', 10000);
       await until(() => openMyTasks(), 'open My Tasks', 10000);
       await until(async () => (await text()).includes('Fix relay reconnect'), 'row in sidebar', 30000);
       await shot('1-sidebar');

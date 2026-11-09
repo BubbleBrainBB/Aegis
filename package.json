@@ -187,7 +187,7 @@
     "verify:settings-integration": "node scripts/tests/settings-integration-electron.test.mjs",
     "verify:providers-settings": "node scripts/tests/providers-settings-electron.test.mjs",
     "verify:agent-onboarding": "npm run transpile:electron && node scripts/tests/agent-onboarding-electron.test.mjs",
-    "verify:app-preferences": "npm run transpile:electron && node scripts/tests/app-preferences.test.cjs && npx tsx scripts/tests/appearance-preferences.test.ts && node scripts/tests/settings-general-electron.test.mjs && node scripts/tests/composer-newline-electron.test.mjs",
+    "verify:app-preferences": "npm run transpile:electron && node scripts/tests/app-preferences.test.cjs && npx tsx scripts/tests/appearance-preferences.test.ts && node scripts/tests/settings-general-electron.test.mjs && node scripts/tests/settings-shell-electron.test.mjs && node scripts/tests/composer-newline-electron.test.mjs",
     "dev:relay": "node services/relay/server.mjs",
     "verify:feishu": "npm run transpile:electron && node scripts/tests/feishu-bridge.test.mjs",
     "verify:remote": "npm run transpile:electron && node scripts/remote/smoke-crypto.mjs && node scripts/remote/crypto-negative.test.mjs && node scripts/remote/gateway.test.mjs && node scripts/remote/relay.test.mjs && node scripts/remote/gateway-push.test.mjs && node scripts/remote/gateway-events.test.mjs && node scripts/remote/gateway-workflows.test.mjs && node scripts/remote/host-client.test.mjs",

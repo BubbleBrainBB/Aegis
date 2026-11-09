@@ -33,6 +33,7 @@ import { MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH } from '../utils/sidebar-width';
 import { SessionHistoryButtons } from './SessionHistoryButtons';
 import { SidebarProfileMenu } from './sidebar/SidebarProfileMenu';
 import { SidebarActiveTasks } from './sidebar/SidebarActiveTasks';
+import { SettingsNavPanel } from './settings/Settings';
 import { SidebarUpdateButton } from './sidebar/SidebarUpdateButton';
 import { useSessionOrganization } from '../store/useSessionOrganizationStore';
 import { useSidebarViewStore } from '../store/useSidebarViewStore';
@@ -119,6 +120,7 @@ export function Sidebar() {
     setActiveSession,
     setActiveWorkspace,
     setShowNewSession,
+    showSettings,
     setShowSettings,
     openDraftSession,
     searchPaletteOpen,
@@ -443,7 +445,7 @@ export function Sidebar() {
         </div>
         <div className="flex min-h-0 flex-1">
         <SidebarRail
-          activeWorkspace={activeWorkspace}
+          activeWorkspace={showSettings ? null : activeWorkspace}
           showRunningDot={sidebarCollapsed && hasRunningSession}
           onSelect={goToWorkspace}
           onOpenSettings={() => setShowSettings(true)}
@@ -460,6 +462,7 @@ export function Sidebar() {
             style={{ width: sidebarWidth, minWidth: sidebarWidth }}
             aria-hidden={sidebarHidden}
           >
+            {showSettings ? <SettingsNavPanel /> : (
             <div className="flex min-h-0 flex-1 flex-col">
               <div className="flex items-center justify-between pb-1 pl-3.5 pr-2 pt-2.5">
                 <div className="aegis-sidebar-brand font-semibold leading-none tracking-[-0.02em] text-[var(--text-primary)]">
@@ -516,6 +519,7 @@ export function Sidebar() {
                 <CappedScrollbar scrollRef={sidebarScrollRef} />
               </div>
             </div>
+            )}
           </div>
 
           {!sidebarCollapsed ? (
@@ -557,7 +561,8 @@ function SidebarRail({
   onSelect,
   onOpenSettings,
 }: {
-  activeWorkspace: string;
+  /** Null while Settings is open: no section is current. */
+  activeWorkspace: string | null;
   showRunningDot: boolean;
   onSelect: (workspace: 'chat' | 'tasks' | 'design' | 'automations' | 'prs' | 'skills') => void;
   onOpenSettings: () => void;

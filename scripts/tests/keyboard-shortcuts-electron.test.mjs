@@ -10,7 +10,7 @@ import React,{useEffect} from 'react';
 import {createRoot} from 'react-dom/client';
 import {Tooltip} from '@base-ui-components/react/tooltip';
 import {Toaster} from 'sonner';
-import {Settings} from '/src/ui/components/settings/Settings';
+import {Settings,SettingsNavPanel} from '/src/ui/components/settings/Settings';
 import {ConfirmDialogHost,confirmDialog} from '/src/ui/components/ui/confirm-dialog';
 import {AppearancePreferences} from '/src/ui/components/AppearancePreferences';
 import {useKeyboardShortcuts} from '/src/ui/hooks/useKeyboardShortcuts';
@@ -24,7 +24,7 @@ useAppStore.setState({showSettings:true,activeSettingsTab:'shortcuts',sidebarCol
 function Harness(){
  useKeyboardShortcuts({toggleRightPanel:()=>{qa.rightPanel=(qa.rightPanel??0)+1;},toggleFullViewNewTab:()=>{qa.fullView=(qa.fullView??0)+1;}});useEffect(subscribeAppPreferences,[]);
  const settings=useAppStore(s=>s.showSettings);
- return <AppearancePreferences><Tooltip.Provider><div style={{height:'100vh',background:'var(--bg-primary)',color:'var(--text-primary)'}}>{settings?<Settings/>:<><textarea aria-label="Composer probe"/><div className="xterm"><textarea aria-label="Terminal probe"/></div><div contentEditable role="textbox" aria-label="Rich editor probe"/></>}<ConfirmDialogHost/><Toaster/></div></Tooltip.Provider></AppearancePreferences>;
+ return <AppearancePreferences><Tooltip.Provider><div style={{height:'100vh',background:'var(--bg-primary)',color:'var(--text-primary)'}}>{settings?<div style={{display:"flex",height:"100%"}}><style>{"@media (max-width: 600px) { [data-harness-nav] { display: none !important } }"}</style><div data-harness-nav className="aegis-sidebar" style={{width:280,flexShrink:0,display:"flex",flexDirection:"column"}}><SettingsNavPanel/></div><Settings/></div>:<><textarea aria-label="Composer probe"/><div className="xterm"><textarea aria-label="Terminal probe"/></div><div contentEditable role="textbox" aria-label="Rich editor probe"/></>}<ConfirmDialogHost/><Toaster/></div></Tooltip.Provider></AppearancePreferences>;
 }
 createRoot(document.getElementById('root')).render(<Harness/>);
 `;
@@ -104,6 +104,7 @@ app.whenReady().then(async()=>{
   await button('Go forwardKeyboard shortcuts');
   assert.equal(await js('document.activeElement.dataset.settingsId'),'shortcut:forward');
   await js('qa.store.getState().setTheme("dark");document.querySelector("main").scrollTop=0');await shot('shortcuts-dark');
+  // A window this narrow collapses the sidebar, Settings nav included: the page alone must fit.
   win.setContentSize(390,740);await delay(150);await shot('shortcuts-narrow');
   assert.equal(await js('document.querySelector("main").scrollWidth>document.querySelector("main").clientWidth'),false);
   win.setContentSize(1124,900);

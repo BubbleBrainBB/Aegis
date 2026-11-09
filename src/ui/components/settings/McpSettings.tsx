@@ -395,7 +395,7 @@ export function McpSettingsContent() {
 
   return (
     <div className="pb-8">
-      <h1 data-settings-id={`mcp-runtime:${selectedTool}`} data-settings-label="MCP Servers" className="mb-6 flex items-center gap-2 text-[17px] font-semibold tracking-normal text-[var(--text-primary)]">
+      <h1 data-settings-id={`mcp-runtime:${selectedTool}`} data-settings-label="MCP Servers" className="settings-page-title mb-10 flex items-center gap-2.5 text-[var(--text-primary)]">
         <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center [&>img]:h-5 [&>img]:w-5 [&>svg]:h-5 [&>svg]:w-5">
           <span><ProviderIcon provider={selectedTool} /></span>
         </span>

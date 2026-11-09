@@ -39,9 +39,15 @@ export function useKeyboardShortcuts(actions: { toggleRightPanel: () => void; to
       const command = SHORTCUT_COMMANDS.find(c => shortcutBindings(c.id, overrides).some(b => matchesShortcut(event, b) && !shortcutConflict(b, c.id, overrides)));
       if (!command) return;
       const id = command.id;
-      if (state.showSettings && id !== 'settings') return;
       // Leave formatting and cursor navigation with editable controls.
       const editing = target?.closest('input, textarea, [contenteditable="true"], [role="textbox"]');
+      // In Settings, Back returns to the app like the title bar's arrow.
+      if (state.showSettings && id === 'back' && !editing) {
+        event.preventDefault();
+        state.setShowSettings(false);
+        return;
+      }
+      if (state.showSettings && id !== 'settings') return;
       if (editing && ['sidebar', 'activity', 'back', 'forward'].includes(id)) return;
       if (id === 'find' && (state.activeWorkspace !== 'chat' || !state.activeSessionId)) return;
       if ((id === 'rightPanel' || id === 'rightPanelFullView') && state.activeWorkspace !== 'chat') return;

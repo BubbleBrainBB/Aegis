@@ -3,8 +3,9 @@ import { KeyboardShortcutsSettings } from './KeyboardShortcutsSettings';
 import './settings-controls.css';
 import { AppearanceControls } from './AppearanceControls';
 import { findSettings, type SettingsSearchEntry } from './settings-search';
-import { useEffect, useLayoutEffect, useState, type CSSProperties, type ReactNode } from 'react';
-import { ArrowLeft, Keyboard, Server, Settings as SettingsIcon, Sun, ChartColumn, User, PlugZap, Bot, Image, Trash2, Globe, Monitor } from '../icons';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { create } from 'zustand';
+import { Keyboard, Server, Settings as SettingsIcon, Sun, ChartColumn, User, PlugZap, Bot, Image, Trash2, Globe, Monitor } from '../icons';
 import { useAppStore } from '../../store/useAppStore';
 import { ClaudeUsageSettingsContent } from './ClaudeUsageSettings';
 import { AgentRuntimeSettings } from './AgentRuntimeSettings';
@@ -78,35 +79,41 @@ function isSettingsTabKey(value: string): value is SettingsTabKey {
   return Object.prototype.hasOwnProperty.call(SETTINGS_TABS, value);
 }
 
-// Settings 面板
-export function Settings() {
-  const [search, setSearch] = useState('');
-  const [target, setTarget] = useState<SettingsSearchEntry | null>(null);
+/** The settings search, shared by the sidebar (where you type) and the page (where a result is revealed). */
+const useSettingsSearchStore = create<{
+  search: string;
+  target: SettingsSearchEntry | null;
+  setSearch: (search: string) => void;
+  setTarget: (target: SettingsSearchEntry | null) => void;
+}>((set) => ({
+  search: '',
+  target: null,
+  setSearch: (search) => set({ search }),
+  setTarget: (target) => set({ target }),
+}));
 
+// They belong to one visit: closing Settings clears them, so reopening starts on the page list.
+useAppStore.subscribe((state, previous) => {
+  if (previous.showSettings && !state.showSettings) useSettingsSearchStore.setState({ search: '', target: null });
+});
+
+/**
+ * Settings in the sidebar panel, Codex-style: a heading, the search, then
+ * the pages by group. The rail stays beside it to leave Settings.
+ */
+export function SettingsNavPanel() {
+  const search = useSettingsSearchStore((s) => s.search);
+  const setSearch = useSettingsSearchStore((s) => s.setSearch);
+  const setTarget = useSettingsSearchStore((s) => s.setTarget);
   const {
-    showSettings,
-    setShowSettings,
     activeSettingsTab,
     setActiveSettingsTab,
-    theme,
-    setTheme,
-    themeState,
-    setThemeState,
-    updateThemeVariant,
-    setThemeVariantCodeThemeId,
-    setThemeVariantFonts,
-    resetThemeVariant,
-    uiFontFamily,
-    setUiFontFamily,
-    chatCodeFontFamily,
-    setChatCodeFontFamily,
     mcpSettingsRuntime,
     setMcpSettingsRuntime,
-    sidebarWidth,
   } = useAppStore();
 
   const [bubbleEntries, setBubbleEntries] = useState<SettingsSearchEntry[]>([]);
-  const searching = showSettings && Boolean(search.trim());
+  const searching = Boolean(search.trim());
   useEffect(() => {
     if (!searching) return;
     let cancelled = false;
@@ -134,6 +141,110 @@ export function Settings() {
     setSearch('');
   };
 
+  const resolvedActiveSettingsTab: SettingsTabKey = isSettingsTabKey(activeSettingsTab)
+    ? activeSettingsTab
+    : 'general';
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col" data-settings-nav>
+      <div className="flex items-center pb-1 pl-3.5 pr-2 pt-2.5">
+        <div className="aegis-sidebar-brand font-semibold leading-none tracking-[-0.02em] text-[var(--text-primary)]">
+          Settings
+        </div>
+      </div>
+
+      <div className="px-2 pb-4 pt-3">
+        <div className="flex h-8 items-center gap-2 rounded-full bg-[var(--sidebar-item-hover)] px-3 focus-within:ring-1 focus-within:ring-[var(--border-focus)]">
+          <Search className="h-[15px] w-[15px] shrink-0 text-[var(--text-muted)]" />
+          <input aria-label="Search settings" role="searchbox" placeholder="Search" value={search} onChange={e => setSearch(e.target.value)} onKeyDown={e => {
+            if (isImeComposing(e)) return;
+            if (e.key === 'Escape') setSearch('');
+            if (e.key === 'Enter') {
+              const first = searchResults[0];
+              if (first) selectSearchResult(first);
+            }
+          }} className="no-drag w-full min-w-0 bg-transparent text-[13px] font-normal leading-[18px] text-[var(--text-primary)] outline-none placeholder:text-[var(--text-muted)]" />
+          {search && <button aria-label="Clear settings search" onClick={() => setSearch('')} className="text-[var(--text-muted)]">×</button>}
+        </div>
+      </div>
+
+      {search.trim() ? <div role="region" aria-label="Settings search results" className="sidebar-scrollbar min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+        {searchResults.map(entry => <button key={`${entry.tab}:${entry.scope ?? ''}:${entry.label}`} onClick={() => selectSearchResult(entry)} className="mb-px flex w-full flex-col rounded-md px-2 py-1.5 text-left text-[13px] text-[var(--text-primary)] hover:bg-[var(--sidebar-item-hover)] focus-visible:outline-2 focus-visible:outline-[var(--accent)]">
+          <span>{entry.label}</span><span className="text-[12px] text-[var(--text-muted)]">{SETTINGS_TABS[entry.tab].label}{entry.scope ? ` · ${entry.scope}` : ''}</span>
+        </button>)}
+        {searchResults.length === 0 && <p className="px-2 text-[13px] text-[var(--text-muted)]">No settings found</p>}
+      </div> : <nav aria-label="Settings" className="sidebar-scrollbar min-h-0 flex-1 space-y-5 overflow-y-auto px-2 pb-2">
+        {SETTINGS_NAV_GROUPS.map(group => <section key={group.label} aria-label={group.label}>
+          <h2 className="pb-1.5 pl-2 text-[13px] font-medium text-[var(--text-secondary)]">{group.label}</h2>
+          <ul className="space-y-0.5">
+            {group.tabs.map(key => { const tab = SETTINGS_TABS[key]; return (
+              <SettingsNavItem
+                key={key}
+                label={tab.label}
+                icon={tab.icon}
+                active={resolvedActiveSettingsTab === key}
+                // With runtime sub-items showing, the child carries the highlight.
+                expanded={key === 'mcp' && resolvedActiveSettingsTab === 'mcp'}
+                onClick={() => { setTarget(null); setActiveSettingsTab(key); }}
+              >
+                {/* Runtimes are sub-pages of MCP Servers rather than tabs inside
+                    the page: the list scales to any number of runtimes without
+                    a horizontal strip that wraps in narrow panes. */}
+                {key === 'mcp' && resolvedActiveSettingsTab === 'mcp' ? (
+                  <ul className="relative mb-1 mt-0.5 ml-[15px] space-y-0.5 border-l border-[var(--border-focus)]/60 pl-2">
+                    {MCP_RUNTIMES.map((runtime) => {
+                      const active = mcpSettingsRuntime === runtime.id;
+                      return (
+                        <li key={runtime.id}>
+                          <button
+                            onClick={() => setMcpSettingsRuntime(runtime.id)}
+                            className={`flex h-7 w-full items-center gap-2 rounded-md pl-2 pr-3 text-left text-[13px] transition-colors ${
+                              active
+                                ? 'bg-[var(--sidebar-item-active)] text-[var(--text-primary)]'
+                                : 'text-[var(--text-secondary)] hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)]'
+                            }`}
+                          >
+                            <span className="flex h-4 w-4 flex-shrink-0 items-center justify-center">
+                              <ProviderIcon provider={runtime.id} />
+                            </span>
+                            <span className="truncate">{runtime.label}</span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ) : null}
+              </SettingsNavItem>
+            ); })}
+          </ul>
+        </section>)}
+      </nav>}
+    </div>
+  );
+}
+
+// The open Settings page, on the main sheet beside the sidebar's Settings nav.
+export function Settings() {
+  const target = useSettingsSearchStore((s) => s.target);
+  const mainRef = useRef<HTMLElement>(null);
+
+  const {
+    showSettings,
+    activeSettingsTab,
+    theme,
+    setTheme,
+    themeState,
+    setThemeState,
+    updateThemeVariant,
+    setThemeVariantCodeThemeId,
+    setThemeVariantFonts,
+    resetThemeVariant,
+    uiFontFamily,
+    setUiFontFamily,
+    chatCodeFontFamily,
+    setChatCodeFontFamily,
+  } = useAppStore();
+
   useEffect(() => {
     if (!uiFontFamily && !chatCodeFontFamily) return;
     setThemeState(migrateLegacyFonts(themeState, uiFontFamily, chatCodeFontFamily));
@@ -143,7 +254,7 @@ export function Settings() {
 
   useLayoutEffect(() => {
     if (!showSettings || !target || activeSettingsTab !== target.tab) return;
-    const pane = document.querySelector<HTMLElement>('.aegis-settings main');
+    const pane = mainRef.current;
     if (!pane) return;
     let matched: HTMLElement | undefined;
     let timer: ReturnType<typeof setTimeout>;
@@ -172,101 +283,15 @@ export function Settings() {
     : 'general';
   const activeMeta = SETTINGS_TABS[resolvedActiveSettingsTab];
   return (
-    <div className="aegis-settings flex h-full min-h-0 min-w-0 flex-col bg-[var(--app-chrome-bg)]"
-      style={{ '--settings-sidebar-width': `${sidebarWidth}px` } as CSSProperties}>
-      <div className="aegis-settings-titlebar flex h-10 flex-shrink-0" aria-hidden="true">
-        <div className="aegis-settings-sidebar-surface aegis-window-left-surface drag-region flex-shrink-0" />
-        <div className="drag-region flex-1" />
-      </div>
-
-      <div className="aegis-settings-layout flex min-h-0 flex-1">
-      <aside className="aegis-settings-sidebar-surface aegis-window-left-surface min-h-0 flex-shrink-0 select-none">
-        <div className="flex h-full min-h-0 flex-col px-1.5 pb-4 pt-2">
-          <button
-            onClick={() => setShowSettings(false)}
-            className="mb-2 flex h-[30px] shrink-0 items-center gap-2 rounded-lg px-2 text-[13px] font-normal leading-[18px] text-[var(--text-primary)] transition-colors hover:bg-[var(--sidebar-item-hover)]"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            <span>Back to app</span>
-          </button>
-
-          <div className="mb-4 flex h-[30px] shrink-0 items-center gap-2 rounded-lg bg-[var(--sidebar-item-hover)] px-2 focus-within:ring-1 focus-within:ring-[var(--border-focus)]">
-            <Search className="h-4 w-4 shrink-0 text-[var(--text-muted)]" />
-            <input aria-label="Search settings" role="searchbox" placeholder="Search settings…" value={search} onChange={e => setSearch(e.target.value)} onKeyDown={e => {
-              if (isImeComposing(e)) return;
-              if (e.key === 'Escape') setSearch('');
-              if (e.key === 'Enter') {
-                const first = searchResults[0];
-                if (first) selectSearchResult(first);
-              }
-            }} className="w-full min-w-0 bg-transparent text-[13px] font-normal leading-[18px] text-[var(--text-primary)] outline-none placeholder:text-[var(--text-muted)]" />
-            {search && <button aria-label="Clear settings search" onClick={() => setSearch('')} className="text-[var(--text-muted)]">×</button>}
-          </div>
-          {search.trim() ? <div role="region" aria-label="Settings search results" className="min-h-0 overflow-y-auto">
-            {searchResults.map(entry => <button key={`${entry.tab}:${entry.scope ?? ''}:${entry.label}`} onClick={() => selectSearchResult(entry)} className="mb-1 flex w-full flex-col rounded-lg px-3 py-2 text-left text-[13px] text-[var(--text-primary)] hover:bg-[var(--sidebar-item-hover)] focus-visible:outline-2 focus-visible:outline-[var(--accent)]">
-              <span>{entry.label}</span><span className="text-[12px] text-[var(--text-muted)]">{SETTINGS_TABS[entry.tab].label}{entry.scope ? ` · ${entry.scope}` : ''}</span>
-            </button>)}
-            {searchResults.length === 0 && <p className="px-3 text-[13px] text-[var(--text-muted)]">No settings found</p>}
-          </div> : <nav aria-label="Settings" className="min-h-0 flex-1 space-y-6 overflow-y-auto">
-            {SETTINGS_NAV_GROUPS.map(group => <section key={group.label} aria-label={group.label}>
-              <h2 className="mb-1 px-2 text-[13px] font-normal leading-[18px] text-[var(--text-muted)]">{group.label}</h2>
-              <ul className="space-y-px">
-                {group.tabs.map(key => { const tab = SETTINGS_TABS[key]; return (
-                  <SettingsNavItem
-                    key={key}
-                    label={tab.label}
-                    icon={tab.icon}
-                    active={resolvedActiveSettingsTab === key}
-                    // With runtime sub-items showing, the child carries the highlight.
-                    expanded={key === 'mcp' && resolvedActiveSettingsTab === 'mcp'}
-                    onClick={() => { setTarget(null); setActiveSettingsTab(key); }}
-                  >
-                    {/* Runtimes are sub-pages of MCP Servers rather than tabs inside
-                        the page: the list scales to any number of runtimes without
-                        a horizontal strip that wraps in narrow panes. */}
-                    {key === 'mcp' && resolvedActiveSettingsTab === 'mcp' ? (
-                      <ul className="relative mb-1 mt-0.5 ml-[19px] space-y-px border-l border-[var(--border-focus)]/60 pl-2">
-                        {MCP_RUNTIMES.map((runtime) => {
-                          const active = mcpSettingsRuntime === runtime.id;
-                          return (
-                            <li key={runtime.id}>
-                              <button
-                                onClick={() => setMcpSettingsRuntime(runtime.id)}
-                                className={`flex w-full items-center gap-2 rounded-[6px] py-1.5 pl-2 pr-3 text-left text-[12.5px] transition-colors ${
-                                  active
-                                    ? 'bg-[var(--sidebar-item-hover)] font-normal text-[var(--text-primary)]'
-                                    : 'text-[var(--text-primary)] hover:bg-[var(--sidebar-item-hover)]'
-                                }`}
-                              >
-                                <span
-                                  className={`flex h-4 w-4 flex-shrink-0 items-center justify-center transition-opacity ${active ? '' : 'opacity-80 group-hover:opacity-100'}`}
-                                >
-                                  <ProviderIcon provider={runtime.id} />
-                                </span>
-                                <span className="truncate">{runtime.label}</span>
-                              </button>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    ) : null}
-                  </SettingsNavItem>
-                ); })}
-              </ul>
-            </section>)}
-          </nav>}
-
-        </div>
-      </aside>
-
-      <main className="aegis-content-card aegis-settings-panel min-h-0 min-w-0 flex-1 overflow-y-auto select-none [&_input]:select-text [&_textarea]:select-text [&_[contenteditable]]:select-text">
+    <div className="aegis-settings flex h-full min-h-0 min-w-0 flex-1 flex-col">
+      <main ref={mainRef} className="aegis-settings-panel min-h-0 min-w-0 flex-1 overflow-y-auto select-none [&_input]:select-text [&_textarea]:select-text [&_[contenteditable]]:select-text">
         <div
-          className={`aegis-settings-content ${['mcp', 'browser', 'bridge', 'usage', 'profile'].includes(resolvedActiveSettingsTab) ? 'settings-standard' : ''} mx-auto w-full px-8 py-8 ${resolvedActiveSettingsTab === 'appearance' ? 'max-w-[832px]' : resolvedActiveSettingsTab === 'usage' ? 'max-w-[1000px]' : 'max-w-3xl'}`}
+          className={`aegis-settings-content ${['mcp', 'browser', 'bridge', 'usage', 'profile'].includes(resolvedActiveSettingsTab) ? 'settings-standard' : ''} mx-auto w-full px-8 pb-12 pt-11 ${resolvedActiveSettingsTab === 'usage' ? 'max-w-[1000px]' : 'max-w-[792px]'}`}
         >
           {/* The MCP page renders its own header (runtime name). */}
           {resolvedActiveSettingsTab !== 'mcp' ? (
-            <header className="mb-6">
-              <h1 data-settings-label={activeMeta.title} className="text-[17px] font-semibold tracking-normal text-[var(--text-primary)]">
+            <header className="mb-10">
+              <h1 data-settings-label={activeMeta.title} className="settings-page-title text-[var(--text-primary)]">
                 {activeMeta.title}
               </h1>
               {activeMeta.description && <p className="mt-1 text-[12px] leading-5 text-[var(--text-muted)]">{activeMeta.description}</p>}
@@ -309,7 +334,6 @@ export function Settings() {
           {resolvedActiveSettingsTab === 'bridge' && <BridgeSettingsContent />}
         </div>
       </main>
-      </div>
     </div>
   );
 }
@@ -334,18 +358,18 @@ function SettingsNavItem({
       <button
         onClick={onClick}
         aria-current={active ? 'page' : undefined}
-        className={`group flex h-[30px] w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] font-normal leading-[18px] transition-colors ${
+        className={`no-drag flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] font-normal transition-colors duration-150 ${
           active && expanded
             ? 'text-[var(--text-primary)]'
             : active
-              ? 'bg-[var(--sidebar-item-hover)] text-[var(--text-primary)]'
-              : 'text-[var(--text-primary)] hover:bg-[var(--sidebar-item-hover)]'
+              ? 'bg-[var(--sidebar-item-active)] text-[var(--text-primary)]'
+              : 'text-[var(--text-secondary)] hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)]'
         }`}
       >
-        <span className={`flex h-4 w-4 flex-shrink-0 items-center justify-center [&_svg]:size-3.5 [&_svg]:stroke-[1.5] ${active ? 'text-[var(--text-primary)]' : 'text-[var(--text-primary)]'}`}>
+        <span className="flex h-4 w-4 flex-shrink-0 items-center justify-center text-[var(--text-muted)] [&_svg]:size-[15px] [&_svg]:stroke-[1.5]">
           {icon}
         </span>
-        <span>{label}</span>
+        <span className="truncate">{label}</span>
       </button>
       {children}
     </li>

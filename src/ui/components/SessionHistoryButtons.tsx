@@ -6,7 +6,7 @@ import { canNavigateActiveTab, isTabViewVisitable, useTabsStore, type TabView } 
 
 /**
  * Back/Forward through the active tab's view history: sessions and the
- * other workspaces alike.
+ * other workspaces alike. In Settings, Back returns to the app and Forward is off.
  */
 export function SessionHistoryButtons({ className = '' }: { className?: string }) {
   const sessions = useAppStore((state) => state.sessions);
@@ -16,8 +16,11 @@ export function SessionHistoryButtons({ className = '' }: { className?: string }
   const goForward = useTabsStore((state) => state.goForward);
 
   const visitable = (view: TabView) => isTabViewVisitable(view, sessions);
-  const canBack = canNavigateActiveTab({ tabs, activeTabId }, -1, visitable);
-  const canForward = canNavigateActiveTab({ tabs, activeTabId }, 1, visitable);
+  const showSettings = useAppStore((state) => state.showSettings);
+  const setShowSettings = useAppStore((state) => state.setShowSettings);
+  const canBack = showSettings || canNavigateActiveTab({ tabs, activeTabId }, -1, visitable);
+  // Settings covers the page, so moving forward behind it would change nothing you can see.
+  const canForward = !showSettings && canNavigateActiveTab({ tabs, activeTabId }, 1, visitable);
   const shortcuts = useAppPreferences(state => state.keyboardShortcuts);
 
   return (
@@ -25,7 +28,7 @@ export function SessionHistoryButtons({ className = '' }: { className?: string }
       <button
         type="button"
         disabled={!canBack}
-        onClick={() => goBack()}
+        onClick={() => (showSettings ? setShowSettings(false) : goBack())}
         className={navButtonClass(canBack)}
         title={['Back', shortcutLabel('back', shortcuts)].filter(Boolean).join(' · ')}
         aria-label="Back"

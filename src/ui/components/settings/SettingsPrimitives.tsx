@@ -50,11 +50,11 @@ export function SettingsRow({
       }
     >
       <div className="min-w-0">
-        <div className="text-[14px] font-medium text-[var(--text-primary)]">
+        <div className="text-[13px] font-medium text-[var(--text-primary)]">
           {label}
         </div>
         {description ? (
-          <div className={isCard ? 'mt-0.5 text-[12px] leading-5 text-[var(--text-muted)]' : 'mt-0.5 text-[13px] leading-5 text-[var(--text-muted)]'}>
+          <div className={'mt-0.5 text-[12px] leading-[18px] text-[var(--text-muted)]'}>
             {description}
           </div>
         ) : null}
@@ -78,16 +78,16 @@ export function SettingsGroup({
   return (
     <section data-settings-label={title}>
       {title || description ? (
-        <div className="settings-group-heading mb-2 px-1">
+        <div className="settings-group-heading mb-3">
           {title ? (
-            <h2 className="text-[12px] font-medium text-[var(--text-muted)]">{title}</h2>
+            <h2 className="text-[13px] font-medium text-[var(--text-primary)]">{title}</h2>
           ) : null}
           {description ? (
             <p className="mt-1 text-[12px] leading-5 text-[var(--text-muted)]">{description}</p>
           ) : null}
         </div>
       ) : null}
-      <div className="settings-group-card overflow-hidden rounded-[16px] border border-[var(--border)] bg-[var(--bg-primary)]">
+      <div className="settings-group-card overflow-hidden rounded-[12px] border border-[var(--border)] bg-[var(--bg-primary)]">
         <div className="settings-group-rows divide-y divide-[var(--border)]">{children}</div>
       </div>
     </section>
