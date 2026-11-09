@@ -650,7 +650,8 @@ const SessionItem = memo(function SessionItem({
       onPullRequestsOpenChange={setPullRequestsOpen}
     />
   );
-  const projectPill = showProject && projectPath && !session.isChat ? <ProjectChip path={projectPath} /> : null;
+  // Only cards name the project; a list row leaves it to the hover card.
+  const projectPill = isCard && showProject && projectPath && !session.isChat ? <ProjectChip path={projectPath} /> : null;
   const providerMark = !properties.includes('agent') ? null : session.handoffSourceProvider ? (
     <SessionHandoffProviderRoute
       sourceProvider={session.handoffSourceProvider}
@@ -761,7 +762,6 @@ const SessionItem = memo(function SessionItem({
               <span className="flex flex-shrink-0 items-center gap-3">
                 {pin}
                 {worktreeMarks}
-                {projectPill}
                 {providerMark}
                 {date ? (
                   <span className="w-14 flex-shrink-0 whitespace-nowrap text-right text-[13px] tabular-nums text-[var(--text-secondary)]" data-task-date>
