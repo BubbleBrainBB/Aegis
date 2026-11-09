@@ -151,7 +151,7 @@ app.whenReady().then(async()=>{
   assert.equal(await js('document.querySelector("[data-session-id=review] [role=img]").dataset.taskIcon'),'half','work to review is half filled');
   assert.equal(await js('document.querySelector("[data-session-id=review] [role=img]").getAttribute("aria-label")'),'Ready for review');
   assert.equal(await js('document.querySelector("[data-session-id=done] [role=img]").getAttribute("aria-label")'),'Completed');
-  assert.equal(await js('document.querySelector("[data-session-id=done] [data-task-project]").textContent'),'test','rows name their project');
+  assert.equal(await js('!!document.querySelector("[data-session-id=done] [data-task-project]")'),false,'rows leave the project to the hover card');
   assert.equal(await js('document.querySelector("[data-session-id=running] [data-task-date]").textContent'),'1m');
   await shot('page');
   await pending('review',true);await until('!!document.querySelector("[data-task-list] [data-session-id=review] [data-title-loading]")');
@@ -199,14 +199,17 @@ app.whenReady().then(async()=>{
   await shot('crumb');
   await js(crumb+'.click()');await until('!!document.querySelector("[data-task-list] [data-session-id]")');
   assert.equal(await title(),'My Tasks');
-  // A right click on a row's project chip offers the project's actions.
-  await js('document.querySelector("[data-task-list] [data-session-id=review] [data-task-project]").dispatchEvent(new MouseEvent("contextmenu",{bubbles:true,cancelable:true}))');await until('!!document.querySelector("[data-project-chip-menu]")');
+  // List rows leave the project out; a card's project chip offers the project's actions.
+  assert.equal(await js('!!document.querySelector("[data-task-list] [data-task-project]")'),false,'list rows do not name the project');
+  await js('qa.view.getState().setOption("layout","board")');await until('!!document.querySelector("[data-task-board] [data-session-id=review] [data-task-project]")');
+  await js('document.querySelector("[data-task-board] [data-session-id=review] [data-task-project]").dispatchEvent(new MouseEvent("contextmenu",{bubbles:true,cancelable:true}))');await until('!!document.querySelector("[data-project-chip-menu]")');
   assert.deepEqual(await js('[...document.querySelectorAll("[data-project-chip-menu] [role=menuitem]")].map(e=>e.textContent)'),['Show only coworker','New task here','Show in Finder','Remove project…']);
   await shot('chip-menu');
   await key('Escape');await until('!document.querySelector("[data-project-chip-menu]")');
-  // A row's project chip filters too.
-  await js('document.querySelector("[data-task-list] [data-session-id=review] [data-task-project]").click()');await until('document.querySelectorAll("[data-task-list] [data-session-id]").length===3');
+  // A card's project chip filters too.
+  await js('document.querySelector("[data-task-board] [data-session-id=review] [data-task-project]").click()');await until('document.querySelectorAll("[data-task-board] [data-session-id]").length===3');
   assert.equal(await js('qa.store.getState().activeWorkspace'),'tasks','the chip filters instead of opening the task');
+  await js('qa.view.getState().setOption("layout","list")');await until('document.querySelectorAll("[data-task-list] [data-session-id]").length===3');
   await js('document.querySelector("[data-task-list] [data-session-id=review]").click()');await until('!!document.querySelector("[data-chat-stub]")');
   assert.equal(await js(crumb+'.textContent'),'coworker','opened from a project, the path names it');
   await js(crumb+'.click()');await until('document.querySelectorAll("[data-task-list] [data-session-id]").length===3');

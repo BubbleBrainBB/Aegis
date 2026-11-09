@@ -123,7 +123,7 @@ app.whenReady().then(async()=>{
   assert.deepEqual(await members('running'),['s3','s4']);
   assert.deepEqual(await members('review'),['s5','s6','s7'],'unseen result, open PR and live worktree wait on review');
   assert.deepEqual(await members('completed'),['s10','s12','s8','s9'].sort(),'Completed starts open; a merged PR lands in it');
-  assert.equal(await js('document.querySelector("[data-session-id=s5] [data-task-project]").textContent'),'coworker','rows name their project');
+  assert.equal(await js('!!document.querySelector("[data-task-list] [data-task-project]")'),false,'list rows leave the project to the hover card');
   await screenshot('3-state');
 
   // Settings unmounts the list; coming back keeps what was folded.
