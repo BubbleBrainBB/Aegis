@@ -84,20 +84,33 @@ function SidebarToggleButton({
 }
 
 /**
+ * Whether the sidebar shows collapsed. Settings keeps it open, as Codex does:
+ * its nav lives there, so the toggle goes away and the saved state waits for
+ * Settings to close.
+ */
+export function useSidebarCollapsed(): boolean {
+  return useAppStore((state) => state.sidebarCollapsed && !state.showSettings);
+}
+
+/**
  * Sidebar toggle and Back/Forward, Codex-style, right of the traffic lights.
+ * Settings shows only Back/Forward.
  * The sidebar's top row hosts them while it is open; a collapsed sidebar
  * hands them to the main column's top row.
  */
 export function TitlebarControls() {
   const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed);
   const setSidebarCollapsed = useAppStore((state) => state.setSidebarCollapsed);
+  const showSettings = useAppStore((state) => state.showSettings);
 
   return (
     <div className="no-drag flex flex-shrink-0 items-center gap-0.5" data-titlebar-controls>
-      <SidebarToggleButton
-        collapsed={sidebarCollapsed}
-        onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-      />
+      {showSettings ? null : (
+        <SidebarToggleButton
+          collapsed={sidebarCollapsed}
+          onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+        />
+      )}
       <SessionHistoryButtons />
     </div>
   );
@@ -106,7 +119,6 @@ export function TitlebarControls() {
 export function Sidebar() {
   const {
     activeSessionId,
-    sidebarCollapsed,
     sidebarWidth,
     projectCwd,
     activeChannelByProject,
@@ -126,6 +138,7 @@ export function Sidebar() {
     searchPaletteOpen,
     setSearchPaletteOpen,
   } = useAppStore();
+  const sidebarCollapsed = useSidebarCollapsed();
   const organization = useSessionOrganization();
   const viewProject = useSidebarViewStore((state) => state.project);
   const setViewOption = useSidebarViewStore((state) => state.setOption);
