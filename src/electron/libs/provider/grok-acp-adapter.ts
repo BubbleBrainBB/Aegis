@@ -41,6 +41,7 @@ import {
 import { getBrowserUseMcpDescriptor } from '../browser-use-http-server';
 import { createGrokAcpHttpMcpServer } from './grok-acp-mcp';
 import { applyGrokPermissionMode, grokPermissionMeta } from './grok-acp-permissions';
+import { discardAcpSession } from './acp-session-discard';
 
 type PromptBlock =
   | { type: 'text'; text: string }
@@ -597,6 +598,13 @@ export class GrokAcpAdapter implements ProviderAdapter {
         error: error instanceof Error ? error : new Error(String(error)),
       });
     }
+  }
+
+  async discardSession(threadId: string): Promise<void> {
+    const session = this.sessions.get(threadId);
+    if (!session) return;
+    // Grok's own TUI deletes with its x.ai extension; standard ACP first.
+    await discardAcpSession(session.rpc, session.providerSessionId, ['session/delete', 'x.ai/session/delete']);
   }
 
   async stopSession(threadId: string): Promise<void> {

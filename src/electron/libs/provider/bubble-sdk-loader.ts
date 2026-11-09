@@ -224,7 +224,7 @@ export type BubbleSdkInstance = {
   listSessions(): BubbleSessionSummary[];
   createSession(options?: { cwd?: string; id?: string }): { id: string; cwd: string };
   getHistory(sessionId: string): unknown[];
-  deleteSession(sessionId: string): void;
+  deleteSession(sessionId: string): Promise<void>;
   /** Abort the in-flight turn of a session, if any. */
   stop(sessionId: string): void;
   listSkills(cwd?: string): BubbleSkillSummary[];

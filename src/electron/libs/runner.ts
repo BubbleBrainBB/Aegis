@@ -1634,6 +1634,18 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
       else await interruptQuery();
     },
     tracksPromptIdentity: () => promptLifecycle.tracksIdentity,
+    // The CLI titles its own session (what Claude Desktop does), persist:false
+    // so the name stays Aegis's to save. The query exists once the CLI is up.
+    generateTitle: async (description: string) => {
+      for (let waited = 0; !activeQuery && waited < 15_000 && !abortController.signal.aborted; waited += 100) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      const query = activeQuery as (ClaudeQuery & {
+        generateSessionTitle?: (description: string, options?: { persist?: boolean }) => Promise<string | undefined>;
+      }) | null;
+      if (typeof query?.generateSessionTitle !== 'function') throw new Error('This Claude Code cannot title a session.');
+      return query.generateSessionTitle(description, { persist: false });
+    },
     stopTask: async (taskId: string) => {
       if (!activeQuery) {
         throw new Error('Session is not active.');

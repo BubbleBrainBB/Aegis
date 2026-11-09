@@ -347,7 +347,10 @@ export class PiSdkAdapter implements ProviderAdapter {
     const sdk = await loadPiSdk();
     const { modelRuntime, modelRegistry } = await createPiModelRuntimeAndRegistry(sdk);
     const selectedModel = this.resolveModel(modelRegistry, input.model);
-    const sessionManager = await this.createSessionManager(input.resumeSessionId, cwd, sdk.SessionManager);
+    // A throwaway one-shot (naming a task) keeps no session file.
+    const sessionManager = input.ephemeral && sdk.SessionManager.inMemory
+      ? sdk.SessionManager.inMemory(cwd)
+      : await this.createSessionManager(input.resumeSessionId, cwd, sdk.SessionManager);
     const offersWorkflows = !getWorkflowSessionPolicy(input.threadId);
 
     const { session: piSession } = await sdk.createAgentSession({
@@ -539,6 +542,7 @@ export class PiSdkAdapter implements ProviderAdapter {
     cwd: string,
     SessionManager: {
       create(cwd: string, sessionDir?: string, options?: { id?: string }): PiSessionManager;
+      inMemory?(cwd?: string): PiSessionManager;
       open(path: string, sessionDir?: string, cwdOverride?: string): PiSessionManager;
       list(cwd: string, sessionDir?: string): Promise<Array<{ id: string; path: string }>>;
     }

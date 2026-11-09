@@ -67,15 +67,17 @@ import { buildHandoffBrief, collectHandoffTurns, readHandoffWorkspace } from './
 import { extractAssistantText, isLocalUtilityAssistantText } from './libs/transcript-text';
 import { setupSessionTitleIPC } from './ipc/session-title';
 import { syncKimiSessionTitle } from './libs/kimi-title-sync';
+import { generateTaskTitle } from './libs/session-title-generator';
+import { generateSessionTitleLocally } from '../shared/session-title';
 import { setupAttachmentIPC } from './ipc/attachments';
 import { ATTACHMENT_MIME_TYPES, MAX_ATTACHMENT_BYTES, attachmentSizeLimit } from '../shared/attachment-policy';
 import { runCodexOneShot, runOpenCodeOneShot } from './libs/codex-runner';
 import { StreamRetryTracker } from './libs/stream-retry-tracker';
 import {
   forkClaudeAgentSession,
-  generateSessionTitle,
   generateWorktreeBranchSlug,
   runClaudeOneShot,
+  runClaudeTitleOneShot,
 } from './libs/util';
 import { ensureProviderService, runAgentLoop } from './libs/agent-loop';
 import { browserManager } from './browserManager';
@@ -3592,6 +3594,9 @@ async function createInlineImageAttachment(
 }
 
 // Runner 句柄映射（带 Provider）
+/** Tasks their agent is still naming (generateTaskTitle); lists show them as loading. */
+const titlePendingSessions = new Set<string>();
+
 const runnerHandles = new Map<
   string,
   {
@@ -5868,11 +5873,6 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
         payload: { message: String(error) },
       });
     }
-  });
-
-  // RPC: 生成会话标题
-  ipcMainHandle('generate-session-title', async (_, prompt: string) => {
-    return generateSessionTitle(prompt);
   });
 
   setupSessionPullRequestsIPC();
@@ -9769,6 +9769,7 @@ function buildSessionInfoFromRow(
   return {
     id: row.id,
     title: row.title,
+    ...(titlePendingSessions.has(row.id) ? { titlePending: true } : {}),
     status: row.status as SessionInfo['status'],
     scope: normalizeSessionScope(row.conversation_scope),
     agentId: row.agent_id || null,
@@ -9848,6 +9849,74 @@ function buildSessionInfoFromRow(
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+/** The task's runner once it is up (it may still be starting, or never start when its runtime is missing). */
+async function waitForRunnerHandle(sessionId: string, timeoutMs = 15_000): Promise<RunnerHandle | undefined> {
+  let handle = runnerHandles.get(sessionId)?.handle;
+  for (let waited = 0; !handle && waited < timeoutMs; waited += 200) {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    handle = runnerHandles.get(sessionId)?.handle;
+  }
+  return handle;
+}
+
+/**
+ * Name a new task with the agent that runs it: Claude's live session titles
+ * itself (the runner may still be starting, or never start when the runtime
+ * is missing); every other agent answers in a throwaway one-shot its adapter
+ * keeps off the agent's own history. A name typed meanwhile wins.
+ */
+function nameTaskWithItsAgent(
+  mainWindow: BrowserWindow,
+  session: NonNullable<ReturnType<typeof sessions.getSession>>,
+  params: { request: string; provider: AgentProvider; cwd?: string; model?: string; betas?: string[] }
+): void {
+  const placeholder = session.title;
+  titlePendingSessions.add(session.id);
+  const live = params.provider === 'claude'
+    ? async (description: string) => {
+        const handle = await waitForRunnerHandle(session.id);
+        if (!handle?.generateTitle) throw new Error('The session did not start.');
+        return handle.generateTitle(description);
+      }
+    : undefined;
+  const oneShot = async (prompt: string, signal: AbortSignal) => {
+    if (params.provider === 'claude') {
+      return runClaudeTitleOneShot({ prompt, cwd: params.cwd, model: params.model, betas: params.betas, signal });
+    }
+    ensureProviderService();
+    // Qoder titles the task's live query when it has one, found by the task's
+    // thread (its fallback query is never registered, so the thread is safe to share).
+    if (params.provider === 'qoder') await waitForRunnerHandle(session.id);
+    const threadId = params.provider === 'qoder' ? session.id : `title-${uuidv4()}`;
+    const result = await getProviderService().runOneShot(
+      { provider: params.provider, threadId, cwd: params.cwd || process.cwd(), prompt, model: params.model, ephemeral: true },
+      { signal }
+    );
+    return result.text;
+  };
+  void generateTaskTitle({ request: params.request, live, oneShot }).then((title) => {
+    titlePendingSessions.delete(session.id);
+    const latest = sessions.getSession(session.id);
+    if (!latest) return;
+    if (title && title !== placeholder && sessions.updateSessionTitle(session.id, title, placeholder)) {
+      syncKimiSessionTitle(session.id, title);
+    }
+    const current = sessions.getSession(session.id) ?? latest;
+    broadcast(mainWindow, {
+      type: 'session.status',
+      payload: {
+        sessionId: session.id,
+        status: (current.status || 'running') as SessionStatus,
+        title: current.title,
+        titlePending: false,
+        scope: normalizeSessionScope(current.conversation_scope),
+        agentId: current.agent_id || null,
+        hiddenFromThreads: current.hidden_from_threads === 1,
+      },
+    });
+  });
 }
 
 // 会话列表
@@ -10101,9 +10170,11 @@ async function startSession(
     });
   }
 
-  // 创建会话（用临时标题）
+  // The task's agent names it in the background; meanwhile the first sentence
+  // stands in (and stays, should naming fail), shown as loading.
+  const namesItself = sessionScope !== 'dm' && !skipTitleGeneration && Boolean(sourcePrompt);
   const session = sessions.createSession({
-    title,
+    title: (namesItself && generateSessionTitleLocally(sourcePrompt)) || title,
     cwd: sessionCwd,
     projectCwd: isolated ? isolated.repoRoot : normalizedProjectCwd,
     envMode: isolated ? 'worktree' : normalizedEnvMode,
@@ -10199,8 +10270,18 @@ async function startSession(
       channelId: normalizeWorkspaceChannelId(session.workspace_channel_id),
       teamMode: normalizeSessionTeamMode(session.team_mode),
       teamId: session.team_id || null,
+      ...(namesItself ? { titlePending: true } : {}),
     },
   });
+  if (namesItself) {
+    nameTaskWithItsAgent(mainWindow, session, {
+      request: sourcePrompt,
+      provider: chosenProvider,
+      cwd: sessionCwd,
+      model: selectedModel,
+      betas: selectedBetas,
+    });
+  }
 
   // 广播用户 prompt（在运行时检查之前，让用户消息立即显示）
   const createdAt = Date.now();
@@ -10355,41 +10436,6 @@ async function startSession(
       });
       return null;
     }
-  }
-
-  // 异步生成更好的标题（不阻塞）
-  if (sessionScope !== 'dm' && !skipTitleGeneration) {
-    generateSessionTitle(
-      sourcePrompt,
-      sessionCwd,
-      chosenProvider === 'claude' ? selectedModel : undefined,
-      chosenProvider === 'claude' ? selectedBetas : undefined,
-      chosenProvider,
-      selectedClaudeReasoningEffort
-    ).then((newTitle) => {
-      const trimmedTitle = newTitle.trim();
-      if (!trimmedTitle) {
-        return;
-      }
-
-      if (!sessions.updateSessionTitle(session.id, trimmedTitle, session.title)) return;
-      syncKimiSessionTitle(session.id, trimmedTitle);
-      const latest = sessions.getSession(session.id);
-      const currentStatus = latest?.status || session.status || 'running';
-      broadcast(mainWindow, {
-        type: 'session.status',
-        payload: {
-          sessionId: session.id,
-          status: currentStatus as SessionStatus,
-          title: trimmedTitle,
-          scope: normalizeSessionScope(latest?.conversation_scope),
-          agentId: latest?.agent_id || null,
-          hiddenFromThreads: latest?.hidden_from_threads === 1,
-        },
-      });
-    }).catch((err) => {
-      console.error('Failed to generate title:', err);
-    });
   }
 
   // The folder note is in this first message; a start that stopped earlier

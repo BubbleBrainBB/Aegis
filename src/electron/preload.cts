@@ -227,10 +227,6 @@ contextBridge.exposeInMainWorld('electron', {
     };
   },
 
-  // 生成会话标题
-  generateSessionTitle: (prompt: string) => {
-    return ipcRenderer.invoke('generate-session-title', prompt);
-  },
   renameSession: (sessionId: string, title: string) => {
     return ipcRenderer.invoke('rename-session', sessionId, title);
   },

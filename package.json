@@ -114,7 +114,7 @@
     "verify:app-updater": "npx tsx scripts/tests/app-updater.test.ts",
     "verify:provider-logos": "node scripts/tests/provider-logos-electron.test.mjs",
     "verify:session-organization": "npm run transpile:electron && node scripts/tests/session-organization.test.cjs && node scripts/tests/session-windows-electron.test.mjs",
-    "verify:session-title": "npx tsx scripts/tests/session-title.test.ts",
+    "verify:session-title": "npx tsx scripts/tests/session-title.test.ts && npx tsx scripts/tests/session-title-generator.test.ts",
     "verify:session-history": "npx tsx scripts/tests/session-history.test.ts",
     "verify:acp-narration": "npx tsx scripts/tests/acp-narration-split.test.ts",
     "verify:devin-acp-adapter": "npx tsx scripts/tests/devin-acp-adapter.test.ts",

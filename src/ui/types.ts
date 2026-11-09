@@ -346,6 +346,8 @@ export type SessionRightPanelLiveFields = {
 export interface SessionView {
   id: string;
   title: string;
+  /** The task's agent is still naming it: lists show a loading bar instead of the title. */
+  titlePending?: boolean;
   status: import('../shared/types').SessionStatus;
   lastTurnError?: string;
   scope?: SessionScope;

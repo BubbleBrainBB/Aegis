@@ -84,6 +84,11 @@ export interface ProviderSessionStartInput {
   attachments?: Attachment[];
   model?: string;
   resumeSessionId?: string;
+  /**
+   * A throwaway one-shot (naming a task): the adapter keeps it off the agent's
+   * own history where it can (an ephemeral session, or deleting it after).
+   */
+  ephemeral?: boolean;
 
   // Provider-specific config
   codexExecutionMode?: CodexExecutionMode;
@@ -262,6 +267,11 @@ export interface ProviderAdapter {
   // Permission responses
   respondToRequest(threadId: string, requestId: string, decision: PermissionResult): Promise<void>;
   runOneShot?(input: ProviderSessionStartInput): Promise<{ text: string; sessionId?: string; model?: string }>;
+  /**
+   * Remove a throwaway session (an ephemeral one-shot) from the agent's own
+   * history, before it is stopped. Best effort, never throws.
+   */
+  discardSession?(threadId: string): Promise<void>;
 
   /**
    * Fork a recorded provider thread into a new independent one. Present only
@@ -386,7 +396,10 @@ export interface ProviderService {
   readonly directory: ProviderSessionDirectory;
 
   // One-shot prompt (for title generation, bootstrapping)
-  runOneShot(input: ProviderSessionStartInput): Promise<{ text: string; sessionId?: string; model?: string }>;
+  runOneShot(
+    input: ProviderSessionStartInput,
+    options?: { signal?: AbortSignal }
+  ): Promise<{ text: string; sessionId?: string; model?: string }>;
 }
 
 // ── Convenience: convert provider -> runtime event ─────────────────────────

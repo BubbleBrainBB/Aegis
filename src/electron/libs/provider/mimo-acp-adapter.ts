@@ -1,7 +1,7 @@
 import { getWorkflowSessionPolicy } from '../workflow/session-hooks';
 import { getSessionReaderHttpConfig, SESSION_MCP_SERVER_NAME } from '../session-http-server';
 import { createGrokAcpHttpMcpServer } from './grok-acp-mcp';
-import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import { EventEmitter } from 'events';
 import { readFileSync } from 'fs';
 import { v4 as uuidv4 } from 'uuid';
@@ -755,6 +755,17 @@ export class MimoAcpAdapter implements ProviderAdapter {
       // Reported (result or stop): a later stop must not count it again.
       if (session.turn === turn) session.turn = undefined;
     }
+  }
+
+  async discardSession(threadId: string): Promise<void> {
+    const session = this.sessions.get(threadId);
+    if (!session) return;
+    // MiMo's ACP has no delete; its CLI does.
+    const binary = await resolveMimoBinary();
+    if (!binary || !session.providerSessionId) return;
+    await new Promise<void>((resolve) => {
+      execFile(binary, ['session', 'delete', session.providerSessionId], { env: buildMimoEnv(), timeout: 10_000 }, () => resolve());
+    });
   }
 
   async stopSession(threadId: string): Promise<void> {

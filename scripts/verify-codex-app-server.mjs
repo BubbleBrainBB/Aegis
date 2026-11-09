@@ -381,6 +381,17 @@ async function testServiceTier() {
   assert.ok(!('serviceTier' in threadStart.params), 'thread/start must not carry serviceTier');
   ok('thread/start never carries serviceTier');
 
+  // A task-naming one-shot: an ephemeral, read-only thread Codex never writes to disk.
+  const { manager: m3, outbound: out3, responders: r3 } = createCapturingManager();
+  r3.set('thread/start', () => ({ result: { thread: { id: 'p-title', model: 'fake-model' }, cwd: '/tmp/proj' } }));
+  await m3.createSession('title-1', '/tmp/proj', undefined, { ephemeral: true, codexPermissionMode: 'fullAccess' });
+  const titleStart = out3.find((m) => m.method === 'thread/start');
+  assert.equal(titleStart.params.ephemeral, true);
+  assert.equal(titleStart.params.sandbox, 'read-only', 'it never gets the task\'s full access');
+  assert.equal('developerInstructions' in titleStart.params, false);
+  assert.equal('ephemeral' in threadStart.params, false, 'a task\'s own thread is saved as before');
+  ok('ephemeral one-shot thread: not persisted, read-only');
+
   const adapterSource = readFileSync(join(__dirname, '../src/electron/libs/provider/codex-adapter.ts'), 'utf8');
   assert.equal(
     adapterSource.includes('Fast mode is not available for model'),

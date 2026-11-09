@@ -223,6 +223,8 @@ export type QoderCanUseTool = (
 ) => Promise<QoderPermissionDecision>;
 
 export type QoderQueryOptions = {
+  /** false: an ephemeral query, written nowhere and never resumable. */
+  persistSession?: boolean;
   cwd?: string;
   model?: string;
   permissionMode?: QoderSdkPermissionMode;

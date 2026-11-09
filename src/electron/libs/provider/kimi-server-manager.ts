@@ -826,6 +826,11 @@ export class KimiServerManager extends EventEmitter {
     await this.request('POST', `/sessions/${sessionId}:archive`);
   }
 
+  /** Removes the session from the store for good (archive only hides it). */
+  async deleteSession(sessionId: string): Promise<void> {
+    await this.request('POST', `/sessions/${sessionId}:delete`);
+  }
+
   async steerPrompts(sessionId: string, promptIds: string[]): Promise<boolean> {
     try {
       await this.request('POST', `/sessions/${sessionId}/prompts:steer`, { prompt_ids: promptIds });

@@ -889,9 +889,13 @@ export class KimiServerAdapter implements ProviderAdapter {
       return { text: text.trim(), sessionId: id, model };
     } finally {
       this.manager.unsubscribeSession(id);
-      // The server session store is persistent — a one-shot per title
-      // generation would litter it without this.
-      await this.manager.archiveSession(id).catch(() => {});
+      // The server session store is persistent — a one-shot would litter it
+      // without this. A throwaway one (naming a task) goes for good; should
+      // delete fail, it is at least archived out of sight.
+      const removed = input.ephemeral
+        ? await this.manager.deleteSession(id).then(() => true, () => false)
+        : false;
+      if (!removed) await this.manager.archiveSession(id).catch(() => {});
     }
   }
 

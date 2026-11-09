@@ -1121,6 +1121,8 @@ export class QoderSdkAdapter implements ProviderAdapter {
     if (machineCli) {
       options.pathToQoderCLIExecutable = machineCli;
     }
+    // A throwaway one (naming a task) leaves nothing in Qoder's history.
+    if (input.ephemeral) options.persistSession = false;
 
     const query = sdk.query({ prompt: input.prompt, options });
     let text = '';

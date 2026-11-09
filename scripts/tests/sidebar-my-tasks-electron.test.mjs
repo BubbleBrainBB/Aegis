@@ -77,7 +77,8 @@ app.whenReady().then(async()=>{
  const rect=s=>js('(()=>{const r=('+s+').getBoundingClientRect();return {x:r.x,y:r.y,bottom:r.bottom}})()');
  const state=()=>js(edge+'.dataset.sidebarScrollEdge');
  const opacity=()=>js('getComputedStyle('+edge+').opacity');
- const scrollTo=async top=>{await js(scroller+'.scrollTop='+top);await until(edge+'.dataset.sidebarScrollEdge==='+JSON.stringify(top>0?'visible':'hidden'));await delay(220)};
+ // The edge fades over 150ms; a slow runner can still be mid-fade after a fixed wait, so wait for the fade to end.
+ const scrollTo=async top=>{await js(scroller+'.scrollTop='+top);await until(edge+'.dataset.sidebarScrollEdge==='+JSON.stringify(top>0?'visible':'hidden'));await until('getComputedStyle('+edge+').opacity==='+JSON.stringify(top>0?'1':'0'))};
  const rows=()=>js('[...document.querySelectorAll("[data-task-list] [data-session-id]")].map(e=>e.dataset.sessionId)');
  const title=()=>js('document.querySelector("[data-main-titlebar] h1").textContent');
  try{
@@ -100,6 +101,16 @@ app.whenReady().then(async()=>{
   assert.equal(await js('document.querySelectorAll("[data-active-family=parent] [class*=rounded-bl]").length'),1,'the last sub-task hooks the tree line');
   assert.equal(sidebarRows.indexOf('parent'),sidebarRows.indexOf('review')+1,'a family stands where its latest member does');
   await shot('sidebar');
+  // While its agent names a task, its title is a loading bar, in the sidebar and the title bar; the name replaces it.
+  const pending=(id,on)=>js('qa.store.setState(s=>({sessions:{...s.sessions,'+id+':{...s.sessions.'+id+',titlePending:'+on+'}}}))');
+  await pending('review',true);await pending('done',true);
+  await until('!!document.querySelector("[data-active-tasks] [data-session-id=review] [data-title-loading]")&&!!document.querySelector("[data-chat-title] [data-title-loading]")');
+  assert.equal(await js('document.querySelector("[data-active-tasks] [data-session-id=review]").textContent.includes("Move Search")'),false,'no title while it is being named');
+  await shot('title-loading');
+  await pending('review',false);await pending('done',false);
+  await until('!document.querySelector("[data-title-loading]")');
+  assert.equal(await js('document.querySelector("[data-active-tasks] [data-session-id=review]").textContent.includes("Move Search below New Task")'),true);
+  assert.equal(await js('document.querySelector("[data-chat-title]").textContent.includes("Give this article a cyberpunk title")'),true);
   assert.equal(await js('document.querySelector("[data-active-tasks] [data-session-id=review] [data-task-age]").textContent'),'2d');
   assert.equal(await js(nav('My Tasks')+'.textContent.trim()'),'My Tasks2','the row counts tasks waiting on you');
   assert.equal(await js('getComputedStyle(document.querySelector("[data-nav-badge]")).color===getComputedStyle(document.documentElement).getPropertyValue("--warning").trim()||document.querySelector("[data-nav-badge]").className.includes("--warning")'),true,'in amber');
@@ -129,6 +140,9 @@ app.whenReady().then(async()=>{
   assert.equal(await js('document.querySelector("[data-session-id=done] [data-task-project]").textContent'),'test','rows name their project');
   assert.equal(await js('document.querySelector("[data-session-id=running] [data-task-date]").textContent'),'1m');
   await shot('page');
+  await pending('review',true);await until('!!document.querySelector("[data-task-list] [data-session-id=review] [data-title-loading]")');
+  await shot('page-title-loading');
+  await pending('review',false);await until('!document.querySelector("[data-task-list] [data-title-loading]")');
   // Filters follow the task states.
   assert.deepEqual(await js('[...document.querySelectorAll("[aria-label=\\"Filter tasks\\"] button")].map(e=>e.textContent)'),['All','Needs input','Running','Ready for review','Completed']);
   await js(filter('Needs input')+'.click()');await until(filter('Needs input')+'.getAttribute("aria-pressed")==="true"');

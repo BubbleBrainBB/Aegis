@@ -151,6 +151,11 @@ export class OpenCodeV2Client {
     return this.request('GET', `/api/session/${enc(sessionID)}`);
   }
 
+  /** Delete a session and its child sessions from OpenCode's history. */
+  deleteSession(sessionID: string): Promise<void> {
+    return this.request('DELETE', `/api/session/${enc(sessionID)}`);
+  }
+
   updateSession(sessionID: string, input: { permissions?: OpenCodePermissionRule[] }): Promise<void> {
     return this.request('PATCH', `/api/session/${enc(sessionID)}`, { body: input });
   }
