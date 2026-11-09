@@ -3,13 +3,8 @@ import { useSessionOrganization, useSessionOrganizationStore, changeSessionOrgan
 import { textInputDialog } from './ui/text-input-dialog';
 import { useSessionActionsMenu } from '../hooks/useSessionActionsMenu';
 import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { Tooltip as TooltipPrimitive } from '@base-ui-components/react/tooltip';
-import { PreviewCard } from '@base-ui-components/react/preview-card';
 import {
   ChevronRight,
-  FolderClosed,
-  GitBranch,
-  GitFork,
   Loader2,
   Monitor,
   MoreHorizontal,
@@ -27,15 +22,15 @@ import { TaskDisplayMenu } from './TaskDisplayMenu';
 import { PROVIDERS } from '../utils/provider';
 import { groupTasks, type TaskGroup } from '../utils/task-groups';
 import { useAppStore } from '../store/useAppStore';
-import { findProposalForChild, rootSessionOf, subSessionParents, useFollowUpStore } from '../store/useFollowUpStore';
+import { rootSessionOf, subSessionParents, useFollowUpStore } from '../store/useFollowUpStore';
 import { sendEvent } from '../hooks/useIPC';
 import type { GitPullRequestSummary } from '../../shared/types';
 import { useSidebarViewOptions, useSidebarViewStore } from '../store/useSidebarViewStore';
 import { primaryPullRequest, useSidebarPullRequests, useSidebarPullRequestStore } from '../store/useSidebarPullRequests';
-import { PULL_REQUEST_STATUS, pullRequestRepo, pullRequestStatus, type PullRequestStatus } from './pull-request-status';
+import { PULL_REQUEST_STATUS, pullRequestStatus } from './pull-request-status';
+import { getSessionProjectPath, SessionHoverCard, SessionWorktreeMarks } from './SessionHoverCard';
 import {
   boardGroupBy,
-  formatAge,
   formatTaskDate,
   getProjectLabel,
   isWithinActivityWindow,
@@ -56,16 +51,6 @@ import { ProjectChip, TaskProjectFilter } from './TaskProjectFilter';
 import { naturalTaskStateOf, openTask, taskStateOf, type TaskStateSources } from '../utils/task-state';
 import { SessionHandoffProviderRoute } from './SessionHandoffIndicator';
 import { TaskTitleLoading, useTaskTitleReveal } from './TaskTitleLoading';
-
-const SESSION_BRANCH_CACHE_TTL_MS = 30_000;
-
-type SessionBranchCacheEntry = {
-  branch: string | null;
-  expiresAt: number;
-};
-
-const sessionBranchCache = new Map<string, SessionBranchCacheEntry>();
-const pendingSessionBranchRequests = new Map<string, Promise<string | null>>();
 
 /**
  * Session title that stays truncated until hovered, then scrolls left/right
@@ -119,56 +104,11 @@ function ScrollingTitle({ title, className = '' }: { title: string; className?: 
   );
 }
 
-const WORKTREE_ACTION_LABELS = {
-  move: 'Moving into a new worktree…',
-  apply: 'Squash-merging changes back…',
-  discard: 'Removing worktree…',
-} as const;
-
-function getGroupLabel(fullPath: string | null): string {
-  return fullPath ? getProjectLabel(fullPath) : 'No Project';
-}
-
-function getSessionProjectPath(session: SessionView): string | null {
-  return session.projectCwd?.trim() || session.cwd?.trim() || null;
-}
-
 /** One wait of a task on the user; a later wait of the same task comes after new activity. */
 function subSessionWaitMark(session: SessionView): string {
   return `${session.id}:${session.updatedAt}`;
 }
 
-function getSessionBranchCwd(session: SessionView): string | null {
-  return session.worktreePath?.trim() || session.cwd?.trim() || session.projectCwd?.trim() || null;
-}
-
-async function readSessionBranch(cwd: string): Promise<string | null> {
-  const cached = sessionBranchCache.get(cwd);
-  if (cached && cached.expiresAt > Date.now()) {
-    return cached.branch;
-  }
-
-  const pending = pendingSessionBranchRequests.get(cwd);
-  if (pending) return pending;
-
-  const request = window.electron
-    .getGitBranch(cwd)
-    .then((result) => (result.ok ? result.branch?.trim() || null : null))
-    .catch(() => null)
-    .then((branch) => {
-      sessionBranchCache.set(cwd, {
-        branch,
-        expiresAt: Date.now() + SESSION_BRANCH_CACHE_TTL_MS,
-      });
-      return branch;
-    })
-    .finally(() => {
-      pendingSessionBranchRequests.delete(cwd);
-    });
-
-  pendingSessionBranchRequests.set(cwd, request);
-  return request;
-}
 
 function toggleTaskPin(sessionId: string) {
   sendEvent({ type: 'session.togglePin', payload: { sessionId } });
@@ -611,97 +551,6 @@ function TaskGroupHeader({ group, expanded, onToggle, nested = false }: {
   );
 }
 
-function pullRequestsLabel(pullRequests: GitPullRequestSummary[]): string {
-  if (pullRequests.length === 1) {
-    return `Pull request #${pullRequests[0].number} · ${PULL_REQUEST_STATUS[pullRequestStatus(pullRequests[0])].label}`;
-  }
-  const counts = new Map<PullRequestStatus, number>();
-  for (const pr of pullRequests) counts.set(pullRequestStatus(pr), (counts.get(pullRequestStatus(pr)) ?? 0) + 1);
-  const parts = (['open', 'draft', 'merged', 'closed'] as const)
-    .filter((status) => counts.has(status))
-    .map((status) => `${counts.get(status)} ${PULL_REQUEST_STATUS[status].label.toLowerCase()}`);
-  return `${pullRequests.length} pull requests · ${parts.join(', ')}`;
-}
-
-/**
- * The row's PR glyph: the status of the PR that speaks for the session, a
- * count when there are several, and on hover every PR the session opened.
- */
-function SessionPullRequestsGlyph({
-  pullRequests,
-  onOpenChange,
-}: {
-  pullRequests: GitPullRequestSummary[];
-  onOpenChange: (open: boolean) => void;
-}) {
-  const primary = primaryPullRequest(pullRequests)!;
-  const meta = PULL_REQUEST_STATUS[pullRequestStatus(primary)];
-  const label = pullRequestsLabel(pullRequests);
-  return (
-    <PreviewCard.Root onOpenChange={(open) => onOpenChange(open)}>
-      <PreviewCard.Trigger
-        delay={200}
-        closeDelay={150}
-        render={
-          <span
-            className={`flex flex-shrink-0 items-center gap-0.5 ${meta.className}`}
-            aria-label={label}
-            data-pull-request-count={pullRequests.length}
-          >
-            <meta.Icon className="h-3.5 w-3.5" aria-hidden="true" />
-            {pullRequests.length > 1 ? (
-              <span className="text-[11px] tabular-nums leading-none">{pullRequests.length}</span>
-            ) : null}
-          </span>
-        }
-      />
-      <PreviewCard.Portal>
-        <PreviewCard.Positioner side="right" align="start" sideOffset={8} collisionPadding={12} className="z-[95]">
-          <PreviewCard.Popup
-            className="w-[320px] max-h-[360px] overflow-y-auto rounded-[var(--popover-radius)] border border-[var(--popover-border)] bg-[var(--popover-bg)] p-1 text-left shadow-[var(--popover-shadow-lg)] outline-none transition-[opacity,transform] duration-150 ease-[cubic-bezier(0.22,1,0.36,1)] data-[starting-style]:opacity-0 data-[ending-style]:opacity-0"
-            aria-label={label}
-          >
-            {pullRequests.map((pr) => {
-              const status = PULL_REQUEST_STATUS[pullRequestStatus(pr)];
-              return (
-                <button
-                  key={pr.url}
-                  type="button"
-                  className="block w-full rounded-md px-2.5 py-1.5 text-left transition-colors duration-150 hover:bg-[var(--sidebar-item-hover)]"
-                  title={pr.url}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void window.electron.openExternalUrl(pr.url).then((result) => {
-                      if (!result.ok) toast.error(result.message || 'Failed to open pull request.');
-                    });
-                  }}
-                >
-                  <div className="truncate text-[13px] leading-5 text-[var(--text-primary)]">{pr.title}</div>
-                  <div className="flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-[var(--text-muted)]">
-                    <span className={`flex flex-shrink-0 items-center gap-1 ${status.className}`}>
-                      <status.Icon className="h-3 w-3" aria-hidden="true" />
-                      {status.label}
-                    </span>
-                    <span aria-hidden="true">·</span>
-                    <span className="min-w-0 truncate">{pullRequestRepo(pr.url)}</span>
-                    <span className="flex-shrink-0 tabular-nums">#{pr.number}</span>
-                    {pr.additions !== undefined && pr.deletions !== undefined ? (
-                      <span className="flex-shrink-0 tabular-nums">
-                        <span className="text-[var(--success)]">+{pr.additions}</span>{' '}
-                        <span className="text-[var(--error)]">−{pr.deletions}</span>
-                      </span>
-                    ) : null}
-                  </div>
-                </button>
-              );
-            })}
-          </PreviewCard.Popup>
-        </PreviewCard.Positioner>
-      </PreviewCard.Portal>
-    </PreviewCard.Root>
-  );
-}
-
 /** A row's sub-sessions: how many, how they are doing, and whether they show. */
 type SubSessionNest = {
   count: number;
@@ -757,64 +606,11 @@ const SessionItem = memo(function SessionItem({
   variant: 'row' | 'card';
 }) {
   const unread = useSessionOrganizationStore(s => s.sessions[session.id]?.unread);
-  // A follow-up or sub-session names the conversation it came from (also when it is listed apart from it).
-  const followUpParentId = useFollowUpStore(s => findProposalForChild(s.proposals, session.id)?.parentSessionId ?? null);
-  const startedBySession = useFollowUpStore(s => findProposalForChild(s.proposals, session.id)?.kind === 'session');
-  const followUpParentTitle = useAppStore(s => (followUpParentId ? s.sessions[followUpParentId]?.title : undefined));
   const rowRef = useRef<HTMLDivElement>(null);
   const { openMenu, menuOpen, worktreeAction } = useSessionActionsMenu(session, nest);
   // The PR list replaces the session preview while it is open.
   const [pullRequestsOpen, setPullRequestsOpen] = useState(false);
-  const [branchLookup, setBranchLookup] = useState<{
-    cwd: string;
-    branch: string | null;
-    loading: boolean;
-    expiresAt: number;
-  } | null>(null);
-  const inWorktree = session.envMode === 'worktree' && Boolean(session.worktreePath);
   const projectPath = getSessionProjectPath(session);
-  const projectLabel = session.isChat ? 'No project' : getGroupLabel(projectPath);
-  // A chat's folder has no branch to look up.
-  const branchCwd = session.isChat ? null : getSessionBranchCwd(session);
-  const storedWorktreeBranch = session.associatedWorktreeBranch?.trim() || null;
-  const lookedUpBranch = branchLookup?.cwd === branchCwd ? branchLookup.branch : null;
-  const branch = storedWorktreeBranch || lookedUpBranch;
-  const branchLoading = Boolean(
-    !storedWorktreeBranch &&
-      branchCwd &&
-      branchLookup?.cwd === branchCwd &&
-      branchLookup.loading
-  );
-  const handlePreviewOpenChange = (open: boolean) => {
-    if (!open || storedWorktreeBranch || !branchCwd) return;
-    if (
-      branchLookup?.cwd === branchCwd &&
-      (branchLookup.loading || branchLookup.expiresAt > Date.now())
-    ) {
-      return;
-    }
-
-    const cached = sessionBranchCache.get(branchCwd);
-    if (cached && cached.expiresAt > Date.now()) {
-      setBranchLookup({
-        cwd: branchCwd,
-        branch: cached.branch,
-        loading: false,
-        expiresAt: cached.expiresAt,
-      });
-      return;
-    }
-
-    setBranchLookup({ cwd: branchCwd, branch: null, loading: true, expiresAt: 0 });
-    void readSessionBranch(branchCwd).then((nextBranch) => {
-      setBranchLookup({
-        cwd: branchCwd,
-        branch: nextBranch,
-        loading: false,
-        expiresAt: sessionBranchCache.get(branchCwd)?.expiresAt ?? Date.now(),
-      });
-    });
-  };
 
   const attention = state === 'needs-input' ? taskAttention(session) : null;
   const summary = attention && properties.includes('summary') ? attention : null;
@@ -847,26 +643,12 @@ const SessionItem = memo(function SessionItem({
     />
   ) : null;
   const worktreeMarks = (
-    <>
-      {worktreeAction ? (
-        <span className="flex-shrink-0" title={WORKTREE_ACTION_LABELS[worktreeAction]}>
-          <Loader2
-            className="h-3.5 w-3.5 animate-spin text-[var(--text-muted)]"
-            aria-label={WORKTREE_ACTION_LABELS[worktreeAction]}
-          />
-        </span>
-      ) : null}
-      {pullRequests?.length ? (
-        <SessionPullRequestsGlyph pullRequests={pullRequests} onOpenChange={setPullRequestsOpen} />
-      ) : session.envMode === 'worktree' && session.worktreePath ? (
-        <span
-          className="flex-shrink-0"
-          title={`Runs on an isolated branch${session.associatedWorktreeBranch ? ` · ${session.associatedWorktreeBranch}` : ''}`}
-        >
-          <GitBranch className="h-3.5 w-3.5 text-[var(--accent)]" aria-label="Runs on an isolated branch" />
-        </span>
-      ) : null}
-    </>
+    <SessionWorktreeMarks
+      session={session}
+      worktreeAction={worktreeAction}
+      pullRequests={pullRequests}
+      onPullRequestsOpenChange={setPullRequestsOpen}
+    />
   );
   const projectPill = showProject && projectPath && !session.isChat ? <ProjectChip path={projectPath} /> : null;
   const providerMark = !properties.includes('agent') ? null : session.handoffSourceProvider ? (
@@ -883,170 +665,114 @@ const SessionItem = memo(function SessionItem({
   const titleReveal = useTaskTitleReveal(session.titlePending);
 
   return (
-    <TooltipPrimitive.Root
-      disableHoverablePopup
+    <SessionHoverCard
+      session={session}
       disabled={menuOpen || pullRequestsOpen}
-      onOpenChange={handlePreviewOpenChange}
-    >
-      <TooltipPrimitive.Trigger
-        delay={420}
-        closeDelay={80}
-        render={
-          <div
-            ref={rowRef}
-            data-session-id={session.id}
-            data-task-state={state ?? undefined}
-            role="button"
-            onContextMenu={(event) => {
+      side={isCard ? 'right' : 'bottom'}
+      sideOffset={isCard ? 8 : 2}
+      trigger={
+        <div
+          ref={rowRef}
+          data-session-id={session.id}
+          data-task-state={state ?? undefined}
+          role="button"
+          onContextMenu={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            void openMenu({ x: event.clientX, y: event.clientY });
+          }}
+          onKeyDown={(event) => {
+            if (event.target !== event.currentTarget) return;
+            if (event.key === 'Enter') {
+              openTask(session.id);
+            } else if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
               event.preventDefault();
-              event.stopPropagation();
-              void openMenu({ x: event.clientX, y: event.clientY });
-            }}
-            onKeyDown={(event) => {
-              if (event.target !== event.currentTarget) return;
-              if (event.key === 'Enter') {
-                openTask(session.id);
-              } else if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
-                event.preventDefault();
-                const rect = event.currentTarget.getBoundingClientRect();
-                void openMenu({ x: rect.left + 12, y: rect.bottom });
-              }
-            }}
-            tabIndex={0}
-            className={`group/session relative cursor-pointer rounded-lg text-[var(--text-primary)] transition-colors duration-150 hover:bg-[var(--sidebar-item-hover)] focus-visible:bg-[var(--sidebar-item-hover)] focus-visible:outline-none ${
-              isCard
-                ? 'flex w-full flex-shrink-0 flex-col gap-2 border border-[var(--border)] p-3'
-                : 'flex h-11 items-center gap-3 px-3'
-            }`}
-            style={isCard ? undefined : { marginLeft: `${depth * ROW_INDENT}px` }}
-            onClick={() => openTask(session.id)}
-          >
-            {isCard ? (
-              <>
-                <span className="flex items-start gap-2">
-                  <span className="flex h-5 flex-shrink-0 items-center">
-                    <TaskStatusMenu session={session} state={state} naturalState={naturalState} failed={attention?.tone === 'error'} rowRef={rowRef} />
-                  </span>
-                  {session.titlePending ? (
-                    <span className="flex h-5 min-w-0 flex-1 items-center"><TaskTitleLoading /></span>
-                  ) : (
-                    <span className={`line-clamp-2 min-w-0 flex-1 text-[13px] leading-5 ${titleReveal}`}>{session.title}</span>
-                  )}
-                  {deviceMark ? <span className="flex h-5 flex-shrink-0 items-center">{deviceMark}</span> : null}
-                  {unreadDot ? <span className="flex h-5 flex-shrink-0 items-center">{unreadDot}</span> : null}
-                  <span className="absolute right-1.5 top-1.5">{pin}</span>
-                </span>
-                {summary ? <span className={`line-clamp-2 text-[12px] ${summaryClass}`} data-task-attention>{summary.text}</span> : null}
-                {projectPill || providerMark || date || pullRequests?.length || worktreeAction || session.worktreePath ? (
-                  <span className="flex min-w-0 items-center gap-2">
-                    {projectPill}
-                    {worktreeMarks}
-                    {providerMark}
-                    {date ? <span className="ml-auto flex-shrink-0 whitespace-nowrap text-[12px] tabular-nums text-[var(--text-muted)]" data-task-date>{date}</span> : null}
-                  </span>
-                ) : null}
-              </>
-            ) : (
-              <>
-                <TaskStatusMenu session={session} state={state} naturalState={naturalState} failed={attention?.tone === 'error'} rowRef={rowRef} />
-                <span className={`flex min-w-0 items-center gap-2 ${summary ? 'max-w-[60%] flex-shrink-0' : 'flex-1'}`}>
-                  {session.titlePending ? (
-                    <TaskTitleLoading />
-                  ) : (
-                    <ScrollingTitle title={session.title} className={`min-w-0 text-[13px] font-normal leading-[1.3] ${titleReveal}`} />
-                  )}
-                  {nest ? (
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        nest.onToggle();
-                      }}
-                      className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md text-[var(--text-muted)] transition-colors duration-150 hover:text-[var(--text-primary)]"
-                      aria-label={nest.expanded ? 'Hide sub-sessions' : 'Show sub-sessions'}
-                      aria-expanded={nest.expanded}
-                      title={nest.expanded ? 'Hide sub-sessions' : 'Show sub-sessions'}
-                    >
-                      <ChevronRight className={`h-3.5 w-3.5 transition-transform duration-150 ${nest.expanded ? 'rotate-90' : ''}`} />
-                    </button>
-                  ) : null}
-                  {nest && !nest.expanded ? <SubSessionSummary nest={nest} /> : null}
-                  {deviceMark}
-                  {unreadDot}
-                </span>
-                {summary ? (
-                  <span className={`min-w-0 flex-1 truncate text-[13px] ${summaryClass}`} data-task-attention>
-                    {summary.text}
-                  </span>
-                ) : null}
-                <span className="flex flex-shrink-0 items-center gap-3">
-                  {pin}
-                  {worktreeMarks}
-                  {projectPill}
-                  {providerMark}
-                  {date ? (
-                    <span className="w-14 flex-shrink-0 whitespace-nowrap text-right text-[13px] tabular-nums text-[var(--text-secondary)]" data-task-date>
-                      {date}
-                    </span>
-                  ) : null}
-                </span>
-              </>
-            )}
-          </div>
-        }
-      />
-
-      <TooltipPrimitive.Portal>
-        <TooltipPrimitive.Positioner
-          side={isCard ? 'right' : 'bottom'}
-          align="start"
-          sideOffset={isCard ? 8 : 2}
-          collisionPadding={12}
-          className="z-[90]"
+              const rect = event.currentTarget.getBoundingClientRect();
+              void openMenu({ x: rect.left + 12, y: rect.bottom });
+            }
+          }}
+          tabIndex={0}
+          className={`group/session relative cursor-pointer rounded-lg text-[var(--text-primary)] transition-colors duration-150 hover:bg-[var(--sidebar-item-hover)] focus-visible:bg-[var(--sidebar-item-hover)] focus-visible:outline-none ${
+            isCard
+              ? 'flex w-full flex-shrink-0 flex-col gap-2 border border-[var(--border)] p-3'
+              : 'flex h-11 items-center gap-3 px-3'
+          }`}
+          style={isCard ? undefined : { marginLeft: `${depth * ROW_INDENT}px` }}
+          onClick={() => openTask(session.id)}
         >
-          <TooltipPrimitive.Popup data-session-hover-card className="w-max min-w-[224px] max-w-[min(400px,calc(100vw-24px))] rounded-[var(--popover-radius)] border border-[var(--popover-border)] bg-[var(--popover-bg)] px-3 py-2.5 text-left text-[12px] text-[var(--text-secondary)] shadow-[var(--popover-shadow-lg)] outline-none transition-[opacity,transform] duration-150 ease-[cubic-bezier(0.22,1,0.36,1)] data-[starting-style]:opacity-0 data-[ending-style]:opacity-0">
-            <div className="flex min-w-0 items-baseline gap-3">
-              <div className="line-clamp-3 min-w-0 flex-1 break-words text-[13px] font-medium leading-5 text-[var(--text-primary)]">
-                {session.title}
-              </div>
-              <div className="flex-shrink-0 text-[11px] tabular-nums text-[var(--text-muted)]">
-                {formatAge(session.updatedAt)}
-              </div>
-            </div>
-
-            <div className="mt-2 space-y-1.5 leading-[18px]">
-              {session.device ? (
-                <div className="flex min-w-0 items-start gap-2 text-[var(--text-primary)]">
-                  <Monitor className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-[var(--text-muted)]" />
-                  <span className="min-w-0 flex-1 break-words">{session.device.name}</span>
-                </div>
+          {isCard ? (
+            <>
+              <span className="flex items-start gap-2">
+                <span className="flex h-5 flex-shrink-0 items-center">
+                  <TaskStatusMenu session={session} state={state} naturalState={naturalState} failed={attention?.tone === 'error'} rowRef={rowRef} />
+                </span>
+                {session.titlePending ? (
+                  <span className="flex h-5 min-w-0 flex-1 items-center"><TaskTitleLoading /></span>
+                ) : (
+                  <span className={`line-clamp-2 min-w-0 flex-1 text-[13px] leading-5 ${titleReveal}`}>{session.title}</span>
+                )}
+                {deviceMark ? <span className="flex h-5 flex-shrink-0 items-center">{deviceMark}</span> : null}
+                {unreadDot ? <span className="flex h-5 flex-shrink-0 items-center">{unreadDot}</span> : null}
+                <span className="absolute right-1.5 top-1.5">{pin}</span>
+              </span>
+              {summary ? <span className={`line-clamp-2 text-[12px] ${summaryClass}`} data-task-attention>{summary.text}</span> : null}
+              {projectPill || providerMark || date || pullRequests?.length || worktreeAction || session.worktreePath ? (
+                <span className="flex min-w-0 items-center gap-2">
+                  {projectPill}
+                  {worktreeMarks}
+                  {providerMark}
+                  {date ? <span className="ml-auto flex-shrink-0 whitespace-nowrap text-[12px] tabular-nums text-[var(--text-muted)]" data-task-date>{date}</span> : null}
+                </span>
               ) : null}
-              <div className="flex min-w-0 items-start gap-2" title={session.device ? undefined : projectPath || undefined}>
-                <FolderClosed className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-[var(--text-muted)]" />
-                <span className="min-w-0 flex-1 break-words">{projectLabel}</span>
-              </div>
-              {branch || branchLoading ? (
-                <div className="flex min-w-0 items-start gap-2">
-                  <GitBranch
-                    className={`mt-0.5 h-3.5 w-3.5 flex-shrink-0 ${inWorktree ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]'}`}
-                  />
-                  <span className={`min-w-0 flex-1 break-all ${branchLoading ? 'text-[var(--text-muted)]' : ''}`}>
-                    {branchLoading ? 'Checking branch…' : branch}
+            </>
+          ) : (
+            <>
+              <TaskStatusMenu session={session} state={state} naturalState={naturalState} failed={attention?.tone === 'error'} rowRef={rowRef} />
+              <span className={`flex min-w-0 items-center gap-2 ${summary ? 'max-w-[60%] flex-shrink-0' : 'flex-1'}`}>
+                {session.titlePending ? (
+                  <TaskTitleLoading />
+                ) : (
+                  <ScrollingTitle title={session.title} className={`min-w-0 text-[13px] font-normal leading-[1.3] ${titleReveal}`} />
+                )}
+                {nest ? (
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      nest.onToggle();
+                    }}
+                    className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md text-[var(--text-muted)] transition-colors duration-150 hover:text-[var(--text-primary)]"
+                    aria-label={nest.expanded ? 'Hide sub-sessions' : 'Show sub-sessions'}
+                    aria-expanded={nest.expanded}
+                    title={nest.expanded ? 'Hide sub-sessions' : 'Show sub-sessions'}
+                  >
+                    <ChevronRight className={`h-3.5 w-3.5 transition-transform duration-150 ${nest.expanded ? 'rotate-90' : ''}`} />
+                  </button>
+                ) : null}
+                {nest && !nest.expanded ? <SubSessionSummary nest={nest} /> : null}
+                {deviceMark}
+                {unreadDot}
+              </span>
+              {summary ? (
+                <span className={`min-w-0 flex-1 truncate text-[13px] ${summaryClass}`} data-task-attention>
+                  {summary.text}
+                </span>
+              ) : null}
+              <span className="flex flex-shrink-0 items-center gap-3">
+                {pin}
+                {worktreeMarks}
+                {projectPill}
+                {providerMark}
+                {date ? (
+                  <span className="w-14 flex-shrink-0 whitespace-nowrap text-right text-[13px] tabular-nums text-[var(--text-secondary)]" data-task-date>
+                    {date}
                   </span>
-                </div>
-              ) : null}
-              {followUpParentId ? (
-                <div className="flex min-w-0 items-start gap-2">
-                  <GitFork className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-[var(--accent)]" />
-                  <span className="min-w-0 flex-1 break-words">
-                    {startedBySession ? 'Started from' : 'Follow-up from'} {followUpParentTitle ? `“${followUpParentTitle}”` : 'another conversation'}
-                  </span>
-                </div>
-              ) : null}
-            </div>
-          </TooltipPrimitive.Popup>
-        </TooltipPrimitive.Positioner>
-      </TooltipPrimitive.Portal>
-    </TooltipPrimitive.Root>
+                ) : null}
+              </span>
+            </>
+          )}
+        </div>
+      }
+    />
   );
 });

@@ -21,6 +21,7 @@ const emptyResult=()=>{const done=()=>{};const result=Promise.resolve([]);for(co
 const autoStub=()=>new Proxy(function(){},{get:(_,k)=>k==='then'?undefined:autoStub(),apply:emptyResult});
 const org={sessions:{seen:{archived:false,unread:false,sectionId:null,manualStatus:null,keptOpen:true}},sections:[],projectSources:{}};const changes=[];
 const stubs={getUserProfile:async()=>({displayName:'BubbleBrain',handle:'bubblebrain',customized:true}),getBubbleProvidersConfig:async()=>({providers:[]}),getGitBranch:async()=>({ok:false}),
+ listSidebarPullRequests:async()=>({review:[{number:41,title:'Move Search',state:'merged',url:'https://github.com/acme/coworker/pull/41'},{number:42,title:'Search follow-up',state:'open',url:'https://github.com/acme/coworker/pull/42'}]}),onSessionPullRequestsChanged:()=>()=>{},
  getSessionOrganization:async()=>structuredClone(org),onSessionOrganizationChanged:()=>()=>{},
  changeSessionOrganization:async change=>{changes.push(change);if(change.kind==='status')org.sessions[change.sessionId]={archived:false,unread:false,sectionId:null,...org.sessions[change.sessionId],manualStatus:change.status};return structuredClone(org)}};
 window.electron=new Proxy(stubs,{get:(t,k)=>k in t?t[k]:autoStub()});
@@ -112,6 +113,17 @@ app.whenReady().then(async()=>{
   assert.equal(await js('document.querySelector("[data-active-tasks] [data-session-id=review]").textContent.includes("Move Search below New Task")'),true);
   assert.equal(await js('document.querySelector("[data-chat-title]").textContent.includes("Give this article a cyberpunk title")'),true);
   assert.equal(await js('document.querySelector("[data-active-tasks] [data-session-id=review] [data-task-age]").textContent'),'2d');
+  // A row shows its PRs and, when the pointer rests on it, the task's card.
+  await until('!!document.querySelector("[data-active-tasks] [data-session-id=review] [data-pull-request-count]")');
+  assert.equal(await js('document.querySelector("[data-active-tasks] [data-session-id=review] [data-pull-request-count]").getAttribute("aria-label")'),'2 pull requests · 1 open, 1 merged');
+  await js('document.querySelector("[data-active-tasks] [data-session-id=review]").scrollIntoView({block:"nearest"})');await delay(60);
+  const cardRow=await rect('document.querySelector("[data-active-tasks] [data-session-id=review]")');
+  win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(cardRow.x+60),y:Math.round(cardRow.y+8)});
+  await until('!!document.querySelector("[data-session-hover-card]")');await shot('sidebar-hover-card');
+  const hoverCard=await js('document.querySelector("[data-session-hover-card]").textContent');
+  assert.ok(hoverCard.includes('Move Search below New Task')&&hoverCard.includes('coworker'),'the hover card names the task and its project: '+hoverCard);
+  win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(cardRow.x+60),y:4});
+  await until('!document.querySelector("[data-session-hover-card]")');
   assert.equal(await js(nav('My Tasks')+'.textContent.trim()'),'My Tasks2','the row counts tasks waiting on you');
   assert.equal(await js('getComputedStyle(document.querySelector("[data-nav-badge]")).color===getComputedStyle(document.documentElement).getPropertyValue("--warning").trim()||document.querySelector("[data-nav-badge]").className.includes("--warning")'),true,'in amber');
   assert.equal(await js(nav('Search')+'.title.startsWith("Search")'),true,'Search keeps its tooltip');
