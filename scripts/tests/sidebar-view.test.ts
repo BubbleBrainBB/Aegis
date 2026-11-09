@@ -80,6 +80,14 @@ assert.equal(deriveSidebarSessionState({ ...idle, status: 'running' }, { manualS
 assert.equal(deriveSidebarSessionState({ ...idle, permissionRequests: [permission] }, { manualStatus: 'completed' }), 'needs-input',
   'a pending approval still asks for you');
 assert.equal(deriveSidebarSessionState({ ...idle, isDraft: true }, { manualStatus: 'review' }), null);
+// A task that has run stays open, seen or not, until you close it.
+assert.equal(deriveSidebarSessionState(idle, { keptOpen: true }), 'review', 'seeing the result does not close it');
+assert.equal(deriveSidebarSessionState({ ...idle, turnReport: report0('nothing_to_do') }, { keptOpen: true }), 'review',
+  'a turn with nothing to change waits for you too');
+assert.equal(deriveSidebarSessionState(idle, { keptOpen: true, manualStatus: 'completed' }), 'completed', 'closing it by hand is what ends it');
+assert.equal(deriveSidebarSessionState({ ...idle, turnReport: report0('question') }, { keptOpen: true }), 'needs-input',
+  'a question still asks for you first');
+assert.equal(deriveSidebarSessionState(idle, {}), 'completed', 'a task closed before this stays closed');
 
 // --- the sidebar's Active list ----------------------------------------------
 {
@@ -98,9 +106,9 @@ assert.equal(deriveSidebarSessionState({ ...idle, isDraft: true }, { manualStatu
   ];
   const roots: Record<string, string> = { 'child-waiting': 'parent', 'child-done': 'parent', orphan: 'deleted-parent' };
   const families = listActiveTaskFamilies(tasks, (id) => roots[id] ?? null, (t) => t.state);
-  assert.deepEqual(families.map((f) => f.root.id), ['parent', 'review-new', 'orphan', 'review-old', 'running'],
-    'needs you, then review, then running; finished work and drafts stay out; a sub-task without its parent stands alone');
-  assert.deepEqual(families[0].children.map((t) => t.id), ['child-done', 'child-waiting'],
+  assert.deepEqual(families.map((f) => f.root.id), ['running', 'review-new', 'orphan', 'review-old', 'parent'],
+    'latest activity first, whatever the state; finished work and drafts stay out; a sub-task without its parent stands alone');
+  assert.deepEqual(families.find((f) => f.root.id === 'parent')!.children.map((t) => t.id), ['child-done', 'child-waiting'],
     'a finished parent stays while a sub-task is open, with all its sub-tasks in the order they started');
 }
 

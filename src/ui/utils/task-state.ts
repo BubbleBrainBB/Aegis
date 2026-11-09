@@ -20,6 +20,7 @@ export function taskStateOf(session: SessionView, sources: TaskStateSources): Si
     unread: sources.organization.sessions[session.id]?.unread,
     pullRequest: primaryPullRequest(sources.prsBySession[session.id]),
     worktreeSettled: isWorktreeSettled(session, sources.worktrees),
+    keptOpen: sources.organization.sessions[session.id]?.keptOpen,
     manualStatus: sources.organization.sessions[session.id]?.manualStatus,
   });
 }
@@ -30,6 +31,7 @@ export function naturalTaskStateOf(session: SessionView, sources: TaskStateSourc
     unread: sources.organization.sessions[session.id]?.unread,
     pullRequest: primaryPullRequest(sources.prsBySession[session.id]),
     worktreeSettled: isWorktreeSettled(session, sources.worktrees),
+    keptOpen: sources.organization.sessions[session.id]?.keptOpen,
   });
 }
 

@@ -60,7 +60,7 @@ const invoke = (window, channel, ...args) => handlers.get(channel)({ sender: win
   await invoke(primary, 'change-session-organization', { kind: 'unread', sessionId: a.id, unread: true });
   await invoke(primary, 'change-session-organization', { kind: 'archive', sessionId: a.id, archived: true });
   sessions.close(); sessions.initialize();
-  assert.deepEqual(sessions.getSessionOrganization().sessions[a.id], { archived: true, unread: true, sectionId, manualStatus: null });
+  assert.deepEqual(sessions.getSessionOrganization().sessions[a.id], { archived: true, unread: true, sectionId, manualStatus: null, keptOpen: false });
   await invoke(primary, 'change-session-organization', { kind: 'rename-section', sectionId, name: 'Renamed' });
   assert.equal(sessions.getSessionOrganization().sections[0].name, 'Renamed');
   await invoke(primary, 'change-session-organization', { kind: 'remove-section', sectionId });
@@ -79,9 +79,16 @@ const invoke = (window, channel, ...args) => handlers.get(channel)({ sender: win
   assert.equal(sessions.getSessionOrganization().sessions[b.id].manualStatus, 'completed');
   await invoke(primary, 'change-session-organization', { kind: 'status', sessionId: b.id, status: 'review' });
   assert.equal(sessions.getSessionOrganization().sessions[b.id].manualStatus, 'review');
-  assert.equal(sessions.clearSessionManualStatus(b.id), true);
-  assert.equal(sessions.getSessionOrganization().sessions[b.id].manualStatus, null);
-  assert.equal(sessions.clearSessionManualStatus(b.id), false, 'nothing to clear, nothing to announce');
+  assert.equal(sessions.getSessionOrganization().sessions[b.id].keptOpen, false, 'a task that has not run since stays closed');
+  assert.equal(sessions.reopenSessionTask(b.id), true);
+  assert.deepEqual(sessions.getSessionOrganization().sessions[b.id], { archived: false, unread: false, sectionId: null, manualStatus: null, keptOpen: true },
+    'a run opens the task and takes over from the status set by hand');
+  assert.equal(sessions.reopenSessionTask(b.id), false, 'nothing to change, nothing to announce');
+  const fresh = sessions.createSession({ title: 'Fresh', cwd: tmp, provider: 'codex' });
+  assert.equal(sessions.reopenSessionTask(fresh.id), true, 'a task with no organization row yet is opened too');
+  assert.equal(sessions.getSessionOrganization().sessions[fresh.id].keptOpen, true);
+  sessions.close(); sessions.initialize();
+  assert.equal(sessions.getSessionOrganization().sessions[b.id].keptOpen, true, 'it stays open across restarts');
   await invoke(primary, 'change-session-organization', { kind: 'status', sessionId: b.id, status: 'completed' });
   await invoke(primary, 'change-session-organization', { kind: 'status', sessionId: b.id, status: null });
   assert.equal(sessions.getSessionOrganization().sessions[b.id].manualStatus, null, 'null hands the state back to the task');

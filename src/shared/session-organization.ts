@@ -6,6 +6,8 @@ export interface SessionOrganization {
   unread: boolean;
   sectionId: string | null;
   manualStatus: ManualTaskStatus | null;
+  /** It has run since you last closed it: it stays open until you mark it done. */
+  keptOpen: boolean;
 }
 
 export interface SessionSection {

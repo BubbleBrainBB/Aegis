@@ -132,8 +132,8 @@ export const TASK_FILTERS: ReadonlyArray<{ id: TaskFilter; label: string }> = [
   ...SIDEBAR_STATE_ORDER.map((state) => ({ id: state, label: SIDEBAR_STATE_LABELS[state] })),
 ];
 
-/** The sidebar's Active list: what needs you first, then what waits for review, then what still runs. */
-export const ACTIVE_STATE_ORDER: SidebarSessionState[] = ['needs-input', 'review', 'running'];
+/** What the sidebar's Active list holds: everything not finished. */
+const ACTIVE_STATES: ReadonlySet<SidebarSessionState> = new Set(['needs-input', 'review', 'running']);
 
 /** A task with the sub-tasks it started, listed together. */
 export interface TaskFamily<T> {
@@ -144,8 +144,9 @@ export interface TaskFamily<T> {
 /**
  * The sidebar's Active list: every task that is not finished, with its family.
  * Sub-tasks belong to the task that started them, so while any of them is
- * unfinished the whole family shows, finished members too. A family stands
- * where its most urgent member does, the latest activity first after that.
+ * unfinished the whole family shows, finished members too. Latest activity
+ * first, like the age on each row, so a task you just started is on top; the
+ * row's icon says what it needs.
  */
 export function listActiveTaskFamilies<T extends Pick<SessionView, 'id' | 'updatedAt' | 'createdAt'>>(
   tasks: readonly T[],
@@ -163,15 +164,14 @@ export function listActiveTaskFamilies<T extends Pick<SessionView, 'id' | 'updat
     const root = rootOf(task.id);
     if (root && byId.has(root)) families.get(root)!.children.push(task);
   }
-  const ranked = [...families.values()].flatMap((family) => {
+  const listed = [...families.values()].flatMap((family) => {
     const members = [family.root, ...family.children];
-    const ranks = members.map((task) => ACTIVE_STATE_ORDER.indexOf(stateOf(task) as SidebarSessionState)).filter((rank) => rank >= 0);
-    if (!ranks.length) return [];
+    if (!members.some((task) => ACTIVE_STATES.has(stateOf(task) as SidebarSessionState))) return [];
     family.children.sort((left, right) => (left.createdAt ?? left.updatedAt) - (right.createdAt ?? right.updatedAt));
-    return [{ family, rank: Math.min(...ranks), latest: Math.max(...members.map((task) => task.updatedAt)) }];
+    return [{ family, latest: Math.max(...members.map((task) => task.updatedAt)) }];
   });
-  return ranked
-    .sort((left, right) => left.rank - right.rank || right.latest - left.latest)
+  return listed
+    .sort((left, right) => right.latest - left.latest)
     .map((entry) => entry.family);
 }
 
@@ -195,6 +195,8 @@ export function deriveSidebarSessionState(
     worktreeSettled?: boolean;
     /** Set by hand from the Change status menu; it outranks everything the last run left behind. */
     manualStatus?: ManualTaskStatus | null;
+    /** It has run since you last closed it: seen or not, it waits for you to close it. */
+    keptOpen?: boolean;
   }
 ): SidebarSessionState | null {
   if (session.isDraft) return null;
@@ -214,7 +216,7 @@ export function deriveSidebarSessionState(
   if (outcome === 'question' || outcome === 'blocked') return 'needs-input';
   if (outcome === 'in_progress' && session.backgroundTasks?.length) return 'running';
   const finished = session.runtimeNotice === 'completed' && outcome !== 'nothing_to_do';
-  if (finished || context.unread) return 'review';
+  if (finished || context.unread || context.keptOpen) return 'review';
   const pr = context.pullRequest;
   if (pr?.state === 'open') return 'review';
   // A live worktree holds work that has not been applied back yet, unless its
