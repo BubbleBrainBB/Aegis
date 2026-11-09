@@ -1181,14 +1181,14 @@ export function App() {
           window chrome; below it the sidebar panel, the main view and the
           right pane form one rounded sheet. */}
       <div className="flex min-h-0 min-w-0 flex-1">
-      {!showSettings && <Sidebar />}
+      <Sidebar />
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       {/* Shared chat surface: the wallpaper lives here so it spans both the
           conversation and the utility workspace (including fullscreen). */}
       <div
         ref={skinHostRef}
-        className={`aegis-skin-host relative flex min-h-0 min-w-0 flex-1 overflow-hidden ${showSettings ? 'aegis-settings-host' : 'aegis-main-host'} ${
+        className={`aegis-skin-host aegis-main-host relative flex min-h-0 min-w-0 flex-1 overflow-hidden ${
           skinVisible ? 'aegis-skin-host--active' : ''
         }`}
       >
@@ -1223,11 +1223,9 @@ export function App() {
           <div className="flex-1 min-w-0 bg-[var(--chat-pane-surface)]" />
         </MainSheet>
       ) : showSettings ? (
-        <div className="flex-1 min-w-0 flex flex-col">
-          <div className="flex-1 min-h-0">
-            <Settings />
-          </div>
-        </div>
+        <MainSheet>
+          <Settings />
+        </MainSheet>
       ) : activeWorkspace === 'skills' ? (
         <MainSheet>
         <div className="flex-1 min-w-0 min-h-0 flex flex-col bg-[var(--chat-pane-surface)]">

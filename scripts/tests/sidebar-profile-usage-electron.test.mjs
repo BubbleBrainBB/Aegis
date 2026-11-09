@@ -38,7 +38,7 @@ window.electron=new Proxy(stubs,{get:(t,k)=>k in t?t[k]:autoStub()});
 useAppStore.setState({sessions:{},sidebarCollapsed:false,sidebarWidth:280,showSettings:false,activeSettingsTab:'profile'});
 useAppStore.getState().setTheme('light');
 window.qa={store:useAppStore,calls,holdHistory:()=>historyHold=true,settleHistory:value=>{fail=value;historyHold=false;pendingHistory.splice(0).forEach(resolve=>resolve())},resolveClaude:()=>resolveClaude(),expire:()=>window.qaTimeOffset+=61000,fail:()=>fail=true,hold:()=>hold=true,settle:value=>{fail=value;hold=false;pending.splice(0).forEach(run=>run())},refresh:()=>{window.qaTimeOffset+=61000;window.qaRefreshers.forEach(run=>run())}};
-function Harness(){const settings=useAppStore(s=>s.showSettings);return <Tooltip.Provider><div style={{height:'100vh',display:'flex',background:'var(--bg-primary)',color:'var(--text-primary)'}}>{settings?<Settings/>:<><Sidebar/><main style={{padding:24,flex:1}}><h1>Workspace</h1></main></>}</div><Toaster/></Tooltip.Provider>}
+function Harness(){const settings=useAppStore(s=>s.showSettings);return <Tooltip.Provider><div style={{height:'100vh',display:'flex',background:'var(--bg-primary)',color:'var(--text-primary)'}}>{settings?<><Sidebar/><Settings/></>:<><Sidebar/><main style={{padding:24,flex:1}}><h1>Workspace</h1></main></>}</div><Toaster/></Tooltip.Provider>}
 createRoot(document.getElementById('root')).render(<Harness/>);
 `;
 const main=String.raw`

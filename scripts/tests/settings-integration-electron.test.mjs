@@ -8,7 +8,7 @@ const tmp=await mkdtemp(path.join(root,'.aegis-design-qa/settings-integration-')
 const harness=String.raw`
 import React from 'react';
 import {createRoot} from 'react-dom/client';
-import {Settings} from '/src/ui/components/settings/Settings';
+import {Settings,SettingsNavPanel} from '/src/ui/components/settings/Settings';
 import {useAppStore} from '/src/ui/store/useAppStore';
 import {ConfirmDialogHost} from '/src/ui/components/ui/confirm-dialog';
 import {Toaster,toast} from 'sonner';
@@ -39,7 +39,7 @@ window.electron={
 for(const name of ['Claude','Codex','Opencode','Kimi','Grok'])window.electron['get'+name+'RuntimeStatus']=async()=>({ready:true,kind:'ready',summary:'Ready',detail:'',checkedAt:Date.now()});
 useAppStore.setState({showSettings:true,activeSettingsTab:'browser',mcpCodexGlobalServers:{calendar:{type:'http',url:'https://example.test/mcp'},filesystem:{type:'stdio',command:'npx',enabled:false}},mcpGlobalServers:{filesystem:{type:'stdio',command:'npx'}}});
 useAppStore.getState().setTheme('light');
-createRoot(document.getElementById('root')).render(<Tooltip.Provider><div style={{height:'100vh',background:'var(--bg-primary)',color:'var(--text-primary)'}}><Settings/><ConfirmDialogHost/><Toaster/></div></Tooltip.Provider>);
+createRoot(document.getElementById('root')).render(<Tooltip.Provider><div style={{height:'100vh',background:'var(--bg-primary)',color:'var(--text-primary)'}}><div style={{display:"flex",height:"100%"}}><style>{"@media (max-width: 600px) { [data-harness-nav] { display: none !important } }"}</style><div data-harness-nav className="aegis-sidebar" style={{width:280,flexShrink:0,display:"flex",flexDirection:"column"}}><SettingsNavPanel/></div><Settings/></div><ConfirmDialogHost/><Toaster/></div></Tooltip.Provider>);
 `;
 const main=String.raw`
 const {app,BrowserWindow}=require('electron');
@@ -63,10 +63,9 @@ app.whenReady().then(async()=>{
  const search=async(query,label)=>{await text('[aria-label="Search settings"]',query);await delay(350);await button(label,'[aria-label="Settings search results"]');await delay(350);};
  try{
   await win.loadURL(process.env.QA_URL);await until('!!document.querySelector("[aria-label=\\"Toggle browser use\\"]")');
-  const shell=await js("(()=>{\n    const main=document.querySelector('.aegis-settings-panel'),aside=document.querySelector('.aegis-settings aside');\n    const panel=main.getBoundingClientRect(),nav=aside.getBoundingClientRect(),style=getComputedStyle(main);\n    return {gap:panel.left-nav.right,top:panel.top,bottom:innerHeight-panel.bottom,right:innerWidth-panel.right,\n      radius:style.borderTopLeftRadius,shadow:style.boxShadow,navBorder:getComputedStyle(aside).borderRightWidth,\n      navWidth:nav.width,expectedWidth:qa.store.getState().sidebarWidth,\n      panelColor:style.backgroundColor,chromeColor:getComputedStyle(document.querySelector('.aegis-settings')).backgroundColor};\n  })()");
-  assert.equal(shell.gap,6);assert.equal(shell.top,40);assert.equal(shell.bottom,6);assert.equal(shell.right,6);
-  assert.equal(shell.radius,'10px');assert.notEqual(shell.shadow,'none');assert.equal(shell.navBorder,'0px');
-  assert.equal(shell.navWidth,shell.expectedWidth);assert.notEqual(shell.panelColor,shell.chromeColor);
+  // Codex layout: the nav is the sidebar panel (heading, pill search, groups); the page has a large title over groups.
+  const shell=await js("(()=>{const nav=document.querySelector('[data-settings-nav]'),search=nav.querySelector('[role=searchbox]').parentElement,title=document.querySelector('.aegis-settings main h1');\n    return {heading:nav.firstElementChild.textContent.trim(),groups:[...nav.querySelectorAll('nav section h2')].map(e=>e.textContent),\n      current:nav.querySelector('[aria-current=page]').textContent,pill:parseFloat(getComputedStyle(search).borderRadius)>=search.offsetHeight/2,title:title.textContent,titleSize:getComputedStyle(title).fontSize};})()");
+  assert.deepEqual(shell,{heading:'Settings',groups:['Personal','Integrations'],current:'Browser',pill:true,title:'Browser',titleSize:'24px'});
   await shot('browser-light');await click('[aria-label="Toggle browser use"]');assert.equal(await js('qa.permissions.enabled'),false);
   await button('Import…');await click('[aria-label="Chrome profile"]');await shot('browser-profile-menu');
   await js('Array.from(document.querySelectorAll("[role=menuitem]")).find(e=>e.textContent.includes("Work")).click()');await delay(100);
@@ -98,6 +97,7 @@ app.whenReady().then(async()=>{
   await search('Google bubble','GoogleProviders · Bubble');assert.equal(await js('document.activeElement.dataset.settingsId'),'Bubble:Google');
   await search('display name','Display nameProfile');assert.equal(await js('document.querySelector("h1").textContent'),'Profile');
   await js('qa.toast.dismiss();qa.store.getState().setTheme("dark")');await nav('bridge');await shot('bridge-dark');
+  // A window this narrow collapses the sidebar, Settings nav included: each page alone must fit.
   win.setContentSize(390,850);
   for(const tab of ['bridge','browser','mcp','usage','profile']){await nav(tab);await shot(tab+'-narrow');assert.equal(await js('document.querySelector("main").scrollWidth>document.querySelector("main").clientWidth'),false,tab+' does not overflow');}
   await js('qa.failBrowser=true');await nav('profile');await nav('browser');await until('!!document.querySelector("[role=alert]")');await js('qa.failBrowser=false');await button('Retry');await until('!!document.querySelector("[aria-label=\\"Toggle browser use\\"]")');

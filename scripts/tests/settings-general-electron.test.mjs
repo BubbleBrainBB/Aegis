@@ -10,7 +10,7 @@ import React,{useEffect,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {Tooltip} from '@base-ui-components/react/tooltip';
 import {Toaster} from 'sonner';
-import {Settings} from '/src/ui/components/settings/Settings';
+import {Settings,SettingsNavPanel} from '/src/ui/components/settings/Settings';
 import {AppearancePreferences} from '/src/ui/components/AppearancePreferences';
 import {exportTheme,choiceFor} from '/src/ui/theme/themes';
 import {PromptInput} from '/src/ui/components/PromptInput';
@@ -44,7 +44,7 @@ useAppStore.setState({showSettings:true,activeSettingsTab:'general'});
 function Harness(){
  useEffect(subscribeAppPreferences,[]);
  const [composer,setComposer]=useState(false);qa.showComposer=provider=>{const a=useAppStore.getState();const id=a.createDraftSession('/tmp');qa.id=id;useAppStore.setState(s=>({sessions:{...s.sessions,[id]:{...s.sessions[id],isDraft:false,provider,status:'running',model:provider==='codex'?'gpt-5.4':'sonnet',messages:[]}},pendingStart:false}));setComposer(true);};
- return <AppearancePreferences><Tooltip.Provider><div style={{height:'100vh',background:'var(--bg-primary)',color:'var(--text-primary)'}}>{composer?<><EnvironmentEditorPicker context={{effectiveCwd:"/tmp"}}/><PromptInput sessionId={qa.id}/></>:<Settings/>}<Toaster/></div></Tooltip.Provider></AppearancePreferences>;
+ return <AppearancePreferences><Tooltip.Provider><div style={{height:'100vh',background:'var(--bg-primary)',color:'var(--text-primary)'}}>{composer?<><EnvironmentEditorPicker context={{effectiveCwd:"/tmp"}}/><PromptInput sessionId={qa.id}/></>:<div style={{display:"flex",height:"100%"}}><style>{"@media (max-width: 600px) { [data-harness-nav] { display: none !important } }"}</style><div data-harness-nav className="aegis-sidebar" style={{width:280,flexShrink:0,display:"flex",flexDirection:"column"}}><SettingsNavPanel/></div><Settings/></div>}<Toaster/></div></Tooltip.Provider></AppearancePreferences>;
 }
 createRoot(document.getElementById('root')).render(<Harness/>);
 `;
@@ -96,7 +96,9 @@ app.whenReady().then(async()=>{
  const choose=async(label,value)=>{await click('[aria-label="'+label+'"]');await click('[data-preference-option="'+value+'"]');};
  const text=async(selector,value)=>{await js('var el=document.querySelector('+JSON.stringify(selector)+');el.focus();Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set.call(el,'+JSON.stringify(value)+');el.dispatchEvent(new Event("input",{bubbles:true}))');await delay(150);};
  const key=async(modifiers=[])=>{win.webContents.sendInputEvent({type:'keyDown',keyCode:'Return',modifiers});win.webContents.sendInputEvent({type:'keyUp',keyCode:'Return',modifiers});await delay(200);};
- const shot=async name=>{await delay(200);fs.mkdirSync(process.env.QA_CAPTURE,{recursive:true});fs.writeFileSync(path.join(process.env.QA_CAPTURE,name+'.png'),(await win.webContents.capturePage()).toPNG());};
+ // capturePage now and then throws UnknownVizError while the compositor is busy; the screenshots are for review, so retry.
+ const capture=async(tries=5)=>{try{return await win.webContents.capturePage();}catch(error){if(tries<=1)throw error;await delay(300);return capture(tries-1);}};
+ const shot=async name=>{await delay(200);fs.mkdirSync(process.env.QA_CAPTURE,{recursive:true});fs.writeFileSync(path.join(process.env.QA_CAPTURE,name+'.png'),(await capture()).toPNG());};
  const search=async value=>{await text('[aria-label="Search settings"]',value);await click('[aria-label="Settings search results"] button');};
  try{
   await win.loadURL(process.env.QA_URL);await until('!!document.querySelector("[data-preference-value]")&&!document.querySelector("[data-preference-value]").disabled','preferences loaded');
@@ -178,7 +180,7 @@ app.whenReady().then(async()=>{
   await until('qa.prefs.getState().uiFontSize===16','font size saved');
   assert.equal(prefs.getAppPreferences().uiFontSize,16);
   assert.equal(await js('getComputedStyle(document.body).fontSize'),'16px');
-  assert(Math.abs(parseFloat(await js('getComputedStyle(document.querySelector("[data-settings-label=Mode] > div > div")).fontSize'))-14*16/13)<0.1,'pixel-based labels scale');
+  assert(Math.abs(parseFloat(await js('getComputedStyle(document.querySelector("[data-settings-label=Mode] > div > div")).fontSize'))-13*16/13)<0.1,'pixel-based labels scale');
   await text('[aria-label="Code font size"]','17');await js('document.querySelector("[aria-label=\\"Code font size\\"]").focus()');await key();await delay(150);
   await js('var code=document.createElement("pre");code.id="appearance-code-probe";code.className="highlighted-code-block";code.textContent="const value = 1;";document.body.append(code)');
   assert.equal(await js('getComputedStyle(document.getElementById("appearance-code-probe")).fontSize'),'17px','code size applies independently');
@@ -210,7 +212,8 @@ app.whenReady().then(async()=>{
   win.setContentSize(390,740);await delay(200);await shot('general-narrow');
   assert.equal(await js('document.documentElement.scrollWidth>innerWidth'),false);
   assert(await js('Array.from(document.querySelectorAll("main [data-preference-value],main [role=switch]")).every(el=>{const r=el.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth;})'));
-  await search('Appearance');await js('document.querySelector("main").scrollTop=0');await shot('appearance-narrow');
+  // A window this narrow collapses the sidebar, Settings nav included: the page alone must fit.
+  await js('qa.store.getState().setActiveSettingsTab("appearance")');await delay(200);await js('document.querySelector("main").scrollTop=0');await shot('appearance-narrow');
   assert.equal(await js('document.querySelector("main").scrollWidth>document.querySelector("main").clientWidth'),false,'appearance has no horizontal overflow');
   prefs.setAppPreferences({uiFontSize:24});await until('qa.prefs.getState().uiFontSize===24','maximum font size');
   await js('document.querySelector(".theme-pack-card").scrollIntoView({block:"start"})');await shot('appearance-narrow-large-type');

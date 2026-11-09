@@ -1,8 +1,11 @@
+/* The page title, Codex-style: large, above groups headed in the body colour. */
+.settings-page-title { font-size: calc(24px * var(--ui-font-scale, 1)); font-weight: 600; line-height: 1.25; letter-spacing: -0.01em; }
+
 /* Shared surfaces for integration, profile and usage settings. */
 .settings-standard { font-size: calc(13px * var(--ui-font-scale, 1)); }
 .settings-standard .settings-group-heading { margin-bottom: 10px; padding-inline: 0; }
 .settings-standard .settings-group-heading h2 { font-size: inherit; font-weight: 500; color: var(--text-primary); }
-.settings-standard .settings-group-card, .settings-surface { border: 1px solid color-mix(in srgb, var(--border) 65%, transparent); border-radius: 16px; background: var(--bg-primary); overflow: hidden; }
+.settings-standard .settings-group-card, .settings-surface { border: 1px solid color-mix(in srgb, var(--border) 65%, transparent); border-radius: 12px; background: var(--bg-primary); overflow: hidden; }
 .settings-standard .settings-group-rows { padding-inline: 16px; }
 .settings-standard .settings-group-rows > * { border-color: color-mix(in srgb, var(--border) 45%, transparent); }
 .settings-standard .settings-row { padding: 14px 0; min-height: 52px; }

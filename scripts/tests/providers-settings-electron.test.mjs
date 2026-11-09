@@ -8,7 +8,7 @@ const tmp=await mkdtemp(path.join(root,'.aegis-design-qa/providers-'));
 const harness=String.raw`
 import React from 'react';
 import {createRoot} from 'react-dom/client';
-import {Settings} from '/src/ui/components/settings/Settings';
+import {Settings,SettingsNavPanel} from '/src/ui/components/settings/Settings';
 import {useAppStore} from '/src/ui/store/useAppStore';
 import {Toaster} from 'sonner';
 import {Tooltip} from '@base-ui-components/react/tooltip';
@@ -41,7 +41,7 @@ window.electron={
 for(const name of ['Claude','Codex','Opencode','Kimi','Grok'])window.electron['get'+name+'RuntimeStatus']=async()=>({ready:true,kind:'ready',cliAvailable:true,summary:'Ready',detail:'',checkedAt:Date.now()});
 useAppStore.setState({showSettings:true,activeSettingsTab:'providers'});
 useAppStore.getState().setTheme('light');
-createRoot(document.getElementById('root')).render(<Tooltip.Provider><div style={{height:'100vh',color:'var(--text-primary)',background:'var(--bg-primary)'}}><Settings/><Toaster/></div></Tooltip.Provider>);
+createRoot(document.getElementById('root')).render(<Tooltip.Provider><div style={{height:'100vh',color:'var(--text-primary)',background:'var(--bg-primary)'}}><div style={{display:"flex",height:"100%"}}><style>{"@media (max-width: 600px) { [data-harness-nav] { display: none !important } }"}</style><div data-harness-nav className="aegis-sidebar" style={{width:280,flexShrink:0,display:"flex",flexDirection:"column"}}><SettingsNavPanel/></div><Settings/></div><Toaster/></div></Tooltip.Provider>);
 `;
 const main=String.raw`
 const {app,BrowserWindow}=require('electron');
@@ -93,6 +93,7 @@ app.whenReady().then(async()=>{
   assert(await js('qa.calls.some(c=>c.type==="bubble-key"&&c.id==="deepseek")'));
   await btn('Show 3 more');await menu('Bubble','DeepSeek','Remove provider');assert.equal(await js('qa.bubble.providers.find(p=>p.id==="deepseek").configured'),false);
   await js('qa.store.getState().setTheme("dark");document.querySelector("main").scrollTop=0');await shot('providers-dark');
+  // A window this narrow collapses the sidebar, Settings nav included: the page alone must fit.
   win.setContentSize(390,850);await js('document.querySelector("main").scrollTop=0');await shot('providers-narrow');
   assert.equal(await js('document.querySelector("main").scrollWidth>document.querySelector("main").clientWidth'),false);
   await click('[aria-label="Bubble: OpenAI"]');await shot('providers-narrow-editor');

@@ -42,7 +42,7 @@
   "verify:video-attachments": 9,
   "verify:project-switcher": 6,
   "verify:new-thread-landing": 26,
-  "verify:app-preferences": 41,
+  "verify:app-preferences": 55,
   "verify:jump-to-latest": 10,
   "verify:opencode-sdk-adapter": 5,
   "verify:pi-sdk-adapter": 0,

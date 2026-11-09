@@ -642,18 +642,12 @@ html[data-window-material='glass'] [data-right-utility-workspace] .aegis-md-edit
   --aegis-md-editor-chrome-surface: transparent;
 }
 
-/* Settings paints its own chrome and card instead of the app shell's. */
-html[data-window-material='glass'] .aegis-settings {
-  background-color: transparent;
-}
-
 html[data-window-material='glass'] .aegis-content-card {
   background-color: var(--app-glass-sheet);
 }
 
 html[data-window-material='glass'] .aegis-sidebar-panel,
-html[data-window-material='glass'] .aegis-window-left-surface,
-html[data-window-material='glass'] .aegis-settings-sidebar-surface {
+html[data-window-material='glass'] .aegis-window-left-surface {
   background-color: var(--app-glass-sidebar);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
@@ -4145,27 +4139,16 @@ button.aegis-mdx-metadata-key:hover {
 }
 
 /* Settings use compact groups and adapt without squeezing controls off-screen. */
-.aegis-settings-sidebar-surface {
-  width: var(--settings-sidebar-width, 280px);
-  background-color: var(--app-sidebar-surface);
-  backdrop-filter: var(--app-sidebar-backdrop-filter);
-  -webkit-backdrop-filter: var(--app-sidebar-backdrop-filter);
-}
 .aegis-settings [data-settings-label] { scroll-margin-block: 24px; }
 .aegis-settings [data-search-match="true"] { outline: 1px solid var(--text-muted); outline-offset: 3px; border-radius: 8px; }
 .aegis-settings .settings-row > :last-child { min-width: 0; max-width: 100%; }
 .aegis-settings .settings-row input { max-width: 100%; }
 @media (max-width: 800px) {
-  .aegis-settings-sidebar-surface { width: 180px; }
   .aegis-settings-content { padding-inline: 20px; }
   .aegis-settings .settings-row { grid-template-columns: minmax(0, 1fr); gap: 8px; }
   .aegis-settings .settings-row > :last-child { justify-content: flex-start; }
 }
 @media (max-width: 560px) {
-  .aegis-settings-titlebar .aegis-settings-sidebar-surface { width: 100%; }
-  .aegis-settings-layout { flex-direction: column; gap: 6px; }
-  .aegis-settings aside { width: 100%; max-height: 220px; overflow-y: auto; }
-  .aegis-settings aside > div { height: auto; padding-block: 8px; }
   .aegis-settings-content { padding: 20px 16px; }
 }
 

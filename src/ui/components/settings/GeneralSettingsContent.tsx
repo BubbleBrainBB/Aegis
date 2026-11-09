@@ -87,7 +87,7 @@ export function GeneralSettingsContent() {
   const disabled = !loaded || saving;
   const completion = notifications?.enabled ? notifications.onlyWhenUnfocused ? 'unfocused' : 'always' : 'off';
   const toggle = (key: 'preventSleep' | 'showContextUsage' | 'plainTextComposer', label: string) => <SettingsToggle ariaLabel={label} checked={preferences[key]} disabled={disabled} onChange={value => void save({ [key]: value })} />;
-  return <div className="space-y-8 pb-8">
+  return <div className="space-y-10 pb-8">
     {error && <div role="alert" className="text-[13px] text-[var(--error)]">Could not load preferences: {error} <button className="underline" onClick={() => setRetry(value => value + 1)}>Retry</button></div>}
     <SettingsGroup title="General">
       <SettingsRow variant="card" label="Default open destination" description="Where project folders open by default.">
