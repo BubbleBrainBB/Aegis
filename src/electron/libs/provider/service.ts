@@ -324,13 +324,15 @@ class ProviderServiceImpl implements ProviderService {
    * Useful for title generation and session bootstrapping.
    */
   async runOneShot(
-    input: ProviderSessionStartInput
+    input: ProviderSessionStartInput,
+    options: { signal?: AbortSignal } = {}
   ): Promise<{ text: string; sessionId?: string; model?: string }> {
     const provider = input.provider || this.directory.getProvider(input.threadId) || 'codex';
     const adapter = registry.getAdapter(provider);
     if (!adapter) {
       throw new Error(`No adapter registered for provider "${provider}"`);
     }
+    options.signal?.throwIfAborted();
 
     if (adapter.runOneShot) {
       return adapter.runOneShot(input);
@@ -411,6 +413,9 @@ class ProviderServiceImpl implements ProviderService {
     };
 
     this.events.on('event', listener);
+    // A caller that no longer wants the answer ends the session now, not at the timeout.
+    const onAbort = () => settleError(new Error('One-shot prompt cancelled.'));
+    options.signal?.addEventListener('abort', onAbort, { once: true });
 
     try {
       const session = await this.startSession(input);
@@ -425,7 +430,10 @@ class ProviderServiceImpl implements ProviderService {
       };
     } finally {
       clearTimeout(timeout);
+      options.signal?.removeEventListener('abort', onAbort);
       this.events.off('event', listener);
+      // A throwaway session leaves the agent's history before it is stopped.
+      if (input.ephemeral) await adapter.discardSession?.(input.threadId).catch(() => undefined);
       await this.stopSession(input.threadId);
     }
   }

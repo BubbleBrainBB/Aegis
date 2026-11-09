@@ -247,6 +247,8 @@ function readCachedCodexFastTier(slug: string): CodexModelServiceTier | null {
 interface CodexRunOptions {
   /** Workflow reviewer/advisor/planner: read-only sandbox, approvals routed to the app (which denies them). */
   workflowReadOnly?: boolean;
+  /** A throwaway thread (naming a task): read-only like a workflow reviewer, and never written to disk, so Codex's own thread list never shows it. */
+  ephemeral?: boolean;
   model?: string;
   codexExecutionMode?: CodexExecutionMode;
   codexPermissionMode?: CodexPermissionMode;
@@ -1166,10 +1168,10 @@ export class CodexAppServerManager extends EventEmitter {
           console.log('[Codex AppServer] thread/resume failed, starting fresh thread:', reason);
         }
         resumeFallback = { reason };
-        response = await this.createNewThread(cwd, { ...options, workflowReadOnly: isWorkflowReadOnly(threadId) });
+        response = await this.createNewThread(cwd, { ...options, workflowReadOnly: options.ephemeral || isWorkflowReadOnly(threadId) });
       }
     } else {
-      response = await this.createNewThread(cwd, { ...options, workflowReadOnly: isWorkflowReadOnly(threadId) });
+      response = await this.createNewThread(cwd, { ...options, workflowReadOnly: options.ephemeral || isWorkflowReadOnly(threadId) });
     }
 
     const providerThreadId = String(
@@ -1269,6 +1271,7 @@ export class CodexAppServerManager extends EventEmitter {
       'thread/start',
       {
         cwd,
+        ...(options.ephemeral ? { ephemeral: true } : {}),
         ...(options.model ? { model: options.model } : {}),
         ...(developerInstructions ? { developerInstructions } : {}),
         ...this.buildThreadPermissionOptions(

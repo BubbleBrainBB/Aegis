@@ -1544,6 +1544,8 @@ export type SessionTeamMode = 'channel_default' | 'solo' | 'team' | 'manual';
 export interface SessionInfo {
   id: string;
   title: string;
+  /** The task's agent is still naming it; title holds its first sentence meanwhile. */
+  titlePending?: boolean;
   status: SessionStatus;
   scope?: SessionScope;
   agentId?: string | null;
@@ -1627,6 +1629,8 @@ export type SessionStatus = 'idle' | 'running' | 'stopping' | 'completed' | 'err
 export interface SessionStatusPayload {
   sessionId: string;
   status: SessionStatus;
+  /** The task's agent is naming it (true) or has (false); absent leaves it as it was. */
+  titlePending?: boolean;
   /** Set when the session runs on another Mac. */
   device?: { id: string; name: string; online: boolean; reconnecting?: boolean };
   /** A new session started in the background: list it without focusing it. */

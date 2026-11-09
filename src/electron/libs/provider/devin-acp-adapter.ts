@@ -8,6 +8,7 @@ import { readFileSync } from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import { buildDevinEnv, getDevinModelConfig, listDevinSkills, resolveDevinBinary } from '../devin-cli';
 import { AcpJsonRpcClient, AcpJsonRpcError, type AcpJsonRpcIncomingRequest } from './acp-json-rpc-client';
+import { discardAcpSession } from './acp-session-discard';
 import type {
   ProviderAdapter,
   ProviderAdapterCapabilities,
@@ -983,6 +984,12 @@ export class DevinAcpAdapter implements ProviderAdapter {
     } else {
       this.emit({ type: 'status_change', threadId: session.threadId, status: 'completed' });
     }
+  }
+
+  async discardSession(threadId: string): Promise<void> {
+    const session = this.sessions.get(threadId);
+    if (!session) return;
+    await discardAcpSession(session.rpc, session.providerSessionId);
   }
 
   async stopSession(threadId: string): Promise<void> {

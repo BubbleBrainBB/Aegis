@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import {
   generateSessionTitleLocally,
   getSessionTitleDisplay,
+  parseGeneratedTitle,
+  sessionTitlePrompt,
   truncateSessionTitle,
 } from '../../src/shared/session-title';
 
@@ -20,4 +22,18 @@ assert.equal(truncateSessionTitle('中'.repeat(50)), '中'.repeat(50));
 assert.equal(truncateSessionTitle('🧠'.repeat(51)), '🧠'.repeat(49) + '…', 'do not split emoji surrogate pairs');
 const marked = truncateSessionTitle(prompt);
 assert.equal(getSessionTitleDisplay(marked, prompt), marked, 'do not append ellipsis twice');
+// What an agent replies when asked for a title.
+assert.equal(parseGeneratedTitle('<title>侧边栏改动卡片丢失</title>'), '侧边栏改动卡片丢失');
+assert.equal(parseGeneratedTitle('Sure!\n<title>Sidebar task order</title>\nAnything else?'), 'Sidebar task order', 'only the tag counts');
+assert.equal(parseGeneratedTitle('<reasoning_effort>15</reasoning_effort> Agent 改完代码后改动卡片消失'), 'Agent 改完代码后改动卡片消失',
+  'a context tag the model echoed is dropped');
+assert.equal(parseGeneratedTitle('<title><reasoning_effort>15</reasoning_effort>Change card missing</title>'), 'Change card missing');
+assert.equal(parseGeneratedTitle('"Fix login button."'), 'Fix login button', 'quotes and a closing period go');
+assert.equal(parseGeneratedTitle('Title: Release notes'), 'Release notes');
+assert.equal(parseGeneratedTitle('**Usage menu**'), 'Usage menu');
+assert.equal(parseGeneratedTitle('Use a <Button> here'), 'Use a here', 'stray tags are not a title');
+assert.equal(parseGeneratedTitle('<title></title>'), null);
+assert.equal(parseGeneratedTitle('  \n '), null);
+assert.equal(parseGeneratedTitle('标'.repeat(60)), '标'.repeat(49) + '…');
+assert.ok(sessionTitlePrompt('fix the sidebar').includes('<request>\nfix the sidebar\n</request>'));
 console.log('session-title tests passed');

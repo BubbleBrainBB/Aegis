@@ -583,6 +583,18 @@ export class OpenCodeSdkAdapter implements ProviderAdapter {
     }
   }
 
+  async discardSession(threadId: string): Promise<void> {
+    const session = this.sessions.get(threadId);
+    if (!session) return;
+    try {
+      const client = await this.manager.getClient();
+      await client.interrupt(session.providerSessionId).catch(() => undefined);
+      await client.deleteSession(session.providerSessionId);
+    } catch {
+      // The session stays in OpenCode's history.
+    }
+  }
+
   async stopSession(threadId: string): Promise<void> {
     const session = this.sessions.get(threadId);
     if (!session) {

@@ -4187,6 +4187,36 @@ button.aegis-mdx-metadata-key:hover {
   animation: workstream-shimmer 4s linear .6s infinite;
   opacity: 0;
 }
+/* A task's title while its agent names it: a quiet bar with a slow sweep; the title fades in after. */
+.task-title-loading {
+  display: inline-block;
+  flex: none;
+  width: 9rem;
+  max-width: 70%;
+  height: 0.62em;
+  border-radius: 999px;
+  vertical-align: middle;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--text-primary) 7%, transparent) 30%,
+    color-mix(in srgb, var(--text-primary) 15%, transparent) 50%,
+    color-mix(in srgb, var(--text-primary) 7%, transparent) 70%
+  );
+  background-size: 300% 100%;
+  animation: task-title-loading 1.6s ease-in-out infinite;
+}
+@keyframes task-title-loading {
+  0% { background-position: 100% 0; }
+  100% { background-position: 0 0; }
+}
+.task-title-reveal { animation: task-title-reveal 240ms ease-out; }
+@keyframes task-title-reveal {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .task-title-loading, .task-title-reveal { animation: none; }
+}
 @keyframes workstream-shimmer {
   0% { background-position: 180% 0; opacity: 0; }
   3% { opacity: .65; }

@@ -546,6 +546,7 @@ function freshSessionViewFromInfo(info: import('../../shared/types').SessionInfo
   return {
     id: info.id,
     title: info.title,
+    titlePending: info.titlePending === true,
     status: info.status,
     scope: info.scope,
     agentId: info.agentId || null,
@@ -3136,6 +3137,7 @@ function handleSessionList(
     sessionsMap[session.id] = {
       id: session.id,
       title: session.title,
+      titlePending: session.titlePending === true,
       status: session.status,
       scope: sessionScope,
       agentId: session.agentId || null,
@@ -3262,6 +3264,7 @@ function handleSessionStatus(
     sessionId: string;
     status: SessionInfo['status'];
     title?: string;
+    titlePending?: boolean;
     scope?: SessionInfo['scope'];
     agentId?: SessionInfo['agentId'];
     /** A new session started in the background: list it without focusing it. */
@@ -3388,6 +3391,7 @@ function handleSessionStatus(
           // stays in computerUseFrames / Environment after the turn settles.
           computerUseLive: shouldAcceptComputerUseLive(status) ? session.computerUseLive : null,
           title: title || session.title,
+          ...(payload.titlePending !== undefined ? { titlePending: payload.titlePending } : {}),
           scope: scope || session.scope || 'project',
           agentId:
             agentId !== undefined
@@ -3497,6 +3501,7 @@ function handleSessionStatus(
     const newSession: SessionView = {
       id: sessionId,
       title: title || 'New Session',
+      titlePending: payload.titlePending === true,
       status,
       device: payload.device,
       scope: scope || 'project',

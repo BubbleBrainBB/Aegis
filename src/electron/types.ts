@@ -241,6 +241,12 @@ export interface RunnerHandle {
    */
   interrupt?: () => Promise<void>;
   /**
+   * Name the task from this live session without a turn and without writing
+   * to its transcript (Claude Code's generate_session_title). Absent where the
+   * agent cannot; the caller then asks in a conversation of its own.
+   */
+  generateTitle?: (description: string) => Promise<string | undefined>;
+  /**
    * Claude: the Stop press. Cancels every queued host prompt by uuid, then
    * interrupts — written in one tick, ahead of anything sent later. The
    * withdrawals settle through onPromptsWithdrawn; stopped prompts the

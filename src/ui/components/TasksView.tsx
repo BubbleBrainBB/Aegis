@@ -55,6 +55,7 @@ import { TaskStateIcon, TaskStatusMenu } from './TaskStatusMenu';
 import { ProjectChip, TaskProjectFilter } from './TaskProjectFilter';
 import { naturalTaskStateOf, openTask, taskStateOf, type TaskStateSources } from '../utils/task-state';
 import { SessionHandoffProviderRoute } from './SessionHandoffIndicator';
+import { TaskTitleLoading, useTaskTitleReveal } from './TaskTitleLoading';
 
 const SESSION_BRANCH_CACHE_TTL_MS = 30_000;
 
@@ -879,6 +880,7 @@ const SessionItem = memo(function SessionItem({
     </span>
   );
   const date = properties.includes('date') ? formatTaskDate(sessionSortTime(session, sortBy)) : null;
+  const titleReveal = useTaskTitleReveal(session.titlePending);
 
   return (
     <TooltipPrimitive.Root
@@ -925,7 +927,11 @@ const SessionItem = memo(function SessionItem({
                   <span className="flex h-5 flex-shrink-0 items-center">
                     <TaskStatusMenu session={session} state={state} naturalState={naturalState} failed={attention?.tone === 'error'} rowRef={rowRef} />
                   </span>
-                  <span className="line-clamp-2 min-w-0 flex-1 text-[13px] leading-5">{session.title}</span>
+                  {session.titlePending ? (
+                    <span className="flex h-5 min-w-0 flex-1 items-center"><TaskTitleLoading /></span>
+                  ) : (
+                    <span className={`line-clamp-2 min-w-0 flex-1 text-[13px] leading-5 ${titleReveal}`}>{session.title}</span>
+                  )}
                   {deviceMark ? <span className="flex h-5 flex-shrink-0 items-center">{deviceMark}</span> : null}
                   {unreadDot ? <span className="flex h-5 flex-shrink-0 items-center">{unreadDot}</span> : null}
                   <span className="absolute right-1.5 top-1.5">{pin}</span>
@@ -944,7 +950,11 @@ const SessionItem = memo(function SessionItem({
               <>
                 <TaskStatusMenu session={session} state={state} naturalState={naturalState} failed={attention?.tone === 'error'} rowRef={rowRef} />
                 <span className={`flex min-w-0 items-center gap-2 ${summary ? 'max-w-[60%] flex-shrink-0' : 'flex-1'}`}>
-                  <ScrollingTitle title={session.title} className="min-w-0 text-[13px] font-normal leading-[1.3]" />
+                  {session.titlePending ? (
+                    <TaskTitleLoading />
+                  ) : (
+                    <ScrollingTitle title={session.title} className={`min-w-0 text-[13px] font-normal leading-[1.3] ${titleReveal}`} />
+                  )}
                   {nest ? (
                     <button
                       type="button"

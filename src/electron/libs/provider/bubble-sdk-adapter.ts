@@ -624,7 +624,7 @@ export class BubbleSdkAdapter implements ProviderAdapter {
     } finally {
       clearTimeout(timer);
       try {
-        sdk.deleteSession(id);
+        await sdk.deleteSession(id);
       } catch (error) {
         console.warn('[BubbleSdkAdapter] failed to delete one-shot session:', error);
       }

@@ -1594,6 +1594,7 @@ export class CodexAdapter implements ProviderAdapter {
           codexPermissionMode: input.codexPermissionMode,
           codexReasoningEffort: input.codexReasoningEffort,
           codexFastMode: input.codexFastMode,
+          ephemeral: input.ephemeral,
         }
       );
       this.assertLifecycleCurrent(input.threadId, threadEpoch, adapterEpoch, manager);

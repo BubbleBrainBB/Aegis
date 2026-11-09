@@ -87,6 +87,8 @@ export type PiSdkModule = {
   ModelRegistry: new (modelRuntime: PiModelRuntime) => PiModelRegistry;
   SessionManager: {
     create(cwd: string, sessionDir?: string, options?: { id?: string }): PiSessionManager;
+    /** No file persistence: nothing reaches ~/.pi/agent/sessions. */
+    inMemory?(cwd?: string): PiSessionManager;
     open(path: string, sessionDir?: string, cwdOverride?: string): PiSessionManager;
     list(cwd: string, sessionDir?: string): Promise<Array<{ id: string; path: string }>>;
   };

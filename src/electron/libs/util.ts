@@ -5,7 +5,6 @@ import {
   toClaudeCodeRuntimeModel,
 } from './claude-model-selection';
 import { getRequiredClaudeCodeRuntime } from './claude-runtime';
-import { generateSessionTitleLocally, truncateSessionTitle } from '../../shared/session-title';
 
 type ClaudeSettingSource = 'user' | 'project' | 'local';
 const OFFICIAL_CLAUDE_SETTING_SOURCES: ClaudeSettingSource[] = ['user', 'project', 'local'];
@@ -104,6 +103,8 @@ export async function runClaudeOneShot(params: {
   claudeReasoningEffort?: ClaudeReasoningEffort;
   /** Replaces Claude Code's own system prompt (short tasks that need no agent). */
   systemPrompt?: string;
+  /** Leaves nothing behind: no tools, and no transcript in ~/.claude/projects (so none in /resume). */
+  ephemeral?: boolean;
   /** Stops the call (the user cancelled). */
   signal?: AbortSignal;
   /** Images to look at, sent with the prompt in one user message (base64, no data: prefix). */
@@ -164,6 +165,7 @@ export async function runClaudeOneShot(params: {
       executableArgs,
       pathToClaudeCodeExecutable,
       settingSources: OFFICIAL_CLAUDE_SETTING_SOURCES,
+      ...(params.ephemeral ? { persistSession: false, tools: [] } : {}),
     },
   });
 
@@ -265,34 +267,22 @@ Output only the branch name.`;
   }
 }
 
-export async function generateSessionTitle(
-  prompt: string,
-  cwd?: string,
-  model?: string,
-  betas?: string[],
-  provider: AgentProvider = 'claude',
-  claudeReasoningEffort?: ClaudeReasoningEffort
-): Promise<string> {
-  if (provider !== 'claude') {
-    return generateSessionTitleLocally(prompt);
-  }
-
-  try {
-    const titlePrompt = `Based on this user request, generate a very short title (3-6 words, no quotes):
-"${prompt.slice(0, 500)}"
-
-Just output the title, nothing else.`;
-
-    const result = await runClaudeOneShot({
-      prompt: titlePrompt,
-      cwd,
-      model,
-      betas,
-      claudeReasoningEffort,
-    });
-    return truncateSessionTitle(result.text);
-  } catch (error) {
-    console.error('Failed to generate title:', error);
-    return generateSessionTitleLocally(prompt);
-  }
+/**
+ * Claude names a task in a conversation of its own that leaves no record: a
+ * short system prompt instead of Claude Code's, no tools, nothing written to
+ * disk. Used when the task's live session cannot title itself.
+ */
+export async function runClaudeTitleOneShot(params: {
+  prompt: string;
+  cwd?: string;
+  model?: string;
+  betas?: string[];
+  signal?: AbortSignal;
+}): Promise<string> {
+  const result = await runClaudeOneShot({
+    ...params,
+    systemPrompt: 'You write short task titles. Reply with only the title, wrapped in <title></title>.',
+    ephemeral: true,
+  });
+  return result.text;
 }
