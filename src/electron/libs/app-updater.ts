@@ -27,6 +27,7 @@ export interface AppUpdaterDeps {
   setQuitting: (quitting: boolean) => void;
   updateDetail: (info: { releaseNotes?: unknown }) => string;
   log?: (message: string, error?: unknown) => void;
+  now?: () => number;
 }
 
 /**
@@ -46,6 +47,8 @@ export function createAppUpdater(deps: AppUpdaterDeps) {
   let initialized = false;
   let pendingManualCheck = false;
   let installRequested = false;
+  const now = deps.now ?? Date.now;
+  let lastCheckAt = -Infinity;
 
   const setStatus = (patch: Partial<AppUpdateStatus>) => {
     status = { ...status, ...patch };
@@ -101,7 +104,12 @@ export function createAppUpdater(deps: AppUpdaterDeps) {
     });
   }
 
-  function check(options?: { manual?: boolean }): void {
+  /**
+   * `unlessCheckedWithinMs` is for background checks tied to something that
+   * happens often (the window coming to the front): it skips the check when
+   * one already ran that recently.
+   */
+  function check(options?: { manual?: boolean; unlessCheckedWithinMs?: number }): void {
     const manual = options?.manual === true;
     if (!deps.isPackaged) {
       if (manual) {
@@ -125,7 +133,11 @@ export function createAppUpdater(deps: AppUpdaterDeps) {
       }
       return;
     }
-    pendingManualCheck = manual;
+    if (!manual && options?.unlessCheckedWithinMs !== undefined && now() - lastCheckAt < options.unlessCheckedWithinMs) return;
+    lastCheckAt = now();
+    // electron-updater answers overlapping checks once: a background check
+    // that starts while a manual one is out must not take its dialog away.
+    pendingManualCheck = pendingManualCheck || manual;
     // Failures are reported through the 'error' listener.
     deps.updater().checkForUpdates().catch(() => undefined);
   }
@@ -150,6 +162,8 @@ export function createAppUpdater(deps: AppUpdaterDeps) {
         log('[Updater] Updater error during download:', error);
         return;
       }
+      // A failed check is no answer: the next occasion to check takes it.
+      lastCheckAt = -Infinity;
       if (!notify) {
         log('[Updater] Background update check failed:', error);
         return;
