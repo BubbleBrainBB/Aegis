@@ -56,6 +56,7 @@ export type {
   AvailableCommand,
   ClaudeSkillSummary,
   ClaudeModelConfig,
+  ClaudeModelInfo,
   ClaudePermissionMode,
   ClaudeAccessMode,
   ClaudeExecutionMode,

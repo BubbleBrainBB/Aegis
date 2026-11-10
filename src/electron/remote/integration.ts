@@ -88,7 +88,7 @@ async function agentOptions(): Promise<RemoteAgentOptions> {
     codex = null;
   }
   return {
-    ...(claude ? { claude: { defaultModel: claude.defaultModel, options: claude.options } } : {}),
+    ...(claude ? { claude: { defaultModel: claude.defaultModel, options: claude.options, listed: claude.listed } } : {}),
     ...(codex
       ? {
           codex: {

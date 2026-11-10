@@ -1,6 +1,6 @@
 import { rendererStateStorage } from '../utils/renderer-state-storage';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { AgentProvider, SettingsTab } from '../types';
+import type { AgentProvider, ClaudeModelConfig, SettingsTab } from '../types';
 import {
   resolveConfirmedListedPreference,
   resolveListedOrPendingModel,
@@ -313,7 +313,7 @@ function savePreferredQoderModel(model: string | null): void {
   rendererStateStorage.setItem(QODER_MODEL_STORAGE_KEY, model);
 }
 
-function buildConfiguredClaudeModelValues(config: { defaultModel: string | null; options: string[] }): string[] {
+function buildConfiguredClaudeModelValues(config: ClaudeModelConfig): string[] {
   return Array.from(
     new Set(
       buildClaudeModelOptions(config)
@@ -326,7 +326,7 @@ function buildConfiguredClaudeModelValues(config: { defaultModel: string | null;
 
 function resolveConfiguredClaudeModel(
   requestedModel: string | null,
-  config: { defaultModel: string | null; options: string[] }
+  config: ClaudeModelConfig
 ): string | null {
   const officialOptions = buildConfiguredClaudeModelValues(config);
   const selectCandidate = (candidateModel: string | null | undefined): string | null => {
@@ -801,7 +801,7 @@ export function useComposerAgentSelection(input?: {
         const officialOptions = buildConfiguredClaudeModelValues(claudeModelConfig).map((option) => ({
           key: `claude:official:${option}`,
           value: option,
-          label: formatClaudeModelLabel(option),
+          label: formatClaudeModelLabel(option, claudeModelConfig.listed),
         }));
         return [defaultOption, ...officialOptions];
       })(),
@@ -837,7 +837,7 @@ export function useComposerAgentSelection(input?: {
       const officialOptions = buildConfiguredClaudeModelValues(claudeModelConfig).map((option) => ({
         key: `claude:official:${option}`,
         value: option,
-        label: formatClaudeModelLabel(option),
+        label: formatClaudeModelLabel(option, claudeModelConfig.listed),
       }));
       return [defaultOption, ...officialOptions];
     }

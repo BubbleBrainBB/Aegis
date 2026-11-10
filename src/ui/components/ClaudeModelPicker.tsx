@@ -27,7 +27,7 @@ export function ClaudeModelPicker({
   );
 
   const resolvedValue = value || config.defaultModel || options[0] || '';
-  const currentLabel = resolvedValue ? formatClaudeModelLabel(resolvedValue) : 'Claude model';
+  const currentLabel = resolvedValue ? formatClaudeModelLabel(resolvedValue, config.listed) : 'Claude model';
 
   return (
     <div className="relative no-drag">
@@ -66,7 +66,7 @@ export function ClaudeModelPicker({
                 className="flex w-full items-center justify-between gap-3 rounded-lg px-2 py-2 text-left text-sm text-[var(--text-primary)] transition-colors hover:bg-[var(--bg-tertiary)]"
                 title={model}
               >
-                <div className="min-w-0 truncate">{formatClaudeModelLabel(model)}</div>
+                <div className="min-w-0 truncate">{formatClaudeModelLabel(model, config.listed)}</div>
                 {resolvedValue === model && (
                   <Check className="h-4 w-4 flex-shrink-0 text-[var(--text-secondary)]" />
                 )}

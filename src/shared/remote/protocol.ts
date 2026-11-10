@@ -214,6 +214,8 @@ export interface RemoteAgentOptions {
   claude?: {
     defaultModel: string | null;
     options: string[];
+    /** The rows of Claude Code's own model list (names, what aliases resolve to), when it answered. */
+    listed?: Array<{ id: string; label?: string; resolvedModel?: string }>;
   };
   codex?: {
     defaultModel: string | null;

@@ -180,7 +180,7 @@ export function catalogFor(provider: string, options?: RemoteAgentOptions): Agen
   const official = config
     ? Array.from(
         new Set(
-          buildClaudeModelOptions({ defaultModel: config.defaultModel, options: config.options })
+          buildClaudeModelOptions(config)
             .map((v) => canonicalizeClaudeModel(v))
             .filter((v): v is string => Boolean(v))
             .filter((v) => isOfficialClaudeModel(v)),
@@ -191,12 +191,12 @@ export function catalogFor(provider: string, options?: RemoteAgentOptions): Agen
     provider: "claude",
     models: [
       { value: "", label: "Default", description: "Do not override the default model" },
-      ...official.map((v) => ({ value: v, label: formatClaudeModelLabel(v) })),
+      ...official.map((v) => ({ value: v, label: formatClaudeModelLabel(v, config?.listed) })),
     ],
     defaultModel: "",
     effortsFor: () => [...CLAUDE_REASONING_EFFORT_OPTIONS],
     defaultEffortFor: () => null,
-    labelFor: (model) => formatClaudeModelLabel(model),
+    labelFor: (model) => formatClaudeModelLabel(model, config?.listed),
     effortLabel: (e) => CLAUDE_REASONING_EFFORT_LABELS[e as keyof typeof CLAUDE_REASONING_EFFORT_LABELS] ?? e,
     fastFor: () => false,
     permissionModes: visible(CLAUDE_PERMISSION_MODE_OPTIONS),
