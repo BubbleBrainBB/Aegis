@@ -18,6 +18,8 @@
   "verify:claude-task-tools": 2,
   "verify:claude-sdk-signals": 2,
   "verify:picker-menu-side": 0,
+  "verify:composer-permission-running": 0,
+  "verify:claude-permission-switch": 1,
   "verify:environment-hub-anchor": 0,
   "verify:environment-summary": 32,
   "verify:session-pull-requests": 8,

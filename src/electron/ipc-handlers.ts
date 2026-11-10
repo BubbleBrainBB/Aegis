@@ -9758,6 +9758,10 @@ async function handleClientEvent(
     case 'session.setTeam':
       handleSessionSetTeam(mainWindow, event.payload);
       break;
+
+    case 'session.setClaudeMode':
+      await handleSessionSetClaudeMode(mainWindow, event.payload);
+      break;
   }
 }
 
@@ -10815,6 +10819,13 @@ async function handleSessionContinueImpl(
     normalizeOpenCodePermissionMode(
       runnerHandles.get(sessionId)?.opencodePermissionMode || previousOpenCodePermissionMode
     ) !== nextOpenCodePermissionMode;
+  // Qoder takes its permission mode at spawn only (sendTurn ignores it), so
+  // a changed pick needs a fresh runner, resumed on the same Qoder session.
+  // Qoder cannot be steered mid-turn, so a send never meets a running one.
+  const qoderPermissionModeChanged =
+    nextProvider === 'qoder' &&
+    nextQoderPermissionMode !== undefined &&
+    normalizeQoderPermissionMode(runnerHandles.get(sessionId)?.qoderPermissionMode) !== nextQoderPermissionMode;
   // Every live runner is bound to the cwd it spawned with. If the session's
   // workspace moved since (handoff, worktree move, external mutation), the
   // handle must never be reused — for any provider — or the next turn would
@@ -11168,6 +11179,7 @@ async function handleSessionContinueImpl(
       (!deepseekMidTurn && deepseekPermissionModeChanged) ||
       (!deepseekMidTurn && deepseekReasoningEffortChanged) ||
       (nextProvider === 'opencode' && opencodePermissionModeChanged) ||
+      qoderPermissionModeChanged ||
       // Never reuse a doomed runner, an auto-approving automation runner for
       // a human turn, or one whose config drifted — except that a steer
       // defers drift to the drain instead of killing the live turn.
@@ -13598,6 +13610,42 @@ function handleSessionSetChannel(
     broadcast(mainWindow, {
       type: 'runner.error',
       payload: { message: `Failed to set session channel: ${String(error)}` },
+    });
+  }
+}
+
+// The composer's Claude permission picker, changed without a send. A live
+// runner switches its SDK query now (mid-turn included) and reports back
+// through onClaudeExecutionModeChange, which persists and broadcasts the
+// mode; its handle entry is updated so the next send reuses it instead of
+// respawning for config drift. Without a live runner the row alone changes:
+// the next turn spawns with it. Nothing is broadcast here — the renderer
+// already shows the pick — so a turn-end status (which carries the stored
+// mode) no longer reverts it.
+async function handleSessionSetClaudeMode(
+  mainWindow: BrowserWindow,
+  payload: Extract<ClientEvent, { type: 'session.setClaudeMode' }>['payload']
+): Promise<void> {
+  const session = sessions.getSession(payload.sessionId);
+  if (!session || session.provider !== 'claude') return;
+  const accessMode = normalizeClaudeAccessMode(payload.claudeAccessMode);
+  const executionMode = normalizeClaudeExecutionMode(payload.claudeExecutionMode, accessMode);
+  sessions.updateSessionClaudeAccessMode(payload.sessionId, accessMode);
+  sessions.updateSessionClaudeExecutionMode(payload.sessionId, executionMode);
+  const entry = runnerHandles.get(payload.sessionId);
+  if (!entry || entry.provider !== 'claude' || !entry.handle.setClaudePermissionMode) return;
+  try {
+    await entry.handle.setClaudePermissionMode(accessMode, executionMode);
+    if (runnerHandles.get(payload.sessionId) === entry) {
+      entry.claudeAccessMode = accessMode;
+      entry.claudeExecutionMode = executionMode;
+    }
+  } catch (error) {
+    // The row holds the mode; the next send sees the drift and respawns.
+    console.warn('[Session] live Claude permission switch failed:', error);
+    broadcast(mainWindow, {
+      type: 'runner.error',
+      payload: { sessionId: payload.sessionId, message: `Permission mode applies to the next turn: ${String(error)}` },
     });
   }
 }
