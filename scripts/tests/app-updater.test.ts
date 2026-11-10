@@ -11,6 +11,7 @@ import type { AppUpdateStatus } from '../../src/shared/types';
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 function harness(options: { platform?: NodeJS.Platform; portable?: boolean; dialogResponse?: number } = {}) {
+  const clock = { now: 1_000_000 };
   const updater = Object.assign(new EventEmitter(), {
     autoDownload: true,
     autoInstallOnAppQuit: false,
@@ -58,9 +59,10 @@ function harness(options: { platform?: NodeJS.Platform; portable?: boolean; dial
     setQuitting: (value) => quitting.push(value),
     updateDetail: () => '',
     log: () => {},
+    now: () => clock.now,
   });
   app.setup();
-  return { app, updater, native, broadcasts, dialogs, quitting, releasesOpened: () => releasesOpened };
+  return { app, updater, native, broadcasts, dialogs, quitting, clock, releasesOpened: () => releasesOpened };
 }
 
 async function available(h: ReturnType<typeof harness>, version = '0.0.84') {
@@ -234,6 +236,51 @@ async function main() {
     quiet.updater.emit('error', new Error('offline'));
     await tick();
     assert.deepEqual(quiet.dialogs, ['Failed to check for updates.']);
+  }
+
+  // Background checks tied to the window coming to the front or the Mac
+  // waking: at most one per interval, and a release found that way reaches
+  // the rail with no dialog and nobody asking.
+  {
+    const h = harness();
+    const gap = 10 * 60 * 1000;
+    const recheck = () => h.app.check({ unlessCheckedWithinMs: gap });
+    recheck();
+    h.updater.emit('update-not-available');
+    assert.equal(h.updater.checks, 1, 'the first one runs');
+    h.clock.now += gap - 1;
+    recheck();
+    assert.equal(h.updater.checks, 1, 'not again within the interval');
+    h.app.check();
+    assert.equal(h.updater.checks, 2, 'the timer check itself always runs');
+    h.clock.now += gap;
+    recheck();
+    assert.equal(h.updater.checks, 3, 'again once the interval has passed');
+    h.updater.emit('update-available', { version: '0.0.86' });
+    await tick();
+    assert.deepEqual([h.app.status().phase, h.app.status().version, h.app.status().autoDetected], ['available', '0.0.86', true]);
+    assert.deepEqual(h.dialogs, [], 'found in the background: the rail button, no dialog');
+
+    // A failed check is no answer: the next occasion checks again.
+    const offline = harness();
+    offline.app.check({ unlessCheckedWithinMs: gap });
+    offline.updater.emit('error', new Error('offline'));
+    offline.app.check({ unlessCheckedWithinMs: gap });
+    assert.equal(offline.updater.checks, 2);
+
+    // A manual check always runs, and keeps its dialog when a background
+    // check starts before the answer is in.
+    const manual = harness();
+    manual.app.check({ unlessCheckedWithinMs: gap });
+    manual.app.check({ manual: true });
+    manual.app.check();
+    assert.equal(manual.updater.checks, 3);
+    manual.updater.emit('update-not-available');
+    await tick();
+    assert.deepEqual(manual.dialogs, ['You are already using the latest version.']);
+    manual.updater.emit('update-not-available');
+    await tick();
+    assert.equal(manual.dialogs.length, 1, 'one answer, one dialog');
   }
 
   // Stray events outside a download change nothing.

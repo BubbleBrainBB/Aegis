@@ -1,5 +1,5 @@
 import { setupSessionWindowsIPC, sessionWindows } from './ipc/session-windows';
-import { app, autoUpdater as nativeUpdater, BrowserWindow, Menu, dialog, shell, ipcMain, nativeTheme, session } from 'electron';
+import { app, autoUpdater as nativeUpdater, BrowserWindow, Menu, dialog, shell, ipcMain, nativeTheme, powerMonitor, session } from 'electron';
 import { queueSessionLink } from './ipc/session-links';
 import {
   applyWindowMaterial,
@@ -218,7 +218,9 @@ function flushPendingProjectEditorDraftForTermination(signal: NodeJS.Signals): v
 process.once('SIGINT', flushPendingProjectEditorDraftForTermination);
 process.once('SIGTERM', flushPendingProjectEditorDraftForTermination);
 
-const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
+// A check is one small request to GitHub: often enough that a release shows
+// up in the rail soon after it is out, without anyone asking for a check.
+const UPDATE_CHECK_INTERVAL_MS = 10 * 60 * 1000;
 const RELEASES_URL = 'https://github.com/BubbleBrainBB/Aegis/releases';
 const PROJECT_EDITOR_FLUSH_REQUEST_CHANNEL = 'project-editor-flush-request';
 const PROJECT_EDITOR_FLUSH_RESPONSE_CHANNEL = 'project-editor-flush-response';
@@ -858,6 +860,12 @@ function scheduleAutomaticUpdateCheck(): void {
   const check = () => appUpdater.check({ manual: false });
   setTimeout(check, 8000);
   setInterval(check, UPDATE_CHECK_INTERVAL_MS);
+  // The interval does not count time asleep, so a Mac that slept through a
+  // release would still wait out the rest of it. Check on wake and when the
+  // app comes back to the front, unless a check just ran.
+  const recheck = () => appUpdater.check({ manual: false, unlessCheckedWithinMs: UPDATE_CHECK_INTERVAL_MS });
+  powerMonitor.on('resume', recheck);
+  app.on('browser-window-focus', recheck);
 }
 
 function setupMenu(): void {
