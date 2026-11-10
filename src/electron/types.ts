@@ -295,6 +295,16 @@ export interface RunnerHandle {
     userMessageId: string,
     options?: { dryRun?: boolean }
   ) => Promise<RewindFilesResult>;
+  /**
+   * Claude: switch the permission mode of the live SDK query (mid-turn too),
+   * the way the composer's picker asks for it. The runner reports the result
+   * through onClaudeExecutionModeChange, which persists and broadcasts it.
+   * Absent on other providers: they take their mode with the next send.
+   */
+  setClaudePermissionMode?: (
+    accessMode: import('../shared/types').ClaudeAccessMode,
+    executionMode: import('../shared/types').ClaudeExecutionMode
+  ) => Promise<void>;
   send: (
     prompt: string,
     attachments?: import('../shared/types').Attachment[],

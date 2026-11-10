@@ -15,6 +15,7 @@ import type {
   Query as ClaudeQuery,
   SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
+import { createClaudePermissionSwitcher } from './claude-permission-switch';
 import { readFile } from 'fs/promises';
 import * as path from 'path';
 import { v4 as uuidv4 } from 'uuid';
@@ -164,33 +165,6 @@ const CLAUDE_FILE_TOOLS = new Set([
   'NotebookEdit',
   'Read',
 ]);
-
-function normalizeClaudeSdkPermissionMode(
-  accessMode?: ClaudeAccessMode,
-  executionMode?: ClaudeExecutionMode
-): ClaudeSdkPermissionMode {
-  if (executionMode === 'plan') {
-    return 'plan';
-  }
-  switch (accessMode) {
-    case 'fullAccess':
-    case 'bypassPermissions':
-      return 'bypassPermissions';
-    case 'acceptEdits':
-    case 'plan':
-    case 'dontAsk':
-    case 'auto':
-      return accessMode;
-    default:
-      return 'default';
-  }
-}
-
-function executionModeForClaudePermissionMode(
-  permissionMode: ClaudeSdkPermissionMode
-): ClaudeExecutionMode {
-  return permissionMode === 'plan' ? 'plan' : 'execute';
-}
 
 function shouldPromptForClaudeTool(
   toolName: string,
@@ -604,32 +578,24 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
   };
   const sessionApprovedExternalAccess = new Set<string>();
   const sessionApprovedToolAccess = new Set<string>();
-  let currentPermissionMode: ClaudeSdkPermissionMode = workflowPolicy?.readOnly
-    ? 'default'
-    : normalizeClaudeSdkPermissionMode(claudeAccessMode, claudeExecutionMode);
-  let currentAccessMode: ClaudeAccessMode = 'default';
-  if (claudeAccessMode && claudeAccessMode !== 'plan') {
-    currentAccessMode = claudeAccessMode;
-  }
-
-  const updatePermissionMode = async (
-    nextMode: ClaudeSdkPermissionMode
-  ): Promise<void> => {
-    if (currentPermissionMode === nextMode) {
-      return;
-    }
-    if (activeQuery) {
-      await activeQuery.setPermissionMode(nextMode);
-    }
-    currentPermissionMode = nextMode;
-    // Full Access toggles silent browser-use navigation too.
-    setBrowserUseSessionFullAccess(session.id, nextMode === 'bypassPermissions');
-    const nextExecutionMode = executionModeForClaudePermissionMode(nextMode);
-    if (nextExecutionMode === 'execute') {
-      currentAccessMode = nextMode;
-    }
-    onClaudeExecutionModeChange?.(nextExecutionMode, currentAccessMode);
-  };
+  // Permission mode: switches are serialized (the composer's picker and
+  // ExitPlanMode share the queue), the newest request wins, and the host
+  // hears only the mode that finally landed (claude-permission-switch).
+  const permission = createClaudePermissionSwitcher({
+    accessMode: claudeAccessMode,
+    executionMode: claudeExecutionMode,
+    readOnly: workflowPolicy?.readOnly,
+    apply: async (nextMode) => {
+      if (activeQuery) {
+        await activeQuery.setPermissionMode(nextMode);
+      }
+    },
+    onChanged: (nextExecutionMode, nextAccessMode) => {
+      // Full Access toggles silent browser-use navigation too.
+      setBrowserUseSessionFullAccess(session.id, permission.mode === 'bypassPermissions');
+      onClaudeExecutionModeChange?.(nextExecutionMode, nextAccessMode);
+    },
+  });
 
   // Prompt sequencing for stop cancellation: preparing a prompt is async
   // (image attachments are read from disk), so the user can press stop while
@@ -942,7 +908,7 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
               return { behavior: result.behavior, message: result.message };
             });
           // Seed the navigation-consent shortcut from the session's starting mode.
-          setBrowserUseSessionFullAccess(session.id, currentPermissionMode === 'bypassPermissions');
+          setBrowserUseSessionFullAccess(session.id, permission.mode === 'bypassPermissions');
         }
       }
 
@@ -973,8 +939,13 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
           enableFileCheckpointing: true,
           ...thinkingOptions.queryOptions,
           betas: betas as Array<'context-1m-2025-08-07'> | undefined,
-          permissionMode: currentPermissionMode,
-          allowDangerouslySkipPermissions: currentPermissionMode === 'bypassPermissions',
+          permissionMode: permission.mode,
+          // Unlocks bypassPermissions as a mode this query may take later
+          // (the composer's picker mid-turn, setClaudePermissionMode); the
+          // query still starts in permissionMode. Without it the CLI refuses
+          // a live switch to Full Access (bypass_not_launched). Read-only
+          // workflow members never leave 'default'.
+          allowDangerouslySkipPermissions: !workflowPolicy?.readOnly,
           env,
           model: currentRuntimeModel,
           settings: currentRuntimeModel ? { model: currentRuntimeModel } : undefined,
@@ -1095,8 +1066,7 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
                 };
               }
 
-              const nextMode = normalizeClaudeSdkPermissionMode(currentAccessMode, 'execute');
-              await updatePermissionMode(nextMode);
+              await permission.exitPlan();
               return {
                 behavior: 'allow' as const,
                 updatedInput: input,
@@ -1104,7 +1074,7 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
             }
 
             if (
-              currentPermissionMode === 'plan' &&
+              permission.mode === 'plan' &&
               (
                 CLAUDE_PERMISSIONED_TOOLS.has(toolName) ||
                 (
@@ -1132,7 +1102,7 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
             // The user asked for the session in words; the service refuses a
             // request that did not come from them. Not while planning.
             if (isStartSessionToolName(toolName)) {
-              return currentPermissionMode === 'plan'
+              return permission.mode === 'plan'
                 ? { behavior: 'deny' as const, message: 'This session is in plan mode. Start the session once the plan is approved.' }
                 : { behavior: 'allow' as const, updatedInput: input };
             }
@@ -1161,7 +1131,7 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
               }
             }
 
-            const isFullAccess = currentPermissionMode === 'bypassPermissions';
+            const isFullAccess = permission.mode === 'bypassPermissions';
             let updatedInput = input;
             if (session.cwd) {
               // 文件操作工具的路径修正
@@ -1188,7 +1158,7 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
                       };
                     }
 
-                    if (currentPermissionMode === 'dontAsk') {
+                    if (permission.mode === 'dontAsk') {
                       return {
                         behavior: 'deny' as const,
                         message: `${toolName} requested an external file, and this session is in Don't Ask mode.`,
@@ -1257,7 +1227,7 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
               }
             }
 
-            if (shouldDenyClaudeToolWithoutPrompt(toolName, currentPermissionMode)) {
+            if (shouldDenyClaudeToolWithoutPrompt(toolName, permission.mode)) {
               return {
                 behavior: 'deny' as const,
                 message: `${toolName} requires permission, and this session is in Don't Ask mode.`,
@@ -1274,7 +1244,7 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
               };
             }
 
-            if (shouldPromptForClaudeTool(toolName, currentPermissionMode)) {
+            if (shouldPromptForClaudeTool(toolName, permission.mode)) {
               const toolUseId = uuidv4();
               const permResult = await onPermissionRequest(
                 toolUseId,
@@ -1679,6 +1649,10 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
         return { canRewind: false, error: 'Session is not active.' };
       }
       return activeQuery.rewindFiles(userMessageId, { dryRun: options?.dryRun });
+    },
+    setClaudePermissionMode: async (accessMode, executionMode) => {
+      // Workflow members keep their policy whatever the composer shows.
+      await permission.set(accessMode, executionMode);
     },
   };
 }

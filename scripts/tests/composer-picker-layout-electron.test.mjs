@@ -73,7 +73,48 @@ app.whenReady().then(async()=>{
   win.webContents.sendInputEvent({type:'keyDown',keyCode:'Escape'});win.webContents.sendInputEvent({type:'keyUp',keyCode:'Escape'});await delay(150);
   await js('qa.width(760)');await delay(150);await check(mode+' restored');await shot(mode+'-wide');
  }
- assert.deepEqual(errors,[]);console.log('PASS: new/chat composer controls at 180–760px with a wide window and Browser pane; no overlap, text wrapping, or clipping; compact menus and restored labels');app.exit(0);
+ // Permission mode stays changeable while the agent runs, for every provider
+ // (Codex/Kimi always did; Claude, OpenCode, Qoder, DeepSeek and Bubble were
+ // disabled by isBusy). Claude also tells the main process without a send.
+ await js('qa.mode("chat")');await delay(200);await js('qa.width(760)');await delay(150);
+ // The layout pass above already picked Full Access once (a legal event for a
+ // Claude session): only events from here on belong to the running checks.
+ const eventCursor=await js('qa.events.length');
+ const running=async(provider,patch)=>{await js('qa.store.setState(s=>({sessions:{...s.sessions,[qa.id]:{...s.sessions[qa.id],provider:'+JSON.stringify(provider)+',status:"running",...'+JSON.stringify(patch||{})+'}}}))');await delay(250)};
+ for(const [provider,patch,label] of [['codex',{codexPermissionMode:'defaultPermissions'},'Full Access'],['claude',{claudeAccessMode:'default',claudeExecutionMode:'execute'},'Full Access'],['opencode',{opencodePermissionMode:'defaultPermissions'},'Full Access'],['qoder',{},'Full Access'],['deepseek',{},'Full Access'],['bubble',{bubblePermissionMode:'default'},'Full Access']]){
+  await running(provider,patch);
+  assert.equal(await js('document.querySelector("[data-composer-control=permission]").disabled'),false,provider+' permission picker enabled while running');
+  await js('document.querySelector("[data-composer-control=permission]").click()');await delay(200);
+  assert(await js('[...document.querySelectorAll("[role=menuitem]")].some(e=>e.textContent.includes('+JSON.stringify(label)+'))'),provider+' permission menu opens while running');
+  await js('[...document.querySelectorAll("[role=menuitem]")].find(e=>e.textContent.includes('+JSON.stringify(label)+')).click()');await delay(150);
+  assert.match(await js('document.querySelector("[data-composer-control=permission]").getAttribute("aria-label")'),new RegExp(label),provider+' permission switched while running');
+ }
+ // Claude: the pick reached the session row and went to the main process.
+ assert.equal(await js('qa.store.getState().sessions[qa.id].claudeAccessMode'),'bypassPermissions','Claude pick updates the session');
+ const claudeModeEvents=await js('qa.events.slice('+eventCursor+').filter(e=>e.type==="session.setClaudeMode").map(e=>e.payload)');
+ assert.deepEqual(claudeModeEvents,[{sessionId:await js('qa.id'),claudeAccessMode:'bypassPermissions',claudeExecutionMode:'execute'}],'Claude pick is sent without a message');
+ // A turn-end status carrying the stored mode must not revert it: the main
+ // process stored the pick, so the status echoes it.
+ await js('qa.store.getState().handleServerEvent({type:"session.status",payload:{sessionId:qa.id,status:"completed",provider:"claude",claudeAccessMode:"bypassPermissions",claudeExecutionMode:"execute"}})');await delay(150);
+ assert.match(await js('document.querySelector("[data-composer-control=permission]").getAttribute("aria-label")'),/Full Access/,'Claude picker keeps the pick after the turn ends');
+ // Start lock: while a draft's first message is starting, a pick would land
+ // on the draft row only (the new session replaces it with the mode it was
+ // sent with), so every provider's picker is disabled then, running or not.
+ for(const provider of ['claude','codex','qoder']){
+  await running(provider,{isDraft:true,status:'completed'});
+  await js('qa.store.setState({pendingStart:true})');await delay(150);
+  assert.equal(await js('document.querySelector("[data-composer-control=permission]").disabled'),true,provider+' permission picker locked while the session starts');
+  await js('qa.store.setState({pendingStart:false})');await delay(150);
+  assert.equal(await js('document.querySelector("[data-composer-control=permission]").disabled'),false,provider+' permission picker free once the start settled');
+ }
+ // A draft's pick never goes to the main process: there is no session yet.
+ const draftCursor=await js('qa.events.length');
+ await running('claude',{isDraft:true,status:'completed',claudeAccessMode:'default',claudeExecutionMode:'execute'});
+ await js('document.querySelector("[data-composer-control=permission]").click()');await delay(200);
+ await js('[...document.querySelectorAll("[role=menuitem]")].find(e=>e.textContent.includes("Full Access")).click()');await delay(150);
+ assert.equal(await js('qa.events.slice('+draftCursor+').filter(e=>e.type==="session.setClaudeMode").length'),0,'a draft pick stays in the renderer');
+ await running('claude',{isDraft:false});
+ assert.deepEqual(errors,[]);console.log('PASS: new/chat composer controls at 180–760px with a wide window and Browser pane; no overlap, text wrapping, or clipping; compact menus and restored labels; permission pickers usable while running, locked while a start is pending');app.exit(0);
  }catch(e){console.error(e,errors,await geometry());await shot('failure');app.exit(1)}
 });
 `;

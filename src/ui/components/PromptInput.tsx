@@ -615,6 +615,12 @@ export function PromptInput({
     },
   });
   const isBusy = isEffectivelyRunning || isStopping || pendingStart || draftStartLocked || approvalPending;
+  // A permission picker stays usable while the agent runs (a live Claude
+  // turn switches at once; the others take the mode with the next send), but
+  // not while a draft's first message is starting: that start carries the
+  // mode it was sent with, and the row it changes is the draft, which the new
+  // session replaces, so a pick then would show a mode the session never got.
+  const startLocked = pendingStart || draftStartLocked;
   const attachmentImport = useAttachmentImport(targetSessionId, isBusy, (created) => {
     setAttachments((previous) => {
       const paths = new Set(previous.map(attachment => attachment.path));
@@ -1781,13 +1787,14 @@ export function PromptInput({
                 if (sessionGoal.snapshot?.goal) void sessionGoal.change({ type: 'clear' }).then(() => sessionGoal.setDraft(false)).catch(error => toast.error(String(error)));
                 else sessionGoal.setDraft(false);
               }} disabled={goalSubmitting} />}
-              {remoteTarget ? <RemotePermissionControl selection={remoteSelection} disabled={isBusy || remoteOffline} /> : null}
+              {remoteTarget ? <RemotePermissionControl selection={remoteSelection} disabled={startLocked || remoteOffline} /> : null}
               {!hideLocalControls && (<>
               {agentSelection.provider === 'codex' && (
                 <PermissionModePicker
                   value={agentSelection.codexPermissionMode}
                   options={CODEX_PERMISSION_MODE_OPTIONS}
                   onChange={agentSelection.setCodexPermissionMode}
+                  disabled={startLocked}
                   menuSide={menuSide}
                 />
               )}
@@ -1810,9 +1817,22 @@ export function PromptInput({
                     agentSelection.setClaudePermissionMode(mode);
                     if (activeSession) {
                       setSessionClaudeMode(activeSession.id, mode, agentSelection.claudeExecutionMode);
+                      // A running turn switches now; otherwise the stored mode
+                      // is what the next turn uses. Without this the turn-end
+                      // status, which carries the stored mode, reverts the pick.
+                      if (!activeSession.isDraft) {
+                        sendEvent({
+                          type: 'session.setClaudeMode',
+                          payload: {
+                            sessionId: activeSession.id,
+                            claudeAccessMode: mode,
+                            claudeExecutionMode: agentSelection.claudeExecutionMode,
+                          },
+                        });
+                      }
                     }
                   }}
-                  disabled={isBusy}
+                  disabled={startLocked}
                   menuSide={menuSide}
                 />
               )}
@@ -1832,7 +1852,7 @@ export function PromptInput({
                   value={agentSelection.opencodePermissionMode}
                   options={OPENCODE_PERMISSION_MODE_OPTIONS}
                   onChange={agentSelection.setOpencodePermissionMode}
-                  disabled={isBusy}
+                  disabled={startLocked}
                   menuSide={menuSide}
                 />
               )}
@@ -1841,6 +1861,7 @@ export function PromptInput({
                   value={agentSelection.kimiPermissionMode}
                   options={KIMI_PERMISSION_MODE_OPTIONS}
                   onChange={agentSelection.setKimiPermissionMode}
+                  disabled={startLocked}
                   menuSide={menuSide}
                 />
               )}
@@ -1849,7 +1870,7 @@ export function PromptInput({
                   value={agentSelection.qoderPermissionMode}
                   options={QODER_PERMISSION_MODE_OPTIONS}
                   onChange={agentSelection.setQoderPermissionMode}
-                  disabled={isBusy}
+                  disabled={startLocked}
                   menuSide={menuSide}
                 />
               )}
@@ -1867,7 +1888,7 @@ export function PromptInput({
                   value={agentSelection.deepseekPermissionMode}
                   options={DEEPSEEK_PERMISSION_MODE_OPTIONS}
                   onChange={agentSelection.setDeepseekPermissionMode}
-                  disabled={isBusy}
+                  disabled={startLocked}
                   menuSide={menuSide}
                 />
               )}
@@ -1876,6 +1897,7 @@ export function PromptInput({
                   value={agentSelection.devinPermissionMode}
                   options={DEVIN_PERMISSION_MODE_OPTIONS}
                   onChange={agentSelection.setDevinPermissionMode}
+                  disabled={startLocked}
                   menuSide={menuSide}
                 />
               )}
@@ -1884,6 +1906,7 @@ export function PromptInput({
                   value={agentSelection.mimoPermissionMode}
                   options={MIMO_PERMISSION_MODE_OPTIONS}
                   onChange={agentSelection.setMimoPermissionMode}
+                  disabled={startLocked}
                   menuSide={menuSide}
                 />
               )}
@@ -1892,6 +1915,7 @@ export function PromptInput({
                   value={agentSelection.minimaxPermissionMode}
                   options={MINIMAX_PERMISSION_MODE_OPTIONS}
                   onChange={agentSelection.setMinimaxPermissionMode}
+                  disabled={startLocked}
                   menuSide={menuSide}
                 />
               )}
@@ -1900,7 +1924,7 @@ export function PromptInput({
                   value={agentSelection.bubblePermissionMode}
                   options={BUBBLE_PERMISSION_MODE_OPTIONS}
                   onChange={agentSelection.setBubblePermissionMode}
-                  disabled={isBusy}
+                  disabled={startLocked}
                   menuSide={menuSide}
                 />
               )}

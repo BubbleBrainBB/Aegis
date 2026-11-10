@@ -983,7 +983,13 @@ export type ClientEvent =
   | { type: 'folder.move'; payload: { oldPath: string; newPath: string } }
   | { type: 'session.setFolder'; payload: { sessionId: string; folderPath: string | null } }
   | { type: 'session.setChannel'; payload: { sessionId: string; channelId: string } }
-  | { type: 'session.setTeam'; payload: { sessionId: string; teamMode: SessionTeamMode; teamId?: string | null } };
+  | { type: 'session.setTeam'; payload: { sessionId: string; teamMode: SessionTeamMode; teamId?: string | null } }
+  // The composer's Claude permission picker, changed without sending: a live
+  // runner switches at once, and the stored mode is what the next turn uses.
+  | {
+      type: 'session.setClaudeMode';
+      payload: { sessionId: string; claudeAccessMode: ClaudeAccessMode; claudeExecutionMode: ClaudeExecutionMode };
+    };
 
 export type AppUpdatePhase = 'idle' | 'available' | 'downloading' | 'downloaded' | 'error';
 
