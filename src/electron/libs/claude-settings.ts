@@ -320,13 +320,13 @@ export async function getClaudeModelConfigWithCatalog(): Promise<ClaudeModelConf
 
   const options = Array.from(
     new Set(
-      [defaultModel, ...catalogModels].filter((value): value is string =>
-        Boolean(value)
+      [defaultModel, ...catalogModels.flatMap((model) => [model.id, model.resolvedModel])].filter(
+        (value): value is string => Boolean(value)
       )
     )
   );
 
-  return { defaultModel, options };
+  return { defaultModel, options, listed: catalogModels };
 }
 
 // 获取 MCP 服务器配置（合并全局和项目级配置）

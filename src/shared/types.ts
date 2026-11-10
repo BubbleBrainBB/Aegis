@@ -71,9 +71,21 @@ export interface ClaudeSkillSummary {
   source: 'user' | 'project' | 'plugin';
 }
 
+/** One row of Claude Code's own model list. */
+export interface ClaudeModelInfo {
+  /** What the CLI takes as the model: an alias ('opus') or a model id. */
+  id: string;
+  /** The CLI's display name: 'Opus 5.5', or just 'Opus' when it cannot see the account. */
+  label?: string;
+  /** The model id an alias currently resolves to. */
+  resolvedModel?: string;
+}
+
 export interface ClaudeModelConfig {
   defaultModel: string | null;
   options: string[];
+  /** The rows of Claude Code's own model list. Absent when it did not answer. */
+  listed?: ClaudeModelInfo[];
 }
 
 export type ClaudePermissionMode =

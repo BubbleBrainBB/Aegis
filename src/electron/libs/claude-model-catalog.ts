@@ -2,14 +2,15 @@ import { homedir } from 'os';
 import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { getClaudeEnv, sanitizeOfficialClaudeEnv } from './claude-settings';
 import { getClaudeCodeRuntime } from './claude-runtime';
+import type { ClaudeModelInfo } from '../../shared/types';
 
 type ClaudeAgentSdkModule = typeof import('@anthropic-ai/claude-agent-sdk');
 
 const CATALOG_TTL_MS = 6 * 60 * 60 * 1000;
 const CATALOG_TIMEOUT_MS = 25_000;
 
-let cachedModels: { values: string[]; fetchedAt: number } | null = null;
-let inflight: Promise<string[]> | null = null;
+let cachedModels: { values: ClaudeModelInfo[]; fetchedAt: number } | null = null;
+let inflight: Promise<ClaudeModelInfo[]> | null = null;
 
 function loadClaudeAgentSdk(): Promise<ClaudeAgentSdkModule> {
   const dynamicImport = new Function('specifier', 'return import(specifier);') as (
@@ -21,13 +22,14 @@ function loadClaudeAgentSdk(): Promise<ClaudeAgentSdkModule> {
 /**
  * Ask the local Claude Code (via the Agent SDK control channel) which models
  * the signed-in account can use — the same source as the CLI's own /model
- * picker. The probe session gets the sanitized official env, so a third-party
+ * picker, with the CLI's own display names and what each alias resolves to.
+ * The probe session gets the sanitized official env, so a third-party
  * ANTHROPIC_BASE_URL configured for Claude Code never shapes this list.
  *
  * Returns [] when Claude Code is missing or the probe fails; callers fall
  * back to the locally-recorded model candidates.
  */
-export function getClaudeSupportedModels(force = false): Promise<string[]> {
+export function getClaudeSupportedModels(force = false): Promise<ClaudeModelInfo[]> {
   if (!force && cachedModels && Date.now() - cachedModels.fetchedAt < CATALOG_TTL_MS) {
     return Promise.resolve(cachedModels.values);
   }
@@ -50,14 +52,16 @@ export function getClaudeSupportedModels(force = false): Promise<string[]> {
   return inflight;
 }
 
-async function fetchSupportedModels(): Promise<string[]> {
+async function fetchSupportedModels(): Promise<ClaudeModelInfo[]> {
   const runtime = getClaudeCodeRuntime();
   if (!runtime.pathToClaudeCodeExecutable) {
     return [];
   }
 
   const sdk = await loadClaudeAgentSdk();
-  const env = { ...sanitizeOfficialClaudeEnv(getClaudeEnv()), ...runtime.env };
+  // On top of this process's environment, as a real session gets it: without
+  // HOME the CLI cannot find the account and answers with its signed-out list.
+  const env = { ...sanitizeOfficialClaudeEnv({ ...process.env, ...getClaudeEnv() }), ...runtime.env };
   const abortController = new AbortController();
 
   // Streaming-input session that never sends a prompt: the control channel
@@ -89,16 +93,16 @@ async function fetchSupportedModels(): Promise<string[]> {
       }),
     ]);
 
-    const values = new Set<string>();
+    const text = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : undefined);
+    const rows = new Map<string, ClaudeModelInfo>();
     for (const model of models) {
-      if (typeof model.value === 'string' && model.value.trim()) {
-        values.add(model.value.trim());
-      }
-      if (typeof model.resolvedModel === 'string' && model.resolvedModel.trim()) {
-        values.add(model.resolvedModel.trim());
-      }
+      const id = text(model.value);
+      if (!id || rows.has(id)) continue;
+      const label = text(model.displayName);
+      const resolvedModel = text(model.resolvedModel);
+      rows.set(id, { id, ...(label ? { label } : {}), ...(resolvedModel ? { resolvedModel } : {}) });
     }
-    return Array.from(values);
+    return Array.from(rows.values());
   } finally {
     abortController.abort();
   }
