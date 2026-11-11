@@ -38,7 +38,7 @@ assert.ok(
   'deriveTranscriptTimelineItems must accept a subagentScopeId scope'
 );
 assert.ok(
-  timelineSrc.includes('message.parentToolUseId !== options.subagentScopeId'),
+  timelineSrc.includes('message.parentToolUseId === options.subagentScopeId'),
   'scope must keep only the scoped subagent messages'
 );
 
