@@ -6,6 +6,7 @@ import { createSessionSdkMcpServer, SESSION_MCP_SERVER_NAME } from './session-mc
 import { isStartWorkflowToolName } from '../../shared/workflow';
 import { isShowWidgetToolName, isWidgetGuideToolName } from '../../shared/widget';
 import { isReportStatusToolName } from '../../shared/turn-report';
+import { markNarrationBlocks } from '../../shared/narration-block';
 import { designToolNameOf } from '../../shared/design-tools';
 import { WidgetDraftTracker, trackMessagesStreamEvent } from './widget-draft';
 import { toClaudeContentBlocks } from './claude-message-content';
@@ -1712,7 +1713,10 @@ function convertSDKMessage(message: SDKMessage): StreamMessage | null {
         type: 'assistant',
         uuid: message.uuid || uuidv4(),
         parentToolUseId: getParentToolUseId(message),
-        message: (message.message || { content: [] }) as any,
+        message: markNarrationBlocks(
+          message.message || { content: [] },
+          (message as { narration_block_indexes?: unknown }).narration_block_indexes
+        ) as any,
       };
 
     case 'user':

@@ -3,6 +3,7 @@ import { isBackgroundTaskEndedMessage } from './background-task-ended';
 import { getAssistantPhase } from '../../shared/assistant-phase';
 import { isProposeFollowUpToolName, isWithdrawFollowUpToolName } from '../../shared/follow-up';
 import { isReportStatusToolName } from '../../shared/turn-report';
+import { isNarrationBlock } from '../../shared/narration-block';
 import type { ContentBlock, StreamMessage } from '../types';
 import type { ThreadGoal } from '../../shared/session-goal';
 import {
@@ -74,6 +75,24 @@ function hasWorkToolUseBlock(blocks: ContentBlock[]): boolean {
     const toolUse = normalizeToolUseBlock(block);
     return Boolean(toolUse) && !isBookkeepingToolName(toolUse!.name);
   });
+}
+
+/**
+ * Whether the turn does real work after this message. Narration ahead of a
+ * tool call is commentary; with only bookkeeping after it, it is the reply.
+ */
+function workFollowsInTurn(
+  messages: StreamMessage[],
+  index: number,
+  inScope: (message: StreamMessage) => boolean
+): boolean {
+  for (let next = index + 1; next < messages.length; next += 1) {
+    const message = messages[next];
+    if (message.type === 'user_prompt' || message.type === 'result') return false;
+    if (message.type !== 'assistant' || !inScope(message)) continue;
+    if (hasWorkToolUseBlock(getMessageContentBlocks(message))) return true;
+  }
+  return false;
 }
 
 /** Work made only of bookkeeping calls, with any reasoning that led to them. */
@@ -445,9 +464,10 @@ function collapseTurnWorkBeforeAnswer(
       workGroups.push(item.inlineWorkGroup);
     }
 
-    const visibleItem: TranscriptTimelineItem = answerHead && answerParts.length > 1
-      ? mergeAnswerParts(answerParts)
-      : { ...item, inlineWorkGroup: undefined };
+    const visibleItem: TranscriptTimelineItem =
+      answerHead && (answerParts.length > 1 || answerParts.some(hasNarrationBlock))
+        ? mergeAnswerParts(answerParts)
+        : { ...item, inlineWorkGroup: undefined };
     visibleItems.push(visibleItem);
 
     if (answerHead) {
@@ -493,12 +513,21 @@ function collapseTurnWorkBeforeAnswer(
   return visibleItems;
 }
 
-/** One answer item from texts split by bookkeeping calls; it stands where the last one was. */
+function hasNarrationBlock(item: Extract<TranscriptTimelineItem, { type: 'message' }>): boolean {
+  return getMessageContentBlocks(item.message).some(isNarrationBlock);
+}
+
+/**
+ * One answer item from texts split by bookkeeping calls; it stands where the
+ * last one was. Narration in the answer reads as the text it stands for.
+ */
 function mergeAnswerParts(
   parts: Array<Extract<TranscriptTimelineItem, { type: 'message' }>>
 ): TranscriptTimelineItem {
   const last = parts[parts.length - 1];
-  const content = parts.flatMap((part) => getMessageContentBlocks(part.message));
+  const content = parts
+    .flatMap((part) => getMessageContentBlocks(part.message))
+    .map((block): ContentBlock => (isNarrationBlock(block) ? { type: 'text', text: block.thinking.trim() } : block));
   const completedGoals = parts.flatMap((part) => part.completedGoals ?? []);
   return {
     ...last,
@@ -765,6 +794,15 @@ export function deriveTranscriptTimelineItems(
     items.push(item);
   };
 
+  // Default: subagent (Task) messages render nested under their Task row in
+  // the workstream, never inline in the top-level transcript. Scoped
+  // (subagent detail panel): keep ONLY this subagent's own direct messages,
+  // skipping the top-level turn and every other subagent.
+  const inScope = (message: StreamMessage) =>
+    options.subagentScopeId
+      ? message.parentToolUseId === options.subagentScopeId
+      : !message.parentToolUseId;
+
   for (let originalIndex = 0; originalIndex < messages.length; originalIndex += 1) {
     const message = messages[originalIndex];
 
@@ -772,15 +810,7 @@ export function deriveTranscriptTimelineItems(
       continue;
     }
 
-    // Default: subagent (Task) messages render nested under their Task row in
-    // the workstream, never inline in the top-level transcript. Scoped
-    // (subagent detail panel): keep ONLY this subagent's own direct messages,
-    // skipping the top-level turn and every other subagent.
-    if (options.subagentScopeId) {
-      if (message.parentToolUseId !== options.subagentScopeId) {
-        continue;
-      }
-    } else if (message.parentToolUseId) {
+    if (!inScope(message)) {
       continue;
     }
 
@@ -819,6 +849,19 @@ export function deriveTranscriptTimelineItems(
     };
 
     for (const block of blocks) {
+      // Prose Claude returned as a thinking block: with no work after it, it
+      // stands as a reply of its own, so the answer rules below see it.
+      if (
+        !messageHasToolUse &&
+        isNarrationBlock(block) &&
+        !workFollowsInTurn(messages, originalIndex, inScope)
+      ) {
+        flushTraceBuffer();
+        flushTextBuffer();
+        pushMessage(cloneAssistantMessageWithContent(message, [block]), originalIndex);
+        continue;
+      }
+
       if (isTraceBlock(block)) {
         flushTextBuffer();
         traceBuffer.push(block);

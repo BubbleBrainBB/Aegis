@@ -1,6 +1,7 @@
 import type { StreamMessage } from "../types";
 import type { WorkflowRunView } from "../workflow";
 import type { RemoteMessage, RemoteWorkflow } from "./protocol";
+import { markNarrationFromSignatures, narrationText } from "../narration-block";
 
 // The phone rebuilds the desktop trace (turns, work groups, stage summaries)
 // from the same stream messages the desktop renders, so it ships a bounded
@@ -40,7 +41,7 @@ function plainText(message: StreamMessage): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
   return content
-    .map((block) => (block.type === "text" && typeof block.text === "string" ? block.text : ""))
+    .map((block) => (block.type === "text" && typeof block.text === "string" ? block.text : narrationText(block) ?? ""))
     .filter(Boolean)
     .join("\n\n");
 }
@@ -70,7 +71,10 @@ export function projectMessages(messages: StreamMessage[]): RemoteMessage[] {
       ("uuid" in message && message.uuid) ||
       `${message.type}:${message.createdAt ?? 0}:${index}`;
     const at = typeof message.createdAt === "number" ? message.createdAt : undefined;
-    let raw = sanitize(message) as StreamMessage;
+    // Signatures are dropped below, and with them what tells narration (an
+    // answer Claude returned as a thinking block) from reasoning: say it outright.
+    const marked = message.type === "assistant" ? { ...message, message: markNarrationFromSignatures(message.message) } : message;
+    let raw = sanitize(marked) as StreamMessage;
     if (JSON.stringify(raw).length > MESSAGE_BYTES)
       raw = sanitize(JSON.parse(JSON.stringify(raw, (k, v) => (typeof v === "string" ? trim(v, 1000) : v)))) as StreamMessage;
     result.push({

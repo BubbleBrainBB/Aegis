@@ -2203,7 +2203,8 @@ export interface ToolExecutionMetadata {
 
 export type ContentBlock =
   | { type: 'text'; text: string }
-  | { type: 'thinking'; thinking: string; signature?: string; durationMs?: number }
+  // `narration`: prose Claude wrote ahead of a tool call, returned as thinking (see narration-block.ts).
+  | { type: 'thinking'; thinking: string; signature?: string; durationMs?: number; narration?: boolean }
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown>; execution?: ToolExecutionMetadata }
   | { type: 'tool_result'; tool_use_id: string; content: string; displayContent?: string; is_error?: boolean; mediaRefs?: ComputerUseMediaRef[]; images?: Attachment[]; execution?: ToolExecutionMetadata }
   | { type: 'memory_citations'; citations: MemoryCitation[] };

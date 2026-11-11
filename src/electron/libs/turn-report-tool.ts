@@ -113,7 +113,8 @@ export function reportStatus(
   } catch (error) {
     return reply(error instanceof Error ? error.message : String(error), true);
   }
-  return reply('Recorded. If you already wrote your reply, end your turn; otherwise write it now, in the language you have been using with the user.');
+  // "Without adding anything": a model that had already answered closed with "Here's my answer above."
+  return reply('Recorded. If you already wrote your reply, end your turn without adding anything; otherwise write it now, in the language you have been using with the user.');
 }
 
 /** Whether the tool_use with this id is a subagent's; null while history does not show it yet. */
