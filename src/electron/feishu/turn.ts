@@ -3,6 +3,7 @@
 // turn changed. The progress card is rendered from this.
 import type { StreamMessage } from "../../shared/types";
 import { getMessageContentBlocks, normalizeToolResultBlock, normalizeToolUseBlock } from "../../ui/utils/message-content";
+import { narrationText } from "../../shared/narration-block";
 
 export type TurnStatus = "running" | "done" | "stopped" | "failed";
 
@@ -49,11 +50,17 @@ export class TurnState {
       let changed = false;
       getMessageContentBlocks(message).forEach((block, index) => {
         const raw = block as unknown as Record<string, unknown>;
-        if (raw.type === "text" && typeof raw.text === "string" && raw.text.trim()) {
+        // Narration is what the agent said, returned as a thinking block: it
+        // reads as text, and a reply can consist of it alone.
+        const narration = narrationText(block);
+        const text = raw.type === "text" && typeof raw.text === "string" ? raw.text : narration;
+        if (text?.trim()) {
           const id = `${uuid}:${index}`;
           const existing = this.blocks.find((b) => b.kind === "text" && b.id === id);
-          if (existing && existing.kind === "text") existing.text = raw.text;
-          else this.blocks.push({ kind: "text", id, text: raw.text });
+          if (existing && existing.kind === "text") existing.text = text;
+          else this.blocks.push({ kind: "text", id, text });
+          // It streamed in as thinking; it is not also a thought.
+          if (narration && this.thinking.trimEnd().endsWith(narration)) this.thinking = this.thinking.trimEnd().slice(0, -narration.length);
           changed = true;
         } else if (raw.type === "thinking" && typeof raw.thinking === "string") {
           if (raw.thinking.length >= this.thinking.length) this.thinking = raw.thinking;

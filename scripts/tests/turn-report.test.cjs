@@ -88,6 +88,7 @@ const flush = () => new Promise((resolve) => setImmediate(resolve));
   }, { now: 1000 });
   assert.equal(asked.isError, undefined);
   assert.match(textOf(asked), /Recorded/);
+  assert.match(textOf(asked), /end your turn without adding anything/, 'no closing line after a reply already written');
   let stored = parseTurnReport(sessions.getSession(a.id).turn_report);
   assert.deepEqual(stored, {
     outcome: 'question', summary: 'Which database should the import target?', question: 'Staging or production?', reportedAt: 1000,
@@ -217,6 +218,15 @@ const flush = () => new Promise((resolve) => setImmediate(resolve));
     'without a named caller the tool is not offered: a report never lands on a guessed session');
   assert.ok(!toolNames(buildSessionMcpServer({ only: new Set(['show_widget']), callerSessionId: a.id })).includes('report_status'),
     'narrowed servers (Kimi) leave it out');
+
+  // That reply can then be narration alone (prose Claude returned as a
+  // thinking block): another task reading this one still gets it.
+  const { readReferencedSession } = require(path.join(root, 'electron/libs/session-reference.js'));
+  const replied = sessions.createSession({ title: 'Code word', cwd: tmp, provider: 'claude' });
+  sessions.addMessage(replied.id, { type: 'user_prompt', prompt: 'What was the code word?', createdAt: 10 });
+  sessions.addMessage(replied.id, { type: 'assistant', uuid: 'why', message: { content: [{ type: 'thinking', thinking: 'Look it up.' }] }, createdAt: 20 });
+  sessions.addMessage(replied.id, { type: 'assistant', uuid: 'said', message: { content: [{ type: 'thinking', thinking: 'It was pineapple-42.\n\n', narration: true }] }, createdAt: 30 });
+  assert.deepEqual(readReferencedSession(replied.id).messages.map((message) => message.text), ['It was pineapple-42.', '[thinking]', 'What was the code word?']);
 
   sessions.setSessionStatusListener(null);
   console.log('turn-report: ok');
