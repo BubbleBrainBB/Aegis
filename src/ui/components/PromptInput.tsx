@@ -25,7 +25,7 @@ import {
 } from 'react';
 import { ArrowElbowRight, CornerDownRight, MousePointer, Plus, Square, Trash2 } from './icons';
 import { toast } from 'sonner';
-import { getSessionReferenceCapabilityError } from '../../shared/session-links';
+import { getSessionReferenceCapabilityError, supportsSessionReferences } from '../../shared/session-links';
 import { useAppStore } from '../store/useAppStore';
 import {
   claimQueueFlushOwner,
@@ -42,6 +42,7 @@ import { useDesignStore } from '../store/useDesignStore';
 import { useAttachmentImport } from '../hooks/useAttachmentImport';
 import { ClaudeSkillMenu } from './ClaudeSkillMenu';
 import { ProjectFileMentionMenu } from './ProjectFileMentionMenu';
+import { TaskMentionMenu } from './TaskMentionMenu';
 import { RemoteModelControl, RemotePermissionControl, useRemoteSelection } from './RemoteAgentPicker';
 import { useRemoteTarget } from '../hooks/useRemoteHosts';
 import { ComposerPromptEditor, type ComposerPromptEditorHandle } from './ComposerPromptEditor';
@@ -83,6 +84,8 @@ import {
 } from '../hooks/useComposerAgentSelection';
 import { useComposerCapabilityMenu } from '../hooks/useClaudeSkillAutocomplete';
 import { useProjectFileMentions } from '../hooks/useProjectFileMentions';
+import { useTaskMentions } from '../hooks/useTaskMentions';
+import { localReferenceError } from '../utils/task-mentions';
 import { DEFAULT_WORKSPACE_CHANNEL_ID } from '../../shared/types';
 import {
   buildCodexReferencePayload,
@@ -727,6 +730,22 @@ export function PromptInput({
     prompt,
     cursorIndex,
   });
+  const taskMentions = useTaskMentions({
+    prompt,
+    cursorIndex,
+    currentSessionId: activeSession?.id,
+    // One menu has the input at a time: a file or command token keeps it. And
+    // not for a task on another Mac, which could not read a task from this one.
+    enabled: supportsSessionReferences(runtimeProvider) && !hideLocalControls && !projectFileMentions.hasMentionQuery && !capabilityMenu.hasSlashQuery,
+    onInsert: (next) => {
+      setPrompt(next.prompt);
+      setCursorIndex(next.cursorIndex);
+      window.requestAnimationFrame(() => {
+        editorRef.current?.focus();
+        editorRef.current?.setCursorIndex(next.cursorIndex);
+      });
+    },
+  });
 
 
   const resetComposer = useCallback(() => {
@@ -853,6 +872,9 @@ export function PromptInput({
       const imageError = deepseekImageInputError(attachments, agentSelection.model, agentSelection.deepseekModelConfig);
       if (imageError) { toast.error(imageError); return; }
     }
+    // A reference made before the task's project moved to another Mac.
+    const remoteReferenceError = hideLocalControls ? localReferenceError(prompt, useAppStore.getState().sessions) : null;
+    if (remoteReferenceError) { toast.error(remoteReferenceError); return; }
     const referenceError = getSessionReferenceCapabilityError(prompt, runtimeProvider, activeSession?.id);
     if (referenceError) { toast.error(referenceError); return; }
     if (agentSelection.modelSetup) {
@@ -1528,6 +1550,10 @@ export function PromptInput({
       }
     }
 
+    if (taskMentions.handleKeyDown(e)) {
+      return;
+    }
+
     if (capabilityMenu.hasSlashQuery) {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
@@ -1657,6 +1683,14 @@ export function PromptInput({
                 onSelect={(suggestion) => {
                   void handleSelectProjectFile(suggestion);
                 }}
+              />
+            </div>
+          ) : taskMentions.open ? (
+            <div className="absolute inset-x-0 bottom-full z-40">
+              <TaskMentionMenu
+                suggestions={taskMentions.suggestions}
+                selectedIndex={taskMentions.selectedIndex}
+                onSelect={taskMentions.select}
               />
             </div>
           ) : capabilityMenu.hasSlashQuery ? (

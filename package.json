@@ -108,6 +108,8 @@
     "verify:new-thread-landing": "node scripts/tests/new-thread-landing-electron.test.mjs",
     "verify:project-switcher": "node scripts/tests/project-switcher-electron.test.mjs",
     "verify:session-links": "npm run transpile:electron && node scripts/tests/session-links-electron.test.mjs",
+    "verify:task-numbers": "npm run transpile:electron && npx tsx scripts/tests/task-mentions.test.ts && node scripts/tests/task-numbers.test.cjs",
+    "verify:task-numbers-ui": "node scripts/tests/task-numbers-electron.test.mjs",
     "verify:sidebar-view": "npx tsx scripts/tests/sidebar-view.test.ts && npx tsx scripts/tests/worktree-work.test.ts && node scripts/tests/sidebar-view-electron.test.mjs",
     "verify:sidebar-my-tasks": "node scripts/tests/sidebar-my-tasks-electron.test.mjs",
     "verify:update-button": "node scripts/tests/sidebar-update-button-electron.test.mjs",
@@ -239,6 +241,8 @@
     "verify:session-title",
     "verify:session-title-editor",
     "verify:session-links",
+    "verify:task-numbers",
+    "verify:task-numbers-ui",
     "verify:session-organization",
     "verify:sidebar-view",
     "verify:sidebar-my-tasks",
@@ -404,7 +408,8 @@
     "verify:markdown-file-links",
     "verify:project-tree-visibility",
     "verify:grok-session-files",
-    "verify:grok-permissions"
+    "verify:grok-permissions",
+    "verify:task-numbers"
   ],
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.299",

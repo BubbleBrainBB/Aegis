@@ -16,13 +16,14 @@ import {
   type MutableRefObject,
 } from 'react';
 import { toast } from 'sonner';
-import { getSessionReferenceCapabilityError } from '../../shared/session-links';
+import { getSessionReferenceCapabilityError, supportsSessionReferences } from '../../shared/session-links';
 import { useAppStore } from '../store/useAppStore';
 import { sendEvent } from '../hooks/useIPC';
 import type { Attachment } from '../types';
 import { AttachmentChips } from './AttachmentChips';
 import { ClaudeSkillMenu } from './ClaudeSkillMenu';
 import { ProjectFileMentionMenu } from './ProjectFileMentionMenu';
+import { TaskMentionMenu } from './TaskMentionMenu';
 import { ComposerPromptEditor, type ComposerPromptEditorHandle } from './ComposerPromptEditor';
 import { ComposerAgentModelPicker } from './ComposerAgentControls';
 import { RemoteModelControl, RemotePermissionControl, useRemoteSelection } from './RemoteAgentPicker';
@@ -48,6 +49,8 @@ import { ComposerContextPills } from './ComposerContextPills';
 import { useComposerAgentSelection } from '../hooks/useComposerAgentSelection';
 import { useComposerCapabilityMenu } from '../hooks/useClaudeSkillAutocomplete';
 import { useProjectFileMentions } from '../hooks/useProjectFileMentions';
+import { useTaskMentions } from '../hooks/useTaskMentions';
+import { localReferenceError } from '../utils/task-mentions';
 import { DEFAULT_WORKSPACE_CHANNEL_ID } from '../../shared/types';
 import { buildCodexReferencePayload } from '../utils/codex-composer';
 import { insertProjectFileMention } from '../utils/project-file-mentions';
@@ -173,6 +176,21 @@ export function NewSessionView() {
     prompt,
     cursorIndex,
   });
+  const taskMentions = useTaskMentions({
+    prompt,
+    cursorIndex,
+    // One menu has the input at a time: a file or command token keeps it. And
+    // not for a project on another Mac, which could not read a task from this one.
+    enabled: supportsSessionReferences(agentSelection.provider) && !remoteTarget && !projectFileMentions.hasMentionQuery && !capabilityMenu.hasSlashQuery,
+    onInsert: (next) => {
+      setPrompt(next.prompt);
+      setCursorIndex(next.cursorIndex);
+      window.requestAnimationFrame(() => {
+        editorRef.current?.focus();
+        editorRef.current?.setCursorIndex(next.cursorIndex);
+      });
+    },
+  });
 
   const buildDispatchPrompt = async (dispatchCwd = cwd): Promise<string | null> => {
     const selectedSkillPrompt =
@@ -221,6 +239,9 @@ export function NewSessionView() {
       const imageError = deepseekImageInputError(attachments, agentSelection.model, agentSelection.deepseekModelConfig);
       if (imageError) { toast.error(imageError); return; }
     }
+    // A reference made before the project was switched to one on another Mac.
+    const remoteReferenceError = remoteTarget ? localReferenceError(prompt, useAppStore.getState().sessions) : null;
+    if (remoteReferenceError) { toast.error(remoteReferenceError); return; }
     const referenceError = getSessionReferenceCapabilityError(prompt, agentSelection.provider);
     if (referenceError) { toast.error(referenceError); return; }
     if (agentSelection.modelSetup) {
@@ -517,6 +538,10 @@ export function NewSessionView() {
       }
     }
 
+    if (taskMentions.handleKeyDown(e)) {
+      return;
+    }
+
     if (capabilityMenu.hasSlashQuery) {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
@@ -560,6 +585,14 @@ export function NewSessionView() {
                     onSelect={(suggestion) => {
                       void handleSelectProjectFile(suggestion);
                     }}
+                  />
+                </div>
+              ) : taskMentions.open ? (
+                <div className="absolute inset-x-0 bottom-full z-40 mb-1">
+                  <TaskMentionMenu
+                    suggestions={taskMentions.suggestions}
+                    selectedIndex={taskMentions.selectedIndex}
+                    onSelect={taskMentions.select}
                   />
                 </div>
               ) : capabilityMenu.hasSlashQuery ? (

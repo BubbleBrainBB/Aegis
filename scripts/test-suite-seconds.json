@@ -115,5 +115,7 @@
   "verify:transcript-file-paths": 2,
   "verify:markdown-file-links": 2,
   "verify:project-file-navigation": 15,
-  "verify:new-tab-menu": 10
+  "verify:new-tab-menu": 10,
+  "verify:task-numbers": 3,
+  "verify:task-numbers-ui": 12
 }

@@ -25,6 +25,8 @@ export interface PaletteProject {
 
 export interface PaletteThread {
   id: string;
+  /** The task's short number (#128), when it has one. */
+  number?: number;
   title: string;
   projectName: string;
   updatedAt: number;
@@ -32,7 +34,7 @@ export interface PaletteThread {
   texts: readonly string[];
 }
 
-export type ThreadHitSource = 'title' | 'message' | 'project';
+export type ThreadHitSource = 'number' | 'title' | 'message' | 'project';
 
 export interface ThreadHit {
   thread: PaletteThread;
@@ -63,6 +65,7 @@ const ACTION_KEYWORD: WeightTable = { exact: 110, anywhere: 90 };
 const ACTION_DESCRIPTION: WeightTable = { anywhere: 70 };
 const PROJECT_NAME: WeightTable = { exact: 150, leading: 130, anywhere: 105 };
 const PROJECT_CWD: WeightTable = { anywhere: 70 };
+const THREAD_NUMBER = 200;
 const THREAD_TITLE: WeightTable = { exact: 170, leading: 145, anywhere: 125 };
 const THREAD_MESSAGE: WeightTable = { exact: 165, leading: 155, anywhere: 145 };
 const THREAD_MESSAGE_ALL_WORDS = 132;
@@ -197,6 +200,8 @@ export function searchThreads(
       .map((thread) => ({ thread, source: 'title', excerpt: null, messageHits: 0 }));
   }
 
+  const numbered = /^#?(\d+)$/.exec(query.phrase);
+  const taskNumber = numbered ? Number(numbered[1]) : null;
   const entries: Ranked<ThreadHit>[] = threads.map((thread, order) => {
     const messages = scoreMessages(thread, query);
     // A thread is reported by its strongest kind of evidence: its title,
@@ -207,6 +212,8 @@ export function searchThreads(
       order,
       weight,
     });
+    // "#128", or the bare number, opens that task whatever else mentions it.
+    if (thread.number !== undefined && taskNumber === thread.number) return hit('number', THREAD_NUMBER, null);
     if (title) return hit('title', title, null);
     if (messages.weight) {
       return hit('message', messages.weight, excerptAround(thread.texts[messages.best], query));

@@ -1561,6 +1561,8 @@ export type SessionTeamMode = 'channel_default' | 'solo' | 'team' | 'manual';
 
 export interface SessionInfo {
   id: string;
+  /** The short number the task is named by (#128). Counted on the Mac that runs it, so only its own tasks have one here. */
+  number?: number;
   title: string;
   /** The task's agent is still naming it; title holds its first sentence meanwhile. */
   titlePending?: boolean;
@@ -1647,6 +1649,8 @@ export type SessionStatus = 'idle' | 'running' | 'stopping' | 'completed' | 'err
 export interface SessionStatusPayload {
   sessionId: string;
   status: SessionStatus;
+  /** The task's short number (#128); every status sent to a window carries it. */
+  number?: number;
   /** The task's agent is naming it (true) or has (false); absent leaves it as it was. */
   titlePending?: boolean;
   /** Set when the session runs on another Mac. */

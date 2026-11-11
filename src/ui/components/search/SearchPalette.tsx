@@ -126,6 +126,7 @@ export function SearchPalette(props: SearchPaletteProps) {
             title={
               <span className="flex items-baseline gap-3">
                 <span className="min-w-0 flex-1 truncate">
+                  {hit.source === 'number' ? <span className="mr-2 tabular-nums text-[var(--text-muted)]">#{hit.thread.number}</span> : null}
                   <Marked text={hit.thread.title || 'Untitled thread'} query={query} />
                 </span>
                 <span className={`w-20 truncate ${asideText}`}>{hit.thread.projectName}</span>

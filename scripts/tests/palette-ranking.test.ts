@@ -103,6 +103,17 @@ const live = thread('live', 'Live', 1, ['first draft']);
 assert.equal(searchThreads([live], 'second').length, 0);
 assert.equal(searchThreads([{ ...live, texts: ['first draft', 'second draft'] }], 'second').length, 1);
 
+// A task's number, with or without its "#", leads whatever else contains the digits.
+const numbered = [
+  { ...thread('task', 'Fix the sidebar', 1), number: 128 },
+  { ...thread('titled', '128', 9), number: 7 },
+  thread('said', 'Other', 8, ['see pull request #128']),
+];
+assert.deepEqual(searchThreads(numbered, '#128').map((h) => [h.thread.id, h.source]), [['task', 'number'], ['said', 'message']]);
+assert.deepEqual(searchThreads(numbered, '128').map((h) => [h.thread.id, h.source]), [['task', 'number'], ['titled', 'title'], ['said', 'message']]);
+// Part of a number names no task.
+assert.equal(searchThreads(numbered, '12').some((h) => h.source === 'number'), false);
+
 // Excerpts: short text as is; long text windows the match with a lead-in.
 assert.equal(excerptAround('  short   text ', 'short'), 'short text');
 const long = `${'a'.repeat(100)} the needle sits here ${'b'.repeat(100)}`;

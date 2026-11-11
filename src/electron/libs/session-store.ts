@@ -603,6 +603,12 @@ export function initialize(): void {
   ensureColumn('sessions', 'handoff_source_session_id', 'TEXT');
   // The agent's report of how its latest turn ended (shared/turn-report.ts), as JSON.
   ensureColumn('sessions', 'turn_report', 'TEXT');
+  // The task's short number (#128); see assignTaskNumber.
+  ensureColumn('sessions', 'task_number', 'INTEGER');
+  getDb().exec(`
+    CREATE TABLE IF NOT EXISTS task_number_sequence (id INTEGER PRIMARY KEY CHECK (id = 1), last INTEGER NOT NULL);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_task_number ON sessions(task_number);
+  `);
   ensureColumn('messages', 'message_type', 'TEXT');
   ensureColumn('messages', 'source_origin', 'TEXT');
   ensureColumn('messages', 'search_text', 'TEXT');
@@ -655,6 +661,7 @@ export function initialize(): void {
   `);
 
   purgeImportedClaudeCodeSessions();
+  numberUnnumberedTasks();
 
   const backfilledCount = backfillClaudeSessionModelsFromInitMessages();
   if (backfilledCount > 0) {
@@ -663,6 +670,28 @@ export function initialize(): void {
   backfillMessageMetadata();
   backfillExternalizedMessagePayloads();
   rebalanceSearchIndexText();
+}
+
+/**
+ * Give a task the next short number (#128), the handle it is named by. Numbers
+ * count up per machine and come from their own sequence, not from the rows, so
+ * a deleted task's number never passes to another one.
+ */
+function assignTaskNumber(sessionId: string): void {
+  const database = getDb();
+  database.transaction(() => {
+    database.prepare('INSERT INTO task_number_sequence (id, last) VALUES (1, 1) ON CONFLICT(id) DO UPDATE SET last = last + 1').run();
+    database.prepare('UPDATE sessions SET task_number = (SELECT last FROM task_number_sequence WHERE id = 1) WHERE id = ? AND task_number IS NULL').run(sessionId);
+  })();
+}
+
+/** Tasks from before numbers existed get theirs in the order they were created. */
+function numberUnnumberedTasks(): void {
+  const database = getDb();
+  const rows = database
+    .prepare('SELECT id FROM sessions WHERE task_number IS NULL AND COALESCE(hidden_from_threads, 0) = 0 ORDER BY created_at, rowid')
+    .all() as Array<{ id: string }>;
+  database.transaction(() => rows.forEach((row) => assignTaskNumber(row.id)))();
 }
 
 function ensureColumn(table: string, column: string, definition: string): void {
@@ -1480,6 +1509,8 @@ export function createSession(params: {
     now,
     now
   );
+  // Sessions kept out of the lists (workflow members, delegates) are not tasks to name.
+  if (!params.hiddenFromThreads) assignTaskNumber(id);
 
   if ((params.provider || 'claude') === 'claude') {
     invalidateClaudeUsageReportCache();
@@ -1515,6 +1546,11 @@ export function createSession(params: {
 export function getSession(sessionId: string): SessionRow | undefined {
   const stmt = getDb().prepare('SELECT * FROM sessions WHERE id = ?');
   return stmt.get(sessionId) as SessionRow | undefined;
+}
+
+/** The task a short number (#128) names on this machine. */
+export function getSessionByTaskNumber(taskNumber: number): SessionRow | undefined {
+  return getDb().prepare('SELECT * FROM sessions WHERE task_number = ?').get(taskNumber) as SessionRow | undefined;
 }
 
 // 获取所有会话

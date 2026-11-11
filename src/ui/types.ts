@@ -346,6 +346,8 @@ export type SessionRightPanelLiveFields = {
 // UI 会话视图状态
 export interface SessionView {
   id: string;
+  /** The short number the task is named by (#128); only tasks on this Mac have one. */
+  number?: number;
   title: string;
   /** The task's agent is still naming it: lists show a loading bar instead of the title. */
   titlePending?: boolean;
