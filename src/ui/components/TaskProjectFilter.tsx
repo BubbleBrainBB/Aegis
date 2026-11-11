@@ -1,15 +1,19 @@
-import { useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Popover } from '@base-ui-components/react/popover';
 import { Menu } from '@base-ui-components/react/menu';
 import { Check, ChevronDown, Filter, FolderOpen, MoreHorizontal, Plus, Search, SquarePen, Trash2 } from './icons';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from './ui/dropdown-menu';
 import { useAppStore } from '../store/useAppStore';
-import { useSessionOrganizationStore } from '../store/useSessionOrganizationStore';
 import { useSidebarViewStore } from '../store/useSidebarViewStore';
 import { getProjectLabel, listWorkspaceProjects } from '../utils/sidebar-view';
 import { addProject, filterTasksByProject, newTaskInProject, removeProject, revealProject } from '../utils/project-actions';
 
 const ITEM_CLASS = 'gap-2 rounded-md px-2 py-1.5 text-[13px]';
+/** How many projects the menu lists before the rest fold into "N more". */
+const RECENT_PROJECTS = 5;
+/** The row that unfolds the older projects. */
+const MORE = Symbol('more');
+type Choice = string | null | typeof MORE;
 
 /** Show in Finder and Remove, for a project's … button. */
 function ProjectMoreItems({ path }: { path: string }) {
@@ -29,39 +33,60 @@ function ProjectMoreItems({ path }: { path: string }) {
 }
 
 /**
- * My Tasks' Project filter: one project, or all of them. It is also where
- * projects are managed now that the sidebar lists tasks: start a task in
- * one, show it in Finder, remove it, or add a folder.
+ * My Tasks' Project filter: one project, or all of them. It lists the few
+ * projects worked in lately and folds the rest away; the search covers them
+ * all. It is also where projects are managed now that the sidebar lists
+ * tasks: start a task in one, show it in Finder, remove it, or add a folder.
  */
 export function TaskProjectFilter() {
   const project = useSidebarViewStore((state) => state.project);
   const sessions = useAppStore((state) => state.sessions);
   const projectCwd = useAppStore((state) => state.projectCwd);
-  const archived = useSessionOrganizationStore((state) => state.sessions);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
-  const [highlight, setHighlight] = useState(0);
+  // The highlighted choice itself, not its place in the list: the list
+  // changes under it when the fold opens or a task moves its project up.
+  // Nothing held means the first choice.
+  const [held, setHeld] = useState<Choice | undefined>(undefined);
+  const [expanded, setExpanded] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  // Set by the keyboard only: the pointer is already on the row it highlights.
+  const reveal = useRef(false);
 
-  const { projects, counts } = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const session of Object.values(sessions)) {
-      if (session.hiddenFromThreads || session.scope === 'dm' || session.isChat || session.isDraft || archived[session.id]?.archived) continue;
-      const path = (session.projectCwd || session.cwd)?.trim();
-      if (path) counts.set(path, (counts.get(path) ?? 0) + 1);
-    }
-    const projects = listWorkspaceProjects(Object.values(sessions), project ?? projectCwd);
-    return { projects, counts };
-  }, [sessions, archived, project, projectCwd]);
+  const projects = useMemo(
+    () => listWorkspaceProjects(Object.values(sessions), project ?? projectCwd),
+    [sessions, project, projectCwd]
+  );
 
   const needle = query.trim().toLowerCase();
   const matches = needle ? projects.filter((path) => getProjectLabel(path).toLowerCase().includes(needle)) : projects;
+  // Most recent first, so the head of the list is what is being worked on;
+  // the project on screen stays listed however old it is. One left over is
+  // not worth a fold.
+  const recent = projects.filter((path, index) => index < RECENT_PROJECTS || path === project);
+  const folded = projects.length - recent.length;
+  const fold = !needle && !expanded && folded > 1;
   // All projects leads the list until you search.
-  const choices: (string | null)[] = needle ? matches : [null, ...matches];
-  const pick = (path: string | null) => {
-    filterTasksByProject(path);
+  const choices: Choice[] = needle ? matches : fold ? [null, ...recent, MORE] : [null, ...projects];
+  // A held choice that is gone (searched away, removed) falls back to the first.
+  const highlight = Math.max(held === undefined ? 0 : choices.indexOf(held), 0);
+  const pick = (choice: Choice) => {
+    if (choice === MORE) {
+      // The highlight moves on to the first project the fold was hiding.
+      setHeld(projects.find((path) => !recent.includes(path)));
+      setExpanded(true);
+      return;
+    }
+    filterTasksByProject(choice);
     setOpen(false);
   };
+
+  useEffect(() => {
+    if (!reveal.current) return;
+    reveal.current = false;
+    listRef.current?.querySelector('[data-highlighted]')?.scrollIntoView({ block: 'nearest' });
+  }, [highlight, expanded]);
 
   return (
     <Popover.Root
@@ -69,7 +94,9 @@ export function TaskProjectFilter() {
       onOpenChange={(next) => {
         setOpen(next);
         setQuery('');
-        setHighlight(0);
+        setHeld(undefined);
+        setExpanded(false);
+        reveal.current = false;
       }}
     >
       <Popover.Trigger
@@ -93,60 +120,78 @@ export function TaskProjectFilter() {
             className="popover-surface flex w-[300px] flex-col text-left"
             data-task-project-menu
           >
-            <label className="flex h-9 items-center gap-2 border-b border-[var(--border)] px-3 text-[var(--text-muted)]">
+            <div className="flex h-9 flex-shrink-0 items-center gap-2 border-b border-[var(--border)] pl-3 pr-1.5 text-[var(--text-muted)]">
               <Search className="h-3.5 w-3.5 flex-shrink-0" />
               <input
                 ref={inputRef}
                 value={query}
                 onChange={(event) => {
                   setQuery(event.target.value);
-                  setHighlight(0);
+                  setHeld(undefined);
                 }}
                 onKeyDown={(event) => {
-                  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                  if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && choices.length) {
                     event.preventDefault();
                     const step = event.key === 'ArrowDown' ? 1 : -1;
-                    setHighlight((index) => (index + step + choices.length) % Math.max(choices.length, 1));
+                    reveal.current = true;
+                    setHeld(choices[(highlight + step + choices.length) % choices.length]);
                   } else if (event.key === 'Enter' && choices.length) {
                     event.preventDefault();
-                    pick(choices[Math.min(highlight, choices.length - 1)]);
+                    reveal.current = true;
+                    pick(choices[highlight]);
                   }
                 }}
                 placeholder="Filter projects…"
                 aria-label="Filter projects"
                 className="min-w-0 flex-1 bg-transparent text-[13px] text-[var(--text-primary)] outline-none placeholder:text-[var(--text-muted)]"
               />
-            </label>
-            <div className="sidebar-scrollbar flex max-h-[320px] flex-col gap-px overflow-y-auto p-1.5" role="listbox" aria-label="Projects">
-              {choices.map((path, index) => (
-                <ProjectChoice
-                  key={path ?? '__all__'}
-                  path={path}
-                  count={path ? counts.get(path) ?? 0 : null}
-                  selected={path === project}
-                  highlighted={index === highlight}
-                  onHover={() => setHighlight(index)}
-                  onPick={() => pick(path)}
-                  onLeave={() => setOpen(false)}
-                  divider={!needle && path === null && matches.length > 0}
-                />
-              ))}
-              {needle && matches.length === 0 ? (
-                <div className="px-2 py-1.5 text-[13px] text-[var(--text-muted)]">No matching projects</div>
-              ) : null}
-            </div>
-            <div className="border-t border-[var(--border)] p-1.5">
               <button
                 type="button"
                 onClick={() => {
                   setOpen(false);
                   void addProject();
                 }}
-                className="flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13px] text-[var(--text-secondary)] transition-colors duration-150 hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)]"
+                className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md text-[var(--text-secondary)] transition-colors duration-150 hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)]"
+                aria-label="Add project…"
+                title="Add project…"
+                data-project-add
               >
                 <Plus className="h-3.5 w-3.5" />
-                <span>Add project…</span>
               </button>
+            </div>
+            <div ref={listRef} className="sidebar-scrollbar flex max-h-[320px] flex-col gap-px overflow-y-auto p-1.5" role="listbox" aria-label="Projects">
+              {choices.map((choice, index) =>
+                choice === MORE ? (
+                  <div
+                    key="__more__"
+                    role="option"
+                    aria-selected={false}
+                    data-project-more
+                    data-highlighted={index === highlight ? '' : undefined}
+                    onMouseEnter={() => setHeld(MORE)}
+                    onClick={() => pick(MORE)}
+                    className={`flex h-7 flex-shrink-0 cursor-pointer items-center gap-1 rounded-md px-2 text-[13px] text-[var(--text-muted)] ${
+                      index === highlight ? 'bg-[var(--sidebar-item-hover)]' : ''
+                    }`}
+                  >
+                    <span>{folded} more</span>
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  </div>
+                ) : (
+                  <ProjectChoice
+                    key={choice ?? '__all__'}
+                    path={choice}
+                    selected={choice === project}
+                    highlighted={index === highlight}
+                    onHover={() => setHeld(choice)}
+                    onPick={() => pick(choice)}
+                    onLeave={() => setOpen(false)}
+                  />
+                )
+              )}
+              {needle && matches.length === 0 ? (
+                <div className="px-2 py-1.5 text-[13px] text-[var(--text-muted)]">No matching projects</div>
+              ) : null}
             </div>
           </Popover.Popup>
         </Popover.Positioner>
@@ -157,79 +202,78 @@ export function TaskProjectFilter() {
 
 function ProjectChoice({
   path,
-  count,
   selected,
   highlighted,
-  divider,
   onHover,
   onPick,
   onLeave,
 }: {
   path: string | null;
-  count: number | null;
   selected: boolean;
   highlighted: boolean;
-  divider: boolean;
   onHover: () => void;
   onPick: () => void;
   /** Close the filter before going somewhere else. */
   onLeave: () => void;
 }) {
   const label = path ? getProjectLabel(path) : 'All projects';
+  // The check sits at the row's end and gives way to the actions on hover.
+  const check = selected ? <Check className="mx-1 h-3.5 w-3.5 flex-shrink-0" /> : null;
   return (
-    <>
-      <div
-        role="option"
-        aria-selected={selected}
-        data-project-choice={path ?? ''}
-        onMouseEnter={onHover}
-        onClick={onPick}
-        title={path ?? undefined}
-        className={`group/project flex h-7 cursor-pointer items-center gap-2 rounded-md pl-2 pr-1 text-[13px] text-[var(--text-primary)] ${
-          highlighted ? 'bg-[var(--sidebar-item-hover)]' : ''
-        } has-[button[data-popup-open]]:bg-[var(--sidebar-item-hover)]`}
-      >
-        <span className="flex w-3.5 flex-shrink-0 justify-center">{selected ? <Check className="h-3.5 w-3.5" /> : null}</span>
-        <span className="min-w-0 flex-1 truncate">{label}</span>
-        {path ? (
-          <span className="flex items-center">
-            <span className="px-1 text-[12px] tabular-nums text-[var(--text-muted)] group-hover/project:hidden group-has-[button[data-popup-open]]/project:hidden">
-              {count}
-            </span>
-            <span className="hidden items-center group-hover/project:flex group-has-[button[data-popup-open]]/project:flex">
-              <RowAction
-                label={`New task in ${label}`}
-                onClick={() => {
-                  onLeave();
-                  newTaskInProject(path);
-                }}
+    <div
+      role="option"
+      aria-selected={selected}
+      data-project-choice={path ?? ''}
+      data-highlighted={highlighted ? '' : undefined}
+      onMouseEnter={onHover}
+      onClick={onPick}
+      title={path ?? undefined}
+      // Rows keep their height and the list scrolls; left to shrink, a long
+      // list squeezed every row instead.
+      className={`group/project flex h-7 flex-shrink-0 cursor-pointer items-center gap-2 rounded-md pl-2 pr-1 text-[13px] text-[var(--text-primary)] ${
+        highlighted ? 'bg-[var(--sidebar-item-hover)]' : ''
+      } has-[button[data-popup-open]]:bg-[var(--sidebar-item-hover)]`}
+    >
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      {path ? (
+        <span className="flex items-center">
+          {check ? (
+            <span className="flex group-hover/project:hidden group-has-[button[data-popup-open]]/project:hidden">{check}</span>
+          ) : null}
+          <span className="hidden items-center group-hover/project:flex group-has-[button[data-popup-open]]/project:flex">
+            <RowAction
+              label={`New task in ${label}`}
+              onClick={() => {
+                onLeave();
+                newTaskInProject(path);
+              }}
+            >
+              <SquarePen className="h-3.5 w-3.5" strokeWidth={1.9} />
+            </RowAction>
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <button
+                    type="button"
+                    onClick={(event) => event.stopPropagation()}
+                    className="flex h-6 w-6 items-center justify-center rounded-md text-[var(--text-muted)] hover:text-[var(--text-primary)] data-[popup-open]:text-[var(--text-primary)]"
+                    aria-label={`Options for ${label}`}
+                    title={`Options for ${label}`}
+                  />
+                }
               >
-                <SquarePen className="h-3.5 w-3.5" strokeWidth={1.9} />
-              </RowAction>
-              <DropdownMenu>
-                <DropdownMenuTrigger
-                  render={
-                    <button
-                      type="button"
-                      onClick={(event) => event.stopPropagation()}
-                      className="flex h-6 w-6 items-center justify-center rounded-md text-[var(--text-muted)] hover:text-[var(--text-primary)] data-[popup-open]:text-[var(--text-primary)]"
-                      aria-label={`Options for ${label}`}
-                      title={`Options for ${label}`}
-                    />
-                  }
-                >
-                  <MoreHorizontal className="h-3.5 w-3.5" />
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" sideOffset={4} className="min-w-[180px]" onClick={(event) => event.stopPropagation()}>
-                  <ProjectMoreItems path={path} />
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </span>
+                <MoreHorizontal className="h-3.5 w-3.5" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" sideOffset={4} className="min-w-[180px]" onClick={(event) => event.stopPropagation()}>
+                <ProjectMoreItems path={path} />
+              </DropdownMenuContent>
+            </DropdownMenu>
           </span>
-        ) : null}
-      </div>
-      {divider ? <div className="-mx-1.5 my-1 h-px bg-[var(--border)]" /> : null}
-    </>
+        </span>
+      ) : (
+        check
+      )}
+    </div>
   );
 }
 
