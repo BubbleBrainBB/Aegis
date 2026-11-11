@@ -72,6 +72,14 @@ app.whenReady().then(async()=>{
  const active=()=>js('[...document.querySelectorAll("[data-active-tasks] [data-session-id]")].map(e=>e.dataset.sessionId)');
  const projectMenu='document.querySelector("[data-task-project-menu]")';
  const pickProject=async name=>{await js('document.querySelector("[data-task-project-filter]").click()');await until('!!'+projectMenu);await js('document.querySelector("[data-project-choice=\\"'+(name?'/projects/'+name:'')+'\\"]").click()');await until('!'+projectMenu)};
+ const choice=name=>'document.querySelector("[data-project-choice=\\"/projects/'+name+'\\"]")';
+ const choices=()=>js('[...document.querySelectorAll("[data-project-choice]")].map(e=>e.textContent)');
+ const moreRow='document.querySelector("[data-project-more]")';
+ const menuInput='document.querySelector("[data-task-project-menu] input")';
+ const menuKey=k=>js(menuInput+'.dispatchEvent(new KeyboardEvent("keydown",{key:"'+k+'",bubbles:true,cancelable:true}))');
+ const held=()=>js('document.querySelector("[data-task-project-menu] [data-highlighted]")?.dataset.projectChoice');
+ const heldInView='(()=>{const l='+projectMenu+'.querySelector("[role=listbox]").getBoundingClientRect(),r='+projectMenu+'.querySelector("[data-highlighted]").getBoundingClientRect();return r.top>=l.top-1&&r.bottom<=l.bottom+1})()';
+ const typeProject=text=>js('(()=>{const i='+menuInput+';Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set.call(i,'+JSON.stringify(text)+');i.dispatchEvent(new Event("input",{bubbles:true}))})()');
  const statusMenu='document.querySelector("[data-task-status-menu]")';
  const key=async k=>{for(const type of ['keyDown','char','keyUp'])win.webContents.sendInputEvent({type,keyCode:k});await delay(60)};
  const filter=label=>'[...document.querySelectorAll("[aria-label=\\"Filter tasks\\"] button")].find(e=>e.textContent==='+JSON.stringify(label)+')';
@@ -166,12 +174,26 @@ app.whenReady().then(async()=>{
   await js(filter('All')+'.click()');await until('document.querySelectorAll("[data-task-list] [data-session-id]").length>5');
   // A project narrows the page, and its name stops repeating on every row.
   await js('document.querySelector("[data-task-project-filter]").click()');await until('!!'+projectMenu);
-  assert.equal(await js('document.querySelector("[data-project-choice=\\"/projects/coworker\\"]").textContent'),'coworker3','each project says how many tasks it has');
+  // The menu lists the projects worked in lately and folds the rest away.
+  assert.deepEqual(await choices(),['All projects','coworker','launch-site','test','insight-daily','test-astra'],'the five latest projects, by name alone');
+  assert.equal(await js(moreRow+'.textContent'),'17 more');
+  assert.equal(await js('document.querySelector("[data-project-choice=\\"\\"]").getAttribute("aria-selected")'),'true');
+  assert.equal(await js('!!document.querySelector("[data-project-choice=\\"\\"] svg")'),true,'the choice in force carries the check');
+  assert.equal(await js('document.querySelector("[data-project-add]").getAttribute("aria-label")'),'Add project…','adding a project sits beside the search');
+  assert.equal(await js('[...'+projectMenu+'.querySelectorAll("button")].some(e=>e.textContent.includes("Add project"))'),false,'and the menu has no footer');
   await shot('project-menu');
   const desktopRow=await rect('document.querySelector("[data-project-choice=\\"/projects/coworker\\"]")');
   win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(desktopRow.x+80),y:Math.round(desktopRow.y+10)});await delay(150);
   assert.equal(await js('getComputedStyle(document.querySelector("[data-project-choice=\\"/projects/coworker\\"] [aria-label=\\"New task in coworker\\"]")).display!=="none"'),true,'hovering a project shows its actions');
   await shot('project-menu-hover');
+  // The fold opens from the keyboard too, and a long list scrolls instead of squeezing its rows.
+  // The pointer is on coworker, the second row; the fold is five rows down.
+  for(let i=0;i<5;i++)await menuKey('ArrowDown');
+  await menuKey('Enter');await until('!'+moreRow);
+  assert.equal((await choices()).length,23,'every project once unfolded');
+  assert.equal(await js('[...document.querySelectorAll("[data-project-choice]")].every(e=>e.getBoundingClientRect().height===28)'),true,'rows keep their height');
+  assert.equal(await js('(()=>{const l='+projectMenu+'.querySelector("[role=listbox]");return l.scrollHeight>l.clientHeight})()'),true,'the list scrolls');
+  await shot('project-menu-unfolded');
   await js('document.querySelector("[data-project-choice=\\"/projects/coworker\\"]").click()');await until('document.querySelectorAll("[data-task-list] [data-session-id]").length===3');
   assert.equal(await title(),'coworker');
   assert.deepEqual(await rows(),['waiting','running','review']);
@@ -271,6 +293,29 @@ app.whenReady().then(async()=>{
   // New task from a project in the filter starts there.
   await js('qa.store.getState().setActiveWorkspace("tasks")');await until('!!document.querySelector("[data-task-project-filter]")');
   await js('document.querySelector("[data-task-project-filter]").click()');await until('!!'+projectMenu);
+  // An older project is folded away; the search still finds it, and once picked it stays listed.
+  assert.equal(await js('!!'+choice('podcasts')),false);
+  await typeProject('podc');await until('!!'+choice('podcasts'));
+  assert.deepEqual(await choices(),['podcasts']);
+  assert.equal(await js('!!'+moreRow),false,'a search has no fold');
+  await js(choice('podcasts')+'.click()');await until('!'+projectMenu);
+  await js('document.querySelector("[data-task-project-filter]").click()');await until('!!'+projectMenu);
+  assert.deepEqual(await choices(),['All projects','coworker','launch-site','test','insight-daily','test-astra','podcasts']);
+  assert.equal(await js(choice('podcasts')+'.getAttribute("aria-selected")'),'true');
+  assert.equal(await js(moreRow+'.textContent'),'16 more');
+  await shot('project-menu-selected-older');
+  // Unfolded from the keyboard, the highlight lands on the first project that was hidden, not on whatever took the fold's place.
+  for(let i=0;i<10&&!(await js(moreRow+'.hasAttribute("data-highlighted")'));i++)await menuKey('ArrowDown');
+  assert.equal(await js(moreRow+'.hasAttribute("data-highlighted")'),true);
+  await menuKey('Enter');await until('!'+moreRow);
+  assert.equal(await held(),'/projects/test-mimo-2.6');
+  // Arrowing past the bottom of the list scrolls the highlight into view.
+  for(let i=0;i<12;i++)await menuKey('ArrowDown');
+  await until(heldInView);
+  // The highlight follows its project when activity elsewhere reorders the list.
+  const heldBefore=await held();
+  await js('qa.store.setState(s=>({sessions:{...s.sessions,p19:{...s.sessions.p19,updatedAt:Date.now()}}}))');await until('document.querySelectorAll("[data-project-choice]")[1].dataset.projectChoice==="/projects/paper-plane"');
+  assert.equal(await held(),heldBefore);
   await js('document.querySelector("[data-project-choice=\\"/projects/podcasts\\"] [aria-label=\\"New task in podcasts\\"]").click()');await until('qa.store.getState().sessions[qa.store.getState().activeSessionId]?.isDraft===true');
   assert.equal(await js('qa.store.getState().sessions[qa.store.getState().activeSessionId].cwd'),'/projects/podcasts');
   assert.equal(await js('!!document.querySelector("[data-chat-stub]")'),true);
