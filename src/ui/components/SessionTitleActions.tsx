@@ -1,7 +1,9 @@
+import { toast } from 'sonner';
 import { useAppStore } from '../store/useAppStore';
 import { findProposalForChild, useFollowUpStore } from '../store/useFollowUpStore';
 import { useSidebarViewStore } from '../store/useSidebarViewStore';
 import { getProjectLabel } from '../utils/sidebar-view';
+import { formatTaskNumber } from '../utils/task-mentions';
 import type { SessionView } from '../types';
 import { Loader2, Monitor } from './icons';
 import { SessionActionsMenu } from './SessionActionsMenu';
@@ -60,6 +62,27 @@ function ParentCrumb({ sessionId }: { sessionId: string }) {
   );
 }
 
+/** The task's short number, the handle to type after `#` in another task's composer. A click copies it. */
+function TaskNumber({ number }: { number: number }) {
+  const label = formatTaskNumber(number);
+  return (
+    <button
+      type="button"
+      className="no-drag flex-shrink-0 rounded-md text-[12.5px] font-normal tabular-nums text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+      title="Copy task number"
+      onClick={() => {
+        void navigator.clipboard.writeText(label).then(
+          () => toast.success(`Copied ${label}`),
+          () => toast.error('Could not copy the task number.')
+        );
+      }}
+      data-session-task-number
+    >
+      {label}
+    </button>
+  );
+}
+
 /**
  * Keep the conversation menu beside its title, including in split panes. The
  * main title bar sets `showMenu={false}` and puts the menu with its other
@@ -79,6 +102,7 @@ export function SessionTitleActions({ session, className = '', showMenu = true, 
       {session && tasksCrumb && !session.isDraft && !session.hiddenFromThreads && session.scope !== 'dm' ? <TasksCrumb session={session} /> : null}
       {session ? <ParentCrumb sessionId={session.id} /> : null}
       <SessionTitleEditor session={session} className={className} />
+      {session?.number ? <TaskNumber number={session.number} /> : null}
       {session?.device ? (
         <span data-session-machine className="no-drag inline-flex h-6 flex-shrink-0 items-center gap-[5px] rounded-[7px] bg-[var(--sidebar-item-hover)] pl-1.5 pr-2 text-[12.5px] text-[var(--text-secondary)]">
           <Monitor className="h-3.5 w-3.5" />

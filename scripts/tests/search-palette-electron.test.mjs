@@ -30,7 +30,8 @@ const long='We looked at the failing upload first. '.repeat(3)+'The retry helper
 const threads=[
  {id:'a',title:'Retry helper',projectName:'coworker',updatedAt:now-2*h,texts:[]},
  {id:'b',title:'Upload debugging',projectName:'coworker',updatedAt:now-h,texts:['why does upload fail?',long,'see the retry helper pr']},
- {id:'c',title:'Release notes',projectName:'coworker',updatedAt:now-30*60000,texts:[]},
+ {id:'c',number:128,title:'Release notes',projectName:'coworker',updatedAt:now-30*60000,texts:[]},
+ {id:'d',title:'Merged pull request 128',projectName:'coworker',updatedAt:now-10*h,texts:[]},
 ];
 window.qa={events:[]};
 function Harness(){
@@ -67,7 +68,7 @@ app.whenReady().then(async()=>{
 
   // Empty query: every action, then the most recent threads; no projects.
   assert.deepEqual(await headings(),['Recent sessions','Actions']);
-  assert.deepEqual(await values(),['thread:c','thread:b','thread:a','action:new-thread','action:open-project','action:settings']);
+  assert.deepEqual(await values(),['thread:c','thread:b','thread:a','thread:d','action:new-thread','action:open-project','action:settings']);
   assert.equal(await selected(),'thread:c','the most recent session starts highlighted');
   assert.equal(await js('document.body.textContent.includes("⌘N")'),true,'action shortcuts show');
   await screenshot('1-empty');
@@ -90,6 +91,17 @@ app.whenReady().then(async()=>{
   assert.equal(await selected(),'thread:b');
   await key('Return');
   assert.deepEqual(await js('qa.events'),['open:false','thread:b'],'the palette closes before the pick runs');
+
+  // A task's number opens that task ahead of text that merely contains the digits.
+  await js('qa.open()');await delay(300);
+  await type('#128');
+  assert.deepEqual(await values(),['thread:c'],'only the numbered task answers to #128');
+  assert.equal(await js('[...document.querySelectorAll("[cmdk-item]")].find(e=>e.dataset.value==="thread:c").textContent.startsWith("#128Release notes")'),true,'the row shows the number it matched');
+  await type('128');
+  assert.deepEqual(await values(),['thread:c','thread:d'],'the bare number leads a title that contains it');
+  await screenshot('4-task-number');
+  await key('Return');
+  assert.deepEqual((await js('qa.events')).slice(-2),['open:false','thread:c']);
 
   // Reopening starts from an empty query.
   await js('qa.open()');await delay(300);

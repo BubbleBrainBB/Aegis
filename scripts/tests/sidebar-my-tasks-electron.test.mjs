@@ -32,7 +32,7 @@ const fixed=[
  task('failed','Create a detailed voxel art model and keep every layer editable','test-opus-5.5',{runtimeNotice:'error',updatedAt:now-day*20}),
  task('waiting','Run the release script','coworker',{updatedAt:now-day*30,permissionRequests:[{sessionId:'waiting',toolUseId:'t1',toolName:'Bash',input:{command:'npm run release'}}]}),
  task('running','Rewrite the sidebar as a task page','coworker',{status:'running',provider:'codex',updatedAt:now-60000}),
- task('review','Move Search below New Task','coworker',{runtimeNotice:'completed',updatedAt:now-day*2}),
+ task('review','Move Search below New Task','coworker',{runtimeNotice:'completed',updatedAt:now-day*2,number:128}),
  task('done','Give this article a cyberpunk title','test',{updatedAt:now-day*4}),
  // Ran since you last closed it and you have read the answer: still yours to close.
  task('seen','Explain why the build is slow','insight-daily',{updatedAt:now-day*5.5}),
@@ -130,6 +130,8 @@ app.whenReady().then(async()=>{
   await until('!!document.querySelector("[data-session-hover-card]")');await shot('sidebar-hover-card');
   const hoverCard=await js('document.querySelector("[data-session-hover-card]").textContent');
   assert.ok(hoverCard.includes('Move Search below New Task')&&hoverCard.includes('coworker'),'the hover card names the task and its project: '+hoverCard);
+  assert.equal(await js('document.querySelector("[data-session-hover-card] [data-session-task-number]").textContent'),'#128 · ','the card leads its age with the task number');
+  assert.equal(await js('!!document.querySelector("[data-active-tasks] [data-session-task-number]")'),false,'rows show no number');
   await until('document.querySelector("[data-session-hover-card]").textContent.includes("feat/search-row")');await shot('sidebar-hover-card-branch');
   assert.equal(await js('(()=>{const c=document.querySelector("[data-session-hover-card]").getBoundingClientRect(),r=document.querySelector("[data-active-tasks] [data-session-id=review]").getBoundingClientRect();return c.left>=r.right&&Math.abs(c.top-r.top)<2})()'),true,'the card opens beside the row, level with it, and covers no other task');
   win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(cardRow.x+60),y:4});

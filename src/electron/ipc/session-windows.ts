@@ -7,6 +7,12 @@ import type { ServerEvent } from '../../shared/types';
 export const sessionWindows = new Map<number, { window: BrowserWindow; rendererState: Record<string, string> }>();
 
 export function broadcastSessionEvent(primary: BrowserWindow, event: ServerEvent): void {
+  // A window first hears of a new task through one of many status events; each
+  // one carries the task's number so none of their senders has to.
+  if (event.type === 'session.status' && event.payload.number === undefined && !event.payload.device) {
+    const number = getSession(event.payload.sessionId)?.task_number;
+    if (number) event = { ...event, payload: { ...event.payload, number } };
+  }
   const targets = event.type === 'session.open' ? [primary] : [primary, ...[...sessionWindows.values()].map(value => value.window)];
   for (const win of new Set(targets)) {
     if (!win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.send('server-event', JSON.stringify(event));

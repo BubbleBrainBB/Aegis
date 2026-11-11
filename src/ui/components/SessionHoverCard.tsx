@@ -8,6 +8,7 @@ import { findProposalForChild, useFollowUpStore } from '../store/useFollowUpStor
 import { primaryPullRequest } from '../store/useSidebarPullRequests';
 import { PULL_REQUEST_STATUS, pullRequestRepo, pullRequestStatus, type PullRequestStatus } from './pull-request-status';
 import { formatAge, getProjectLabel } from '../utils/sidebar-view';
+import { formatTaskNumber } from '../utils/task-mentions';
 import type { GitPullRequestSummary } from '../../shared/types';
 import type { SessionView } from '../types';
 
@@ -283,6 +284,7 @@ export function SessionHoverCard({
                 {session.title}
               </div>
               <div className="flex-shrink-0 text-[11px] tabular-nums text-[var(--text-muted)]">
+                {session.number ? <span data-session-task-number>{formatTaskNumber(session.number)} · </span> : null}
                 {formatAge(session.updatedAt)}
               </div>
             </div>

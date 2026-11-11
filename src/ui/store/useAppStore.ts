@@ -547,6 +547,7 @@ function freshSessionViewFromInfo(info: import('../../shared/types').SessionInfo
     id: info.id,
     title: info.title,
     titlePending: info.titlePending === true,
+    number: info.number,
     status: info.status,
     scope: info.scope,
     agentId: info.agentId || null,
@@ -3138,6 +3139,7 @@ function handleSessionList(
       id: session.id,
       title: session.title,
       titlePending: session.titlePending === true,
+      number: session.number,
       status: session.status,
       scope: sessionScope,
       agentId: session.agentId || null,
@@ -3265,6 +3267,7 @@ function handleSessionStatus(
     status: SessionInfo['status'];
     title?: string;
     titlePending?: boolean;
+    number?: number;
     scope?: SessionInfo['scope'];
     agentId?: SessionInfo['agentId'];
     /** A new session started in the background: list it without focusing it. */
@@ -3392,6 +3395,7 @@ function handleSessionStatus(
           computerUseLive: shouldAcceptComputerUseLive(status) ? session.computerUseLive : null,
           title: title || session.title,
           ...(payload.titlePending !== undefined ? { titlePending: payload.titlePending } : {}),
+          ...(payload.number !== undefined ? { number: payload.number } : {}),
           scope: scope || session.scope || 'project',
           agentId:
             agentId !== undefined
@@ -3502,6 +3506,7 @@ function handleSessionStatus(
       id: sessionId,
       title: title || 'New Session',
       titlePending: payload.titlePending === true,
+      number: payload.number,
       status,
       device: payload.device,
       scope: scope || 'project',

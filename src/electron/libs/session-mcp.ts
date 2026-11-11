@@ -22,7 +22,7 @@ import { reportClaudeStatus, reportStatus, reportStatusDescription, reportStatus
 
 export const SESSION_MCP_SERVER_NAME = 'aegis-sessions';
 const schema = {
-  sessionId: z.string().describe('The Aegis session ID from a conversation link.'),
+  sessionId: z.string().describe('The Aegis session ID from a conversation link, or a task number such as 128.'),
   cursor: z.string().optional(),
   limit: z.number().int().min(1).max(20).optional(),
   maxMessageChars: z.number().int().min(1).max(12000).optional(),

@@ -10,7 +10,7 @@ import type { ShowWidgetInput } from '../../shared/widget';
 export const SESSION_READER_JSON_SCHEMA = {
   type: 'object', additionalProperties: false, required: ['sessionId'],
   properties: {
-    sessionId: { type: 'string', description: 'Aegis session ID from the conversation link.' },
+    sessionId: { type: 'string', description: 'Aegis session ID from the conversation link, or a task number such as 128.' },
     cursor: { type: 'string' },
     limit: { type: 'integer', minimum: 1, maximum: 20 },
     maxMessageChars: { type: 'integer', minimum: 1, maximum: 12000 },

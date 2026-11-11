@@ -70,6 +70,8 @@ export interface SessionRow {
   pinned: number | null;
   folder_path: string | null;
   hidden_from_threads: number | null;
+  /** The task's short number (#128), counted per machine; null for sessions kept out of the lists. */
+  task_number: number | null;
   workspace_channel_id: string | null;
   team_mode: import('../shared/types').SessionTeamMode | null;
   team_id: string | null;

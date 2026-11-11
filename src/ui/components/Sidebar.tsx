@@ -362,6 +362,7 @@ export function Sidebar() {
 
       return {
         id: session.id,
+        number: session.number,
         title: session.title,
         projectName,
         updatedAt: session.updatedAt,

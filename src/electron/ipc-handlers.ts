@@ -9844,6 +9844,7 @@ function buildSessionInfoFromRow(
     pinned: row.pinned === 1,
     folderPath: row.folder_path || null,
     hiddenFromThreads: row.hidden_from_threads === 1,
+    ...(row.task_number ? { number: row.task_number } : {}),
     channelId: normalizeWorkspaceChannelId(row.workspace_channel_id),
     teamMode: normalizeSessionTeamMode(row.team_mode),
     teamId: row.team_id || null,
