@@ -69,13 +69,20 @@ app.whenReady().then(async()=>{
  const js=code=>win.webContents.executeJavaScript(code,true);
  const until=async(code,label)=>{for(let i=0;i<160;i++){if(await js(code))return;await delay(60);}throw new Error('Timed out: '+label+' (rows '+JSON.stringify(await js('qa.rows()'))+', text '+JSON.stringify(await js('qa.editor()?.textContent'))+')');};
  const snap=async name=>{if(process.env.QA_CAPTURE){fs.mkdirSync(process.env.QA_CAPTURE,{recursive:true});fs.writeFileSync(path.join(process.env.QA_CAPTURE,name+'.png'),(await win.webContents.capturePage()).toPNG());}};
- const focus=async()=>{win.focus();win.webContents.focus();await js('qa.editor().focus()');};
- const type=async text=>{await focus();await win.webContents.insertText(text);await delay(150);};
- const clear=async()=>{await focus();await js('document.execCommand("selectAll");document.execCommand("delete")');await delay(120);};
- const key=async(keyCode,modifiers=[])=>{await focus();win.webContents.sendInputEvent({type:'keyDown',keyCode,modifiers});if(keyCode==='Enter')win.webContents.sendInputEvent({type:'char',keyCode:String.fromCharCode(13),modifiers});win.webContents.sendInputEvent({type:'keyUp',keyCode,modifiers});await delay(180);};
+ // Focus the editor only when it lost focus: focusing it again moves the caret, and
+ // webContents.focus() clears the page's focused element on a runner whose window is in the background.
+ const focus=()=>js('(()=>{const e=qa.editor();if(document.activeElement!==e)e.focus();})()');
+ const type=async text=>{await focus();const before=await js('qa.editor().textContent');await win.webContents.insertText(text);await until('qa.editor().textContent!=='+JSON.stringify(before),'typed '+text);};
+ const clear=async()=>{await focus();await js('document.execCommand("selectAll");document.execCommand("delete")');await until('qa.editor().textContent===""','cleared');};
+ const key=async(keyCode,modifiers=[])=>{await focus();win.webContents.sendInputEvent({type:'keyDown',keyCode,modifiers});if(keyCode==='Enter')win.webContents.sendInputEvent({type:'char',keyCode:String.fromCharCode(13),modifiers});win.webContents.sendInputEvent({type:'keyUp',keyCode,modifiers});await delay(120);};
+ // Press a key and wait for what it should cause. A slow runner drops keys: send it again only when nothing came of it for a while.
+ const press=async(keyCode,expr,label)=>{for(let attempt=0;attempt<3;attempt++){await key(keyCode);for(let i=0;i<30;i++){if(await js(expr))return;await delay(50);}}throw new Error('Timed out: '+label+' after '+keyCode+' (rows '+JSON.stringify(await js('qa.rows()'))+', text '+JSON.stringify(await js('qa.editor()?.textContent'))+')');};
  const rows=()=>js('qa.rows()');
  try {
   await win.loadURL(process.env.QA_URL);await until('!!window.qa && !!qa.editor()','composer ready');win.focus();
+  // A window in the background drops key events unless the page is told it has focus.
+  try{win.webContents.debugger.attach('1.3')}catch{}
+  await win.webContents.debugger.sendCommand('Emulation.setFocusEmulationEnabled',{enabled:true});
 
   // The number sits beside the title; a click copies it as typed.
   assert.equal(await js('document.querySelector("[data-session-task-number]").textContent'),'#5');
@@ -90,8 +97,7 @@ app.whenReady().then(async()=>{
   assert.equal(await js('qa.selected()'),12);
   await snap('2-menu');
   // Enter still sends: the same text names pull requests.
-  await key('Enter');
-  await until('qa.editor().textContent===""','sent');
+  await press('Enter','qa.editor().textContent===""','sent');
   assert.deepEqual(sent,['PR #12']);
   assert.deepEqual(await rows(),[]);
 
@@ -99,25 +105,21 @@ app.whenReady().then(async()=>{
   await type('see #1');
   await until('qa.rows().length===2','menu for #1');
   assert.deepEqual(await rows(),[128,12],'both start with 1: the newer first');
-  await key('Down');
-  assert.equal(await js('qa.selected()'),12);
-  await key('Enter');
-  await until('qa.chips().length===1','picked with Enter');
+  await press('Down','qa.selected()===12','highlight moved');
+  await press('Enter','qa.chips().length===1','picked with Enter');
   assert.deepEqual(await js('qa.chips()'),[[A,'↗Sidebar search row']]);
   assert.deepEqual(await rows(),[]);
   assert.equal(sent.length,1);
   await snap('3-chip');
   // The picked task goes out as its conversation link.
   await type('first');
-  await key('Enter');
-  await until('qa.editor().textContent===""','sent with a reference');
+  await press('Enter','qa.editor().textContent===""','sent with a reference');
   assert.equal(sent[1],'see aegis://sessions/'+A+' first');
 
   // Tab picks at once; titles match, and text written without spaces can lead.
   await type('接着#palette');
   await until('qa.rows().length===1','title match');
-  await key('Tab');
-  await until('qa.chips().length===1','picked with Tab');
+  await press('Tab','qa.chips().length===1','picked with Tab');
   assert.equal((await js('qa.chips()'))[0][0],B);
   await clear();
 
@@ -126,18 +128,14 @@ app.whenReady().then(async()=>{
   await until('qa.rows().length===2','menu before a modified arrow');
   await key('Down',['shift']);
   assert.equal(await js('qa.selected()'),128,'the highlight did not move');
-  await key('Enter');
-  await until('qa.editor().textContent===""','sent after a modified arrow');
+  await press('Enter','qa.editor().textContent===""','sent after a modified arrow');
   assert.equal(sent[2],'see #1');
 
   // A pick replaces the number only: the bracket after it stays.
   await type('see (#12)');
-  await key('Left');
-  await until('qa.rows().length===2','menu inside brackets');
-  await key('Tab');
-  await until('qa.chips().length===1','picked inside brackets');
-  await key('Enter');
-  await until('qa.editor().textContent===""','sent with brackets');
+  await press('Left','qa.rows().length===2','menu inside brackets');
+  await press('Tab','qa.chips().length===1','picked inside brackets');
+  await press('Enter','qa.editor().textContent===""','sent with brackets');
   assert.equal(sent[3],'see (aegis://sessions/'+A+')');
 
   // "@#12" belongs to the file menu: the task menu neither shows nor takes Tab.
@@ -177,8 +175,7 @@ app.whenReady().then(async()=>{
   const before=sent.length;
   await type('see aegis://sessions/'+A+' ');
   await until('qa.chips().length===1','pasted reference');
-  await key('Enter');
-  await until('document.body.textContent.includes("read tasks on this Mac")','remote reference refused');
+  await press('Enter','document.body.textContent.includes("read tasks on this Mac")','remote reference refused');
   assert.equal(sent.length,before);
   assert.equal((await js('qa.chips()')).length,1,'the draft is kept');
   await clear();
@@ -195,15 +192,13 @@ app.whenReady().then(async()=>{
   await type('#128');
   await until('qa.rows().length===1','menu in the new task composer');
   await snap('4-new-task');
-  await key('Tab');
-  await until('qa.chips().length===1','picked in the new task composer');
+  await press('Tab','qa.chips().length===1','picked in the new task composer');
   assert.deepEqual(await js('qa.chips()'),[[B,'↗Search palette ranking']]);
 
   // Switching the project to one on another Mac afterwards holds the start back.
   await js('qa.store.setState({projectCwd:"/aegis-remote/abcdef012345/p1/coworker"})');await delay(300);
   await until('!document.body.textContent.includes("read tasks on this Mac")','earlier notice gone');
-  await key('Enter');
-  await until('document.body.textContent.includes("read tasks on this Mac")','remote start refused');
+  await press('Enter','document.body.textContent.includes("read tasks on this Mac")','remote start refused');
   assert.equal(started,0);
   assert.equal((await js('qa.chips()')).length,1,'the draft is kept');
 
