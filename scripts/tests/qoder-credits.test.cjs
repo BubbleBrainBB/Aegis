@@ -98,7 +98,9 @@ for (const byModel of [{ Auto: 2, Fast: 1 }, { Fast: 1, Auto: 2 }]) {
 }
 
 // A copied transcript shows the conversation and bills nothing: a task handed
-// to Claude and back, or forked, adds no credits until it runs a turn of its own.
+// to Claude and back, or forked, adds no credits until it runs a turn of its
+// own. The copies keep their totals and are marked, and a marked result is
+// neither counted nor used as the base for the turn after it.
 {
   const total = () => sessions.getAgentUsageReport('qoder', 30).billing.credits;
   const spent = total();
@@ -109,15 +111,23 @@ for (const byModel of [{ Auto: 2, Fast: 1 }, { Fast: 1, Auto: 2 }]) {
   const fork = sessions.createSession({ title: 'Qoder task (fork)', cwd: tmp, provider: 'qoder', model: 'Auto' });
   sessions.copySessionHistory(task.id, fork.id);
   near(total(), spent, 'copies add nothing');
-  assert.ok(sessions.getSessionHistory(back.id).length > 0, 'the transcript was copied');
-  assert.ok(sessions.getSessionHistory(back.id).every((message) => message.qoderCredits === undefined), 'without the credit totals');
-  assert.ok(sessions.getSessionHistory(task.id).some((message) => message.qoderCredits), 'which stay on the task that spent them');
+  const copied = sessions.getSessionHistory(back.id).filter((message) => message.type === 'result');
+  assert.ok(copied.length > 0, 'the transcript was copied');
+  assert.ok(copied.every((message) => message.copiedFromSessionId === task.id), 'each copied result names the task that ran it, through both copies');
+  assert.ok(sessions.getSessionHistory(task.id).every((message) => !message.copiedFromSessionId), 'the original is not marked');
   // The returned task's own first turn, in a new Qoder session, counts from zero.
   sessions.addMessage(back.id, {
     type: 'result', subtype: 'success', duration_ms: 1, total_cost_usd: 0, usage: { input_tokens: 0, output_tokens: 0 }, model: 'Auto', createdAt: now - 100,
     qoderCredits: { sessionId: 'q-back', total: 0.4, byModel: { Auto: 0.4 } },
   });
   near(total(), spent + 0.4, 'its own turn counts');
+  // Nor is a copy a base for a range that starts after it: the fork's own turn
+  // in the Qoder session of the copied totals would otherwise count only the difference.
+  sessions.addMessage(fork.id, {
+    type: 'result', subtype: 'success', duration_ms: 1, total_cost_usd: 0, usage: { input_tokens: 0, output_tokens: 0 }, model: 'Auto', createdAt: now - 50,
+    qoderCredits: { sessionId: 'q-fork', total: 0.3, byModel: { Auto: 0.3 } },
+  });
+  near(total(), spent + 0.4 + 0.3, "the fork's own turn counts from zero");
 }
 
 // Other agents are untouched: no billing block for one that reports none.

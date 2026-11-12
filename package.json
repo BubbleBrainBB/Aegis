@@ -140,7 +140,7 @@
     "verify:composer-agent-selection": "node scripts/verify-composer-agent-selection.mjs",
     "verify:reasoning-picker": "node scripts/tests/reasoning-picker-electron.test.mjs",
     "verify:codex-reasoning": "npm run transpile:electron && npx tsx scripts/tests/codex-reasoning-effort.test.ts && node scripts/tests/codex-reasoning-catalog.test.cjs",
-    "verify:session-handoff": "npm run transpile:electron && node scripts/verify-session-handoff.mjs",
+    "verify:session-handoff": "npm run transpile:electron && node scripts/verify-session-handoff.mjs && node scripts/tests/copied-history-usage.test.cjs",
     "verify:claude-plan-slash": "npx tsx scripts/tests/claude-plan-slash-command.test.ts",
     "verify:claude-task-tools": "npx tsx scripts/tests/claude-task-tools.test.ts",
     "verify:claude-sdk-signals": "npx tsx scripts/tests/claude-sdk-signals.test.ts",

@@ -2146,6 +2146,12 @@ export type StreamMessage =
        * does not say.
        */
       answeredPrompts?: number;
+      /**
+       * Set on a result that reached this task with copied history (fork,
+       * handoff): the task the turn ran in. Such a row is transcript only;
+       * its usage and cost are counted in that task, never here.
+       */
+      copiedFromSessionId?: string;
     })
   | (StreamMessageBase & {
       type: 'plan_update';
@@ -2180,6 +2186,8 @@ export type StreamMessage =
       costDetails?: ProviderCostDetails;
       usage: Usage;
       model?: string;
+      /** As on a result: a copy from that task, counted there. */
+      copiedFromSessionId?: string;
     })
   | (StreamMessageBase & { type: 'stream_event'; event: StreamEvent })
   // A show_widget call's HTML while the model is still writing it. Transient:
