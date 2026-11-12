@@ -670,6 +670,10 @@ export function initialize(): void {
   backfillMessageMetadata();
   backfillExternalizedMessagePayloads();
   rebalanceSearchIndexText();
+  const markedCopies = markResultsCopiedBeforeMarking();
+  if (markedCopies > 0) {
+    console.log(`[session-store] Marked ${markedCopies} results copied by earlier forks and handoffs; usage reports no longer count them twice.`);
+  }
 }
 
 /**
@@ -2638,10 +2642,78 @@ export function replaceSessionHistory(sessionId: string, messages: StreamMessage
 }
 
 /**
+ * A result or usage record that came with copied history. Its usage and cost
+ * belong to the task the turn ran in, so nothing that totals usage counts it.
+ */
+export function isCopiedUsage(message: StreamMessage): boolean {
+  return (message.type === 'result' || message.type === 'usage_record') && !!message.copiedFromSessionId;
+}
+
+/** A stored result without what a copy changes or adds, so a copy and its original compare equal. */
+function storedResultIdentity(data: string): string | null {
+  try {
+    const parsed = JSON.parse(data) as Record<string, unknown> | null;
+    if (!parsed || parsed.type !== 'result') return null;
+    for (const key of ['uuid', 'parentTurnId', 'createdAt', 'copiedFromSessionId']) delete parsed[key];
+    return JSON.stringify(parsed);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Marks the copies made by forks and handoffs before copies were marked. A
+ * result older than the task that holds it, and identical to a result in a
+ * task created earlier, was copied from there. A copy whose original is gone
+ * is left alone: its turn is then still counted once. Returns how many rows it
+ * marked; once they are marked there is nothing left to find.
+ */
+export function markResultsCopiedBeforeMarking(): number {
+  const database = getDb();
+  const candidates = database.prepare(`
+    SELECT m.id, m.data, m.created_at, s.created_at AS task_created_at
+    FROM messages m
+    INNER JOIN sessions s ON s.id = m.session_id
+    WHERE m.message_type = 'result' AND m.created_at < s.created_at
+  `).all() as Array<{ id: string; data: string; created_at: number; task_created_at: number }>;
+  if (candidates.length === 0) return 0;
+
+  const earlierStmt = database.prepare(`
+    SELECT m.session_id, m.data
+    FROM messages m
+    INNER JOIN sessions s ON s.id = m.session_id
+    WHERE m.message_type = 'result' AND m.created_at = ? AND s.created_at < ?
+    ORDER BY s.created_at ASC, s.rowid ASC
+  `);
+  const updateStmt = database.prepare('UPDATE messages SET data = ? WHERE id = ?');
+  let marked = 0;
+  database.transaction(() => {
+    for (const row of candidates) {
+      const identity = storedResultIdentity(row.data);
+      if (!identity) continue;
+      const message = JSON.parse(row.data) as { copiedFromSessionId?: string };
+      if (message.copiedFromSessionId) continue;
+      const earlier = earlierStmt.all(row.created_at, row.task_created_at) as Array<{ session_id: string; data: string }>;
+      const original = earlier.find((other) => storedResultIdentity(other.data) === identity);
+      if (!original) continue;
+      // The earliest task that still holds the turn, or the one its own mark names.
+      const ranIn = (JSON.parse(original.data) as { copiedFromSessionId?: string }).copiedFromSessionId || original.session_id;
+      updateStmt.run(JSON.stringify({ ...message, copiedFromSessionId: ranIn }), row.id);
+      marked += 1;
+    }
+  })();
+  if (marked > 0) invalidateClaudeUsageReportCache();
+  return marked;
+}
+
+/**
  * Copy one session's transcript into another (for forking). Every message is
  * re-keyed with a fresh uuid so it doesn't collide with the source's rows
  * (messages.id is the message uuid, unique across the table); parentTurnId is
  * remapped consistently so turn grouping survives the copy.
+ *
+ * Copied results keep their numbers for the transcript and the context ring,
+ * and are marked with the task their turn ran in (see isCopiedUsage).
  */
 export function copySessionHistory(sourceSessionId: string, destSessionId: string): void {
   const history = getSessionHistory(sourceSessionId);
@@ -2664,9 +2736,10 @@ export function copySessionHistory(sourceSessionId: string, destSessionId: strin
     if (typeof source.parentTurnId === 'string' && idMap.has(source.parentTurnId)) {
       next.parentTurnId = idMap.get(source.parentTurnId);
     }
-    // The copy shows the conversation. Qoder's credit totals stay with the
-    // task that spent them: read again from the copy they would be billed twice.
-    delete (next as { qoderCredits?: unknown }).qoderCredits;
+    if (message.type === 'result' || message.type === 'usage_record') {
+      // A copy of a copy still names the task that ran the turn.
+      (next as { copiedFromSessionId?: string }).copiedFromSessionId = message.copiedFromSessionId || sourceSessionId;
+    }
     return next as StreamMessage;
   });
 
@@ -3276,8 +3349,9 @@ function readCodexReportedCosts(sessionId: string): CodexReportedCostWindow[] {
       const result = readStoredMessagePayload(row.data, row.created_at);
       if (result.type !== 'result') continue;
       if (result.parentToolUseId || result.sourceProvider || result.agentId) continue;
-      // Earlier Claude turns survive a provider handoff; their price is not a Codex turn price.
-      if (result.modelUsage && Object.keys(result.modelUsage).some(looksLikeClaudeModelAlias)) {
+      // Turns copied in by a fork or handoff, and earlier Claude turns that
+      // survive a provider handoff: their price is not a price of this task's Codex turns.
+      if (isCopiedUsage(result) || (result.modelUsage && Object.keys(result.modelUsage).some(looksLikeClaudeModelAlias))) {
         start = row.created_at;
         continue;
       }
@@ -3593,7 +3667,7 @@ export function getDeepseekSessionCost(sessionId: string): { usd: number | null 
     let message: StreamMessage;
     try { message = readStoredMessagePayload(row.data, row.created_at); }
     catch { return { usd: null }; }
-    if (message.type !== 'result') continue;
+    if (message.type !== 'result' || isCopiedUsage(message)) continue;
     const cost = getStoredDeepseekResultCost(message,
       resolveUsageRowModel('deepseek', session.model, message.model), row.created_at);
     if (cost === null) return { usd: null };
@@ -3704,7 +3778,8 @@ function readQoderCreditTotalsBefore(before: number, sessionIds: ReadonlySet<str
       let credits: QoderCreditTotals | null = null;
       try {
         const parsed = readStoredMessagePayload(row.data, row.created_at);
-        credits = parsed.type === 'result' ? normalizeQoderCredits(parsed.qoderCredits) : null;
+        // A copied result holds another task's totals: no base for this one.
+        credits = parsed.type === 'result' && !isCopiedUsage(parsed) ? normalizeQoderCredits(parsed.qoderCredits) : null;
       } catch {
         // An unreadable row gives no base; the one before it may.
       }
@@ -3787,6 +3862,11 @@ function getClaudeProtocolUsageReport(
     try {
       parsed = readStoredMessagePayload(row.data, row.created_at);
     } catch {
+      continue;
+    }
+
+    // Copied turns were paid for, and are counted, in the task they ran in.
+    if (isCopiedUsage(parsed)) {
       continue;
     }
 

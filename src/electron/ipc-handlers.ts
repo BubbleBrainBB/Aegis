@@ -2039,12 +2039,17 @@ function buildSessionCostSummary(session: ReturnType<typeof sessions.getSession>
     return 'No active session found.';
   }
 
+  // Turns that came with copied history (fork, handoff) are counted in the task they ran in.
   const history = sessions.getSessionHistory(session.id);
   const resultMessages = history.filter(
-    (message): message is StreamMessage & { type: 'result' } => message.type === 'result'
+    (message): message is StreamMessage & { type: 'result' } =>
+      message.type === 'result' && !sessions.isCopiedUsage(message)
   );
   // Stopped turns' incurred usage counts toward tokens and cost, not turns.
-  const usageMessages = [...resultMessages, ...sessions.getSessionUsageRecords(session.id)];
+  const usageMessages = [
+    ...resultMessages,
+    ...sessions.getSessionUsageRecords(session.id).filter((message) => !sessions.isCopiedUsage(message)),
+  ];
 
   if (usageMessages.length === 0) {
     return [
