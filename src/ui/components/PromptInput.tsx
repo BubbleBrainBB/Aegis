@@ -85,6 +85,7 @@ import {
 import { useComposerCapabilityMenu } from '../hooks/useClaudeSkillAutocomplete';
 import { useProjectFileMentions } from '../hooks/useProjectFileMentions';
 import { useTaskMentions } from '../hooks/useTaskMentions';
+import { qoderModelNameAlias } from '../../shared/qoder-models';
 import { localReferenceError } from '../utils/task-mentions';
 import { DEFAULT_WORKSPACE_CHANNEL_ID } from '../../shared/types';
 import {
@@ -103,6 +104,7 @@ import {
   getLatestCodexContextSnapshot,
   getLatestBubbleContextSnapshot,
   getLatestOpenCodeContextSnapshot,
+  getLatestQoderContextSnapshot,
   isClaudeUsageModelMatch,
   withClaudeContextUsage,
 } from '../utils/context-usage';
@@ -562,9 +564,13 @@ export function PromptInput({
   const qoderContextSnapshot = useMemo(
     () =>
       isQoderContextVisible
-        ? getLatestOpenCodeContextSnapshot(activeSession.messages, qoderContextModel, 'Qoder')
+        ? getLatestQoderContextSnapshot(
+            activeSession.messages,
+            qoderContextModel,
+            qoderModelNameAlias(agentSelection.qoderModels, qoderContextModel)
+          )
         : null,
-    [activeSession?.messages, isQoderContextVisible, qoderContextModel]
+    [activeSession?.messages, isQoderContextVisible, qoderContextModel, agentSelection.qoderModels]
   );
   const isRunning = activeSession?.status === 'running';
   // Codex two-phase stop: 'stopping' is a broadcast-only transient while the

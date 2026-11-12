@@ -340,9 +340,12 @@ export function getLatestCodexContextSnapshot(messages: StreamMessage[]): CodexC
 export function getLatestOpenCodeContextSnapshot(
   messages: StreamMessage[],
   preferredModel?: string | null,
-  fallbackModelLabel = 'OpenCode'
+  fallbackModelLabel = 'OpenCode',
+  /** Another name results may carry for the preferred model (Qoder: the picker's name). */
+  preferredModelAlias?: string | null
 ): OpenCodeContextSnapshot | null {
   const normalizedPreferred = preferredModel?.trim().toLowerCase();
+  const normalizedAlias = (normalizedPreferred && preferredModelAlias?.trim().toLowerCase()) || undefined;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (!isResultMessage(message) || !message.usage) {
@@ -361,7 +364,8 @@ export function getLatestOpenCodeContextSnapshot(
     if (
       normalizedPreferred &&
       model &&
-      model.toLowerCase() !== normalizedPreferred
+      model.toLowerCase() !== normalizedPreferred &&
+      model.toLowerCase() !== normalizedAlias
     ) {
       continue;
     }
@@ -390,6 +394,21 @@ export function getLatestOpenCodeContextSnapshot(
   }
 
   return null;
+}
+
+/**
+ * Qoder's latest context snapshot for the selected model. A result names its
+ * model by id, or by the name the picker shows when it was saved from
+ * qodercli 1.1.8x before results were stored by id. `nameAlias` is that name
+ * when it can only mean this model (see qoderModelNameAlias), else null.
+ */
+export function getLatestQoderContextSnapshot(
+  messages: StreamMessage[],
+  model?: string | null,
+  nameAlias?: string | null
+): OpenCodeContextSnapshot | null {
+  // One pass, newest first: the latest usable result under either name.
+  return getLatestOpenCodeContextSnapshot(messages, model, 'Qoder', nameAlias);
 }
 
 /** Native Bubble context is a current snapshot, independent of accumulated billing usage. */

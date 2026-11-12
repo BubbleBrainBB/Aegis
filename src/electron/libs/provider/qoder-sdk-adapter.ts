@@ -26,6 +26,7 @@ import type {
   StreamMessage,
   Usage,
 } from '../../../shared/types';
+import { findQoderModelById, findQoderModelByName, resolveReportedQoderModel } from '../../../shared/qoder-models';
 import type {
   ProviderAdapter,
   ProviderAdapterCapabilities,
@@ -177,7 +178,18 @@ type ActiveQoderSession = {
   providerSessionId: string | null;
   status: ProviderSessionStatus;
   cwd: string;
+  /**
+   * The model the session is on, as far as it is known: an id once
+   * `modelResolved`, else the CLI's own name for a model that could not be
+   * told (see resolveReportedQoderModel). Before the CLI's first init it is
+   * the model that was asked for.
+   */
   model?: string;
+  modelResolved: boolean;
+  /** The id Aegis last asked for: at start, or with setModel. */
+  requestedModel?: string;
+  /** The CLI's latest name for the model: an id, or the name the picker shows. */
+  reportedModel?: string;
   query: QoderQuery;
   promptQueue: QoderPromptQueue;
   /** stopSession ran (or the iterator died) — the session is terminal. */
@@ -528,6 +540,7 @@ export class QoderSdkAdapter implements ProviderAdapter {
     }
 
     const promptQueue = new QoderPromptQueue();
+    const requestedModel = this.requestedModelId(input.model);
     const query = sdk.query({
       prompt: promptQueue,
       options: {
@@ -560,7 +573,10 @@ export class QoderSdkAdapter implements ProviderAdapter {
       providerSessionId: null,
       status: 'connecting',
       cwd,
-      model: input.model?.trim() || undefined,
+      model: requestedModel,
+      // Asked for, not yet named by the CLI.
+      modelResolved: false,
+      requestedModel,
       query,
       promptQueue,
       closed: false,
@@ -649,8 +665,12 @@ export class QoderSdkAdapter implements ProviderAdapter {
     session.status = 'running';
     this.emit({ type: 'status_change', threadId: input.threadId, status: 'running' });
 
-    if (input.model?.trim() && input.model.trim() !== session.model) {
-      await this.setModel(input.threadId, input.model);
+    // Compared by id, so a turn for the model the session is on does not
+    // switch and re-initialize the CLI. A model the CLI named and Aegis could
+    // not tell is not that id, and the asked-for model is applied again.
+    const wantedModel = this.requestedModelId(input.model);
+    if (wantedModel && wantedModel !== session.model) {
+      await this.setModel(input.threadId, wantedModel);
     }
 
     const text = buildPromptText(input.prompt, input.attachments);
@@ -877,12 +897,29 @@ export class QoderSdkAdapter implements ProviderAdapter {
     if (!session || session.closed) {
       throw new Error(`No Qoder session found for thread "${threadId}"`);
     }
-    const normalized = model.trim();
+    const normalized = this.requestedModelId(model);
     if (!normalized) {
       return;
     }
-    await session.query.setModel(normalized);
-    session.model = normalized;
+    // What the CLI said before the switch no longer describes the session.
+    // It is dropped now, not after the await: an init that arrives while the
+    // switch is pending is the CLI's answer to it and has to stay.
+    const before = session.reportedModel;
+    session.reportedModel = undefined;
+    try {
+      await session.query.setModel(normalized);
+    } catch (error) {
+      if (session.reportedModel === undefined) session.reportedModel = before;
+      throw error;
+    }
+    session.requestedModel = normalized;
+    if (session.reportedModel === undefined) {
+      // Asked for and not yet named by the CLI.
+      session.model = normalized;
+      session.modelResolved = true;
+    } else {
+      this.applyReportedModel(session);
+    }
   }
 
   private async refreshModelCatalog(session: ActiveQoderSession): Promise<void> {
@@ -901,6 +938,12 @@ export class QoderSdkAdapter implements ProviderAdapter {
     const catalog = buildModelCatalog(init, currentModel);
     const changed = JSON.stringify(catalog.models) !== JSON.stringify(this.modelCatalog?.models ?? null);
     this.modelCatalog = catalog;
+    // A name the CLI gave before there was a catalog to read it by is read
+    // now. A model that was already told is left alone: a later catalog must
+    // not move it to another model on the strength of an old name.
+    for (const session of this.sessions.values()) {
+      if (!session.modelResolved) this.applyReportedModel(session);
+    }
     if (changed && catalog.models.length > 0) {
       // The IPC layer persists this to disk and rebroadcasts to the UI
       // (qoder.modelConfigUpdated → useQoderModelConfig refetch).
@@ -1136,7 +1179,7 @@ export class QoderSdkAdapter implements ProviderAdapter {
         Promise.resolve({ behavior: 'deny', message: 'One-shot prompts cannot request permissions.' }),
     };
     if (input.model?.trim()) {
-      options.model = input.model.trim();
+      options.model = this.requestedModelId(input.model);
     }
     applyPermissionMode(options, input.qoderPermissionMode);
     if (machineCli) {
@@ -1179,7 +1222,7 @@ export class QoderSdkAdapter implements ProviderAdapter {
         // Already closed.
       }
     }
-    return { text: text.trim(), sessionId, model: input.model };
+    return { text: text.trim(), sessionId, model: this.requestedModelId(input.model) };
   }
 
   // ── Pump: SDK message stream → StreamMessage translation ───────────────
@@ -1416,7 +1459,12 @@ export class QoderSdkAdapter implements ProviderAdapter {
 
   private handleSystemInit(session: ActiveQoderSession, message: QoderSystemInitMessage): void {
     const sessionId = getString(message.session_id).trim();
-    const model = getString(message.model).trim();
+    // The CLI's name for the model: its id, or the name the picker shows.
+    const reported = getString(message.model).trim();
+    if (reported) {
+      session.reportedModel = reported;
+      this.applyReportedModel(session);
+    }
 
     if (!session.initSeen) {
       session.initSeen = true;
@@ -1425,9 +1473,6 @@ export class QoderSdkAdapter implements ProviderAdapter {
         this.assertSessionUnbound(sessionId, session.threadId);
         session.providerSessionId = sessionId;
         this.sessionOwners.set(sessionId, session.threadId);
-      }
-      if (model) {
-        session.model = model;
       }
       session.initResolve(sessionId);
       this.emit({
@@ -1442,9 +1487,6 @@ export class QoderSdkAdapter implements ProviderAdapter {
     // Re-init (same session id — after setModel or a queued mid-turn
     // injection, P9c/P10): refresh caches only. NOT a new session; emit no
     // transcript message.
-    if (model) {
-      session.model = model;
-    }
     void this.refreshModelCatalog(session);
   }
 
@@ -1551,7 +1593,7 @@ export class QoderSdkAdapter implements ProviderAdapter {
   ): { sessionId: string; total: number; byModel: Record<string, number>; model?: string } | undefined {
     const total = getNumber(message.total_credits);
     if (total === undefined || total < 0 || !session.providerSessionId) return undefined;
-    const labelOf = (model: string) => this.modelCatalog?.models.find((option) => option.value === model)?.displayName || model;
+    const labelOf = (model: string) => findQoderModelById(this.catalogModels(), model)?.displayName || model;
     const byModel: Record<string, number> = {};
     for (const [model, usage] of Object.entries(message.modelUsage ?? {})) {
       const credits = getNumber(usage?.credits);
@@ -1579,14 +1621,45 @@ export class QoderSdkAdapter implements ProviderAdapter {
     };
   }
 
+  private catalogModels(): QoderModelOption[] {
+    return this.modelCatalog?.models ?? [];
+  }
+
+  /**
+   * A model Aegis asks for, as an id. Callers pass the picker's id; a task
+   * saved from qodercli 1.1.8x before ids were restored passes the name the
+   * picker shows, which is read when it says which model it is.
+   */
+  private requestedModelId(model: string | undefined | null): string | undefined {
+    const named = model?.trim();
+    if (!named) return undefined;
+    const models = this.catalogModels();
+    return (findQoderModelById(models, named) ?? findQoderModelByName(models, named))?.value ?? named;
+  }
+
+  /** Reads the CLI's latest name for the session's model against the id that was asked for. */
+  private applyReportedModel(session: ActiveQoderSession): void {
+    if (!session.reportedModel) return;
+    const models = this.catalogModels();
+    // A model asked for by the picker's name before there was a catalog (a
+    // task saved that way) is asked for by id once there is one.
+    if (!session.modelResolved) session.requestedModel = this.requestedModelId(session.requestedModel);
+    const told = resolveReportedQoderModel(models, session.reportedModel, session.requestedModel);
+    session.model = told.model;
+    // Without a catalog nothing is known to be an id; it is read again when one arrives.
+    session.modelResolved = told.resolved && models.length > 0;
+  }
+
   private resolveContextWindow(session: ActiveQoderSession, message?: QoderResultMessage): number | null {
     const model = session.model?.trim();
     if (model) {
-      const fromCatalog = this.modelCatalog?.models.find((option) => option.value === model)?.contextWindow;
-      if (fromCatalog && fromCatalog > 0) {
-        return fromCatalog;
+      // An id names its own entry; a name the CLI gave is read only if it says which model it is.
+      const option = findQoderModelById(this.catalogModels(), model) ?? findQoderModelByName(this.catalogModels(), model);
+      if (option?.contextWindow && option.contextWindow > 0) {
+        return option.contextWindow;
       }
-      const fromUsage = message?.modelUsage?.[model]?.contextWindow;
+      // qodercli 1.1.8x reports 0 here; older CLIs gave the window.
+      const fromUsage = (message?.modelUsage?.[option?.value ?? model] ?? message?.modelUsage?.[model])?.contextWindow;
       if (typeof fromUsage === 'number' && fromUsage > 0) {
         return fromUsage;
       }
@@ -1628,7 +1701,7 @@ export class QoderSdkAdapter implements ProviderAdapter {
       onAuthExpired: () => this.handleAuthExpired(input.threadId),
     };
     if (input.model?.trim()) {
-      options.model = input.model.trim();
+      options.model = this.requestedModelId(input.model);
     }
     // Start-time only: sendTurn deliberately does not re-apply the mode.
     applyPermissionMode(options, input.qoderPermissionMode);
