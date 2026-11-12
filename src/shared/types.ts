@@ -2124,6 +2124,14 @@ export type StreamMessage =
       thoughtLevelLabel?: string;
       /** Devin: what the turn billed (quota plans report messages only, credit plans also credits). */
       devinBilling?: { agentMessages: number; credits: number };
+      /**
+       * Qoder: the credits its session has used so far, as the CLI reports
+       * them: running totals for the Qoder session (`sessionId`) and per
+       * model. They carry over a resume, and a fork starts again from zero.
+       * A turn's share is the difference from the result before it. `model`
+       * is the turn's model under the names `byModel` uses.
+       */
+      qoderCredits?: { sessionId: string; total: number; byModel: Record<string, number>; model?: string };
       modelUsage?: Record<string, ClaudeModelUsage>;
       /** Provider-specific usage fold version for safe historical repair. */
       usageAccounting?: string;

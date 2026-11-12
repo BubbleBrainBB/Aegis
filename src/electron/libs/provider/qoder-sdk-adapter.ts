@@ -53,7 +53,6 @@ import {
   type QoderSDKMessage,
   type QoderSDKUserMessage,
   type QoderSdkModule,
-  type QoderSdkPermissionMode,
   type QoderStreamEventMessage,
   type QoderSystemInitMessage,
   type QoderSystemMessage,
@@ -81,6 +80,24 @@ import {
  *   commands are auto-approved without a callback (P6).
  */
 
+/**
+ * Since SDK 1.0.5x every Query runs on the qodercli daemon, which takes four
+ * permission modes (default, acceptEdits, auto, bypassPermissions; 'yolo' is
+ * its alias for the last) and throws on the other two Aegis offers:
+ *
+ * - Plan is the separate `planMode` switch.
+ * - Don't Ask (deny what is not pre-approved) has no daemon mode. Default
+ *   asks about exactly those requests, so it is default with every ask
+ *   denied (see handleCanUseTool).
+ */
+function applyPermissionMode(options: QoderQueryOptions, mode: QoderPermissionMode | undefined): void {
+  if (!mode) return;
+  if (mode === 'plan') options.planMode = true;
+  else options.permissionMode = mode === 'dontAsk' ? 'default' : mode;
+}
+
+const DONT_ASK_DENIAL = "Denied: the task runs in Don't Ask mode, which allows only what is pre-approved.";
+
 const CAPABILITIES: ProviderAdapterCapabilities = {
   sessionModelSwitch: true, // warm setModel between turns verified (P10)
   skillDiscovery: true, // initializationResult() skills catalog (see listSkills)
@@ -89,7 +106,7 @@ const CAPABILITIES: ProviderAdapterCapabilities = {
   imageAttachments: true,
   forkThread: true,
   compactThread: false,
-  planMode: true, // start-time options.permissionMode only (P11: runtime 'plan' is broken)
+  planMode: true, // start-time options.planMode only; a mode change restarts the Query
 };
 
 /** P9b: ~140ms typical in streamInput mode; 2s is the safety bound. */
@@ -172,6 +189,8 @@ type ActiveQoderSession = {
   turn: ActiveTurn | null;
   turnSeq: number;
   pendingPermissions: Map<string, PendingPermission>;
+  /** Don't Ask mode: answer every permission request with a denial. */
+  denyAsks: boolean;
 };
 
 /**
@@ -552,6 +571,7 @@ export class QoderSdkAdapter implements ProviderAdapter {
       turn: null,
       turnSeq: 0,
       pendingPermissions: new Map(),
+      denyAsks: input.qoderPermissionMode === 'dontAsk',
     };
     // Never orphan a previous session for the same thread — an undisposed
     // predecessor would leak its qodercli child process.
@@ -762,6 +782,9 @@ export class QoderSdkAdapter implements ProviderAdapter {
     }
     if (options.signal.aborted) {
       return Promise.resolve({ behavior: 'deny', message: 'Session stopped.' });
+    }
+    if (session.denyAsks) {
+      return Promise.resolve({ behavior: 'deny', message: DONT_ASK_DENIAL });
     }
 
     const requestId = options.toolUseID || uuidv4();
@@ -1115,9 +1138,7 @@ export class QoderSdkAdapter implements ProviderAdapter {
     if (input.model?.trim()) {
       options.model = input.model.trim();
     }
-    if (input.qoderPermissionMode) {
-      options.permissionMode = input.qoderPermissionMode as QoderSdkPermissionMode;
-    }
+    applyPermissionMode(options, input.qoderPermissionMode);
     if (machineCli) {
       options.pathToQoderCLIExecutable = machineCli;
     }
@@ -1299,6 +1320,7 @@ export class QoderSdkAdapter implements ProviderAdapter {
       totalCostUsd: getNumber(message.total_cost_usd),
       usage,
       modelUsage: message.modelUsage,
+      credits: this.buildResultCredits(session, message),
     };
 
     // Startup auth failure baseline: terminal_reason auth_required (exit 41).
@@ -1485,6 +1507,7 @@ export class QoderSdkAdapter implements ProviderAdapter {
       totalCostUsd?: number;
       usage?: Usage;
       modelUsage?: Record<string, QoderModelUsage>;
+      credits?: { sessionId: string; total: number; byModel: Record<string, number>; model?: string };
     }
   ): void {
     const turn = session.turn;
@@ -1509,8 +1532,35 @@ export class QoderSdkAdapter implements ProviderAdapter {
         ...(fields.modelUsage
           ? { modelUsage: fields.modelUsage as unknown as Record<string, ClaudeModelUsage> }
           : {}),
+        ...(fields.credits ? { qoderCredits: fields.credits } : {}),
       },
     });
+  }
+
+  /**
+   * Qoder meters in credits and reports them as running totals for its
+   * session, in all and per model; tokens and USD stay 0. They are stored as
+   * reported, with the session they count for: the usage report takes a
+   * turn's share from the totals of the turn before it. Models go by the
+   * name the picker shows, the turn's own model included: the session holds
+   * its id until the CLI's init names it (at start, and after a model switch).
+   */
+  private buildResultCredits(
+    session: ActiveQoderSession,
+    message: QoderResultMessage
+  ): { sessionId: string; total: number; byModel: Record<string, number>; model?: string } | undefined {
+    const total = getNumber(message.total_credits);
+    if (total === undefined || total < 0 || !session.providerSessionId) return undefined;
+    const labelOf = (model: string) => this.modelCatalog?.models.find((option) => option.value === model)?.displayName || model;
+    const byModel: Record<string, number> = {};
+    for (const [model, usage] of Object.entries(message.modelUsage ?? {})) {
+      const credits = getNumber(usage?.credits);
+      if (credits === undefined || credits <= 0) continue;
+      const label = labelOf(model);
+      byModel[label] = (byModel[label] ?? 0) + credits;
+    }
+    const model = session.model?.trim();
+    return { sessionId: session.providerSessionId, total, byModel, ...(model ? { model: labelOf(model) } : {}) };
   }
 
   private buildResultUsage(session: ActiveQoderSession, message: QoderResultMessage): Usage {
@@ -1580,11 +1630,8 @@ export class QoderSdkAdapter implements ProviderAdapter {
     if (input.model?.trim()) {
       options.model = input.model.trim();
     }
-    if (input.qoderPermissionMode) {
-      // Start-time permissionMode only: runtime setPermissionMode('plan') is
-      // broken on 1.0.15 (P11), so sendTurn deliberately does not re-apply it.
-      options.permissionMode = input.qoderPermissionMode as QoderSdkPermissionMode;
-    }
+    // Start-time only: sendTurn deliberately does not re-apply the mode.
+    applyPermissionMode(options, input.qoderPermissionMode);
     if (input.resumeSessionId?.trim()) {
       options.resume = input.resumeSessionId.trim();
     }

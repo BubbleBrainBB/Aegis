@@ -4,7 +4,8 @@ import { homedir } from 'os';
 import { delimiter as pathDelimiter, join } from 'path';
 
 /**
- * Minimal structural types for `@qoder-ai/qoder-agent-sdk` (verified 1.0.15).
+ * Minimal structural types for `@qoder-ai/qoder-agent-sdk` (verified 1.0.15,
+ * re-checked against 1.0.59).
  *
  * The SDK ships ESM with its own .d.ts, but Aegis's main process compiles to
  * CommonJS with node module resolution; structural types keep the dynamic
@@ -56,6 +57,8 @@ export type QoderModelUsage = {
   cacheCreationInputTokens: number;
   webSearchRequests: number;
   costUSD: number;
+  /** Session-cumulative credits for this model (CLI 1.1.8x on). */
+  credits?: number;
   contextWindow: number;
   maxOutputTokens: number;
 };
@@ -121,6 +124,8 @@ export type QoderResultMessage = {
     | string;
   duration_ms?: number;
   total_cost_usd?: number;
+  /** Session-cumulative credits (CLI 1.1.8x on); the only spend Qoder reports. */
+  total_credits?: number;
   usage?: QoderUsage;
   modelUsage?: Record<string, QoderModelUsage>;
   result?: string;
@@ -228,6 +233,8 @@ export type QoderQueryOptions = {
   cwd?: string;
   model?: string;
   permissionMode?: QoderSdkPermissionMode;
+  /** Start in Plan Mode. Its own switch since 1.0.5x: `permissionMode: 'plan'` is rejected. */
+  planMode?: boolean;
   resume?: string;
   continue?: boolean;
   forkSession?: boolean;

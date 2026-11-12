@@ -2664,6 +2664,9 @@ export function copySessionHistory(sourceSessionId: string, destSessionId: strin
     if (typeof source.parentTurnId === 'string' && idMap.has(source.parentTurnId)) {
       next.parentTurnId = idMap.get(source.parentTurnId);
     }
+    // The copy shows the conversation. Qoder's credit totals stay with the
+    // task that spent them: read again from the copy they would be billed twice.
+    delete (next as { qoderCredits?: unknown }).qoderCredits;
     return next as StreamMessage;
   });
 
@@ -3632,6 +3635,88 @@ function applyCostMode(report: ClaudeUsageReport, costs: ReturnType<typeof empty
   if (costs.unpricedCount) report.note += ` ${costs.unpricedCount} usage record(s) lack a verified USD price, model identity, or request-level token details and are excluded: ${[...models].join(', ')}.`;
 }
 
+type QoderCreditTotals = { sessionId: string; total: number; byModel: Record<string, number>; model?: string };
+
+/** Qoder's running credit totals on a stored result, or null when it has none it can be read by. */
+function normalizeQoderCredits(value: unknown): QoderCreditTotals | null {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as { sessionId?: unknown; total?: unknown; byModel?: unknown; model?: unknown };
+  const total = typeof raw.total === 'number' && Number.isFinite(raw.total) && raw.total >= 0 ? raw.total : null;
+  if (total === null || typeof raw.sessionId !== 'string' || !raw.sessionId) return null;
+  const byModel: Record<string, number> = {};
+  if (raw.byModel && typeof raw.byModel === 'object') {
+    for (const [model, credits] of Object.entries(raw.byModel as Record<string, unknown>)) {
+      if (typeof credits === 'number' && Number.isFinite(credits) && credits > 0) byModel[model] = credits;
+    }
+  }
+  const model = typeof raw.model === 'string' && raw.model.trim() ? raw.model.trim() : undefined;
+  return { sessionId: raw.sessionId, total, byModel, ...(model ? { model } : {}) };
+}
+
+/**
+ * The credits one turn used: its totals less those of the result before it.
+ * Totals belong to a Qoder session, so another session (a fork, a fresh start
+ * after an edit) or a total that went down counts from zero.
+ *
+ * Models share the turn by how much their own totals moved, and what no model
+ * accounts for goes to the turn's model. When the models moved by more than
+ * the session did (the result before carried the session total without the
+ * per-model ones), their numbers cannot be told apart, and the whole turn goes
+ * to its model.
+ */
+function qoderTurnCredits(
+  previous: QoderCreditTotals | undefined,
+  current: QoderCreditTotals,
+  turnModel: string
+): { total: number; byModel: Record<string, number> } {
+  // Running totals are subtracted, so sums are compared with room for float noise.
+  const EPSILON = 1e-9;
+  const base = previous && previous.sessionId === current.sessionId && current.total >= previous.total ? previous : null;
+  const total = current.total - (base?.total ?? 0);
+  if (!(total > 0)) return { total: 0, byModel: {} };
+  const byModel: Record<string, number> = {};
+  let attributed = 0;
+  for (const [model, credits] of Object.entries(current.byModel)) {
+    const moved = credits - (base?.byModel[model] ?? 0);
+    if (moved <= 0) continue;
+    byModel[model] = moved;
+    attributed += moved;
+  }
+  if (attributed > total + EPSILON) return { total, byModel: { [turnModel]: total } };
+  if (total - attributed > EPSILON) byModel[turnModel] = (byModel[turnModel] ?? 0) + (total - attributed);
+  return { total, byModel };
+}
+
+/**
+ * For each of these tasks, the totals on its last result before `before`: the
+ * base its first turn in a range counts from. Only tasks with turns in the
+ * range are read, newest result first, up to the first one that has totals.
+ */
+function readQoderCreditTotalsBefore(before: number, sessionIds: ReadonlySet<string>): Map<string, QoderCreditTotals> {
+  const totals = new Map<string, QoderCreditTotals>();
+  const earlier = getDb().prepare(`
+    SELECT data, created_at FROM messages
+    WHERE session_id = ? AND message_type = 'result' AND created_at < ?
+    ORDER BY created_at DESC
+  `);
+  for (const sessionId of sessionIds) {
+    for (const row of earlier.iterate(sessionId, before) as Iterable<{ data: string; created_at: number }>) {
+      let credits: QoderCreditTotals | null = null;
+      try {
+        const parsed = readStoredMessagePayload(row.data, row.created_at);
+        credits = parsed.type === 'result' ? normalizeQoderCredits(parsed.qoderCredits) : null;
+      } catch {
+        // An unreadable row gives no base; the one before it may.
+      }
+      if (credits) {
+        totals.set(sessionId, credits);
+        break;
+      }
+    }
+  }
+  return totals;
+}
+
 // Builds a usage report for any provider whose runner stores Claude-shaped
 // `result` messages: claude itself and every other provider except codex and
 // opencode (kimi, grok, pi, qoder, bubble, deepseek, devin, mimo, minimax).
@@ -3675,6 +3760,11 @@ function getClaudeProtocolUsageReport(
   }
   // Devin bills in agent messages (quota plans) and credits (credit plans).
   const devinBilling = provider === 'devin' ? { agentMessages: 0, credits: 0 } : null;
+  // Qoder bills in credits and reports running totals per Qoder session; a
+  // turn's share is taken from the totals of the result before it.
+  const qoderBilling = provider === 'qoder' ? { agentMessages: 0, credits: 0 } : null;
+  const qoderTotals = qoderBilling ? readQoderCreditTotalsBefore(rangeStart, new Set(rows.map((row) => row.session_id))) : null;
+  const billing = devinBilling ?? qoderBilling;
 
   const sessionIds = new Set<string>();
   const modelSummaries = new Map<string, ClaudeUsageModelSummary>();
@@ -3835,6 +3925,22 @@ function getClaudeProtocolUsageReport(
         dayBucket.byModelCredits[fallbackModel] = (dayBucket.byModelCredits[fallbackModel] || 0) + credits;
       }
     }
+
+    const qoderTotal = qoderBilling && qoderTotals ? normalizeQoderCredits(result.qoderCredits) : null;
+    if (qoderBilling && qoderTotals && qoderTotal) {
+      // The turn's model as its totals name models; the row's own name can be the id.
+      const turn = qoderTurnCredits(qoderTotals.get(row.session_id), qoderTotal, qoderTotal.model || fallbackModel);
+      qoderTotals.set(row.session_id, qoderTotal);
+      qoderBilling.credits += turn.total;
+      for (const [model, credits] of Object.entries(turn.byModel)) {
+        const modelSummary = modelSummaries.get(model) || emptyModelSummary(model);
+        modelSummary.credits = (modelSummary.credits || 0) + credits;
+        modelSummaries.set(model, modelSummary);
+        if (!modelSessions.has(model)) modelSessions.set(model, new Set());
+        modelSessions.get(model)!.add(row.session_id);
+        if (dayBucket) dayBucket.byModelCredits[model] = (dayBucket.byModelCredits[model] || 0) + credits;
+      }
+    }
   }
 
   const modelList = Array.from(modelSummaries.values())
@@ -3845,6 +3951,7 @@ function getClaudeProtocolUsageReport(
     .sort((left, right) =>
       right.totalTokens - left.totalTokens ||
       right.totalCostUsd - left.totalCostUsd ||
+      (right.credits || 0) - (left.credits || 0) ||
       left.model.localeCompare(right.model)
     );
 
@@ -3861,14 +3968,14 @@ function getClaudeProtocolUsageReport(
       cacheReadTokens: totalCacheReadTokens,
       cacheHitRate: cacheDenominator > 0 ? totalCacheReadTokens / cacheDenominator : 0,
     },
-    ...(devinBilling ? { billing: devinBilling } : {}),
+    ...(billing ? { billing } : {}),
     models: modelList,
     daily: Array.from(dailyMap.entries()).map(([date, bucket]) => ({
       date,
       totalTokens: bucket.totalTokens,
       byModel: bucket.byModel,
       byModelCostUsd: bucket.byModelCostUsd,
-      ...(devinBilling ? { byModelAgentMessages: bucket.byModelAgentMessages, byModelCredits: bucket.byModelCredits } : {}),
+      ...(billing ? { byModelAgentMessages: bucket.byModelAgentMessages, byModelCredits: bucket.byModelCredits } : {}),
     })),
   };
 

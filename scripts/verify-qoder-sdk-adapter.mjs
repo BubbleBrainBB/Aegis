@@ -504,6 +504,81 @@ const messageEvents = (events) => events.filter((event) => event.type === 'messa
   ok('deny without message gets a default message');
 }
 
+// Credits: the only spend Qoder reports, as running totals for its session.
+// The result keeps them as reported, with the session they count for.
+{
+  const { harness, sdk } = makeHarness({
+    onTurn: async (q) =>
+      q.push(successResult({
+        total_credits: 1.25,
+        modelUsage: { auto: { ...makeModelUsage(), credits: 1 }, fast: { ...makeModelUsage(), credits: 0.25 }, '<synthetic>': makeModelUsage() },
+      })),
+  });
+  setQoderSdkForTests(sdk);
+  const adapter = new QoderSdkAdapter();
+  const events = collectEvents(adapter);
+  const session = await adapter.startSession({ provider: 'qoder', threadId: 'credits-1', cwd: '/tmp', prompt: 'go' });
+  await waitFor(() => resultEvents(events).length === 1, 4000, 'result with credits');
+  const credits = resultEvents(events)[0].message.qoderCredits;
+  assert.equal(credits.sessionId, session.providerSessionId);
+  assert.equal(credits.sessionId, harness.queries[0].state.sessionId);
+  assert.equal(credits.total, 1.25);
+  assert.equal(Object.values(credits.byModel).reduce((sum, value) => sum + value, 0), 1.25, 'a model with no credits is left out');
+  assert.equal(Object.keys(credits.byModel).length, 2);
+  assert.ok(Object.keys(credits.byModel).includes(credits.model), 'the turn model is named as the totals name models: ' + credits.model);
+
+  // A CLI that reports no total (before 1.1.8x) leaves the result without the field.
+  const plain = makeHarness({ onTurn: async (q) => q.push(successResult()) });
+  setQoderSdkForTests(plain.sdk);
+  const plainAdapter = new QoderSdkAdapter();
+  const plainEvents = collectEvents(plainAdapter);
+  await plainAdapter.startSession({ provider: 'qoder', threadId: 'credits-2', cwd: '/tmp', prompt: 'go' });
+  await waitFor(() => resultEvents(plainEvents).length === 1, 4000, 'result without credits');
+  assert.equal(resultEvents(plainEvents)[0].message.qoderCredits, undefined);
+  ok('credits: running totals kept on the result with their Qoder session');
+}
+
+// Permission modes: the daemon the SDK runs on since 1.0.5x takes default,
+// acceptEdits, auto, bypassPermissions and yolo, and throws on plan and dontAsk.
+{
+  const started = async (threadId, qoderPermissionMode, onTurn = async (q) => q.push(successResult())) => {
+    const { harness, sdk } = makeHarness({ onTurn });
+    setQoderSdkForTests(sdk);
+    const adapter = new QoderSdkAdapter();
+    const events = collectEvents(adapter);
+    await adapter.startSession({ provider: 'qoder', threadId, cwd: '/tmp', prompt: 'go', qoderPermissionMode });
+    await waitFor(() => resultEvents(events).length === 1, 4000, `result in ${qoderPermissionMode ?? 'no'} mode`);
+    return { options: harness.queries[0].options, events };
+  };
+
+  for (const mode of ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'yolo']) {
+    const { options } = await started(`mode-${mode}`, mode);
+    assert.equal(options.permissionMode, mode, `${mode} passes through`);
+    assert.equal(options.planMode, undefined);
+  }
+  const unset = await started('mode-unset', undefined);
+  assert.equal(unset.options.permissionMode, undefined);
+  assert.equal(unset.options.planMode, undefined);
+
+  // Plan is its own switch.
+  const plan = await started('mode-plan', 'plan');
+  assert.equal(plan.options.planMode, true);
+  assert.equal(plan.options.permissionMode, undefined, 'plan must not reach permissionMode');
+
+  // Don't Ask: default mode with every ask denied, and no card for the user.
+  let decision;
+  const dontAsk = await started('mode-dontAsk', 'dontAsk', async (q) => {
+    decision = await q.options.canUseTool('Bash', { command: 'rm -rf /' }, { toolUseID: 'tool-da', signal: new AbortController().signal });
+    q.push(successResult());
+  });
+  assert.equal(dontAsk.options.permissionMode, 'default');
+  assert.equal(dontAsk.options.planMode, undefined);
+  assert.equal(decision.behavior, 'deny');
+  assert.match(decision.message, /Don't Ask/);
+  assert.equal(dontAsk.events.some((event) => event.type === 'permission_request'), false, "Don't Ask raises no approval card");
+  ok("permission modes: plan → planMode, dontAsk → default + denied asks, the rest pass through");
+}
+
 // ── L1-4: stop mid-turn — interrupt → abort result → single stopped result ──
 {
   const { harness, sdk } = makeHarness({

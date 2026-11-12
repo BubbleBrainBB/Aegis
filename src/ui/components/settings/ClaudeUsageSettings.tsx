@@ -122,7 +122,10 @@ export function ClaudeUsageSettingsContent() {
 
   const activeProviderCard = providers.find((provider) => provider.id === activeProvider) || providers[0];
   const activeReport = activeProviderCard.report;
-  const stats = useMemo(() => (activeReport ? computeUsageStats(activeReport) : null), [activeReport]);
+  const stats = useMemo(
+    () => (activeReport ? computeUsageStats(activeReport, countsInCredits(activeReport) ? 'credits' : 'tokens') : null),
+    [activeReport]
+  );
   // The picked range's report (the year's when "1 year" is picked, or until the range loads).
   const rangeReport = useMemo(() => {
     const raw = rangeDays === 365 ? null : rangeUsage.report?.usage ?? null;
@@ -143,6 +146,8 @@ export function ClaudeUsageSettingsContent() {
   const tokenReportHidden = Boolean(
     activeReport && activeReport.totals.totalTokens <= 0 && activeReport.totals.sessionCount > 0 && !hasBilledUsage(activeReport)
   );
+  // The year decides the unit, so the page does not change shape with the range.
+  const unit: UsageUnit = activeReport && countsInCredits(activeReport) ? 'credits' : 'tokens';
 
   return (
     <div className="space-y-6 pb-10">
@@ -171,21 +176,23 @@ export function ClaudeUsageSettingsContent() {
             <>
               <div className="flex items-baseline gap-2" data-usage-total>
                 <span className="text-[32px] font-semibold leading-none tracking-[-0.02em] tabular-nums text-[var(--text-primary)]">
-                  {formatCompactNumber(ledgerTotalTokens(rangeReport!))}
+                  {unit === 'credits' ? formatCredits(rangeReport!.billing?.credits ?? 0) : formatCompactNumber(ledgerTotalTokens(rangeReport!))}
                 </span>
-                <span className="text-[17px] font-medium text-[var(--text-secondary)]">tokens</span>
-                {rangeReport!.billing ? (
+                <span className="text-[17px] font-medium text-[var(--text-secondary)]">{unit}</span>
+                {rangeReport!.billing && unit === 'tokens' ? (
                   <span className="ml-2 text-[13px] text-[var(--text-muted)]" data-usage-billing-total>
                     {formatBillingSummary(rangeReport!.billing.agentMessages, rangeReport!.billing.credits)}
                   </span>
                 ) : null}
               </div>
 
-              <ModelLedger report={rangeReport!} yearDaily={activeReport!.daily} />
+              {unit === 'credits'
+                ? <CreditLedger report={rangeReport!} yearDaily={activeReport!.daily} />
+                : <ModelLedger report={rangeReport!} yearDaily={activeReport!.daily} />}
 
-              {rangeReport!.billing ? <DailyBillingSection report={rangeReport!} /> : null}
+              {rangeReport!.billing ? <DailyBillingSection report={rangeReport!} unit={unit} /> : null}
 
-              <TokenActivitySection daily={activeReport!.daily} stats={stats!} />
+              <TokenActivitySection daily={activeReport!.daily} stats={stats!} unit={unit} />
             </>
           )}
 
@@ -215,8 +222,9 @@ interface UsageStats {
   activeDays: number;
 }
 
-function computeUsageStats(report: ClaudeUsageReport): UsageStats {
-  const daily = report.daily;
+function computeUsageStats(report: ClaudeUsageReport, unit: UsageUnit = 'tokens'): UsageStats {
+  // Counted in the page's unit: an agent that reports credits has no token days.
+  const daily = report.daily.map((point) => ({ date: point.date, totalTokens: dayValue(point, unit) }));
   let dailyTotalTokens = 0;
   let peakDayTokens = 0;
   let peakDayDate: string | null = null;
@@ -266,7 +274,7 @@ function computeUsageStats(report: ClaudeUsageReport): UsageStats {
 
 /* ---------- Token activity ---------- */
 
-function TokenActivitySection({ daily, stats }: { daily: ClaudeUsageDailyPoint[]; stats: UsageStats }) {
+function TokenActivitySection({ daily, stats, unit }: { daily: ClaudeUsageDailyPoint[]; stats: UsageStats; unit: UsageUnit }) {
   const [mode, setMode] = useState<ActivityViewMode>('daily');
 
   return (
@@ -298,14 +306,14 @@ function TokenActivitySection({ daily, stats }: { daily: ClaudeUsageDailyPoint[]
       </div>
 
       <div className="mt-4">
-        <ActivityHeatmap daily={daily} mode={mode} />
+        <ActivityHeatmap daily={daily} mode={mode} unit={unit} />
       </div>
       <div className="mt-3 flex flex-wrap gap-x-6 gap-y-1 text-[12.5px] text-[var(--text-muted)]" data-usage-activity-stats>
         {stats.peakDayDate ? (
           <span>
             Busiest day{' '}
             <span className="font-medium text-[var(--text-primary)]">
-              {formatShortDate(stats.peakDayDate)} · {formatCompactNumber(stats.peakDayTokens)}
+              {formatShortDate(stats.peakDayDate)} · {unit === 'credits' ? formatCredits(stats.peakDayTokens) : formatCompactNumber(stats.peakDayTokens)}
             </span>
           </span>
         ) : null}
@@ -610,10 +618,116 @@ function ModelLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDai
   );
 }
 
+/** What an agent's usage is counted in on this page. */
+type UsageUnit = 'tokens' | 'credits';
+
+/** The credits a day used, across models. */
+function dayCredits(point: ClaudeUsageDailyPoint): number {
+  return Object.values(point.byModelCredits ?? {}).reduce((sum, credits) => sum + credits, 0);
+}
+
+function dayValue(point: ClaudeUsageDailyPoint, unit: UsageUnit): number {
+  return unit === 'credits' ? dayCredits(point) : point.totalTokens;
+}
+
+/** An agent that bills in credits and reports no tokens (Qoder): credits are all there is to count. */
+function countsInCredits(report: ClaudeUsageReport): boolean {
+  return (report.billing?.credits ?? 0) > 0 && (report.billing?.agentMessages ?? 0) <= 0 && ledgerTotalTokens(report) <= 0;
+}
+
+/** Credits are small and fractional: two decimals, and a floor so a used amount never reads as zero. */
+function formatCredits(value: number): string {
+  if (!(value > 0)) return '0';
+  if (value < 0.01) return '<0.01';
+  return value.toLocaleString('en-US', { maximumFractionDigits: 2 });
+}
+
+/**
+ * The model table for an agent counted in credits: credits with a share bar,
+ * share, sessions, a trend and when each model was last used.
+ */
+function CreditLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDaily: ClaudeUsageDailyPoint[] }) {
+  const models = report.models.filter((model) => (model.credits ?? 0) > 0).sort((a, b) => (b.credits ?? 0) - (a.credits ?? 0));
+  const total = models.reduce((sum, model) => sum + (model.credits ?? 0), 0);
+  const trendLabel = report.rangeDays <= 30 ? `Last ${report.rangeDays} days` : 'Last 13 weeks';
+  const creditsOf = (model: string) => (point: ClaudeUsageDailyPoint) => point.byModelCredits?.[model] ?? 0;
+  const header = 'px-3 pb-2 pt-3 align-bottom text-[11.5px] font-normal leading-[15px] text-[var(--text-muted)]';
+  const cell = 'px-3 py-2.5 whitespace-nowrap tabular-nums';
+
+  return (
+    <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--bg-primary)]" data-usage-ledger="credits">
+      <div className="px-5 pt-4 text-[13.5px] font-semibold text-[var(--text-primary)]">By model</div>
+      {models.length === 0 ? (
+        <div className="px-5 py-5 text-[13px] text-[var(--text-muted)]">No model activity in this range.</div>
+      ) : (
+        <div className="overflow-x-auto px-2 pb-1">
+          <table className="w-full min-w-[640px] table-fixed border-collapse text-[13px]">
+            <colgroup>
+              <col />
+              <col className="w-[136px]" />
+              <col className="w-[68px]" />
+              <col className="w-[84px]" />
+              <col className="w-[104px]" />
+              <col className="w-[88px]" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th className={`${header} text-left`}>Model</th>
+                <th className={`${header} text-right`}>Credits</th>
+                <th className={`${header} text-right`}>Share</th>
+                <th className={`${header} text-right`}>Sessions</th>
+                <th className={`${header} text-left`}>{trendLabel}</th>
+                <th className={`${header} text-right`}>Last used</th>
+              </tr>
+            </thead>
+            <tbody>
+              {models.map((model) => {
+                const credits = model.credits ?? 0;
+                return (
+                  <tr key={model.model} className="border-t border-[var(--border)]" data-usage-model-row={model.model}>
+                    <td className={`${cell} overflow-hidden`}>
+                      <div className="flex min-w-0 items-center gap-2.5">
+                        <ModelProviderLogo model={model.model} color="var(--text-muted)" />
+                        <span className="min-w-0 truncate font-medium text-[var(--text-primary)]" title={model.model}>{model.model}</span>
+                      </div>
+                    </td>
+                    <td className={`${cell} text-right`}>
+                      <div className="flex items-center justify-end gap-2">
+                        <span className="h-[3px] w-10 flex-shrink-0 overflow-hidden rounded-full bg-[var(--bg-tertiary)]" aria-hidden="true">
+                          <span className="block h-full rounded-full bg-[var(--accent)]" style={{ width: `${Math.max(2, (credits / total) * 100)}%` }} />
+                        </span>
+                        <span className="min-w-[48px] text-[var(--text-primary)]" data-usage-credits>{formatCredits(credits)}</span>
+                      </div>
+                    </td>
+                    <td className={`${cell} text-right text-[var(--text-secondary)]`}>{`${Math.round((credits / total) * 100)}%`}</td>
+                    <td className={`${cell} text-right text-[var(--text-secondary)]`}>{model.sessionCount.toLocaleString('en-US')}</td>
+                    <td className={cell}><Sparkline values={trendSeries(yearDaily, report.rangeDays, creditsOf(model.model))} /></td>
+                    <td className={`${cell} text-right text-[var(--text-secondary)]`}>{lastUsedLabel(yearDaily, (point) => creditsOf(model.model)(point) > 0)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+            <tfoot>
+              <tr className="border-t border-[var(--text-primary)]/60 font-semibold text-[var(--text-primary)]" data-usage-model-row="total">
+                <td className={cell}>Total</td>
+                <td className={`${cell} text-right`}>{formatCredits(total)}</td>
+                <td className={`${cell} text-right`}>100%</td>
+                <td className={`${cell} text-right`}>{report.totals.sessionCount.toLocaleString('en-US')}</td>
+                <td className={cell} />
+                <td className={`${cell} text-right`}>{lastUsedLabel(yearDaily, (point) => dayCredits(point) > 0)}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const DAILY_BILLING_VISIBLE_DAYS = 10;
 
 /** Devin: billed agent messages and credits per day in the range, newest first, split by model. */
-function DailyBillingSection({ report }: { report: ClaudeUsageReport }) {
+function DailyBillingSection({ report, unit }: { report: ClaudeUsageReport; unit: UsageUnit }) {
   const [expanded, setExpanded] = useState(false);
   const days = report.daily
     .map((point) => {
@@ -641,21 +755,23 @@ function DailyBillingSection({ report }: { report: ClaudeUsageReport }) {
       <div className="px-5 pt-4 text-[13.5px] font-semibold text-[var(--text-primary)]">By day</div>
       {days.length === 0 ? (
         <div className="px-5 py-5 text-[13px] text-[var(--text-muted)]">
-          No billed messages recorded in this range. Devin turns record them from this version on.
+          {unit === 'credits'
+            ? 'No credits recorded in this range.'
+            : 'No billed messages recorded in this range. Devin turns record them from this version on.'}
         </div>
       ) : (
         <div className="overflow-x-auto px-2 pb-1">
           <table className="w-full min-w-[640px] table-fixed border-collapse text-[13px]">
             <colgroup>
               <col className="w-[132px]" />
-              <col className="w-[96px]" />
+              {unit === 'credits' ? null : <col className="w-[96px]" />}
               <col className="w-[96px]" />
               <col />
             </colgroup>
             <thead>
               <tr>
                 <th className={`${header} text-left`}>Date</th>
-                <th className={`${header} text-right`}>Messages</th>
+                {unit === 'credits' ? null : <th className={`${header} text-right`}>Messages</th>}
                 <th className={`${header} text-right`}>Credits</th>
                 <th className={`${header} text-left`}>By model</th>
               </tr>
@@ -664,16 +780,24 @@ function DailyBillingSection({ report }: { report: ClaudeUsageReport }) {
               {shown.map((day) => (
                 <tr key={day.date} className="border-t border-[var(--border)]" data-usage-day-row={day.date}>
                   <td className={`${cell} whitespace-nowrap text-[var(--text-primary)]`}>{formatLongDate(day.date)}</td>
-                  <td className={`${cell} text-right font-medium text-[var(--text-primary)]`}>{formatBillingCount(day.messages)}</td>
-                  <td className={`${cell} text-right text-[var(--text-secondary)]`}>{formatBillingCount(day.credits)}</td>
+                  {unit === 'credits' ? null : <td className={`${cell} text-right font-medium text-[var(--text-primary)]`}>{formatBillingCount(day.messages)}</td>}
+                  <td className={`${cell} text-right ${unit === 'credits' ? 'font-medium text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}`}>
+                    {unit === 'credits' ? formatCredits(day.credits) : formatBillingCount(day.credits)}
+                  </td>
                   <td className={`${cell} text-[var(--text-secondary)]`}>
                     <div className="flex flex-wrap gap-x-4 gap-y-1">
                       {day.models.map((entry) => (
                         <span key={entry.model} className="inline-flex min-w-0 items-center gap-1.5" data-usage-day-model={entry.model}>
                           <ModelProviderLogo model={entry.model} color="var(--text-muted)" />
                           <span className="truncate">{entry.model}</span>
-                          <span className="font-medium text-[var(--text-primary)]">{formatBillingCount(entry.messages)}</span>
-                          {entry.credits > 0 ? <span>· {formatBillingCount(entry.credits)} credits</span> : null}
+                          {unit === 'credits' ? (
+                            <span className="font-medium text-[var(--text-primary)]">{formatCredits(entry.credits)}</span>
+                          ) : (
+                            <>
+                              <span className="font-medium text-[var(--text-primary)]">{formatBillingCount(entry.messages)}</span>
+                              {entry.credits > 0 ? <span>· {formatBillingCount(entry.credits)} credits</span> : null}
+                            </>
+                          )}
                         </span>
                       ))}
                     </div>
@@ -758,11 +882,14 @@ function HeatmapHoverTip({ tip }: { tip: HeatmapTip | null }) {
 
 // Same compact form as the stat tiles and the Top models list, so a day
 // reads "217.4K tokens" rather than a six-digit count.
-function formatTokenDetail(tokens: number): string {
+function formatTokenDetail(tokens: number, unit: UsageUnit = 'tokens'): string {
+  if (unit === 'credits') return tokens > 0 ? `${formatCredits(tokens)} credits` : 'No credits';
   return tokens > 0 ? `${formatCompactNumber(tokens)} tokens` : 'No tokens';
 }
 
-function ActivityHeatmap({ daily, mode }: { daily: ClaudeUsageDailyPoint[]; mode: ActivityViewMode }) {
+function ActivityHeatmap({ daily: points, mode, unit }: { daily: ClaudeUsageDailyPoint[]; mode: ActivityViewMode; unit: UsageUnit }) {
+  // Each day's value in the page's unit, under the name the grid reads.
+  const daily = useMemo(() => points.map((point) => ({ ...point, totalTokens: dayValue(point, unit) })), [points, unit]);
   const cell = 10;
   const gap = 3;
   const pitch = cell + gap;
@@ -838,7 +965,7 @@ function ActivityHeatmap({ daily, mode }: { daily: ClaudeUsageDailyPoint[]; mode
       return {
         ...anchor,
         title: start ? `Week of ${formatLongDate(start)}` : 'Week',
-        detail: formatTokenDetail(weekSums[weekIndex]),
+        detail: formatTokenDetail(weekSums[weekIndex], unit),
       };
     }
     if (mode === 'cumulative') {
@@ -846,13 +973,15 @@ function ActivityHeatmap({ daily, mode }: { daily: ClaudeUsageDailyPoint[]; mode
       return {
         ...anchor,
         title: formatLongDate(point.date),
-        detail: cumulative > 0 ? `${formatCompactNumber(cumulative)} tokens to date` : 'No tokens yet',
+        detail: unit === 'credits'
+          ? cumulative > 0 ? `${formatCredits(cumulative)} credits to date` : 'No credits yet'
+          : cumulative > 0 ? `${formatCompactNumber(cumulative)} tokens to date` : 'No tokens yet',
       };
     }
     return {
       ...anchor,
       title: formatLongDate(point.date),
-      detail: formatTokenDetail(point.totalTokens),
+      detail: formatTokenDetail(point.totalTokens, unit),
     };
   };
 
@@ -1604,7 +1733,8 @@ function formatBillingCount(value: number): string {
 }
 
 function formatBillingSummary(messages: number, credits: number): string {
-  const parts = [`${messages.toLocaleString('en-US')} agent ${messages === 1 ? 'message' : 'messages'}`];
+  // Credits alone when no messages were billed; "0 agent messages" when nothing was.
+  const parts = messages > 0 || !(credits > 0) ? [`${messages.toLocaleString('en-US')} agent ${messages === 1 ? 'message' : 'messages'}`] : [];
   if (credits > 0) parts.push(`${formatBillingCount(credits)} credits`);
   return parts.join(' · ');
 }
