@@ -3762,6 +3762,32 @@ function qoderTurnCredits(
 }
 
 /**
+ * The picker's name for each model id, as the range's own results give it: a
+ * result with credit totals carries both. An id that results name in two
+ * ways keeps its id.
+ */
+function readQoderModelLabels(provider: AgentProvider, rows: JoinedClaudeMessageRow[]): Map<string, string> {
+  const labels = new Map<string, string>();
+  const clashing = new Set<string>();
+  for (const row of rows) {
+    let parsed: StreamMessage;
+    try {
+      parsed = readStoredMessagePayload(row.data, row.created_at);
+    } catch {
+      continue;
+    }
+    if (parsed.type !== 'result' || isCopiedUsage(parsed)) continue;
+    const label = normalizeQoderCredits(parsed.qoderCredits)?.model;
+    const id = resolveUsageRowModel(provider, row.session_model, parsed.model);
+    if (!label || !id || id === label) continue;
+    if (labels.has(id) && labels.get(id) !== label) clashing.add(id);
+    else labels.set(id, label);
+  }
+  for (const id of clashing) labels.delete(id);
+  return labels;
+}
+
+/**
  * For each of these tasks, the totals on its last result before `before`: the
  * base its first turn in a range counts from. Only tasks with turns in the
  * range are read, newest result first, up to the first one that has totals.
@@ -3839,6 +3865,7 @@ function getClaudeProtocolUsageReport(
   // turn's share is taken from the totals of the result before it.
   const qoderBilling = provider === 'qoder' ? { agentMessages: 0, credits: 0 } : null;
   const qoderTotals = qoderBilling ? readQoderCreditTotalsBefore(rangeStart, new Set(rows.map((row) => row.session_id))) : null;
+  const qoderModelLabels = qoderBilling ? readQoderModelLabels(provider, rows) : null;
   const billing = devinBilling ?? qoderBilling;
 
   const sessionIds = new Set<string>();
@@ -3970,7 +3997,14 @@ function getClaudeProtocolUsageReport(
       (result as { model?: unknown }).model
     );
     // Priced by the model id; the row (and its buckets) go under the label.
-    const fallbackModel = provider === 'devin' ? devinUsageLabel(resolvedModel, result) : resolvedModel;
+    // Qoder results name their model by id, or by the picker's name when they
+    // were saved from qodercli 1.1.8x before ids were restored. Rows go by the
+    // picker's name: the one on the result's credit totals, or, for a result
+    // without totals (a stopped or failed turn), the one other results of the
+    // range give for its model.
+    const fallbackModel = provider === 'devin' ? devinUsageLabel(resolvedModel, result)
+      : qoderModelLabels ? normalizeQoderCredits(result.qoderCredits)?.model || qoderModelLabels.get(resolvedModel) || resolvedModel
+        : resolvedModel;
     const resultCostUsd = recordCost(storedAgentCost(provider, result, resolvedModel, row.created_at), fallbackModel);
     totalCostUsd += resultCostUsd;
     const summary = modelSummaries.get(fallbackModel) || emptyModelSummary(fallbackModel);

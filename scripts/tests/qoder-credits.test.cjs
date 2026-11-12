@@ -94,7 +94,14 @@ for (const byModel of [{ Auto: 2, Fast: 1 }, { Fast: 1, Auto: 2 }]) {
   add(now - 2000, { sessionId: named.id, total: 3, byModel: { Cantus: 2 }, model: 'Cantus' });
   const rows = Object.fromEntries(sessions.getAgentUsageReport('qoder', 30).models.map((model) => [model.model, model.credits ?? 0]));
   near(rows.Cantus, 3, 'both turns on the named row');
-  assert.ok(!(rows.cmodel > 0), 'no second row under the id');
+  assert.ok(!('cmodel' in rows), 'no second row under the id');
+  // A stopped or failed turn carries no totals: it still belongs to the same row.
+  sessions.addMessage(named.id, { type: 'result', subtype: 'stopped', duration_ms: 1, total_cost_usd: 0, usage: { input_tokens: 0, output_tokens: 0 }, model: 'cmodel', createdAt: now - 1500 });
+  sessions.addMessage(named.id, { type: 'result', subtype: 'error', duration_ms: 1, total_cost_usd: 0, usage: { input_tokens: 0, output_tokens: 0 }, model: 'cmodel', createdAt: now - 1000 });
+  const after = sessions.getAgentUsageReport('qoder', 30).models;
+  assert.ok(!after.some((model) => model.model === 'cmodel'), 'a turn without totals opens no row under the id');
+  assert.equal(after.find((model) => model.model === 'Cantus').sessionCount, 1, 'one task, one row');
+  near(after.find((model) => model.model === 'Cantus').credits, 3, 'and adds no credits');
 }
 
 // A copied transcript shows the conversation and bills nothing: a task handed

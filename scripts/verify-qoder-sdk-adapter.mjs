@@ -245,6 +245,8 @@ function makeFakeQuery(prompt, options, harness) {
     },
     setModel: async (model) => {
       state.setModelCalls.push(model);
+      // A test can decide what the CLI answers and when.
+      if (harness.onSetModel) return harness.onSetModel(api, model);
       // P10: a re-init (same session id) follows a mid-session switch.
       push({ type: 'system', subtype: 'init', session_id: state.sessionId, model });
     },
@@ -502,6 +504,162 @@ const messageEvents = (events) => events.filter((event) => event.type === 'messa
   await adapter2.respondToRequest('t3b', 'tool-2', { behavior: 'deny' });
   await waitFor(() => resultEvents(events2).length === 1, 4000, 'result after deny');
   ok('deny without message gets a default message');
+}
+
+// Context ring: the result carries a ratio, and the window comes from the
+// model catalog. qodercli 1.1.8x names the session's model as the picker shows
+// it and reports a 0 window in modelUsage, so the catalog entry has to be
+// found by display name as well as by id.
+{
+  for (const [label, initModel] of [['display name', 'Auto'], ['id', 'auto']]) {
+    const { harness, sdk } = makeHarness({
+      model: initModel,
+      onTurn: async (q) => q.push(successResult({ modelUsage: { auto: makeModelUsage(0) } })),
+    });
+    setQoderSdkForTests(sdk);
+    const adapter = new QoderSdkAdapter();
+    const events = collectEvents(adapter);
+    await adapter.startSession({ provider: 'qoder', threadId: `ring-${initModel}`, cwd: '/tmp', prompt: 'go', model: 'auto' });
+    await waitFor(() => adapter.getModelCatalog()?.models?.length >= 2, 4000, 'model catalog');
+    await adapter.sendTurn({ threadId: `ring-${initModel}`, prompt: 'again', model: 'auto' });
+    await waitFor(() => resultEvents(events).length === 2, 4000, `second result (${label})`);
+    const usage = resultEvents(events)[1].message.usage;
+    assert.equal(usage.context_window, 180000, `window from the catalog when the session names its model by ${label}`);
+    assert.equal(usage.total_tokens, 45000, `ratio x window (${label})`);
+    // Outside the adapter the model goes by its id, which is what the picker
+    // selects and what the ring matches a result against.
+    assert.equal(resultEvents(events)[1].message.model, 'auto', `the result names the model by id (${label})`);
+    // And a turn sent with that id does not switch models: no setModel, no re-init.
+    assert.equal(harness.queries[0].state.setModelCalls.length, 0, `no model switch before the second turn (${label})`);
+  }
+  ok('context ring: window found by model id or display name; results and the switch check go by id');
+}
+
+// A name is not always enough to say which model the CLI means. The id the
+// session was started with settles it; with no such id only a name that fits
+// exactly one model is resolved, and an ambiguous one is kept as it came.
+{
+  const run = async (threadId, { catalog, requested, reported }) => {
+    const { harness, sdk } = makeHarness({
+      model: reported,
+      initResult: { models: catalog, skills: [], account: { subscriptionType: 'Pro' } },
+      onTurn: async (q) => q.push(successResult({ modelUsage: {} })),
+    });
+    setQoderSdkForTests(sdk);
+    const adapter = new QoderSdkAdapter();
+    const events = collectEvents(adapter);
+    await adapter.startSession({ provider: 'qoder', threadId, cwd: '/tmp', prompt: 'go', ...(requested ? { model: requested } : {}) });
+    // The catalog arrives after the first init: the second turn is read with it.
+    await waitFor(() => adapter.getModelCatalog()?.models?.length === catalog.length, 4000, 'model catalog');
+    await adapter.sendTurn({ threadId, prompt: 'again', ...(requested ? { model: requested } : {}) });
+    await waitFor(() => resultEvents(events).length === 2, 4000, `second result (${threadId})`);
+    const result = resultEvents(events)[1].message;
+    return { model: result.model, window: result.usage.context_window, switches: harness.queries[0].state.setModelCalls.length };
+  };
+  const model = (value, displayName, defaultContextWindow) => ({ value, displayName, isEnabled: true, defaultContextWindow });
+
+  // Two models share a display name: the one the session was started with is kept.
+  const shared = [model('a', 'Shared', 100000), model('b', 'Shared', 300000)];
+  assert.deepEqual(await run('same-name-b', { catalog: shared, requested: 'b', reported: 'Shared' }), { model: 'b', window: 300000, switches: 0 });
+  assert.deepEqual(await run('same-name-a', { catalog: shared, requested: 'a', reported: 'Shared' }), { model: 'a', window: 100000, switches: 0 });
+  // With no id to go by, a shared name is not resolved: kept as it came, no window guessed.
+  assert.deepEqual(await run('same-name-none', { catalog: shared, reported: 'Shared' }), { model: 'Shared', window: null, switches: 0 });
+
+  // One model's display name is another's id.
+  const crossed = [model('a', 'b', 100000), model('b', 'Bee', 300000)];
+  assert.deepEqual(await run('crossed-a', { catalog: crossed, requested: 'a', reported: 'b' }), { model: 'a', window: 100000, switches: 0 });
+  assert.deepEqual(await run('crossed-b', { catalog: crossed, requested: 'b', reported: 'Bee' }), { model: 'b', window: 300000, switches: 0 });
+
+  // No model requested: the CLI's name for its default is read once the catalog is there.
+  const plain = [model('auto', 'Auto', 180000), model('fast', 'Fast', 200000)];
+  assert.deepEqual(await run('default-name', { catalog: plain, reported: 'Auto' }), { model: 'auto', window: 180000, switches: 0 });
+  // The CLI says it runs another model than the one asked for: its unique name
+  // is believed, so the next turn sees the difference and asks for its model again.
+  assert.deepEqual(await run('other-model', { catalog: plain, requested: 'fast', reported: 'Auto' }), { model: 'fast', window: 200000, switches: 1 });
+  // A model the catalog does not hold is kept as the CLI named it.
+  assert.deepEqual(await run('unknown', { catalog: plain, reported: 'Mystery' }), { model: 'Mystery', window: null, switches: 0 });
+
+  // A task saved under the picker's name, started before the catalog is
+  // there: the name is all there is at first, and becomes the id with the catalog.
+  assert.deepEqual(await run('started-by-name', { catalog: plain, requested: 'Auto', reported: 'Auto' }), { model: 'auto', window: 180000, switches: 0 });
+
+  // No catalog at all (it came back empty, or never loaded): the CLI's name
+  // cannot be checked against the model that was asked for, so that model is
+  // not taken as confirmed, and the next turn asks for it again.
+  assert.deepEqual(await run('no-catalog', { catalog: [], requested: 'fast', reported: 'Auto' }), { model: 'fast', window: null, switches: 1 });
+
+  const modelOf = (adapter, threadId) => adapter.listSessions().find((session) => session.threadId === threadId)?.model;
+  const reinit = (q, name) => q.push({ type: 'system', subtype: 'init', session_id: q.state.sessionId, model: name });
+
+  // A catalog that changes later does not move a model that was already told:
+  // `b` was confirmed while two models shared its name, and stays `b` when
+  // only the other one is left.
+  {
+    const { harness, sdk } = makeHarness({
+      model: 'Shared',
+      initResult: { models: shared, skills: [], account: { subscriptionType: 'Pro' } },
+      onTurn: async (q) => q.push(successResult({ modelUsage: {} })),
+    });
+    setQoderSdkForTests(sdk);
+    const adapter = new QoderSdkAdapter();
+    const events = collectEvents(adapter);
+    await adapter.startSession({ provider: 'qoder', threadId: 'catalog-shrinks', cwd: '/tmp', prompt: 'go', model: 'b' });
+    await waitFor(() => modelOf(adapter, 'catalog-shrinks') === 'b', 4000, 'b confirmed');
+    // Another task starts and the catalog is read again: this session gets no new init.
+    harness.initResult = { models: [shared[0]], skills: [], account: { subscriptionType: 'Pro' } };
+    harness.sessionId = 'qoder-fake-session-other';
+    await adapter.startSession({ provider: 'qoder', threadId: 'catalog-other', cwd: '/tmp', prompt: 'go', model: 'a' });
+    await waitFor(() => adapter.getModelCatalog()?.models?.length === 1, 4000, 'smaller catalog');
+    assert.equal(modelOf(adapter, 'catalog-shrinks'), 'b', 'an old name does not move the session to the model that is left');
+    const mine = () => resultEvents(events).filter((event) => event.threadId === 'catalog-shrinks');
+    await adapter.sendTurn({ threadId: 'catalog-shrinks', prompt: 'again', model: 'b' });
+    await waitFor(() => mine().length === 2, 4000, 'second result after the catalog changed');
+    assert.equal(mine()[1].message.model, 'b');
+    assert.equal(harness.queries[0].state.setModelCalls.length, 0, 'and no switch back to b is needed');
+  }
+
+  // A switch and the CLI's re-init can come in either order. The CLI's answer
+  // to the switch is kept whichever comes first.
+  for (const order of ['re-init first', 'switch first']) {
+    const threadId = `switch-${order}`;
+    const { sdk } = makeHarness({
+      model: 'Auto',
+      initResult: { models: plain, skills: [], account: { subscriptionType: 'Pro' } },
+      onTurn: async (q) => q.push(successResult({ modelUsage: {} })),
+      // Asked for `fast`, the CLI says it is still on Auto.
+      onSetModel: async (q) => {
+        if (order === 're-init first') {
+          reinit(q, 'Auto');
+          await sleep(80);
+        } else {
+          setTimeout(() => reinit(q, 'Auto'), 80);
+        }
+      },
+    });
+    setQoderSdkForTests(sdk);
+    const adapter = new QoderSdkAdapter();
+    const events = collectEvents(adapter);
+    await adapter.startSession({ provider: 'qoder', threadId, cwd: '/tmp', prompt: 'go', model: 'auto' });
+    await waitFor(() => resultEvents(events).length === 1 && adapter.getModelCatalog()?.models?.length === 2, 4000, 'first turn');
+    await adapter.setModel(threadId, 'fast');
+    if (order === 'switch first') assert.equal(modelOf(adapter, threadId), 'fast', 'asked for, until the CLI names the model');
+    await waitFor(() => modelOf(adapter, threadId) === 'auto', 4000, `the CLI's answer stands (${order})`);
+    await sleep(120);
+    assert.equal(modelOf(adapter, threadId), 'auto', `and is not overwritten afterwards (${order})`);
+  }
+
+  // A cold one-shot answers with the id it asked for, also when it was given the picker's name.
+  {
+    const { sdk } = makeHarness({ initResult: { models: plain, skills: [], account: { subscriptionType: 'Pro' } } });
+    setQoderSdkForTests(sdk);
+    const adapter = new QoderSdkAdapter();
+    const warm = collectEvents(adapter);
+    await adapter.startSession({ provider: 'qoder', threadId: 'warm', cwd: '/tmp', prompt: 'go' });
+    await waitFor(() => resultEvents(warm).length === 1 && adapter.getModelCatalog()?.models?.length === 2, 4000, 'catalog for the one-shot');
+    const shot = await adapter.runOneShot({ provider: 'qoder', cwd: '/tmp', prompt: 'title', model: 'Fast' });
+    assert.equal(shot.model, 'fast');
+  }
+  ok('model identity: the started id settles an ambiguous name; a shared or unknown name is not guessed; no catalog, a changed catalog and a pending switch keep the right model');
 }
 
 // Credits: the only spend Qoder reports, as running totals for its session.

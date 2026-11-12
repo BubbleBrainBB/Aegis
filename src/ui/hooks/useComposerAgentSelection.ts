@@ -15,6 +15,7 @@ import { useGrokModelConfig } from './useGrokModelConfig';
 import { usePiModelConfig } from './usePiModelConfig';
 import { useBubbleModelConfig } from './useBubbleModelConfig';
 import { useQoderModelConfig } from './useQoderModelConfig';
+import { findQoderModelByName } from '../../shared/qoder-models';
 import { useDeepseekModelConfig } from './useDeepseekModelConfig';
 import { useDevinModelConfig } from './useDevinModelConfig';
 import { useDevinThoughtLevels } from './useDevinThoughtLevels';
@@ -721,6 +722,13 @@ function resolveConfiguredQoderModel(
     const normalized = candidate?.trim() || null;
     if (normalized && optionValues.has(normalized)) {
       return normalized;
+    }
+    // qodercli 1.1.8x names a session's model as the picker shows it, and a
+    // task saved that way would otherwise fall through to the preferred model.
+    // Only a name that says which model it is counts.
+    const named = findQoderModelByName(config.models, normalized)?.value.trim();
+    if (named && optionValues.has(named)) {
+      return named;
     }
   }
   return null;
@@ -1869,6 +1877,8 @@ export function useComposerAgentSelection(input?: {
     codexModels,
     grokModels,
     bubbleModels,
+    /** Qoder's model list, ids with the names the picker shows. */
+    qoderModels: qoderModelConfig.models,
     claudeReasoningEffort,
     setClaudeReasoningEffort,
     codexReasoningEffort,
