@@ -30,6 +30,9 @@ const session = await adapter.startSession({
   threadId: 'smoke-1',
   cwd: process.cwd(),
   prompt: 'Reply with exactly: AEGIS_QODER_SMOKE_OK',
+  // Unset, qodercli uses the model saved in ~/.qoder/settings.json; name one
+  // when that model is unavailable (a preview model answered 416 on 2026-11-11).
+  model: process.env.QODER_SMOKE_MODEL || undefined,
 });
 console.log(`[smoke] init: providerSessionId=${session.providerSessionId} model=${session.model}`);
 

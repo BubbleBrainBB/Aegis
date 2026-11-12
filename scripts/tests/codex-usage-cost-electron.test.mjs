@@ -12,13 +12,13 @@ import {createRoot} from 'react-dom/client';
 import '/src/ui/index.css';
 let clock=Date.now();Date.now=()=>clock;
 let report=null;
-window.electron={getKimiModelConfig:async()=>({availableModels:[],options:[]}),getAgentUsageReport:async()=>report,getCodexRateLimits:async()=>null};
+window.electron={getKimiModelConfig:async()=>({availableModels:[],options:[]}),getAgentUsageReport:async()=>report,getCodexRateLimits:async()=>null,getQoderPlanUsage:async()=>null};
 const {useAppStore}=await import('/src/ui/store/useAppStore');
 const {prefetchAgentUsageReport}=await import('/src/ui/hooks/useAgentUsageReport');
 const {ClaudeUsageSettingsContent}=await import('/src/ui/components/settings/ClaudeUsageSettings');
 useAppStore.getState().setUsageSettingsProvider('codex');
 useAppStore.getState().setTheme('light');
-window.qa={load:async (next,provider='codex')=>{report=next;clock+=60001;await prefetchAgentUsageReport(provider,365);useAppStore.getState().setUsageSettingsProvider(provider);},dark:()=>useAppStore.getState().setTheme('dark')};
+window.qa={load:async (next,provider='codex')=>{report=next;clock+=60001;await prefetchAgentUsageReport(provider,365);useAppStore.getState().setUsageSettingsProvider(provider);},dark:()=>useAppStore.getState().setTheme('dark'),light:()=>useAppStore.getState().setTheme('light')};
 createRoot(document.getElementById('root')).render(<main style={{maxWidth:900,margin:'32px auto',padding:16}}><ClaudeUsageSettingsContent/></main>);
 `;
 const main = String.raw`
@@ -305,6 +305,27 @@ app.whenReady().then(async()=>{
   assert.equal(await js('document.querySelectorAll("[data-usage-day-row]").length'),1);
   await load({...devinReport,billing:{agentMessages:0,credits:0},daily:devinReport.daily.map(d=>({...d,byModelAgentMessages:{},byModelCredits:{}}))},'devin');
   await until('document.body.innerText.includes("No billed messages recorded in this range")');
+  // Qoder reports credits and no tokens: the whole page counts in credits.
+  const noTokens={inputTokens:0,outputTokens:0,totalTokens:0,totalCostUsd:0,cacheReadTokens:0};
+  const qoderReport={...devinReport,totals:{...noTokens,sessionCount:2,cacheHitRate:0},billing:{agentMessages:0,credits:36.21},
+    models:[{model:'Fast',...noTokens,sessionCount:1,credits:6.01},{model:'Auto',...noTokens,sessionCount:2,credits:30.2}],
+    daily:devinReport.daily.map((d,i,all)=>({date:d.date,totalTokens:0,byModel:{},byModelCostUsd:{},byModelAgentMessages:{},byModelCredits:i===all.length-1?{Auto:17.7,Fast:6.01}:i===all.length-2?{Auto:12.5}:{}}))};
+  win.setContentSize(1140,900);await js('qa.light()');
+  await load(qoderReport,'qoder');await until('document.querySelector("[data-usage-total]")?.innerText.includes("credits")');
+  assert.equal(await js('document.querySelector("[data-usage-total]").innerText.split(/\\s+/).join(" ").trim()'),'36.21 credits','the headline counts in credits');
+  assert.equal(await js('!!document.querySelector("[data-usage-billing-total]")'),false,'no second total beside it');
+  assert.equal(await js('document.querySelector("[data-usage-ledger]").dataset.usageLedger'),'credits');
+  assert.deepEqual(await js('Array.from(document.querySelectorAll("[data-usage-ledger] thead th")).map(th=>th.innerText.trim())'),['Model','Credits','Share','Sessions','Last 13 weeks','Last used']);
+  assert.deepEqual(await js('Array.from(document.querySelectorAll("[data-usage-ledger] tbody tr")).map(r=>r.dataset.usageModelRow+" "+r.querySelector("[data-usage-credits]").innerText)'),['Auto 30.2','Fast 6.01'],'most credits first');
+  assert.deepEqual(await js('Array.from(document.querySelectorAll("[data-usage-daily-billing] thead th")).map(th=>th.innerText.trim())'),['Date','Credits','By model'],'no Messages column');
+  assert.deepEqual(await js('Array.from(document.querySelectorAll("[data-usage-day-row]")).map(r=>r.children[1].innerText.trim())'),['23.71','12.5'],'newest day first');
+  copy=await js('document.body.innerText');
+  assert(!copy.includes('tokens')&&!copy.includes('agent message')&&!copy.includes('Cache hit'),'nothing on the page counts tokens: '+copy.slice(0,200));
+  assert(copy.split(/\s+/).join(' ').includes('· 23.71'),'the activity strip counts the busiest day in credits');
+  await shot('qoder-credits-light');await js('qa.dark()');await wait(100);await shot('qoder-credits-dark');
+  // A report with tokens and credits and no billed messages names only what it has.
+  await load({...devinReport,billing:{agentMessages:0,credits:3.5}},'devin');await until('!!document.querySelector("[data-usage-billing-total]")');
+  assert.equal(await js('document.querySelector("[data-usage-billing-total]").innerText.trim()'),'3.5 credits');
   assert.deepEqual(errors,[]);store.close();db.close();
   console.log('codex-usage-cost: persisted rollouts, mixed/unknown/known/empty/range coverage, cache and Electron UI passed');app.exit(0);
  }catch(error){console.error(error);store?.close();db?.close();app.exit(1)}
