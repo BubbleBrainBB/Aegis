@@ -2099,6 +2099,12 @@ export type StreamMessage =
       provider: 'codex' | 'kimi' | 'grok' | 'deepseek' | 'bubble' | 'devin' | 'mimo' | 'minimax';
       model?: string;
       usage: CodexContextUsage;
+      /**
+       * Devin: true when the update follows a model request, whose usage it
+       * carries; false when it restores the reading of a session loaded
+       * again. Absent on updates stored before this was recorded.
+       */
+      requestUsage?: boolean;
     })
   | (StreamMessageBase & { type: 'assistant'; uuid: string; message: AssistantMessage; streaming?: boolean; phase?: 'commentary' | 'final_answer'; interrupted?: boolean })
   | (StreamMessageBase & {
@@ -2290,6 +2296,8 @@ export interface CodexContextUsage {
   estimated?: boolean;
   inputTokens: number;
   cachedInputTokens: number;
+  /** Tokens written to the cache, when the agent says (Devin). Part of inputTokens. */
+  cacheWriteInputTokens?: number;
   outputTokens: number;
   reasoningOutputTokens: number;
   totalTokens: number;

@@ -13,7 +13,9 @@ export function emptyCostDetails(): ProviderCostDetails {
  * USD / million, verified 2026-09-20:
  * https://docs.z.ai/guides/overview/pricing
  * https://docs.x.ai/developers/models (default US region, excluding tool fees)
- * https://platform.kimi.ai/docs/pricing/chat (international API equivalent)
+ * https://platform.kimi.ai/docs/pricing/chat (international API equivalent;
+ * the K3 series verified 2026-11-13). K3-series cache writes are billed by
+ * TTL: 5 minutes at the input rate, 1 hour at twice it.
  */
 const API_PRICES: Record<string, [number, number, number]> = {
   'glm-5.3': [1.4, 0.26, 4.4],
@@ -24,29 +26,52 @@ const API_PRICES: Record<string, [number, number, number]> = {
   'glm-5': [1, 0.2, 3.2],
   'grok-4.6': [2, 0.5, 6],
   'grok-4.5': [2, 0.3, 6],
+  'kimi-k3.1-pro': [2, 0.2, 10],
+  'kimi-k3.1-pro-highspeed': [4, 0.2, 20],
   'kimi-k3': [3, 0.3, 15],
   'kimi-k2.7-code': [0.95, 0.19, 4],
   'kimi-k2.7-code-highspeed': [1.9, 0.38, 8],
   'kimi-k2.6': [0.95, 0.16, 4],
 };
 
-/** Current API equivalents for Kimi subscription names, not a claim about
- * the historical backend behind a rolling alias. Keep unknown names unknown. */
+/** Current API equivalents for Kimi's rolling subscription aliases, not a
+ * claim about the historical backend behind them. A subscription name that
+ * is the API id without its `kimi-` prefix (k3, k3.1-pro) needs no entry: see
+ * kimiApiModelId. Keep unknown names unknown. */
 const KIMI_ESTIMATE_MODELS: Record<string, string> = {
-  k3: 'kimi-k3',
   'kimi-for-coding': 'kimi-k3',
   'kimi-for-coding-highspeed': 'kimi-k2.7-code-highspeed',
 };
 
-// https://platform.claude.com/docs/en/about-claude/pricing, verified 2026-09-20.
+/** The API model a Kimi Code model name is priced as. */
+function kimiApiModelId(name: string): string {
+  return KIMI_ESTIMATE_MODELS[name] || (API_PRICES[`kimi-${name}`] ? `kimi-${name}` : name);
+}
+
+/** K3-series models bill cache writes by TTL; earlier ones bill them as input. */
+const kimiWritesByTtl = (id: string) => id.startsWith('kimi-k3');
+
+/** USD / million [input, cache read, output], verified 2026-11-13:
+ * https://platform.claude.com/docs/en/about-claude/pricing
+ * Cache writes are 1.25x the input rate for 5 minutes and 2x for an hour, on
+ * every model. Models from 4.6 on bill the whole 1M context at these rates. */
 const CLAUDE_PRICES: Record<string, [number, number, number]> = {
+  'claude-fable-5-2': [8, 0.2, 40], 'claude-mythos-5-2': [8, 0.2, 40],
   'claude-fable-5-1': [10, 0.25, 50], 'claude-mythos-5-1': [10, 0.25, 50],
   'claude-fable-5': [10, 1, 50], 'claude-mythos-5': [10, 1, 50],
+  'claude-opus-5-5': [4, 0.2, 20],
   'claude-opus-5': [5, 0.5, 25], 'claude-opus-4-8': [5, 0.5, 25],
   'claude-opus-4-7': [5, 0.5, 25], 'claude-opus-4-6': [5, 0.5, 25],
-  'claude-opus-4-5': [5, 0.5, 25], 'claude-sonnet-5': [2, 0.2, 10],
+  'claude-opus-4-5': [5, 0.5, 25],
+  'claude-sonnet-5-5': [2, 0.1, 10], 'claude-sonnet-5': [2, 0.2, 10],
   'claude-sonnet-4-6': [3, 0.3, 15], 'claude-sonnet-4-5': [3, 0.3, 15],
-  'claude-haiku-4-5': [1, 0.1, 5],
+  'claude-haiku-5-5': [0.1, 0.01, 0.5], 'claude-haiku-4-5': [1, 0.1, 5],
+};
+
+/** Models priced by one request's prompt length (all input, cache reads and
+ * writes included): past the boundary every rate is the higher one. */
+const CLAUDE_LONG_PROMPT: Record<string, { tokens: number; rates: [number, number, number] }> = {
+  'claude-haiku-5-5': { tokens: 100_000, rates: [0.5, 0.05, 2.5] },
 };
 
 /** MiniMax pay-as-you-go text rates, USD / million [input, cache read, output],
@@ -64,14 +89,23 @@ const MINIMAX_LONG_CONTEXT_TOKENS = 512_000;
 
 const count = (n: unknown) => validUsd(n) ? n : 0;
 
-/** The id a model is priced under: the bare model name, with Kimi's subscription names mapped to API ones. */
+// Devin names a model by id with a thinking level on the end and dashes for
+// the dots of a version: `claude-opus-5-5-medium`, `gpt-6-1-sol-high`.
+const DEVIN_LEVEL_SUFFIX = /-(?:minimal|low|medium|high|xhigh)$/;
+const devinApiModelId = (id: string) => id.replace(DEVIN_LEVEL_SUFFIX, '').replace(/(\d)-(\d)/g, '$1.$2');
+
+/**
+ * The id a model is priced under: the bare model name, with Kimi's
+ * subscription names and Devin's ids mapped to API ones.
+ */
 function pricedModelId(provider: AgentProvider, model: string): string {
   const qualifiedModel = model.trim().toLowerCase();
   // MiniMax Code records its select value, `m:<provider>:<model>:v:<variant>`.
   const mcodeModel = /^m:[^:]+:([^:]+):[uv]\b/.exec(qualifiedModel)?.[1];
   const rawId = mcodeModel ? decodeURIComponent(mcodeModel) : qualifiedModel.split(/[/:]/).pop() || '';
   const kimiModel = provider === 'kimi' || /^(kimi-code|kimi-for-coding|moonshot(?:-cn|-ai)?)[/:]/.test(qualifiedModel);
-  return kimiModel ? KIMI_ESTIMATE_MODELS[rawId] || rawId : rawId;
+  if (provider === 'devin') return devinApiModelId(rawId);
+  return kimiModel ? kimiApiModelId(rawId) : rawId;
 }
 
 /** Tokens or dollars by what was billed: uncached input, cache reads, cache writes and output. */
@@ -81,9 +115,9 @@ export interface UsageTypeParts { input: number; cacheRead: number; cacheWrite: 
 export function usageTokenParts(provider: AgentProvider, usage: Usage | null | undefined): UsageTypeParts {
   const cacheRead = count(usage?.cache_read_input_tokens);
   const cacheWrite = count(usage?.cache_creation_input_tokens);
-  // Bubble SDK promptTokens includes cached input; Pi/Claude/OpenCode/Kimi
-  // expose uncached input and cache buckets separately.
-  const includesCache = provider === 'bubble' || provider === 'codex';
+  // Bubble SDK promptTokens and Devin's inputTokens include cached input;
+  // Pi/Claude/OpenCode/Kimi expose uncached input and cache buckets separately.
+  const includesCache = provider === 'bubble' || provider === 'codex' || provider === 'devin';
   return {
     input: Math.max(0, count(usage?.input_tokens) - (includesCache ? cacheRead + cacheWrite : 0)),
     cacheRead,
@@ -108,11 +142,16 @@ export function estimateAgentApiCost(
   // occupancy alone still cannot be used as billable usage.
   if (allInput + output === 0 && (count(usage.total_tokens) > 0
     || !validUsd(usage.input_tokens) || !validUsd(usage.output_tokens))) return null;
-  const claude = CLAUDE_PRICES[id.replace(/-\d{8}$/, '').replaceAll('.', '-')];
+  const claudeId = id.replace(/-\d{8}$/, '').replaceAll('.', '-');
+  const longPrompt = CLAUDE_LONG_PROMPT[claudeId];
+  const pastLongPrompt = longPrompt !== undefined && allInput > longPrompt.tokens;
+  // A turn total cannot tell whether one request crossed the boundary.
+  if (pastLongPrompt && !perRequest) return null;
+  const claude = pastLongPrompt ? longPrompt.rates : CLAUDE_PRICES[claudeId];
   if (claude) {
     // Older Sonnet 4.5 has per-request long-context pricing; aggregated
     // records above its boundary cannot be reconstructed safely.
-    if (id.startsWith('claude-sonnet-4-5') && allInput > 200_000) return null;
+    if (claudeId.startsWith('claude-sonnet-4-5') && allInput > 200_000) return null;
     const cache = (usage as Usage & { cache_creation?: { ephemeral_1h_input_tokens?: number } }).cache_creation;
     const hour = Math.min(write, count(cache?.ephemeral_1h_input_tokens));
     // Without a TTL split do not silently price unknown writes at 5m rates.
@@ -140,11 +179,11 @@ export function estimateAgentApiCost(
     return ((input + write) * rates[0] + read * rates[1] + output * rates[2]) / 1_000_000;
   }
   const price = API_PRICES[id];
-  if (id === 'kimi-k3' && price) {
+  if (price && kimiWritesByTtl(id)) {
     const cache = (usage as Usage & { cache_creation?: { ephemeral_1h_input_tokens?: number } }).cache_creation;
     // Estimate unspecified TTL at the official API default of 5 minutes.
     const hour = Math.min(write, count(cache?.ephemeral_1h_input_tokens));
-    return (input * price[0] + read * price[1] + (write - hour) * 3 + hour * 6 + output * price[2]) / 1_000_000;
+    return (input * price[0] + read * price[1] + (write - hour) * price[0] + hour * price[0] * 2 + output * price[2]) / 1_000_000;
   }
   if (!price) return null;
   const grok = id.startsWith('grok-');
@@ -199,7 +238,7 @@ export function apiCostWeights(
   if (minimax) return at(minimax.rates[0], minimax.rates[1], minimax.rates[0], minimax.rates[2]);
   const price = API_PRICES[id];
   if (!price) return null;
-  return at(price[0], price[1], id === 'kimi-k3' ? tiered(3, 6) : price[0], price[2]);
+  return at(price[0], price[1], kimiWritesByTtl(id) ? tiered(price[0], price[0] * 2) : price[0], price[2]);
 }
 
 export function emptyCostByType(): UsageCostByType {

@@ -55,7 +55,8 @@ function report(provider,days){
   result.billing={agentMessages:Math.round(agent.billing.agentMessages*yearPart),credits:Math.round(agent.billing.credits*yearPart*100)/100};
   if(provider==='qoder'){models[0].credits=result.billing.credits;daily[daily.length-1].byModelCredits={Auto:result.billing.credits};totals.sessionCount=3;models[0].sessionCount=3}
   else models[0].agentMessages=result.billing.agentMessages;
- }else{
+ }
+ if(agent.split){
   const [input,read,write,output]=agent.split,unsplit=agent.unsplit||0;
   result.costByType={inputTokens:Math.round(tokens*.4),cacheReadTokens:tokens*6,cacheWriteTokens:Math.round(tokens*write*2),outputTokens:Math.round(tokens*.6),
    inputCostUsd:cost*input,cacheReadCostUsd:cost*read,cacheWriteCostUsd:cost*write,outputCostUsd:cost*output,unsplitCostUsd:cost*unsplit};
@@ -72,10 +73,16 @@ const {useAppStore}=await import('/src/ui/store/useAppStore');
 const {ClaudeUsageSettingsContent}=await import('/src/ui/components/settings/ClaudeUsageSettings');
 useAppStore.getState().setTheme('light');
 const sum=(days,pick)=>PROVIDERS.reduce((total,provider)=>total+pick(report(provider,days),provider),0);
-const dollars=(r)=>r.billing?0:r.totals.totalCostUsd;
+// An agent counts in dollars when its usage has a cost; one billed in its own unit only has none.
+const dollars=(r)=>r.totals.totalCostUsd;
 window.qa={store:useAppStore,calls,
  expected:days=>({cost:sum(days,dollars),tokens:sum(days,r=>r.totals.totalTokens),sessions:sum(days,r=>r.totals.sessionCount),
-  agentCost:provider=>dollars(report(provider,days)),bucket:(from,to)=>{let total=0;for(const provider of PROVIDERS){const r=report(provider,days);if(r.billing)continue;for(const day of r.daily.slice(from,to))for(const usd of Object.values(day.byModelCostUsd))total+=usd}return total}}),
+  agentCost:provider=>dollars(report(provider,days)),
+  day:date=>{const spent=PROVIDERS.flatMap(provider=>{const r=report(provider,days);const usd=Object.values(r.daily.find(d=>d.date===date)?.byModelCostUsd||{}).reduce((a,b)=>a+b,0);return usd>0?[[provider,usd]]:[]}).sort((a,b)=>b[1]-a[1]);return {total:spent.reduce((s,[,usd])=>s+usd,0),agents:spent.map(([provider])=>provider)}}}),
+ // Devin as it is once its tokens have API prices: still billed in messages, and with an estimate in dollars.
+ // A recent day Devin spent on.
+ devinDay:days=>report('devin',days).daily.filter(d=>Object.keys(d.byModelCostUsd).length).at(-1).date,
+ priceDevin:()=>{AGENTS.devin={yearCost:900,costMode:'estimated',models:[['claude-opus-5-5-high',1]],tokensPerUsd:3e6,split:[.1,.3,.4,.2],billing:{agentMessages:312,credits:0}}},
  hold:(provider,days)=>{held={match:(p,d)=>(!provider||p===provider)&&(!days||d===days),release:[]}},
  release:()=>{const pending=held.release;held=null;pending.forEach(resolve=>resolve())},
  frames:[],watch:()=>{window.qa.frames=[];window.qa.observer=new MutationObserver(()=>window.qa.frames.push(document.getElementById('root').innerText));window.qa.observer.observe(document.getElementById('root'),{subtree:true,childList:true,characterData:true})},
@@ -103,6 +110,30 @@ app.whenReady().then(async()=>{
   const range=async label=>{await js('[...document.querySelectorAll("[data-usage-range] button")].find(b=>b.innerText.trim()==='+JSON.stringify(label)+').click()')};
   const hover=async selector=>{const r=await js('(()=>{const r=document.querySelector('+JSON.stringify(selector)+').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()');
    win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(r.x),y:Math.round(r.y)-2});win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(r.x),y:Math.round(r.y)});await wait(120)};
+  // A year's points sit about a pixel apart, so the plot is hovered by position and the tip says which day it is.
+  // Everything about the tip is read in one go: the window is on screen, and a real pointer passing over it
+  // can move the hover between two reads. A hover that was knocked off is tried again.
+  const TIP=['(()=>{const tip=document.querySelector("[data-usage-cost-tip]");if(!tip)return null;',
+   'const rows=[...tip.querySelectorAll("[data-usage-cost-tip-row]")],t=tip.getBoundingClientRect(),card=document.querySelector("[data-usage-daily-cost]").getBoundingClientRect(),dot=document.querySelector("[data-usage-cost-dot]").getBoundingClientRect();',
+   'return {day:tip.dataset.usageCostTip,text:tip.innerText.split(/\\s+/).join(" ").trim(),rows:rows.map(row=>row.dataset.usageCostTipRow),',
+   'logos:rows.every(row=>row.firstElementChild.tagName==="IMG"&&Math.round(row.firstElementChild.getBoundingClientRect().width)===14),',
+   'dotsInTip:[...tip.querySelectorAll("span")].some(el=>el.classList.contains("rounded-full")),namesFit:rows.every(row=>[...row.querySelectorAll("span")].every(el=>el.scrollWidth<=el.clientWidth)),',
+   'dots:document.querySelectorAll("[data-usage-cost-dot]").length,inside:t.left>=card.left&&t.right<=card.right,leftOfPoint:t.right<=dot.left,rightOfPoint:t.left>=dot.right}})()'].join('');
+  const hoverTip=async(at)=>{
+   for(let attempt=0;attempt<8;attempt++){
+    const r=await js(typeof at==='number'
+     ?'(()=>{const r=document.querySelector("[data-usage-cost-point]").parentElement.getBoundingClientRect();return {x:r.x+r.width*'+at+',y:r.y+r.height/2}})()'
+     :'(()=>{const r=document.querySelector('+JSON.stringify(at)+').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()');
+    win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(r.x),y:Math.round(r.y)-2});win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(r.x),y:Math.round(r.y)});await wait(120);
+    const tip=await js(TIP);if(tip)return tip;
+   }
+   throw Error('No tip after hovering '+at);};
+  const tipMatchesDay=async(days,tip)=>{
+   const day=await js('qa.expected('+days+').day('+JSON.stringify(tip.day)+')');
+   const label=new Date(tip.day+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'});
+   assert(tip.text.startsWith(label+' '+money(day.total,true)),'the tip names its day and that day\'s total: '+tip.text);
+   assert.deepEqual(tip.rows,day.agents,'the agents that spent that day, most expensive first');
+   assert.equal(tip.text.includes('Devin'),day.agents.includes('devin'),'an agent is in the tip when it spent dollars that day');assert(!tip.text.includes('Qoder'));};
   const agents=()=>js('[...document.querySelectorAll("[data-usage-agent]")].map(row=>row.dataset.usageAgent)');
   await win.loadURL(process.env.QA_URL);await until('!!window.qa');
 
@@ -120,7 +151,7 @@ app.whenReady().then(async()=>{
   assert.equal(await js('!!document.querySelector("[data-plan-limits]")'),false,'plan limits belong to one agent');
 
   // The headline is the cost of the agents that count in dollars; Devin and Qoder stay out of it.
-  let expected=await js('(()=>{const e=qa.expected(365);return {cost:e.cost,tokens:e.tokens,sessions:e.sessions,claude:e.agentCost("claude"),bubble:e.agentCost("bubble"),last:e.bucket(358,365),first:e.bucket(0,1)}})()');
+  let expected=await js('(()=>{const e=qa.expected(365);return {cost:e.cost,tokens:e.tokens,sessions:e.sessions,claude:e.agentCost("claude"),bubble:e.agentCost("bubble")}})()');
   assert(Math.abs(expected.cost-12455)<1e-6,'fixtures: the year adds up to $12,455');
   assert.equal(await text('[data-usage-total]'),money(expected.cost,true)+' at API prices '+compact(expected.tokens)+' tokens · '+expected.sessions.toLocaleString('en-US')+' sessions');
   // By agent: most expensive first, four colors then gray; own units last, without a color or a share.
@@ -133,31 +164,34 @@ app.whenReady().then(async()=>{
   assert.equal(new Set(dots.slice(0,4)).size,4,'the top four have their own colors');
   assert.equal(dots[4],dots[5],'the rest share gray');assert(!dots.slice(0,4).includes(dots[4]));
   assert.equal(dots[6],'rgba(0, 0, 0, 0)');assert.equal(dots[7],'rgba(0, 0, 0, 0)');
-  // A year draws a point per whole week, counted back from today (52 of them): a line for each of the top four, one gray line for the rest.
-  assert.equal(await text('[data-usage-daily-cost] > div'),'Weekly cost');
-  assert.equal(await js('document.querySelectorAll("[data-usage-cost-point]").length'),52);
+  // Beside the chart the list takes only the width its longest row needs, so the chart gets the rest:
+  // no name is cut, and the longest row has just the gap between its name and its amount.
+  const listFit=await js('(()=>{const list=document.querySelector("[data-usage-agents]").getBoundingClientRect(),chart=document.querySelector("[data-usage-daily-cost]").getBoundingClientRect();const slack=[...document.querySelectorAll("[data-usage-agent]")].map(row=>{const name=row.querySelector("[data-usage-agent-name]"),range=document.createRange();range.selectNodeContents(name);return {cut:name.scrollWidth>name.clientWidth,gap:Math.round(row.querySelector("[data-usage-agent-cost], [data-usage-agent-own]").getBoundingClientRect().left-range.getBoundingClientRect().right)}});return {width:Math.round(list.width),chart:Math.round(chart.width),cut:slack.some(s=>s.cut),tightest:Math.min(...slack.map(s=>s.gap))}})()');
+  assert.equal(listFit.cut,false,'no agent name is cut');
+  assert(listFit.tightest>=16&&listFit.tightest<=24,'the longest row sets the width: '+JSON.stringify(listFit));
+  assert(listFit.width<=336&&listFit.chart>listFit.width*1.8,'the chart has the rest of the card: '+JSON.stringify(listFit));
+  // Every range draws a point per day, a year too (365 of them): a line for each of the top four, one gray line for the rest.
+  assert.equal(await text('[data-usage-daily-cost] > div'),'Daily cost');
+  assert.equal(await js('document.querySelectorAll("[data-usage-cost-point]").length'),365);
   assert.deepEqual(await js('[...document.querySelectorAll("[data-usage-cost-line]")].map(line=>line.dataset.usageCostLine)'),['other','bubble','kimi','codex','claude'],'drawn back to front, the most expensive on top');
   const lineShape=await js('(()=>{const pick=key=>document.querySelector("[data-usage-cost-line=\\""+key+"\\"] polyline");const ys=key=>pick(key).getAttribute("points").split(" ").map(p=>Number(p.split(",")[1]));const xs=pick("claude").getAttribute("points").split(" ").map(p=>Number(p.split(",")[0]));return {points:xs.length,first:xs[0],last:xs[xs.length-1],peak:Math.min(...ys("claude")),otherPeak:Math.min(...ys("other")),stroke:[...document.querySelectorAll("[data-usage-cost-line]")].map(line=>getComputedStyle(line.querySelector("polyline")).stroke),scaling:getComputedStyle(pick("claude")).vectorEffect}})()');
-  assert.equal(lineShape.points,52);assert.equal(lineShape.first,0);assert.equal(lineShape.last,100);
+  assert.equal(lineShape.points,365);assert.equal(lineShape.first,0);assert.equal(lineShape.last,100);
   assert(lineShape.peak>4&&lineShape.peak<12,'the highest line nearly reaches the top of the plot: '+lineShape.peak);
   assert(lineShape.otherPeak>90,'lines share one scale, so small agents stay near the baseline: '+lineShape.otherPeak);
   assert.equal(new Set(lineShape.stroke).size,5,'each line has its own color');assert.equal(lineShape.scaling,'non-scaling-stroke');
   assert.equal(await js('!!document.querySelector("[data-usage-cost-dot], [data-usage-cost-tip]")'),false,'nothing is marked until a point is hovered');
-  await hover('[data-usage-cost-point]:last-child');
-  let tip=await text('[data-usage-cost-tip]');
-  assert(tip.includes(' – ')&&tip.includes(money(expected.last,true)),'a week names its days and its total: '+tip);
-  assert(tip.indexOf('Claude Code')<tip.indexOf('Codex CLI')&&tip.indexOf('Codex CLI')<tip.indexOf('Kimi Code'),'most expensive first: '+tip);
-  assert(!tip.includes('Devin')&&!tip.includes('Qoder'));
+  let tip=await hoverTip(0.9);
+  assert(/^\d{4}-\d{2}-\d{2}$/.test(tip.day),'the tip belongs to one day: '+tip.day);
+  await tipMatchesDay(365,tip);
   // Each agent in the tip goes by its logo; the colored dots stay with the list and the lines.
-  assert.deepEqual(await js('[...document.querySelectorAll("[data-usage-cost-tip-row]")].map(row=>[row.dataset.usageCostTipRow,row.firstElementChild.tagName.toLowerCase(),Math.round(row.firstElementChild.getBoundingClientRect().width)])'),
-   [['claude','img',14],['codex','img',14],['kimi','img',14],['bubble','img',14],['deepseek','img',14],['opencode','img',14]],'a logo leads every row of the tip');
-  assert.equal(await js('[...document.querySelectorAll("[data-usage-cost-tip] span")].some(el=>el.classList.contains("rounded-full"))'),false,'no dots in the tip');
-  assert.equal(await js('[...document.querySelectorAll("[data-usage-cost-tip-row] span")].every(el=>el.scrollWidth<=el.clientWidth)'),true,'every name fits beside its logo');
-  assert.equal(await js('document.querySelectorAll("[data-usage-cost-dot]").length'),5,'a dot on every line at the hovered point');
-  const tipBox=await js('(()=>{const t=document.querySelector("[data-usage-cost-tip]").getBoundingClientRect(),p=document.querySelector("[data-usage-daily-cost]").getBoundingClientRect(),d=document.querySelector("[data-usage-cost-dot]").getBoundingClientRect();return {inside:t.left>=p.left&&t.right<=p.right,beside:t.right<=d.left}})()');
-  assert.deepEqual(tipBox,{inside:true,beside:true},'the tip opens beside the point, inside the card');
-  await hover('[data-usage-cost-point]:first-child');
-  assert.equal(await js('(()=>{const t=document.querySelector("[data-usage-cost-tip]"),d=document.querySelector("[data-usage-cost-dot]").getBoundingClientRect();return !t||t.getBoundingClientRect().left>=d.right})()'),true,'on the left half it opens to the right');
+  assert.equal(tip.logos,true,'a logo leads every row of the tip');assert.equal(tip.dotsInTip,false,'no dots in the tip');
+  assert.equal(tip.namesFit,true,'every name fits beside its logo');
+  assert.equal(tip.dots,5,'a dot on every line at the hovered point');
+  assert.deepEqual([tip.inside,tip.leftOfPoint],[true,true],'the tip opens beside the point, inside the card');
+  // A few pixels to the side is another day.
+  const other=await hoverTip(0.92);assert.notEqual(other.day,tip.day,'days can be told apart');await tipMatchesDay(365,other);
+  const early=await hoverTip(0.1);
+  assert.deepEqual([early.inside,early.rightOfPoint],[true,true],'on the left half it opens to the right');await tipMatchesDay(365,early);
   await hover('[data-usage-total]');assert.equal(await js('!!document.querySelector("[data-usage-cost-tip]")'),false,'leaving the plot closes the tip');
   // Cost by type: four parts and what could not be split, adding up to the total.
   assert.deepEqual(await js('[...document.querySelectorAll("[data-usage-cost-type]")].map(el=>el.dataset.usageCostType)'),['input','cache-read','cache-write','output','other']);
@@ -180,16 +214,16 @@ app.whenReady().then(async()=>{
   // Another range keeps the page on screen while its reports load, then swaps; short ranges draw days.
   await js('qa.hold(null,30);qa.watch()');await range('30 days');
   await until('qa.calls.filter(c=>c.endsWith(":30")).length===12');await wait(150);
-  assert.equal(await js('document.querySelectorAll("[data-usage-cost-point]").length'),52,'the year stays until the range has loaded');
+  assert.equal(await js('document.querySelectorAll("[data-usage-cost-point]").length'),365,'the year stays until the range has loaded');
   assert((await text('[data-usage-report-status]')).includes('Refreshing'));
   await js('qa.release()');await until('document.querySelectorAll("[data-usage-cost-point]").length===30');
   assert.equal(await js('qa.frames.some(frame=>frame.includes("Loading usage"))'),false,'no loading placeholder between ranges');
-  expected=await js('(()=>{const e=qa.expected(30);return {cost:e.cost,tokens:e.tokens,sessions:e.sessions,day:e.bucket(29,30)}})()');
+  expected=await js('(()=>{const e=qa.expected(30);return {cost:e.cost,tokens:e.tokens,sessions:e.sessions}})()');
   assert.equal(await text('[data-usage-daily-cost] > div'),'Daily cost');
   assert((await text('[data-usage-total]')).startsWith(money(expected.cost,true)+' at API prices'));
   assert.deepEqual(await js('Array.from(document.querySelectorAll("[data-usage-ledger] thead th")).map(th=>th.innerText.trim())').then(h=>h[7]),'Last 30 days');
-  await hover('[data-usage-cost-point]:last-child');tip=await text('[data-usage-cost-tip]');
-  assert(!tip.includes(' – ')&&tip.includes(money(expected.day,true)),'a day names itself: '+tip);
+  tip=await hoverTip('[data-usage-cost-point]:last-child');
+  assert.equal(tip.day,await js('[...document.querySelectorAll("[data-usage-cost-point]")].at(-1).dataset.usageCostPoint'),'the last point is today');await tipMatchesDay(30,tip);
   await shot('month-hover');await hover('[data-usage-total]');await shot('month-light');
   await js('qa.dark()');await shot('month-dark');await js('qa.light()');
   win.setContentSize(520,1000);await wait(200);
@@ -216,8 +250,24 @@ app.whenReady().then(async()=>{
   await until('!!document.querySelector("[data-usage-overview]")');
   assert.equal(await js('document.querySelectorAll("[data-usage-cost-point]").length'),30,'back on the overview, same range');
 
+  // An agent billed in messages whose tokens have API prices counts in dollars like the rest: with an estimate,
+  // Devin is in the total, the ranking, the lines and the tip. (Without one it shows its messages, as above.)
+  await js('qa.priceDevin()');await range('90 days');
+  await until('document.querySelectorAll("[data-usage-cost-point]").length===90');
+  expected=await js('(()=>{const e=qa.expected(90),cost=p=>e.agentCost(p);const r=qa.devinDay(90);return {cost:e.cost,devin:cost("devin"),codex:cost("codex"),kimi:cost("kimi"),qoder:cost("qoder"),day:r}})()');
+  assert(expected.devin<expected.codex&&expected.devin>expected.kimi&&expected.qoder===0,'fixtures: Devin ranks third, Qoder has no dollars');
+  assert((await text('[data-usage-total]')).startsWith(money(expected.cost,true)+' at API prices'),'the headline includes Devin');
+  assert.deepEqual(await agents(),['claude','codex','devin','kimi','bubble','deepseek','opencode','qoder']);
+  assert.equal(await text('[data-usage-agent="devin"]'),'Devin '+money(expected.devin,true)+' '+(expected.devin/expected.cost*100).toFixed(1)+'%','dollars and a share, not messages');
+  assert.deepEqual(await js('[...document.querySelectorAll("[data-usage-cost-line]")].map(line=>line.dataset.usageCostLine)'),['other','kimi','devin','codex','claude'],'Devin has its own line');
+  tip=await hoverTip('[data-usage-cost-point="'+expected.day+'"]');
+  assert.equal(tip.day,expected.day);assert(tip.rows.includes('devin')&&tip.text.includes('Devin'),'Devin is in the tip of a day it spent on: '+tip.text);await tipMatchesDay(90,tip);
+  const typeSum90=await js('[...document.querySelectorAll("[data-usage-cost-type]")].reduce((sum,el)=>sum+Number(el.innerText.match(/\\$([\\d,.]+)/)[1].replaceAll(",","")),0)');
+  assert(Math.abs(typeSum90-expected.cost)<0.05,'cost by type includes Devin: '+typeSum90);
+  await hover('[data-usage-total]');await shot('devin-priced');
+
   assert.deepEqual(errors,[]);
-  console.log('usage-overview: loading, headline, agents, weekly and daily lines, tip, cost by type, models, ranges, narrow, agent pages and picker passed');app.exit(0);
+  console.log('usage-overview: loading, headline, agents, daily lines, tip, cost by type, models, ranges, narrow, agent pages, picker and a priced Devin passed');app.exit(0);
  }catch(error){console.error(error);app.exit(1)}
 });
 `;

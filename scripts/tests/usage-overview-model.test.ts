@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { buildUsageOverview, costAxis, overviewBucketDays } from '../../src/ui/utils/usage-overview-model';
+import { buildUsageOverview, costAxis } from '../../src/ui/utils/usage-overview-model';
 import type { ClaudeUsageReport, UsageCostByType } from '../../src/ui/types';
 
 const near = (a: number, b: number) => assert(Math.abs(a - b) < 1e-9, `${a} != ${b}`);
@@ -53,9 +53,10 @@ const kimi = report({ costMode: 'partial', models: [{ model: 'K3', tokens: 2000,
 const bubble = report({ models: [{ model: 'shared', tokens: 500, cost: 10, sessions: 2 }], dayCosts: { 5: { shared: 10 } }, costByType: { ...split(1, 4, 0, 3), unsplitCostUsd: 2 } });
 const opencode = report({ models: [{ model: 'big-pickle', tokens: 300, cost: 5, sessions: 1 }], dayCosts: { 6: { 'big-pickle': 5 } } });
 const deepseek = report({ costMode: 'estimated', models: [{ model: 'deepseek-v4-pro', tokens: 200, cost: 2, sessions: 1 }], dayCosts: { 5: { 'deepseek-v4-pro': 2 } }, costByType: split(.5, .5, 0, 1) });
-// Devin bills messages: its dollars (an API estimate for one model) stay out of every total.
-const devin = report({ costMode: 'partial', models: [{ model: 'swe-2-high', tokens: 700, cost: 9, sessions: 4, messages: 12 }], dayCosts: { 5: { 'swe-2-high': 9 } },
-  billing: { agentMessages: 12, credits: 0 }, costByType: split(3, 3, 0, 3) });
+// Devin bills messages, but its Claude and GPT tokens have API prices: those count in dollars like any
+// other estimate. Its own model has no price and stays a row without one.
+const devin = report({ costMode: 'partial', models: [{ model: 'claude-opus-5-5-high', tokens: 600, cost: 9, sessions: 3, messages: 10 }, { model: 'swe-2-high', tokens: 100, cost: 0, sessions: 1, messages: 2 }],
+  dayCosts: { 5: { 'claude-opus-5-5-high': 9 } }, billing: { agentMessages: 12, credits: 0 }, costByType: split(3, 3, 0, 3) });
 const qoder = report({ costMode: 'unavailable', models: [{ model: 'Auto', tokens: 0, cost: 0, sessions: 2, credits: 12.4 }], billing: { agentMessages: 0, credits: 12.4 } });
 // An agent with tokens and no price shows its tokens.
 const mimo = report({ costMode: 'unavailable', models: [{ model: 'mimo-v2', tokens: 900, cost: 0, sessions: 1 }] });
@@ -68,48 +69,51 @@ const inputs = [
 ].map(([provider, title, range]) => ({ provider, title, range, year: range })) as Parameters<typeof buildUsageOverview>[0];
 
 const overview = buildUsageOverview(inputs, 30);
-near(overview.totalCostUsd, 457);
+near(overview.totalCostUsd, 466);
 assert.equal(overview.estimated, true, 'any estimated agent makes the total an estimate');
 assert.equal(overview.totalTokens, 9000 + 4000 + 2050 + 500 + 300 + 200 + 700 + 0 + 900, 'tokens count every agent, own-unit ones too');
 assert.equal(overview.sessionCount, 6 + 3 + 3 + 2 + 1 + 1 + 4 + 2 + 1);
 
 // By agent: dollars first, most expensive first; own-unit agents after, without a share or a color.
-assert.deepEqual(overview.agents.map((row) => row.provider), ['claude', 'codex', 'kimi', 'bubble', 'opencode', 'deepseek', 'qoder', 'devin', 'mimo']);
+assert.deepEqual(overview.agents.map((row) => row.provider), ['claude', 'codex', 'kimi', 'bubble', 'devin', 'opencode', 'deepseek', 'qoder', 'mimo']);
 assert.deepEqual(overview.agents.map((row) => row.series), [0, 1, 2, 3, null, null, null, null, null], 'four colors, then gray');
-assert.deepEqual(overview.agents.map((row) => row.estimated), [true, true, true, false, false, true, false, false, false], 'reported amounts carry no ≈');
-near(overview.agents[0].share!, 340 / 457);
+assert.deepEqual(overview.agents.map((row) => row.estimated), [true, true, true, false, true, false, true, false, false], 'reported amounts carry no ≈');
+near(overview.agents[0].share!, 340 / 466);
 near(overview.agents.reduce((sum, row) => sum + (row.share ?? 0), 0), 1);
 const own = Object.fromEntries(overview.agents.filter((row) => row.own).map((row) => [row.provider, row]));
-assert.deepEqual(own.devin.own, { messages: 12, credits: 0, tokens: 700, sessions: 4 });
+assert.deepEqual(Object.keys(own), ['qoder', 'mimo'], 'only agents with no priced usage keep their own unit');
 assert.deepEqual(own.qoder.own, { messages: 0, credits: 12.4, tokens: 0, sessions: 2 });
 assert.equal(own.mimo.own!.tokens, 900);
-assert.equal(own.devin.costUsd, null); assert.equal(own.devin.share, null);
+assert.equal(own.qoder.costUsd, null); assert.equal(own.qoder.share, null);
+// Devin's priced tokens put it among the dollar rows, as an estimate.
+const devinRow = overview.agents.find((row) => row.provider === 'devin')!;
+assert.deepEqual([devinRow.costUsd, devinRow.estimated, devinRow.own], [9, true, null]); near(devinRow.share!, 9 / 466);
 assert.equal(overview.agents.some((row) => row.provider === 'grok' || row.provider === 'pi'), false, 'agents with nothing in the range are left out');
 
-// Daily cost: one point a day, in the list's order, without the own-unit agents' dollars.
-assert.equal(overview.buckets.length, 30);
-const day5 = overview.buckets[5];
-assert.equal(day5.start, '2026-10-06'); assert.equal(day5.end, '2026-10-06');
-assert.deepEqual(day5.agents, [{ provider: 'claude', costUsd: 200 }, { provider: 'codex', costUsd: 80 }, { provider: 'bubble', costUsd: 10 }, { provider: 'deepseek', costUsd: 2 }]);
-near(day5.totalCostUsd, 292);
-near(overview.buckets.reduce((sum, bucket) => sum + bucket.totalCostUsd, 0), 457);
-assert.deepEqual(overview.buckets[0].agents, []);
+// Daily cost: one point a day, agents in the list's order.
+assert.equal(overview.days.length, 30);
+const day5 = overview.days[5];
+assert.equal(day5.date, '2026-10-06');
+assert.deepEqual(day5.agents, [{ provider: 'claude', costUsd: 200 }, { provider: 'codex', costUsd: 80 }, { provider: 'bubble', costUsd: 10 }, { provider: 'devin', costUsd: 9 }, { provider: 'deepseek', costUsd: 2 }]);
+near(day5.totalCostUsd, 301);
+near(overview.days.reduce((sum, day) => sum + day.totalCostUsd, 0), 466);
+assert.deepEqual(overview.days[0].agents, []);
 
 // Cost by type adds the dollar agents that carry a split.
-near(overview.costByType!.inputCostUsd, 10 + 8 + 2 + 1 + .5);
-near(overview.costByType!.cacheReadCostUsd, 200 + 40 + 8 + 4 + .5);
+near(overview.costByType!.inputCostUsd, 10 + 8 + 2 + 1 + .5 + 3);
+near(overview.costByType!.cacheReadCostUsd, 200 + 40 + 8 + 4 + .5 + 3);
 near(overview.costByType!.unsplitCostUsd, 2);
-assert.equal(overview.costByType!.cacheReadTokens, 5 * 8000);
+assert.equal(overview.costByType!.cacheReadTokens, 6 * 8000);
 
 // One model table: same-named rows add up, and its total is the headline.
 const models = Object.fromEntries(overview.report.models.map((model) => [model.model, model]));
 near(models.shared.totalCostUsd, 50); assert.equal(models.shared.totalTokens, 1500); assert.equal(models.shared.sessionCount, 3);
-near(models['swe-2-high'].totalCostUsd, 0);
-assert.equal('agentMessages' in models['swe-2-high'], false, 'billed counts stay on the agent rows');
+near(models['claude-opus-5-5-high'].totalCostUsd, 9); near(models['swe-2-high'].totalCostUsd, 0);
+assert.equal('agentMessages' in models['swe-2-high'], false, 'billed counts stay on the agent\'s own page');
 assert.equal(overview.report.billing, undefined);
 assert.deepEqual([...overview.report.costCoverage!.unpricedModels].sort(), ['Auto', 'mimo-v2', 'mystery', 'swe-2-high']);
 near(overview.report.totals.totalCostUsd, overview.totalCostUsd);
-near(overview.report.models.reduce((sum, model) => sum + model.totalCostUsd, 0), 457);
+near(overview.report.models.reduce((sum, model) => sum + model.totalCostUsd, 0), 466);
 assert.equal(overview.report.models[0].model, 'claude-opus-5-5', 'most tokens first');
 assert.equal(overview.report.costMode, 'estimated');
 // Cache hit: split agents by their own buckets (8 of 10), the rest by their reported rate.
@@ -118,7 +122,7 @@ assert(overview.report.totals.cacheHitRate > 0.5 && overview.report.totals.cache
 assert.equal(overview.yearDaily.length, 30);
 assert.equal(overview.yearDaily[29].totalTokens, overview.totalTokens);
 assert.equal(overview.yearDaily[29].byModel.shared, 1500);
-assert.equal(overview.yearDaily[5].byModelCostUsd!['swe-2-high'], undefined);
+assert.equal(overview.yearDaily[5].byModelCostUsd!['claude-opus-5-5-high'], 9);
 
 // Only reported amounts: no ≈ anywhere.
 const actual = buildUsageOverview(inputs.filter((input) => input.provider === 'bubble' || input.provider === 'opencode'), 30);
@@ -127,14 +131,11 @@ assert.equal(actual.estimated, false); assert.equal(actual.report.costMode, 'act
 const empty = buildUsageOverview([{ provider: 'claude', title: 'Claude Code', range: idle, year: idle }, { provider: 'pi', title: 'Pi', range: null, year: null }], 30);
 assert.equal(empty.agents.length, 0); assert.equal(empty.totalCostUsd, 0); assert.equal(empty.costByType, null);
 
-// Long ranges fold days into weeks counted back from today: the newest point is a full week.
-assert.equal(overviewBucketDays(7), 1); assert.equal(overviewBucketDays(30), 1); assert.equal(overviewBucketDays(90), 7); assert.equal(overviewBucketDays(365), 7);
-const weekly = buildUsageOverview(inputs, 90);
-assert.equal(weekly.buckets.length, 4, '30 days of data: four whole weeks; the two days before them would draw as a dip');
-assert.deepEqual([weekly.buckets[3].start, weekly.buckets[3].end], ['2026-10-24', '2026-10-30']);
-assert.deepEqual([weekly.buckets[0].start, weekly.buckets[0].end], ['2026-10-03', '2026-10-09']);
-near(weekly.buckets[3].totalCostUsd, 160);
-near(weekly.buckets.reduce((sum, bucket) => sum + bucket.totalCostUsd, 0), 457);
+// Every range draws its days as they are: a long range is not folded into weeks.
+const long = buildUsageOverview(inputs, 365);
+assert.deepEqual(long.days.map((day) => day.date), overview.days.map((day) => day.date), 'one point for every day the reports hold');
+assert.deepEqual(long.days[5], day5);
+near(long.days.reduce((sum, day) => sum + day.totalCostUsd, 0), 466);
 
 // Axis: round steps, at most four above zero, headroom above the tallest bar.
 assert.deepEqual(costAxis(310.96).ticks, [100, 200, 300]);
@@ -147,4 +148,4 @@ for (const max of [0.004, 0.4, 3, 7.5, 42, 999, 18_500]) {
   assert(ticks.length >= 1 && ticks.length <= 4, `${max}: ${ticks}`);
   assert(ticks[ticks.length - 1] <= max * 1.0001);
 }
-console.log('usage overview model: totals, agent order, own units, daily and weekly points, cost by type, merged models and axis passed');
+console.log('usage overview model: totals, agent order, own units, daily points, cost by type, merged models and axis passed');

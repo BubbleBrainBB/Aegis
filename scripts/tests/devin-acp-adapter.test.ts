@@ -407,9 +407,10 @@ async function main(): Promise<void> {
     assert.equal(permissionInput.toolName, 'Bash');
 
     const usage = messages.find((message) => message.subtype === 'token_usage') as
-      | { provider: string; usage: { totalTokens: number; contextWindow: number } }
+      | { provider: string; requestUsage?: boolean; usage: { totalTokens: number; contextWindow: number } }
       | undefined;
     assert.equal(usage?.provider, 'devin');
+    assert.equal(usage?.requestUsage, true, 'an update during a turn follows a model request: the usage report counts it');
     assert.equal(usage?.usage.totalTokens, 25000);
     assert.equal(usage?.usage.contextWindow, 262000);
 
@@ -988,6 +989,10 @@ async function main(): Promise<void> {
       (event) => event.type === 'message' && (event.message as { subtype?: string }).subtype === 'token_usage'
     );
     assert.ok(usage, 'the replayed context watermark seeds the context ring');
+    assert.equal(
+      (usage as { message: { requestUsage?: boolean } }).message.requestUsage, false,
+      'and is marked as no request, so the usage report does not count it again'
+    );
     assert.ok(
       events.some((event) => event.type === 'message' && (event.message as { subtype?: string }).subtype === 'available_commands_update')
     );

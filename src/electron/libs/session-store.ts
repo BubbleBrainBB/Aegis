@@ -610,6 +610,18 @@ export function initialize(): void {
     CREATE TABLE IF NOT EXISTS task_number_sequence (id INTEGER PRIMARY KEY CHECK (id = 1), last INTEGER NOT NULL);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_task_number ON sessions(task_number);
   `);
+  // What was read from Devin's own session database, per Devin session (see readDevinOwnRequests).
+  getDb().exec(`
+    CREATE TABLE IF NOT EXISTS devin_request_cache (
+      db_path TEXT NOT NULL,
+      devin_session_id TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      last_row_id INTEGER NOT NULL,
+      row_count INTEGER NOT NULL,
+      requests TEXT NOT NULL,
+      PRIMARY KEY (db_path, devin_session_id)
+    );
+  `);
   ensureColumn('messages', 'message_type', 'TEXT');
   ensureColumn('messages', 'source_origin', 'TEXT');
   ensureColumn('messages', 'search_text', 'TEXT');
@@ -671,6 +683,11 @@ export function initialize(): void {
   backfillMessageMetadata();
   backfillExternalizedMessagePayloads();
   rebalanceSearchIndexText();
+  // Records kept for tasks that are gone, or in a layout this version does not read.
+  getDb().prepare(`
+    DELETE FROM devin_request_cache
+    WHERE version != ? OR devin_session_id NOT IN (SELECT devin_session_id FROM sessions WHERE devin_session_id IS NOT NULL)
+  `).run(DEVIN_REQUEST_CACHE_VERSION);
   const markedCopies = markResultsCopiedBeforeMarking();
   if (markedCopies > 0) {
     console.log(`[session-store] Marked ${markedCopies} results copied by earlier forks and handoffs; usage reports no longer count them twice.`);
@@ -2568,7 +2585,9 @@ export function addMessage(sessionId: string, message: StreamMessage, options?: 
   if (
     message.type === 'result' ||
     message.type === 'usage_record' ||
-    (message.type === 'system' && message.subtype === 'init')
+    (message.type === 'system' && message.subtype === 'init') ||
+    // Devin's usage report counts its turns by these (see readDevinRequests).
+    (message.type === 'system' && message.subtype === 'token_usage' && message.provider === 'devin')
   ) {
     invalidateClaudeUsageReportCache();
   }
@@ -2955,6 +2974,8 @@ export function listDerivedSummariesForSession(sessionId: string): DerivedSummar
 type JoinedClaudeMessageRow = {
   data: string;
   created_at: number;
+  /** The row's place in the table, where a query asks for it. */
+  row_id?: number;
   session_id: string;
   session_model: string | null;
 };
@@ -3993,6 +4014,426 @@ export function sumUsageCostUsd(provider: AgentProvider, messages: readonly Stre
   return costUsd;
 }
 
+/** One model request of a Devin turn. */
+type DevinRequest = {
+  at: number;
+  usage: Usage;
+  /** The model that answered, when Devin's own records name it. */
+  model?: string;
+  /**
+   * Where the request's usage update sits in the task's history. A request
+   * from Devin's own records has no place there, only a time to the second.
+   */
+  rowId?: number;
+  /** Devin's own id for the request, on a request from its records. */
+  requestId?: string;
+};
+
+/**
+ * A request's usage as the report counts it: `input` is the whole prompt,
+ * cache reads and writes included. Devin does not say how long a write is
+ * kept: writes are priced at the 5-minute rate, the lower of the two.
+ */
+function devinRequestUsage(input: number, output: number, cacheRead: number, cacheWrite: number): Usage {
+  return {
+    input_tokens: input, output_tokens: output, cache_read_input_tokens: cacheRead, cache_creation_input_tokens: cacheWrite,
+    ...(cacheWrite > 0 ? { cache_creation: { ephemeral_1h_input_tokens: 0 } } : {}),
+  } as Usage;
+}
+
+/** What a result and a request have in common: Devin's result reports its turn's last request. */
+function devinUsageSignature(usage: Usage | null | undefined): string | null {
+  const input = toNumber(usage?.input_tokens);
+  const output = toNumber(usage?.output_tokens);
+  if (input <= 0 && output <= 0) return null;
+  return `${input}:${toNumber(usage?.cache_read_input_tokens)}:${output}`;
+}
+
+// Devin keeps its sessions in its own database; `devin` and `devin-next` each
+// have one. Every Devin CLI install has it, but the layout is Devin's to
+// change, so nothing here depends on it being readable.
+function getDevinSessionDbPaths(): string[] {
+  const root = join(homedir(), '.local', 'share', 'devin');
+  return [join(root, 'cli', 'sessions.db'), join(root, 'cli-next', 'sessions.db')];
+}
+
+// A session's requests as read from Devin's database so far. Devin writes a
+// row when a request is done and does not change it, so only the rows added
+// since are read; a session that lost rows is read again from the start.
+//
+// Reading a session means parsing every message in it (over a second for a
+// few hundred megabytes not yet in the file cache, on the main process), so
+// what was read is also kept in Aegis's database, for the next run.
+type DevinOwnRequests = {
+  lastRowId: number;
+  rowCount: number;
+  requests: DevinRequest[];
+  /** Request ids counted: a request is on more than one row. */
+  seen: Set<string>;
+};
+const devinOwnRequestCache = new Map<string, DevinOwnRequests>();
+
+// Bumped when what is kept per request changes: older rows are read again.
+const DEVIN_REQUEST_CACHE_VERSION = 1;
+
+/** One kept request: time, model, input (whole prompt), output, cache read, cache write, request id. */
+type KeptDevinRequest = [number, string | null, number, number, number, number, string | null];
+
+function loadKeptDevinRequests(dbPath: string, devinSessionId: string): DevinOwnRequests | null {
+  try {
+    const row = getDb().prepare(`
+      SELECT last_row_id, row_count, requests FROM devin_request_cache
+      WHERE db_path = ? AND devin_session_id = ? AND version = ?
+    `).get(dbPath, devinSessionId, DEVIN_REQUEST_CACHE_VERSION) as { last_row_id: number; row_count: number; requests: string } | undefined;
+    if (!row) return null;
+    const requests = (JSON.parse(row.requests) as KeptDevinRequest[]).map(([at, model, input, output, cacheRead, cacheWrite, requestId]): DevinRequest => ({
+      at,
+      ...(model ? { model } : {}),
+      ...(requestId ? { requestId } : {}),
+      usage: devinRequestUsage(input, output, cacheRead, cacheWrite),
+    }));
+    return {
+      lastRowId: row.last_row_id,
+      rowCount: row.row_count,
+      requests,
+      seen: new Set(requests.flatMap((request) => (request.requestId ? [request.requestId] : []))),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function keepDevinRequests(dbPath: string, devinSessionId: string, read: DevinOwnRequests): void {
+  try {
+    const kept = read.requests.map((request): KeptDevinRequest => [
+      request.at, request.model ?? null,
+      toNumber(request.usage.input_tokens), toNumber(request.usage.output_tokens),
+      toNumber(request.usage.cache_read_input_tokens), toNumber(request.usage.cache_creation_input_tokens),
+      request.requestId ?? null,
+    ]);
+    getDb().prepare(`
+      INSERT INTO devin_request_cache (db_path, devin_session_id, version, last_row_id, row_count, requests)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(db_path, devin_session_id) DO UPDATE SET
+        version = excluded.version, last_row_id = excluded.last_row_id, row_count = excluded.row_count, requests = excluded.requests
+    `).run(dbPath, devinSessionId, DEVIN_REQUEST_CACHE_VERSION, read.lastRowId, read.rowCount, JSON.stringify(kept));
+  } catch {
+    // Not kept: the session is read again next run.
+  }
+}
+
+/**
+ * The model requests of these Devin sessions, as Devin's own records have
+ * them, per Devin session id and oldest first. Unlike the usage
+ * updates Devin sends, a record says which model answered and how many tokens
+ * were written to the cache. A request is on more than one row (its text, its
+ * tool calls, later copies): the first row with its request id counts.
+ */
+function readDevinOwnRequests(devinSessionIds: readonly string[]): Map<string, DevinRequest[]> {
+  const requests = new Map<string, DevinRequest[]>();
+  if (devinSessionIds.length === 0) return requests;
+  for (const dbPath of getDevinSessionDbPaths()) {
+    if (!existsSync(dbPath)) continue;
+    let devinDb: Database.Database | null = null;
+    try {
+      devinDb = new Database(dbPath, { readonly: true, fileMustExist: true });
+      // Answered from the session index alone, without reading a message.
+      const stat = devinDb.prepare(`
+        SELECT MAX(row_id) AS last_row_id, COUNT(*) AS row_count, COALESCE(SUM(row_id > ?), 0) AS added
+        FROM message_nodes WHERE session_id = ?
+      `);
+      // created_at is in seconds.
+      const rows = devinDb.prepare(`
+        SELECT
+          created_at,
+          json_extract(chat_message, '$.metadata.request_id') AS request_id,
+          json_extract(chat_message, '$.metadata.generation_model') AS model,
+          json_extract(chat_message, '$.metadata.metrics.input_tokens') AS input_tokens,
+          json_extract(chat_message, '$.metadata.metrics.cache_read_tokens') AS cache_read_tokens,
+          json_extract(chat_message, '$.metadata.metrics.cache_creation_tokens') AS cache_write_tokens,
+          json_extract(chat_message, '$.metadata.metrics.output_tokens') AS output_tokens
+        FROM message_nodes
+        WHERE session_id = ? AND row_id > ? AND row_id <= ?
+          AND json_extract(chat_message, '$.role') = 'assistant'
+          AND json_extract(chat_message, '$.metadata.metrics') IS NOT NULL
+        ORDER BY row_id ASC
+      `);
+      for (const devinSessionId of devinSessionIds) {
+        if (requests.has(devinSessionId)) continue;
+        const cacheKey = `${dbPath}\n${devinSessionId}`;
+        let cached = devinOwnRequestCache.get(cacheKey) ?? loadKeptDevinRequests(dbPath, devinSessionId) ?? undefined;
+        const state = stat.get(cached?.lastRowId ?? 0, devinSessionId) as Record<string, unknown> | undefined;
+        const lastRowId = toNumber(state?.last_row_id);
+        const rowCount = toNumber(state?.row_count);
+        if (lastRowId <= 0) continue;
+        if (!cached || lastRowId < cached.lastRowId || rowCount !== cached.rowCount + toNumber(state?.added)) {
+          cached = { lastRowId: 0, rowCount: 0, requests: [], seen: new Set() };
+        }
+        if (lastRowId > cached.lastRowId) {
+          for (const row of rows.iterate(devinSessionId, cached.lastRowId, lastRowId) as Iterable<Record<string, unknown>>) {
+            const requestId = typeof row.request_id === 'string' ? row.request_id : '';
+            if (requestId) {
+              if (cached.seen.has(requestId)) continue;
+              cached.seen.add(requestId);
+            }
+            const cacheRead = toNumber(row.cache_read_tokens);
+            const cacheWrite = toNumber(row.cache_write_tokens);
+            // Devin's records count uncached input apart; a request's usage here counts the whole prompt.
+            const input = toNumber(row.input_tokens) + cacheRead + cacheWrite;
+            const output = toNumber(row.output_tokens);
+            if (input <= 0 && output <= 0) continue;
+            cached.requests.push({
+              at: toNumber(row.created_at) * 1000,
+              ...(typeof row.model === 'string' && row.model.trim() ? { model: row.model.trim() } : {}),
+              ...(requestId ? { requestId } : {}),
+              usage: devinRequestUsage(input, output, cacheRead, cacheWrite),
+            });
+          }
+          cached.lastRowId = lastRowId;
+          cached.rowCount = rowCount;
+          keepDevinRequests(dbPath, devinSessionId, cached);
+        }
+        devinOwnRequestCache.set(cacheKey, cached);
+        if (cached.requests.length > 0) requests.set(devinSessionId, cached.requests);
+      }
+    } catch {
+      // A database this version cannot read: the usage updates still count.
+    } finally {
+      devinDb?.close();
+    }
+  }
+  return requests;
+}
+
+/**
+ * The model requests Devin made since `since`, per task, oldest first.
+ *
+ * A Devin result carries the usage of its turn's last request only, and a
+ * turn makes many. Each request is known two ways. The usage update Devin
+ * sends after every request, stored in the task's history, has no cache-write
+ * count and no model. Devin's own records have both, and requests Devin makes
+ * on its own besides (compacting the context), but they can be short of a
+ * task's requests (a session from another machine, rows Devin removed). They
+ * are used for a task only when every one of its updates has its record:
+ * holding as many requests would not show that the same ones are there.
+ */
+function readDevinRequests(since: number, activeSessionIds: ReadonlySet<string>): Map<string, DevinRequest[]> {
+  const requests = readDevinUsageUpdates(since);
+  const sessions = getDb().prepare(`
+    SELECT id, devin_session_id FROM sessions
+    WHERE provider = 'devin' AND devin_session_id IS NOT NULL AND devin_session_id != ''
+  `).all() as Array<{ id: string; devin_session_id: string }>;
+  // Devin's records do not say which task made a request: a Devin session
+  // that more than one task opened is counted by each task's own updates.
+  // Only tasks with a result or an update in the range are looked up.
+  const tasksOf = new Map<string, string[]>();
+  for (const session of sessions) {
+    tasksOf.set(session.devin_session_id, [...(tasksOf.get(session.devin_session_id) ?? []), session.id]);
+  }
+  const taskOf = new Map<string, string>();
+  for (const [devinSessionId, tasks] of tasksOf) {
+    if (tasks.length === 1 && (activeSessionIds.has(tasks[0]) || requests.has(tasks[0]))) taskOf.set(devinSessionId, tasks[0]);
+  }
+  for (const [devinSessionId, own] of readDevinOwnRequests([...taskOf.keys()])) {
+    const sessionId = taskOf.get(devinSessionId)!;
+    // Matched against every record, whatever its time: an update just inside
+    // the range can have its record stamped just before it.
+    const unmatched = new Map<string, number>();
+    for (const request of own) {
+      const signature = devinUsageSignature(request.usage);
+      if (signature) unmatched.set(signature, (unmatched.get(signature) ?? 0) + 1);
+    }
+    const recorded = (requests.get(sessionId) ?? []).every((update) => {
+      const signature = devinUsageSignature(update.usage);
+      const left = signature ? unmatched.get(signature) ?? 0 : 0;
+      if (left <= 0) return false;
+      unmatched.set(signature!, left - 1);
+      return true;
+    });
+    const inRange = own.filter((request) => request.at >= since);
+    if (recorded && inRange.length > 0) requests.set(sessionId, inRange);
+  }
+  return requests;
+}
+
+// Devin sends a request's usage update twice, a few milliseconds apart (20 at
+// most over 1,600 pairs measured). A second request with the same four counts
+// cannot have been answered that fast.
+const DEVIN_REPEATED_UPDATE_MS = 1000;
+
+/**
+ * The requests of Devin's tasks as the usage updates in their history give
+ * them: one per update Devin sent in that task after a model request.
+ *
+ * Left out: updates that came with copied history or from another agent
+ * (their requests were made, and are counted, in the task that sent them);
+ * the second copy of an update sent twice; and the reading Devin restores
+ * when a session is loaded again, which repeats the last request before it.
+ */
+function readDevinUsageUpdates(since: number): Map<string, DevinRequest[]> {
+  // Read task by task: going by message type instead walks every agent's
+  // system messages (four times as long on a year of history).
+  const rows = getDb().prepare(`
+    SELECT
+      m.rowid AS row_id,
+      m.message_type AS message_type,
+      CASE WHEN m.message_type = 'system' THEN m.data END AS data,
+      m.created_at AS created_at,
+      m.session_id AS session_id
+    FROM sessions s
+    CROSS JOIN messages m ON m.session_id = s.id
+    WHERE s.provider = 'devin'
+      AND m.created_at >= ?
+      AND (+m.message_type IN ('result', 'usage_record') OR (+m.message_type = 'system' AND m.data LIKE '%token_usage%'))
+    ORDER BY m.rowid ASC
+  `).all(since) as Array<{ row_id: number; message_type: string; data: string | null; created_at: number; session_id: string }>;
+  const requests = new Map<string, DevinRequest[]>();
+  // Per task: the last update counted, and whether a turn has ended since.
+  const lastCounted = new Map<string, { signature: string; at: number; turnEnded: boolean }>();
+  for (const row of rows) {
+    const previous = lastCounted.get(row.session_id);
+    if (row.message_type !== 'system' || row.data === null) {
+      if (previous) previous.turnEnded = true;
+      continue;
+    }
+    let message: StreamMessage;
+    try {
+      message = readStoredMessagePayload(row.data, row.created_at);
+    } catch {
+      continue;
+    }
+    if (message.type !== 'system' || message.subtype !== 'token_usage') continue;
+    // Sent by Devin, in this task.
+    if (message.provider !== 'devin' || message.session_id !== row.session_id) continue;
+    if (message.requestUsage === false) continue;
+    const input = toNumber(message.usage?.inputTokens);
+    const output = toNumber(message.usage?.outputTokens);
+    const cacheRead = toNumber(message.usage?.cachedInputTokens);
+    const cacheWrite = toNumber(message.usage?.cacheWriteInputTokens);
+    if (input <= 0 && output <= 0) continue;
+    const signature = `${input}:${cacheRead}:${cacheWrite}:${output}`;
+    if (previous?.signature === signature) {
+      if (!previous.turnEnded && row.created_at - previous.at <= DEVIN_REPEATED_UPDATE_MS) continue;
+      // Updates stored before they said what they are (requestUsage): the
+      // first one after a turn that repeats its last request is the reading
+      // restored on load.
+      if (previous.turnEnded && message.requestUsage === undefined) continue;
+    }
+    lastCounted.set(row.session_id, { signature, at: row.created_at, turnEnded: false });
+    const list = requests.get(row.session_id) ?? [];
+    list.push({
+      at: row.created_at,
+      rowId: row.row_id,
+      // Devin's input count includes what it read from and wrote to the cache.
+      usage: devinRequestUsage(input, output, cacheRead, cacheWrite),
+    });
+    requests.set(row.session_id, list);
+  }
+  return requests;
+}
+
+/** A stored row as the usage report counts it: a top-level result or usage record of a turn that ran in its task. */
+function readUsageResultRow(row: JoinedClaudeMessageRow): StoredClaudeResultMessage | null {
+  let parsed: StreamMessage;
+  try {
+    parsed = readStoredMessagePayload(row.data, row.created_at);
+  } catch {
+    return null;
+  }
+  // Copied turns were paid for, and are counted, in the task they ran in.
+  if (isCopiedUsage(parsed)) return null;
+  // A usage record is accounted like the result row of a stopped turn.
+  if (parsed.type === 'usage_record') {
+    parsed = { ...parsed, type: 'result', subtype: 'error_during_execution' } as StreamMessage;
+  }
+  if (parsed.type !== 'result' || parsed.sourceProvider || parsed.parentToolUseId || parsed.agentId) return null;
+  return parsed as StoredClaudeResultMessage;
+}
+
+/** The requests a Devin result's turn made, as the report counts them. */
+type DevinTurn = {
+  requests: DevinRequest[];
+  /**
+   * The task's requests are known up to this result. A turn without any then
+   * adds nothing: what its result reports is a request already counted.
+   * Otherwise (a result from before requests were kept) the result's own
+   * usage stands.
+   */
+  known: boolean;
+};
+
+/**
+ * Gives every Devin result the requests of its turn, in each task's order: a
+ * turn's requests are the ones made since the result before it. Requests left
+ * after a task's last result (a turn still running, or one that ended without
+ * a result) get a row of their own, added to `rows`.
+ *
+ * A usage update has its place in the task's history, so its turn is certain.
+ * A request from Devin's own records has only a time, in whole seconds,
+ * rounded down: one stamped with the second its result came in may belong to
+ * the next turn. There the result decides: it reports its turn's last request,
+ * so the turn ends with the request that matches it.
+ */
+function assignDevinRequests(rows: JoinedClaudeMessageRow[], requests: Map<string, DevinRequest[]>): Map<JoinedClaudeMessageRow, DevinTurn> {
+  const turns = new Map<JoinedClaudeMessageRow, DevinTurn>();
+  const taken = new Map<string, number>();
+  for (const row of rows) {
+    const sessionRequests = requests.get(row.session_id);
+    if (!sessionRequests) continue;
+    const result = readUsageResultRow(row);
+    if (!result) continue;
+    const from = taken.get(row.session_id) ?? 0;
+    const rowId = row.row_id ?? Infinity;
+    let end = from;
+    let firstUnsure = -1;
+    for (; end < sessionRequests.length; end++) {
+      const request = sessionRequests[end];
+      if (request.rowId !== undefined ? request.rowId >= rowId : request.at > row.created_at) break;
+      if (firstUnsure < 0 && request.rowId === undefined && request.at + 1000 > row.created_at) firstUnsure = end;
+    }
+    const signature = firstUnsure < 0 ? null : devinUsageSignature(result.usage);
+    if (signature) {
+      let last = firstUnsure;
+      while (last < end && devinUsageSignature(sessionRequests[last].usage) !== signature) last++;
+      if (last < end) end = last + 1;
+      else if (firstUnsure > from && devinUsageSignature(sessionRequests[firstUnsure - 1].usage) === signature) end = firstUnsure;
+    }
+    taken.set(row.session_id, end);
+    turns.set(row, { requests: sessionRequests.slice(from, end), known: end > 0 });
+  }
+  const sessionModel = getDb().prepare('SELECT model FROM sessions WHERE id = ?').pluck();
+  let added = false;
+  for (const [sessionId, sessionRequests] of requests) {
+    const rest = sessionRequests.slice(taken.get(sessionId) ?? 0);
+    if (rest.length === 0) continue;
+    const row: JoinedClaudeMessageRow = {
+      data: JSON.stringify({ type: 'result', subtype: 'error_during_execution', duration_ms: 0, total_cost_usd: 0,
+        costSource: 'unavailable', usage: { input_tokens: 0, output_tokens: 0 } }),
+      created_at: rest[rest.length - 1].at,
+      row_id: Number.MAX_SAFE_INTEGER,
+      session_id: sessionId,
+      session_model: (sessionModel.get(sessionId) as string | null | undefined) ?? null,
+    };
+    rows.push(row);
+    turns.set(row, { requests: rest, known: true });
+    added = true;
+  }
+  if (added) rows.sort((left, right) => left.created_at - right.created_at || (left.row_id ?? 0) - (right.row_id ?? 0));
+  return turns;
+}
+
+/** Each request priced on its own, so a rate tied to one request's size applies to that request. */
+function priceDevinRequests(requests: DevinRequest[], model: string) {
+  const details = emptyCostDetails();
+  const priced = requests.map((request) => {
+    const one = emptyCostDetails();
+    addAgentCost(one, 'devin', request.model ?? model, request.usage, undefined, request.at, true);
+    for (const key of Object.keys(details) as Array<keyof typeof details>) details[key] += one[key];
+    return { request, usd: one.reportedUsd + one.estimatedUsd };
+  });
+  return { details, priced };
+}
+
 // Builds a usage report for any provider whose runner stores Claude-shaped
 // `result` messages: claude itself and every other provider except codex and
 // opencode (kimi, grok, pi, qoder, bubble, deepseek, devin, mimo, minimax).
@@ -4013,6 +4454,7 @@ function getClaudeProtocolUsageReport(
     SELECT
       m.data AS data,
       m.created_at AS created_at,
+      m.rowid AS row_id,
       s.id AS session_id,
       s.model AS session_model
     FROM messages m
@@ -4020,7 +4462,7 @@ function getClaudeProtocolUsageReport(
     WHERE s.provider = ?
       AND m.created_at >= ?
       AND m.message_type IN ('result', 'usage_record')
-    ORDER BY m.created_at ASC
+    ORDER BY m.created_at ASC, m.rowid ASC
   `).all(provider, rangeStart) as JoinedClaudeMessageRow[];
 
   const dailyMap = new Map<string, {
@@ -4045,6 +4487,8 @@ function getClaudeProtocolUsageReport(
   // Claude reports running totals for cost and per-model usage; a turn's share
   // is taken from the totals of the result before it (see claudeTurnUsage).
   const claudeTotals = provider === 'claude' ? readRunningTotalsBefore(rangeStart, rowSessionIds, readClaudeRunningTotals) : null;
+  // Devin's turns are counted by their requests (see assignDevinRequests).
+  const devinTurns = provider === 'devin' ? assignDevinRequests(rows, readDevinRequests(rangeStart, rowSessionIds)) : null;
 
   const sessionIds = new Set<string>();
   const modelSummaries = new Map<string, ClaudeUsageModelSummary>();
@@ -4064,27 +4508,8 @@ function getClaudeProtocolUsageReport(
   const costByType = emptyCostByType();
 
   for (const row of rows) {
-    let parsed: StreamMessage;
-    try {
-      parsed = readStoredMessagePayload(row.data, row.created_at);
-    } catch {
-      continue;
-    }
-
-    // Copied turns were paid for, and are counted, in the task they ran in.
-    if (isCopiedUsage(parsed)) {
-      continue;
-    }
-
-    // A usage record is accounted like the result row of a stopped turn.
-    if (parsed.type === 'usage_record') {
-      parsed = { ...parsed, type: 'result', subtype: 'error_during_execution' } as StreamMessage;
-    }
-    if (parsed.type !== 'result' || parsed.sourceProvider || parsed.parentToolUseId || parsed.agentId) {
-      continue;
-    }
-
-    const result = parsed as StoredClaudeResultMessage;
+    const result = readUsageResultRow(row);
+    if (!result) continue;
     // Before deepseek-step-last-wins-v1 the rc.6 usage chunk and its matching
     // committed assistant message were both added, doubling every successful
     // step. New result rows carry the fold marker; repair old persisted rows
@@ -4094,10 +4519,21 @@ function getClaudeProtocolUsageReport(
         ? 0.5
         : 1;
     const scaleUsage = (value: unknown) => Math.round(toNumber(value) * deepseekUsageScale);
-    const inputTokens = scaleUsage(result.usage?.input_tokens);
-    const outputTokens = scaleUsage(result.usage?.output_tokens);
-    const cacheReadTokens = scaleUsage(result.usage?.cache_read_input_tokens);
-    const cacheCreationTokens = scaleUsage(result.usage?.cache_creation_input_tokens);
+    // A Devin turn is the requests made up to its result. A result from
+    // before requests were kept has none, and its own usage stands.
+    const devinTurn = devinTurns?.get(row);
+    const devinRequests = devinTurn?.requests ?? [];
+    const sumRequests = (requests: DevinRequest[], key: 'input_tokens' | 'output_tokens' | 'cache_read_input_tokens' | 'cache_creation_input_tokens') =>
+      requests.reduce((sum, request) => sum + toNumber(request.usage[key]), 0);
+    const turnUsage = devinRequests.length > 0 || devinTurn?.known
+      ? { input_tokens: sumRequests(devinRequests, 'input_tokens'), output_tokens: sumRequests(devinRequests, 'output_tokens'),
+          cache_read_input_tokens: sumRequests(devinRequests, 'cache_read_input_tokens'),
+          cache_creation_input_tokens: sumRequests(devinRequests, 'cache_creation_input_tokens') }
+      : result.usage;
+    const inputTokens = scaleUsage(turnUsage?.input_tokens);
+    const outputTokens = scaleUsage(turnUsage?.output_tokens);
+    const cacheReadTokens = scaleUsage(turnUsage?.cache_read_input_tokens);
+    const cacheCreationTokens = scaleUsage(turnUsage?.cache_creation_input_tokens);
     const totalTokens = inputTokens + outputTokens + (provider === 'deepseek' ? cacheReadTokens : 0);
     const dateKey = formatDateKey(row.created_at);
     const dayBucket = dailyMap.get(dateKey);
@@ -4199,37 +4635,72 @@ function getClaudeProtocolUsageReport(
     const fallbackModel = provider === 'devin' ? devinUsageLabel(resolvedModel, result)
       : qoderModelLabels ? normalizeQoderCredits(result.qoderCredits)?.model || qoderModelLabels.get(resolvedModel) || resolvedModel
         : resolvedModel;
-    const resultCostUsd = recordCost(storedAgentCost(provider, result, resolvedModel, row.created_at), fallbackModel);
-    totalCostUsd += resultCostUsd;
-    // The same (repaired) counts the totals use, with the record's cache TTL split when it has one.
-    const typedUsage = {
-      ...result.usage,
-      input_tokens: inputTokens, output_tokens: outputTokens,
-      cache_read_input_tokens: cacheReadTokens, cache_creation_input_tokens: cacheCreationTokens,
-    } as Usage;
-    addCostByType(costByType, usageTokenParts(provider, typedUsage), resultCostUsd,
-      apiCostWeights(provider, resolvedModel, typedUsage, row.created_at));
-    const summary = modelSummaries.get(fallbackModel) || emptyModelSummary(fallbackModel);
-    summary.inputTokens += inputTokens;
-    summary.outputTokens += outputTokens;
-    summary.totalTokens += totalTokens;
-    summary.totalCostUsd += resultCostUsd ?? 0;
-    summary.cacheReadTokens += cacheReadTokens;
-    modelSummaries.set(fallbackModel, summary);
-
-    if (!modelSessions.has(fallbackModel)) {
-      modelSessions.set(fallbackModel, new Set());
+    // What the turn used, per model row. Devin's own records name the model
+    // of each request, and a turn can call more than one (the picked model,
+    // the compactor): each request goes under the model that answered it.
+    const shares: Array<{ model: string; inputTokens: number; outputTokens: number; cacheReadTokens: number; totalTokens: number; costUsd: number }> = [];
+    if (devinRequests.length > 0) {
+      const byModel = new Map<string, DevinRequest[]>();
+      for (const request of devinRequests) {
+        const model = request.model ?? fallbackModel;
+        const list = byModel.get(model) ?? [];
+        list.push(request);
+        byModel.set(model, list);
+      }
+      for (const [model, requests] of byModel) {
+        const { details, priced } = priceDevinRequests(requests, resolvedModel);
+        for (const { request, usd } of priced) {
+          addCostByType(costByType, usageTokenParts(provider, request.usage), usd,
+            apiCostWeights(provider, request.model ?? resolvedModel, request.usage, request.at));
+        }
+        const shareInput = sumRequests(requests, 'input_tokens');
+        const shareOutput = sumRequests(requests, 'output_tokens');
+        shares.push({
+          model, inputTokens: shareInput, outputTokens: shareOutput, cacheReadTokens: sumRequests(requests, 'cache_read_input_tokens'),
+          totalTokens: shareInput + shareOutput, costUsd: recordCost(details, model),
+        });
+      }
+    } else if (devinTurn?.known) {
+      // Nothing of its own to add; the row still carries the turn's messages and credits.
+      shares.push({ model: fallbackModel, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalTokens: 0, costUsd: 0 });
+    } else {
+      const costUsd = recordCost(storedAgentCost(provider, result, resolvedModel, row.created_at), fallbackModel);
+      // The same (repaired) counts the totals use, with the record's cache TTL split when it has one.
+      const typedUsage = {
+        ...result.usage,
+        input_tokens: inputTokens, output_tokens: outputTokens,
+        cache_read_input_tokens: cacheReadTokens, cache_creation_input_tokens: cacheCreationTokens,
+      } as Usage;
+      addCostByType(costByType, usageTokenParts(provider, typedUsage), costUsd,
+        apiCostWeights(provider, resolvedModel, typedUsage, row.created_at));
+      shares.push({ model: fallbackModel, inputTokens, outputTokens, cacheReadTokens, totalTokens, costUsd });
     }
-    modelSessions.get(fallbackModel)!.add(row.session_id);
+    for (const share of shares) {
+      totalCostUsd += share.costUsd;
+      const shareSummary = modelSummaries.get(share.model) || emptyModelSummary(share.model);
+      shareSummary.inputTokens += share.inputTokens;
+      shareSummary.outputTokens += share.outputTokens;
+      shareSummary.totalTokens += share.totalTokens;
+      shareSummary.totalCostUsd += share.costUsd;
+      shareSummary.cacheReadTokens += share.cacheReadTokens;
+      modelSummaries.set(share.model, shareSummary);
 
-    if (dayBucket) {
-      dayBucket.totalTokens += totalTokens;
-      dayBucket.byModel[fallbackModel] = (dayBucket.byModel[fallbackModel] || 0) + totalTokens;
-      dayBucket.byModelCostUsd[fallbackModel] =
-        (dayBucket.byModelCostUsd[fallbackModel] || 0) + (resultCostUsd ?? 0);
+      if (!modelSessions.has(share.model)) {
+        modelSessions.set(share.model, new Set());
+      }
+      modelSessions.get(share.model)!.add(row.session_id);
+
+      if (dayBucket) {
+        dayBucket.totalTokens += share.totalTokens;
+        dayBucket.byModel[share.model] = (dayBucket.byModel[share.model] || 0) + share.totalTokens;
+        dayBucket.byModelCostUsd[share.model] = (dayBucket.byModelCostUsd[share.model] || 0) + share.costUsd;
+      }
     }
 
     if (devinBilling) {
+      // A turn's messages and credits are one amount: under the model that used most of the turn.
+      const billedModel = shares.reduce((top, share) => (share.totalTokens > top.totalTokens ? share : top)).model;
+      const summary = modelSummaries.get(billedModel)!;
       const agentMessages = toNumber(result.devinBilling?.agentMessages);
       const credits = toNumber(result.devinBilling?.credits);
       devinBilling.agentMessages += agentMessages;
@@ -4237,8 +4708,8 @@ function getClaudeProtocolUsageReport(
       summary.agentMessages = (summary.agentMessages || 0) + agentMessages;
       summary.credits = (summary.credits || 0) + credits;
       if (dayBucket && (agentMessages || credits)) {
-        dayBucket.byModelAgentMessages[fallbackModel] = (dayBucket.byModelAgentMessages[fallbackModel] || 0) + agentMessages;
-        dayBucket.byModelCredits[fallbackModel] = (dayBucket.byModelCredits[fallbackModel] || 0) + credits;
+        dayBucket.byModelAgentMessages[billedModel] = (dayBucket.byModelAgentMessages[billedModel] || 0) + agentMessages;
+        dayBucket.byModelCredits[billedModel] = (dayBucket.byModelCredits[billedModel] || 0) + credits;
       }
     }
 
@@ -4751,4 +5222,6 @@ export function close(): void {
     db.close();
     db = null;
   }
+  // Belongs to the database that was open; the next one has its own kept copy.
+  devinOwnRequestCache.clear();
 }
