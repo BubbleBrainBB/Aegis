@@ -279,19 +279,23 @@ app.whenReady().then(async()=>{
   assert(await js(oneLine),'Estimated cost fits on one line');await shot('minimax-estimated');
   await load(current);await until('document.body.innerText.includes("API equivalent cost")');assert(await js(oneLine),'API equivalent cost fits on one line');
   await load(mixed);await until('document.body.innerText.includes("Priced usage only")');assert(await js(oneLine),'Priced usage only fits on one line');
-  // Devin: messages and credits replace the cost columns; a By day table splits them by model.
-  await load(devinReport,'devin');await until('!!document.querySelector("[data-usage-daily-billing]")');
+  // Devin: messages and credits replace the cost columns. No By day table: the model table and the activity map cover it.
+  await load(devinReport,'devin');await until('document.body.innerText.includes("7 agent messages")');
   copy=await js('document.body.innerText');
   assert(copy.includes('7 agent messages · 1.25 credits'),'headline shows billed totals');
   assert(!copy.includes('Estimated cost')&&!copy.includes('Per 1M'),'no USD cost columns for Devin');
   assert.equal(await js('document.querySelector("[data-usage-model-row=\\"swe-2-high\\"] [data-usage-messages]").textContent'),'5');
   assert.equal(await js('document.querySelector("[data-usage-model-row=\\"claude-opus-5-5-high\\"] [data-usage-credits]").textContent'),'1.25');
   assert.equal(await js('document.querySelector("[data-usage-model-row=\\"swe-2-high\\"] [data-usage-credits]").textContent'),'—','no credits reads as a dash, not 0');
-  const dayRows=await js('Array.from(document.querySelectorAll("[data-usage-day-row]")).map(r=>Array.from(r.querySelectorAll("[data-usage-day-model]")).map(m=>m.dataset.usageDayModel+" "+m.innerText.trim().replace(/\\s+/g," ")))');
-  assert.equal(dayRows.length,1,'only days with billed messages are listed');
-  assert.deepEqual(dayRows[0],['swe-2-high swe-2-high 5','claude-opus-5-5-high claude-opus-5-5-high 1 · 1.25 credits','adaptive adaptive 1'],'busiest model first');
+  assert.equal(await js('!!document.querySelector("[data-usage-daily-billing]")'),false,'no By day table');
+  assert(!copy.includes('By day'),'no By day heading');
+  assert.deepEqual(await js('Array.from(document.querySelectorAll("[data-usage-ledger] thead th")).map(th=>th.innerText.trim())'),['Model','Tokens','Share','Messages','Credits','Sessions','Cache hit','Last 13 weeks','Last used'],'credits billed in the range bring the Credits column');
   await js('Array.from(document.querySelectorAll("[data-usage-model-row=\\"others\\"] button")).forEach(b=>b.click())');
   assert.equal(await js('document.querySelector("[data-usage-model-row=\\"adaptive\\"] [data-usage-messages]")?.textContent'),'1','a billed model without tokens stays in the ledger');
+  // The folded row and the rows it opens line up with the header, the footer and the column widths.
+  assert.equal(await js('!!document.querySelector("[data-usage-model-row=\\"others\\"]")'),true,'the fixture folds models into one row');
+  const columns='(()=>{const t=document.querySelector("[data-usage-ledger] table");return {cols:t.querySelectorAll("col").length,rows:Array.from(new Set(Array.from(t.querySelectorAll("tr")).map(r=>r.children.length))),messages:Math.round(t.querySelectorAll("thead th")[3].getBoundingClientRect().width)}})()';
+  assert.deepEqual(await js(columns),{cols:9,rows:[9],messages:84},'nine columns everywhere with credits');
   await shot('devin-billing');
   // Only billed, zero-token turns in the year: the report still shows instead of hiding.
   const billedOnly={...devinReport,totals:{...devinReport.totals,totalTokens:0,inputTokens:0,outputTokens:0,sessionCount:1},billing:{agentMessages:2,credits:0},
@@ -302,9 +306,14 @@ app.whenReady().then(async()=>{
   assert(!copy.includes('No usage recorded in the last year'),'billed-only usage is not reported as empty');
   assert(await js('!!document.querySelector("[data-usage-range]")'),'the range switch stays');
   assert.equal(await js('document.querySelector("[data-usage-model-row=\\"adaptive\\"] [data-usage-messages]")?.textContent'),'2');
-  assert.equal(await js('document.querySelectorAll("[data-usage-day-row]").length'),1);
+  // A plan billed by message reports no credits: no Credits column of dashes.
+  assert.deepEqual(await js('Array.from(document.querySelectorAll("[data-usage-ledger] thead th")).map(th=>th.innerText.trim())'),['Model','Tokens','Share','Messages','Sessions','Cache hit','Last 13 weeks','Last used']);
+  assert.equal(await js('document.querySelectorAll("[data-usage-credits]").length'),0);
+  assert.deepEqual(await js(columns),{cols:8,rows:[8],messages:84},'eight columns everywhere without credits');
+  await shot('devin-messages-only');
   await load({...devinReport,billing:{agentMessages:0,credits:0},daily:devinReport.daily.map(d=>({...d,byModelAgentMessages:{},byModelCredits:{}}))},'devin');
-  await until('document.body.innerText.includes("No billed messages recorded in this range")');
+  await until('document.querySelector("[data-usage-billing-total]")?.innerText.trim()==="0 agent messages"');
+  assert(!(await js('document.body.innerText')).includes('No billed messages recorded'),'nothing billed leaves no empty table behind');
   // Qoder reports credits and no tokens: the whole page counts in credits.
   const noTokens={inputTokens:0,outputTokens:0,totalTokens:0,totalCostUsd:0,cacheReadTokens:0};
   const qoderReport={...devinReport,totals:{...noTokens,sessionCount:2,cacheHitRate:0},billing:{agentMessages:0,credits:36.21},
@@ -317,8 +326,11 @@ app.whenReady().then(async()=>{
   assert.equal(await js('document.querySelector("[data-usage-ledger]").dataset.usageLedger'),'credits');
   assert.deepEqual(await js('Array.from(document.querySelectorAll("[data-usage-ledger] thead th")).map(th=>th.innerText.trim())'),['Model','Credits','Share','Sessions','Last 13 weeks','Last used']);
   assert.deepEqual(await js('Array.from(document.querySelectorAll("[data-usage-ledger] tbody tr")).map(r=>r.dataset.usageModelRow+" "+r.querySelector("[data-usage-credits]").innerText)'),['Auto 30.2','Fast 6.01'],'most credits first');
-  assert.deepEqual(await js('Array.from(document.querySelectorAll("[data-usage-daily-billing] thead th")).map(th=>th.innerText.trim())'),['Date','Credits','By model'],'no Messages column');
-  assert.deepEqual(await js('Array.from(document.querySelectorAll("[data-usage-day-row]")).map(r=>r.children[1].innerText.trim())'),['23.71','12.5'],'newest day first');
+  assert.equal(await js('!!document.querySelector("[data-usage-daily-billing]")'),false,'no By day table');
+  // Each model row carries the agent's logo, not a placeholder dot.
+  const logos=await js('Array.from(document.querySelectorAll("[data-usage-ledger] tbody tr")).map(r=>{const i=r.querySelector("[data-usage-model-logo] img");return i?i.getAttribute("src"):null})');
+  assert.equal(logos.length,2);assert.ok(logos.every(src=>src&&/qoder/.test(src)),'Qoder logo on every model row: '+JSON.stringify(logos));
+  assert.equal(await js('document.querySelectorAll("[data-usage-ledger] tbody [data-usage-model-logo] img").length'),2);
   copy=await js('document.body.innerText');
   assert(!copy.includes('tokens')&&!copy.includes('agent message')&&!copy.includes('Cache hit'),'nothing on the page counts tokens: '+copy.slice(0,200));
   assert(copy.split(/\s+/).join(' ').includes('· 23.71'),'the activity strip counts the busiest day in credits');
