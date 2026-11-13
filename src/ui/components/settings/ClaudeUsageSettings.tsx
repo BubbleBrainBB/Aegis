@@ -187,10 +187,8 @@ export function ClaudeUsageSettingsContent() {
               </div>
 
               {unit === 'credits'
-                ? <CreditLedger report={rangeReport!} yearDaily={activeReport!.daily} />
+                ? <CreditLedger report={rangeReport!} yearDaily={activeReport!.daily} logo={activeProviderCard.logo} />
                 : <ModelLedger report={rangeReport!} yearDaily={activeReport!.daily} />}
-
-              {rangeReport!.billing ? <DailyBillingSection report={rangeReport!} unit={unit} /> : null}
 
               <TokenActivitySection daily={activeReport!.daily} stats={stats!} unit={unit} />
             </>
@@ -489,6 +487,8 @@ function ModelLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDai
     : null;
   // Devin bills in agent messages and credits, not USD: those replace the cost columns.
   const billing = report.billing;
+  // Plans billed by message never report credits; the column shows only when the range has some.
+  const showCredits = (billing?.credits ?? 0) > 0;
   const trendLabel = report.rangeDays <= 30 ? `Last ${report.rangeDays} days` : 'Last 13 weeks';
   const used = (row: LedgerRow) => (point: ClaudeUsageDailyPoint) => row.models.some((model) => (point.byModel[model] ?? 0) > 0);
   const tokensOf = (row: LedgerRow) => (point: ClaudeUsageDailyPoint) => row.models.reduce((sum, model) => sum + (point.byModel[model] ?? 0), 0);
@@ -527,7 +527,7 @@ function ModelLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDai
       {billing ? (
         <>
           <td className={`${cell} text-right text-[var(--text-primary)]`} data-usage-messages>{formatBillingCount(row.messages)}</td>
-          <td className={`${cell} text-right text-[var(--text-secondary)]`} data-usage-credits>{formatBillingCount(row.credits)}</td>
+          {showCredits ? <td className={`${cell} text-right text-[var(--text-secondary)]`} data-usage-credits>{formatBillingCount(row.credits)}</td> : null}
         </>
       ) : (
         <>
@@ -549,14 +549,15 @@ function ModelLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDai
         <div className="px-5 py-5 text-[13px] text-[var(--text-muted)]">No model activity in this range.</div>
       ) : (
         <div className="overflow-x-auto px-2 pb-1">
-          <table className="w-full min-w-[912px] table-fixed border-collapse text-[13px]">
+          <table className={`w-full ${billing ? (showCredits ? 'min-w-[860px]' : 'min-w-[792px]') : 'min-w-[912px]'} table-fixed border-collapse text-[13px]`}>
             {/* Fixed numeric columns; the model column takes the rest, one line, cut with an ellipsis. */}
             <colgroup>
               <col />
               <col className="w-[124px]" />
               <col className="w-[60px]" />
-              <col className="w-[136px]" />
-              <col className="w-[68px]" />
+              {/* The cost label is long ("API equivalent cost"); a message count needs far less. */}
+              <col className={billing ? 'w-[84px]' : 'w-[136px]'} />
+              {billing && !showCredits ? null : <col className="w-[68px]" />}
               <col className="w-[72px]" />
               <col className="w-[76px]" />
               <col className="w-[104px]" />
@@ -570,7 +571,7 @@ function ModelLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDai
                 {billing ? (
                   <>
                     <th className={`${header} text-right`} title="Agent messages Devin billed">Messages</th>
-                    <th className={`${header} text-right`} title="Credits Devin billed (credit-billed accounts only)">Credits</th>
+                    {showCredits ? <th className={`${header} text-right`} title="Credits Devin billed">Credits</th> : null}
                   </>
                 ) : (
                   <>
@@ -597,7 +598,7 @@ function ModelLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDai
                 {billing ? (
                   <>
                     <td className={`${cell} text-right`}>{formatBillingCount(billing.agentMessages)}</td>
-                    <td className={`${cell} text-right`}>{formatBillingCount(billing.credits)}</td>
+                    {showCredits ? <td className={`${cell} text-right`}>{formatBillingCount(billing.credits)}</td> : null}
                   </>
                 ) : (
                   <>
@@ -644,9 +645,10 @@ function formatCredits(value: number): string {
 
 /**
  * The model table for an agent counted in credits: credits with a share bar,
- * share, sessions, a trend and when each model was last used.
+ * share, sessions, a trend and when each model was last used. Rows carry the
+ * agent's own logo: its models are its tiers and names, not other vendors'.
  */
-function CreditLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDaily: ClaudeUsageDailyPoint[] }) {
+function CreditLedger({ report, yearDaily, logo }: { report: ClaudeUsageReport; yearDaily: ClaudeUsageDailyPoint[]; logo: ReactNode }) {
   const models = report.models.filter((model) => (model.credits ?? 0) > 0).sort((a, b) => (b.credits ?? 0) - (a.credits ?? 0));
   const total = models.reduce((sum, model) => sum + (model.credits ?? 0), 0);
   const trendLabel = report.rangeDays <= 30 ? `Last ${report.rangeDays} days` : 'Last 13 weeks';
@@ -687,7 +689,7 @@ function CreditLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDa
                   <tr key={model.model} className="border-t border-[var(--border)]" data-usage-model-row={model.model}>
                     <td className={`${cell} overflow-hidden`}>
                       <div className="flex min-w-0 items-center gap-2.5">
-                        <ModelProviderLogo model={model.model} color="var(--text-muted)" />
+                        <span className="flex h-4 w-4 flex-shrink-0 items-center justify-center" data-usage-model-logo>{logo}</span>
                         <span className="min-w-0 truncate font-medium text-[var(--text-primary)]" title={model.model}>{model.model}</span>
                       </div>
                     </td>
@@ -718,105 +720,6 @@ function CreditLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDa
               </tr>
             </tfoot>
           </table>
-        </div>
-      )}
-    </div>
-  );
-}
-
-const DAILY_BILLING_VISIBLE_DAYS = 10;
-
-/** Devin: billed agent messages and credits per day in the range, newest first, split by model. */
-function DailyBillingSection({ report, unit }: { report: ClaudeUsageReport; unit: UsageUnit }) {
-  const [expanded, setExpanded] = useState(false);
-  const days = report.daily
-    .map((point) => {
-      const messages = point.byModelAgentMessages ?? {};
-      const credits = point.byModelCredits ?? {};
-      const models = Array.from(new Set([...Object.keys(messages), ...Object.keys(credits)]))
-        .map((model) => ({ model, messages: messages[model] ?? 0, credits: credits[model] ?? 0 }))
-        .filter((entry) => entry.messages > 0 || entry.credits > 0)
-        .sort((a, b) => b.messages - a.messages || b.credits - a.credits || a.model.localeCompare(b.model));
-      return {
-        date: point.date,
-        models,
-        messages: models.reduce((sum, entry) => sum + entry.messages, 0),
-        credits: models.reduce((sum, entry) => sum + entry.credits, 0),
-      };
-    })
-    .filter((day) => day.models.length > 0)
-    .reverse();
-  const shown = expanded ? days : days.slice(0, DAILY_BILLING_VISIBLE_DAYS);
-  const header = 'px-3 pb-2 pt-3 align-bottom text-[11.5px] font-normal leading-[15px] text-[var(--text-muted)]';
-  const cell = 'px-3 py-2.5 align-top tabular-nums';
-
-  return (
-    <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--bg-primary)]" data-usage-daily-billing>
-      <div className="px-5 pt-4 text-[13.5px] font-semibold text-[var(--text-primary)]">By day</div>
-      {days.length === 0 ? (
-        <div className="px-5 py-5 text-[13px] text-[var(--text-muted)]">
-          {unit === 'credits'
-            ? 'No credits recorded in this range.'
-            : 'No billed messages recorded in this range. Devin turns record them from this version on.'}
-        </div>
-      ) : (
-        <div className="overflow-x-auto px-2 pb-1">
-          <table className="w-full min-w-[640px] table-fixed border-collapse text-[13px]">
-            <colgroup>
-              <col className="w-[132px]" />
-              {unit === 'credits' ? null : <col className="w-[96px]" />}
-              <col className="w-[96px]" />
-              <col />
-            </colgroup>
-            <thead>
-              <tr>
-                <th className={`${header} text-left`}>Date</th>
-                {unit === 'credits' ? null : <th className={`${header} text-right`}>Messages</th>}
-                <th className={`${header} text-right`}>Credits</th>
-                <th className={`${header} text-left`}>By model</th>
-              </tr>
-            </thead>
-            <tbody>
-              {shown.map((day) => (
-                <tr key={day.date} className="border-t border-[var(--border)]" data-usage-day-row={day.date}>
-                  <td className={`${cell} whitespace-nowrap text-[var(--text-primary)]`}>{formatLongDate(day.date)}</td>
-                  {unit === 'credits' ? null : <td className={`${cell} text-right font-medium text-[var(--text-primary)]`}>{formatBillingCount(day.messages)}</td>}
-                  <td className={`${cell} text-right ${unit === 'credits' ? 'font-medium text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}`}>
-                    {unit === 'credits' ? formatCredits(day.credits) : formatBillingCount(day.credits)}
-                  </td>
-                  <td className={`${cell} text-[var(--text-secondary)]`}>
-                    <div className="flex flex-wrap gap-x-4 gap-y-1">
-                      {day.models.map((entry) => (
-                        <span key={entry.model} className="inline-flex min-w-0 items-center gap-1.5" data-usage-day-model={entry.model}>
-                          <ModelProviderLogo model={entry.model} color="var(--text-muted)" />
-                          <span className="truncate">{entry.model}</span>
-                          {unit === 'credits' ? (
-                            <span className="font-medium text-[var(--text-primary)]">{formatCredits(entry.credits)}</span>
-                          ) : (
-                            <>
-                              <span className="font-medium text-[var(--text-primary)]">{formatBillingCount(entry.messages)}</span>
-                              {entry.credits > 0 ? <span>· {formatBillingCount(entry.credits)} credits</span> : null}
-                            </>
-                          )}
-                        </span>
-                      ))}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {days.length > DAILY_BILLING_VISIBLE_DAYS ? (
-            <button
-              type="button"
-              onClick={() => setExpanded(!expanded)}
-              aria-expanded={expanded}
-              className="mx-3 my-2 inline-flex items-center gap-1 text-[12.5px] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-            >
-              {expanded ? 'Show fewer days' : `Show ${days.length - DAILY_BILLING_VISIBLE_DAYS} more days`}
-              <ChevronDown className={`h-3.5 w-3.5 transition-transform ${expanded ? 'rotate-180' : ''}`} />
-            </button>
-          ) : null}
         </div>
       )}
     </div>
