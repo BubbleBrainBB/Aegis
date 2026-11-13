@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import './SidebarUsageMenu.css';
 import { usePlanUsage } from '../../hooks/usePlanUsage';
-import { prefetchAgentUsageReport, useAgentUsageReport, useAgentUsageReports } from '../../hooks/useAgentUsageReport';
+import { prefetchAgentUsageReport, useAgentUsageReports } from '../../hooks/useAgentUsageReport';
 import { useAppStore } from '../../store/useAppStore';
 import type { AgentProvider } from '../../types';
 import { PROVIDERS } from '../../utils/provider';
@@ -36,7 +36,11 @@ function staleStatus(error: string | null, fetchedAt: number | undefined): strin
 export function SidebarUsageMenu() {
   const [open, setOpen] = useState(false);
   const selectedProvider = useAppStore((state) => state.usageSettingsProvider);
-  useAgentUsageReport(selectedProvider, 365, open);
+  // The page "Usage details" opens on: one agent's year, or every agent's for the overview.
+  useAgentUsageReports(
+    PROVIDERS.map((entry) => ({ provider: entry.id, enabled: open && (selectedProvider === 'all' || selectedProvider === entry.id) })),
+    365,
+  );
   const claude = usePlanUsage('claude', open);
   const codex = usePlanUsage('codex', open);
   const grok = usePlanUsage('grok', open);

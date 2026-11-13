@@ -35,7 +35,7 @@ const stubs={
  getAgentUsageReport:async(provider,days)=>{calls.push(provider+':'+days);if(days===365&&historyHold)await new Promise(resolve=>pendingHistory.push(resolve));if(fail||provider==='deepseek')throw Error('Unavailable');const tokens=provider==='bubble'?(days===365?12000000:1200000):provider==='claude'&&days===365?7800000:0;return {rangeDays:days,totals:{inputTokens:tokens,outputTokens:0,totalTokens:tokens,totalCostUsd:0,sessionCount:provider==='kimi'?2:tokens?1:0,cacheReadTokens:0,cacheHitRate:0},models:[],daily:[{date:new Date().toISOString().slice(0,10),totalTokens:tokens,byModel:{}}]};},
 };
 window.electron=new Proxy(stubs,{get:(t,k)=>k in t?t[k]:autoStub()});
-useAppStore.setState({sessions:{},sidebarCollapsed:false,sidebarWidth:280,showSettings:false,activeSettingsTab:'profile'});
+useAppStore.setState({sessions:{},sidebarCollapsed:false,sidebarWidth:280,showSettings:false,activeSettingsTab:'profile',usageSettingsProvider:'claude'});
 useAppStore.getState().setTheme('light');
 window.qa={store:useAppStore,calls,holdHistory:()=>historyHold=true,settleHistory:value=>{fail=value;historyHold=false;pendingHistory.splice(0).forEach(resolve=>resolve())},resolveClaude:()=>resolveClaude(),expire:()=>window.qaTimeOffset+=61000,fail:()=>fail=true,hold:()=>hold=true,settle:value=>{fail=value;hold=false;pending.splice(0).forEach(run=>run())},refresh:()=>{window.qaTimeOffset+=61000;window.qaRefreshers.forEach(run=>run())}};
 function Harness(){const settings=useAppStore(s=>s.showSettings);return <Tooltip.Provider><div style={{height:'100vh',display:'flex',background:'var(--bg-primary)',color:'var(--text-primary)'}}>{settings?<><Sidebar/><Settings/></>:<><Sidebar/><main style={{padding:24,flex:1}}><h1>Workspace</h1></main></>}</div><Toaster/></Tooltip.Provider>}
@@ -175,7 +175,18 @@ app.whenReady().then(async()=>{
   const scrolled=await js('qa.geometry()');await js('qa.hold();qa.refresh()');await delay(150);
   assert.deepEqual(await js('qa.geometry()'),scrolled,'refresh preserves scroll position');
   await js('qa.settle(false)');await delay(200);assert.deepEqual(await js('qa.geometry()'),scrolled,'recovery preserves scroll position');
-  assert.deepEqual(errors,[]);console.log('PASS: lazy/independent usage with loading skeleton, plan windows with tiers and tones, token ledger and idle logos, hover and keyboard submenus, every provider routes, prefetched/persistent yearly details without loading flashes, shared quotas, cache reopen/failure, stable geometry throughout refresh/failure/recovery, Settings and small window scrolling');app.exit(0);
+  // With "All agents" picked, the menu loads every agent's year: the overview opens without a loading frame.
+  await outside();win.setSize(1050,800);await delay(200);
+  await js('qa.store.getState().setUsageSettingsProvider("all");qa.expire();qa.calls.length=0');await open();
+  await until('qa.calls.filter(c=>c.endsWith(":365")).length==='+ALL);
+  await js('qa.detailFrames=[];qa.detailObserver=new MutationObserver(()=>{const main=document.querySelector(".aegis-settings main");if(main)qa.detailFrames.push(main.textContent)});qa.detailObserver.observe(document.getElementById("root"),{subtree:true,childList:true,characterData:true})');
+  await textClick('Usage details');await until('!!document.querySelector("[data-usage-overview] [data-usage-agent]")');
+  assert.equal(await js('qa.store.getState().usageSettingsProvider'),'all','full usage keeps the overview');
+  assert.equal(await js('qa.detailFrames.some(t=>t.includes("Loading usage"))'),false,'the overview does not paint a loading placeholder');
+  assert.deepEqual(await js('[...document.querySelectorAll("[data-usage-agent]")].map(e=>e.dataset.usageAgent+": "+e.querySelector("[data-usage-agent-own]").textContent)'),
+   ['claude: 7.8M tokens','kimi: 2 sessions','bubble: 12M tokens'],'agents without dollars show their own unit; one that failed to load is left out');
+  await js('qa.detailObserver.disconnect();qa.store.getState().setShowSettings(false)');await delay(150);
+  assert.deepEqual(errors,[]);console.log('PASS: lazy/independent usage with loading skeleton, plan windows with tiers and tones, token ledger and idle logos, hover and keyboard submenus, every provider routes, prefetched/persistent yearly details without loading flashes, shared quotas, cache reopen/failure, All agents prefetch, stable geometry throughout refresh/failure/recovery, Settings and small window scrolling');app.exit(0);
  }catch(e){console.error(e,errors);await shot('failure');app.exit(1)}
 });
 `;

@@ -1,6 +1,6 @@
-import type { AgentProvider, ProviderCostDetails, Usage } from '../../shared/types';
-import { estimateCodexUsageCost, getCodexPriceEntry } from './codex-pricing';
-import { estimateDeepseekUsageCost } from './deepseek-pricing';
+import type { AgentProvider, ProviderCostDetails, Usage, UsageCostByType } from '../../shared/types';
+import { estimateCodexUsageCost, estimateCodexUsageCostParts, getCodexPriceEntry } from './codex-pricing';
+import { estimateDeepseekUsageCost, getDeepseekPrice } from './deepseek-pricing';
 
 export const validUsd = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value) && value >= 0;
@@ -62,29 +62,47 @@ const MINIMAX_PRICES: Record<string, { rates: [number, number, number]; longCont
 };
 const MINIMAX_LONG_CONTEXT_TOKENS = 512_000;
 
-export function estimateAgentApiCost(
-  provider: AgentProvider, model: string, usage: Usage | null | undefined,
-  atMs = Date.now(), perRequest = false,
-): number | null {
-  if (!usage) return null;
+const count = (n: unknown) => validUsd(n) ? n : 0;
+
+/** The id a model is priced under: the bare model name, with Kimi's subscription names mapped to API ones. */
+function pricedModelId(provider: AgentProvider, model: string): string {
   const qualifiedModel = model.trim().toLowerCase();
   // MiniMax Code records its select value, `m:<provider>:<model>:v:<variant>`.
   const mcodeModel = /^m:[^:]+:([^:]+):[uv]\b/.exec(qualifiedModel)?.[1];
   const rawId = mcodeModel ? decodeURIComponent(mcodeModel) : qualifiedModel.split(/[/:]/).pop() || '';
   const kimiModel = provider === 'kimi' || /^(kimi-code|kimi-for-coding|moonshot(?:-cn|-ai)?)[/:]/.test(qualifiedModel);
-  const id = kimiModel ? KIMI_ESTIMATE_MODELS[rawId] || rawId : rawId;
-  const count = (n: unknown) => validUsd(n) ? n : 0;
-  const read = count(usage.cache_read_input_tokens);
-  const write = count(usage.cache_creation_input_tokens);
+  return kimiModel ? KIMI_ESTIMATE_MODELS[rawId] || rawId : rawId;
+}
+
+/** Tokens or dollars by what was billed: uncached input, cache reads, cache writes and output. */
+export interface UsageTypeParts { input: number; cacheRead: number; cacheWrite: number; output: number }
+
+/** A usage record's tokens by type, with uncached input apart from the cache buckets. */
+export function usageTokenParts(provider: AgentProvider, usage: Usage | null | undefined): UsageTypeParts {
+  const cacheRead = count(usage?.cache_read_input_tokens);
+  const cacheWrite = count(usage?.cache_creation_input_tokens);
+  // Bubble SDK promptTokens includes cached input; Pi/Claude/OpenCode/Kimi
+  // expose uncached input and cache buckets separately.
+  const includesCache = provider === 'bubble' || provider === 'codex';
+  return {
+    input: Math.max(0, count(usage?.input_tokens) - (includesCache ? cacheRead + cacheWrite : 0)),
+    cacheRead,
+    cacheWrite,
+    output: count(usage?.output_tokens),
+  };
+}
+
+export function estimateAgentApiCost(
+  provider: AgentProvider, model: string, usage: Usage | null | undefined,
+  atMs = Date.now(), perRequest = false,
+): number | null {
+  if (!usage) return null;
+  const id = pricedModelId(provider, model);
+  const { input, cacheRead: read, cacheWrite: write, output } = usageTokenParts(provider, usage);
   // Grok's legacy Claude-compatible records and native ACP records do not
   // yet carry a cache-bucket accounting version. A missing-cost cached turn
   // cannot safely establish whether input includes those buckets.
   if (provider === 'grok' && (read > 0 || write > 0)) return null;
-  // Bubble SDK promptTokens includes cached input; Pi/Claude/OpenCode/Kimi
-  // expose uncached input and cache buckets separately.
-  const includesCache = provider === 'bubble' || provider === 'codex';
-  const input = Math.max(0, count(usage.input_tokens) - (includesCache ? read + write : 0));
-  const output = count(usage.output_tokens);
   const allInput = input + read + write;
   // A known model's explicitly reported zero usage contributes zero; context
   // occupancy alone still cannot be used as billable usage.
@@ -135,6 +153,81 @@ export function estimateAgentApiCost(
   // These APIs have no separate cache-write token tier: newly written
   // tokens are ordinary cache-miss input (cache storage is not a token fee).
   return ((input + write) * price[0] + read * price[1] + output * price[2]) * multiplier / 1_000_000;
+}
+
+/** Anthropic's rate structure, relative to a model's input rate: cache reads
+ * 0.1x, 5-minute cache writes 1.25x (1-hour 2x), output 5x. Splits the cost of
+ * a Claude model that is not in the price list yet. */
+const CLAUDE_RATE_SHAPE: [number, number, number] = [1, 0.1, 5];
+
+/**
+ * What each type of token would cost at list prices, for splitting an amount
+ * by type. Only the proportions are used, so it answers where
+ * estimateAgentApiCost refuses to name a price (an unknown cache TTL, a turn
+ * past a long-context boundary). Null when the model has no listed rates.
+ */
+export function apiCostWeights(
+  provider: AgentProvider, model: string, usage: Usage | null | undefined, atMs = Date.now(),
+): UsageTypeParts | null {
+  if (!usage) return null;
+  const id = pricedModelId(provider, model);
+  const { input, cacheRead, cacheWrite, output } = usageTokenParts(provider, usage);
+  const at = (inputRate: number, readRate: number, writeRate: number, outputRate: number): UsageTypeParts => ({
+    input: input * inputRate / 1_000_000,
+    cacheRead: cacheRead * readRate / 1_000_000,
+    cacheWrite: cacheWrite * writeRate / 1_000_000,
+    output: output * outputRate / 1_000_000,
+  });
+  const hourWrites = Math.min(cacheWrite,
+    count((usage as Usage & { cache_creation?: { ephemeral_1h_input_tokens?: number } }).cache_creation?.ephemeral_1h_input_tokens));
+  // A cache-write rate that blends the 5-minute and 1-hour tiers this record used.
+  const tiered = (short: number, hour: number) =>
+    cacheWrite > 0 ? ((cacheWrite - hourWrites) * short + hourWrites * hour) / cacheWrite : short;
+  const claudeId = id.replace(/-\d{8}$/, '').replaceAll('.', '-');
+  const claude = CLAUDE_PRICES[claudeId] ?? (claudeId.startsWith('claude-') ? CLAUDE_RATE_SHAPE : undefined);
+  if (claude) return at(claude[0], claude[1], tiered(claude[0] * 1.25, claude[0] * 2), claude[2]);
+  if (getCodexPriceEntry(id)) {
+    return estimateCodexUsageCostParts(id, { inputTokens: input + cacheRead + cacheWrite,
+      cachedInputTokens: cacheRead, cacheWriteInputTokens: cacheWrite, outputTokens: output });
+  }
+  const deepseek = getDeepseekPrice(id, atMs);
+  if (deepseek) {
+    return at(deepseek.cacheMissInputUsdPerMillion, deepseek.cacheHitInputUsdPerMillion,
+      deepseek.cacheMissInputUsdPerMillion, deepseek.outputUsdPerMillion);
+  }
+  const minimax = MINIMAX_PRICES[id];
+  if (minimax) return at(minimax.rates[0], minimax.rates[1], minimax.rates[0], minimax.rates[2]);
+  const price = API_PRICES[id];
+  if (!price) return null;
+  return at(price[0], price[1], id === 'kimi-k3' ? tiered(3, 6) : price[0], price[2]);
+}
+
+export function emptyCostByType(): UsageCostByType {
+  return {
+    inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0,
+    inputCostUsd: 0, cacheReadCostUsd: 0, cacheWriteCostUsd: 0, outputCostUsd: 0,
+    unsplitCostUsd: 0,
+  };
+}
+
+/** Count a record's tokens by type and share its cost out in the weights' proportions. */
+export function addCostByType(
+  target: UsageCostByType, tokens: UsageTypeParts, usd: number, weights: UsageTypeParts | null,
+): void {
+  target.inputTokens += tokens.input;
+  target.cacheReadTokens += tokens.cacheRead;
+  target.cacheWriteTokens += tokens.cacheWrite;
+  target.outputTokens += tokens.output;
+  if (!(usd > 0)) return;
+  const sum = weights ? weights.input + weights.cacheRead + weights.cacheWrite + weights.output : 0;
+  if (!weights || !(sum > 0)) {
+    target.unsplitCostUsd += usd;
+    return;
+  }
+  target.inputCostUsd += usd * weights.input / sum;
+  target.cacheReadCostUsd += usd * weights.cacheRead / sum;
+  target.cacheWriteCostUsd += usd * weights.cacheWrite / sum;
+  target.outputCostUsd += usd * weights.output / sum;
 }
 
 /** Resolve each request before summing: preserve returned zero and never

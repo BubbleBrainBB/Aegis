@@ -4,6 +4,8 @@
 export type SettingsTab = 'connections' | 'mcp' | 'general' | 'shortcuts' | 'appearance' | 'browser' | 'providers' | 'usage' | 'profile' | 'bridge';
 /** Agent runtime whose MCP servers the settings pane is showing. */
 export type McpSettingsRuntime = 'claude' | 'codex' | 'opencode' | 'kimi' | 'qoder' | 'bubble' | 'deepseek';
+/** What Settings > Usage shows: every agent added together, or one agent's own page. */
+export type UsageSettingsProvider = AgentProvider | 'all';
 
 import type { ThemeRecipe, ThemeTypefaces, ThemeMode, ThemeChoice, AppearanceState, ThemeVariant } from './theme/theme-types';
 // 从共享类型导入
@@ -75,6 +77,7 @@ export type {
   ClaudeUsageModelSummary,
   ClaudeUsageRangeDays,
   ClaudeUsageReport,
+  UsageCostByType,
   CodexRateLimitReport,
   CodexRateLimitSnapshot,
   CodexRateLimitWindow,
@@ -551,7 +554,7 @@ export interface AppState {
   // 按 draft session id 记，默认 local。
   draftStartMode: Record<string, 'local' | 'worktree'>;
   activeSettingsTab: SettingsTab;
-  usageSettingsProvider: AgentProvider;
+  usageSettingsProvider: UsageSettingsProvider;
   // Which runtime's MCP servers the settings pane shows; drives the sidebar sub-nav too.
   mcpSettingsRuntime: McpSettingsRuntime;
   agentSetupOpen: boolean;
@@ -733,7 +736,7 @@ export interface AppActions {
   // Settings Actions
   setShowSettings: (show: boolean) => void;
   setActiveSettingsTab: (tab: SettingsTab) => void;
-  setUsageSettingsProvider: (provider: AgentProvider) => void;
+  setUsageSettingsProvider: (provider: UsageSettingsProvider) => void;
   setMcpSettingsRuntime: (runtime: McpSettingsRuntime) => void;
   setAgentSetupOpen: (open: boolean) => void;
   dismissAgentSetup: () => void;

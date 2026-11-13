@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useState, type ReactNode } from 'react';
 import { toast } from 'sonner';
 import { Check, ChevronDown } from '../icons';
 import * as DropdownMenu from '../ui/dropdown-menu';
@@ -13,7 +13,7 @@ import { ApplicationDestinationSelect, type ApplicationDestinationOption } from 
 const selectClass = 'h-8 max-w-full min-w-0 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-2 text-[13px] text-[var(--text-primary)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]';
 
 export function PreferenceSelect({ label, value, options, disabled, onChange }: {
-  label: string; value: string; options: { value: string; label: string; icon?: ReactNode }[]; disabled?: boolean; onChange: (value: string) => void;
+  label: string; value: string; options: { value: string; label: string; icon?: ReactNode; /** A line under this option, setting it apart from the rest. */ divider?: boolean }[]; disabled?: boolean; onChange: (value: string) => void;
 }) {
   const selected = options.find(option => option.value === value);
   return <DropdownMenu.Root>
@@ -24,10 +24,13 @@ export function PreferenceSelect({ label, value, options, disabled, onChange }: 
       </button>
     </DropdownMenu.Trigger>
     <DropdownMenu.Portal><DropdownMenu.Content align="end" sideOffset={6} className="max-h-[min(320px,calc(100vh-24px))] max-w-[calc(100vw-24px)] overflow-y-auto">
-      {options.map(option => <DropdownMenu.Item key={option.value} data-preference-option={option.value} onSelect={() => onChange(option.value)} className="gap-3 text-[13px]">
-        <span className="flex min-w-0 flex-1 items-center gap-2">{option.icon}{option.label}</span>
-        <Check aria-hidden="true" className={`h-3.5 w-3.5 shrink-0 ${value === option.value ? '' : 'invisible'}`} />
-      </DropdownMenu.Item>)}
+      {options.map(option => <Fragment key={option.value}>
+        <DropdownMenu.Item data-preference-option={option.value} onSelect={() => onChange(option.value)} className="gap-3 text-[13px]">
+          <span className="flex min-w-0 flex-1 items-center gap-2">{option.icon}{option.label}</span>
+          <Check aria-hidden="true" className={`h-3.5 w-3.5 shrink-0 ${value === option.value ? '' : 'invisible'}`} />
+        </DropdownMenu.Item>
+        {option.divider ? <DropdownMenu.Separator /> : null}
+      </Fragment>)}
     </DropdownMenu.Content></DropdownMenu.Portal>
   </DropdownMenu.Root>;
 }

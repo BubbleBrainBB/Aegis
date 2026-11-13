@@ -12,7 +12,7 @@ import devinLogo from '../../assets/devin-color.svg';
 import mimoLogo from '../../assets/xiaomimimo.svg';
 import zhipuLogo from '../../assets/zhipu-color.svg';
 import { OpenCodeLogo } from '../OpenCodeLogo';
-import { ChevronDown } from '../icons';
+import { ChevronDown, LayoutGrid } from '../icons';
 import type {
   AgentProvider,
   ClaudePlanUsageReport,
@@ -25,12 +25,19 @@ import type {
   CodexRateLimitWindow,
   GrokPlanUsageReport,
   QoderPlanUsageReport,
+  UsageSettingsProvider,
 } from '../../types';
 import { useKimiModelConfig } from '../../hooks/useKimiModelConfig';
 import { usePlanUsage } from '../../hooks/usePlanUsage';
-import { useAgentUsageReport } from '../../hooks/useAgentUsageReport';
+import { useAgentUsageReport, useAgentUsageReports } from '../../hooks/useAgentUsageReport';
 import { useAppStore } from '../../store/useAppStore';
+import {
+  formatBillingCount, formatCompactNumber, formatCredits, formatCurrency, formatLongDate, formatPercent,
+  formatShortDate, parseDateKey,
+} from '../../utils/usage-format';
+import { buildUsageOverview, ledgerTotalTokens } from '../../utils/usage-overview-model';
 import { PreferenceSelect } from './GeneralSettingsContent';
+import { UsageOverviewCards } from './UsageOverview';
 
 // Steps of the theme's accent, so the heatmap follows light, dark and custom themes.
 const HEATMAP_LEVEL_COLORS = [22, 40, 58, 78, 100].map((p) => `color-mix(in srgb, var(--accent) ${p}%, transparent)`);
@@ -39,12 +46,6 @@ type UsageProviderCard = {
   id: AgentProvider;
   title: string;
   logo: ReactNode;
-  report: ClaudeUsageReport | null;
-  loading: boolean;
-  error: string | null;
-};
-
-type ProviderUsageState = {
   report: ClaudeUsageReport | null;
   loading: boolean;
   error: string | null;
@@ -65,13 +66,163 @@ const USAGE_PROVIDERS: Array<{ id: AgentProvider; title: string; logoSrc?: strin
   { id: 'minimax', title: 'MiniMax Code', logoSrc: minimaxLogo },
 ];
 
+function usageProviderLogo(provider: AgentProvider): ReactNode {
+  const logoSrc = USAGE_PROVIDERS.find((entry) => entry.id === provider)?.logoSrc;
+  return logoSrc ? (
+    <img src={logoSrc} alt="" className={`h-3.5 w-3.5 flex-shrink-0 ${[claudeLogo, openaiLogo, grokLogo, moonshotLogo, mimoLogo].includes(logoSrc) ? 'provider-monochrome-logo' : ''}`} aria-hidden="true" />
+  ) : (
+    <OpenCodeLogo className="h-3.5 w-3.5 flex-shrink-0" />
+  );
+}
+
 type ActivityViewMode = 'daily' | 'weekly' | 'cumulative';
+
+/** Kimi's picker names ("K2.7 Coding") for the raw model ids its usage is recorded under. */
+function useKimiModelLabels(): Record<string, string> {
+  const kimiModelConfig = useKimiModelConfig();
+  return useMemo(() => {
+    const labels: Record<string, string> = {};
+    for (const model of kimiModelConfig.availableModels) {
+      if (model.label && model.label !== model.name) {
+        labels[model.name] = model.label;
+      }
+    }
+    return labels;
+  }, [kimiModelConfig]);
+}
 
 export function ClaudeUsageSettingsContent() {
   const activeProvider = useAppStore((state) => state.usageSettingsProvider);
   const setActiveProvider = useAppStore((state) => state.setUsageSettingsProvider);
   // The year feeds the activity heatmap and streaks; the model table follows the picked range.
+  // One range for both pages: opening an agent from the overview keeps it.
   const [rangeDays, setRangeDays] = useState<ClaudeUsageRangeDays>(365);
+  const kimiModelLabels = useKimiModelLabels();
+  const picker = <UsageProviderPicker value={activeProvider} onSelect={setActiveProvider} />;
+
+  return activeProvider === 'all' ? (
+    <UsageOverviewPage
+      rangeDays={rangeDays}
+      onRangeChange={setRangeDays}
+      picker={picker}
+      kimiModelLabels={kimiModelLabels}
+      onSelectAgent={setActiveProvider}
+    />
+  ) : (
+    <AgentUsagePage
+      activeProvider={activeProvider}
+      rangeDays={rangeDays}
+      setRangeDays={setRangeDays}
+      picker={picker}
+      kimiModelLabels={kimiModelLabels}
+    />
+  );
+}
+
+/** The line above every usage page: when the data is from, then the range and the agent. */
+function UsageToolbar({ status, range, picker }: { status: ReactNode; range: ReactNode; picker: ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+      <div className="min-w-0 truncate text-[12px] leading-4 text-[var(--text-muted)]" role="status" data-usage-report-status="">
+        {status}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        {range}
+        {picker}
+      </div>
+    </div>
+  );
+}
+
+const OVERVIEW_REQUESTS = USAGE_PROVIDERS.map((provider) => ({ provider: provider.id, enabled: true }));
+const OVERVIEW_IDLE_REQUESTS = USAGE_PROVIDERS.map((provider) => ({ provider: provider.id, enabled: false }));
+
+/** Every agent added together: cost total, cost by agent, by day and by type, then models and activity. */
+function UsageOverviewPage({ rangeDays, onRangeChange, picker, kimiModelLabels, onSelectAgent }: {
+  rangeDays: ClaudeUsageRangeDays;
+  onRangeChange(value: ClaudeUsageRangeDays): void;
+  picker: ReactNode;
+  kimiModelLabels: Record<string, string>;
+  onSelectAgent(provider: AgentProvider): void;
+}) {
+  const year = useAgentUsageReports(OVERVIEW_REQUESTS, 365);
+  // "1 year" reads the year's reports; any other range has its own.
+  const range = useAgentUsageReports(rangeDays === 365 ? OVERVIEW_IDLE_REQUESTS : OVERVIEW_REQUESTS, rangeDays);
+  const snapshots = rangeDays === 365 ? year : [...year, ...range];
+  // Agents answer one by one. Nothing is drawn from part of them: the total
+  // and the order of the list would jump as each arrives.
+  const settled = snapshots.every((snapshot) => snapshot.report || !snapshot.loading);
+  const built = useMemo(() => {
+    if (!settled) return null;
+    const relabel = (provider: AgentProvider, report: ClaudeUsageReport | null | undefined) =>
+      report && provider === 'kimi' ? relabelUsageReportModels(report, kimiModelLabels) : report ?? null;
+    return buildUsageOverview(
+      USAGE_PROVIDERS.map((provider, index) => ({
+        provider: provider.id,
+        title: provider.title,
+        range: relabel(provider.id, range[index].report?.usage),
+        year: relabel(provider.id, year[index].report?.usage),
+      })),
+      rangeDays,
+    );
+  }, [settled, year, range, rangeDays, kimiModelLabels]);
+  // While another range loads, the last one stays on screen.
+  const [shown, setShown] = useState(built);
+  useEffect(() => {
+    if (built) setShown(built);
+  }, [built]);
+  const overview = built ?? shown;
+  const stats = useMemo(
+    () => (overview ? computeUsageStats({ ...overview.report, daily: overview.yearDaily }) : null),
+    [overview]
+  );
+
+  const fetchedAt = year.reduce<number | null>((oldest, snapshot) => {
+    const at = snapshot.report?.fetchedAt;
+    return at === undefined ? oldest : oldest === null ? at : Math.min(oldest, at);
+  }, null);
+  const refreshing = snapshots.some((snapshot) => snapshot.loading);
+  const failed = snapshots.filter((snapshot) => snapshot.error && !snapshot.loading);
+  const nothingLoaded = settled && snapshots.every((snapshot) => !snapshot.report);
+
+  return (
+    <div className="space-y-6 pb-10" data-usage-overview>
+      <UsageToolbar
+        status={fetchedAt !== null ? <>
+          Updated {formatLocalTime(fetchedAt)}
+          {refreshing ? ' · Refreshing…' : failed.length ? ' · Update failed; showing saved data' : ''}
+        </> : null}
+        range={<UsageRangeSwitch value={rangeDays} onChange={onRangeChange} />}
+        picker={picker}
+      />
+
+      {!overview ? (
+        <InlineEmpty label="Loading usage…" />
+      ) : nothingLoaded && failed.length ? (
+        <div className="px-4 py-4 text-center text-[12px] text-[var(--error)]">
+          <span className="font-medium">Unable to load usage.</span> {normalizeUsageLoadError(new Error(failed[0].error || ''), 'get-agent-usage-report')}
+        </div>
+      ) : overview.agents.length === 0 ? (
+        <InlineEmpty label={overview.report.rangeDays === 365 ? 'No usage recorded in the last year.' : 'No usage recorded in this range.'} />
+      ) : (
+        <>
+          <UsageOverviewCards overview={overview} logoFor={usageProviderLogo} onSelectAgent={onSelectAgent} />
+          <ModelLedger report={overview.report} yearDaily={overview.yearDaily} />
+          <TokenActivitySection daily={overview.yearDaily} stats={stats!} unit="tokens" />
+        </>
+      )}
+    </div>
+  );
+}
+
+/** One agent's own page: its plan limits, its total, its models and its activity. */
+function AgentUsagePage({ activeProvider, rangeDays, setRangeDays, picker, kimiModelLabels }: {
+  activeProvider: AgentProvider;
+  rangeDays: ClaudeUsageRangeDays;
+  setRangeDays(value: ClaudeUsageRangeDays): void;
+  picker: ReactNode;
+  kimiModelLabels: Record<string, string>;
+}) {
   const usage = useAgentUsageReport(activeProvider, 365);
   const rangeUsage = useAgentUsageReport(activeProvider, rangeDays, rangeDays !== 365);
   const { report: codexRateLimits, loading: codexRateLimitsLoading, error: codexRateLimitsError } =
@@ -82,45 +233,21 @@ export function ClaudeUsageSettingsContent() {
     usePlanUsage('grok', activeProvider === 'grok');
   const { report: qoderPlanUsage, loading: qoderPlanUsageLoading, error: qoderPlanUsageError } =
     usePlanUsage('qoder', activeProvider === 'qoder');
-  const kimiModelConfig = useKimiModelConfig();
-  const kimiModelLabels = useMemo(() => {
-    const labels: Record<string, string> = {};
-    for (const model of kimiModelConfig.availableModels) {
-      if (model.label && model.label !== model.name) {
-        labels[model.name] = model.label;
-      }
-    }
-    return labels;
-  }, [kimiModelConfig]);
 
-  const providers = useMemo<UsageProviderCard[]>(
-    () =>
-      USAGE_PROVIDERS.map((provider) => {
-        const state: ProviderUsageState = provider.id === activeProvider
-          ? { report: usage.report?.usage ?? null, loading: usage.loading, error: usage.error }
-          : { report: null, loading: false, error: null };
-        return {
-          id: provider.id,
-          title: provider.title,
-          logo: provider.logoSrc ? (
-            <img src={provider.logoSrc} alt="" className={`h-3.5 w-3.5 flex-shrink-0 ${[claudeLogo, openaiLogo, grokLogo, moonshotLogo, mimoLogo].includes(provider.logoSrc) ? 'provider-monochrome-logo' : ''}`} aria-hidden="true" />
-          ) : (
-            <OpenCodeLogo className="h-3.5 w-3.5 flex-shrink-0" />
-          ),
-          ...state,
-          // Kimi attributes usage by raw model id (e.g. kimi-code/kimi-for-coding);
-          // relabel with the picker's display names ("K2.7 Coding") so the card
-          // matches what the user selected.
-          report:
-            provider.id === 'kimi' && state.report
-              ? relabelUsageReportModels(state.report, kimiModelLabels)
-              : state.report,
-        };
-      }),
-    [kimiModelLabels, activeProvider, usage]
-  );
-
-  const activeProviderCard = providers.find((provider) => provider.id === activeProvider) || providers[0];
+  const activeProviderCard = useMemo<UsageProviderCard>(() => {
+    const report = usage.report?.usage ?? null;
+    return {
+      id: activeProvider,
+      title: USAGE_PROVIDERS.find((provider) => provider.id === activeProvider)?.title ?? activeProvider,
+      logo: usageProviderLogo(activeProvider),
+      loading: usage.loading,
+      error: usage.error,
+      // Kimi attributes usage by raw model id (e.g. kimi-code/kimi-for-coding);
+      // relabel with the picker's display names ("K2.7 Coding") so the card
+      // matches what the user selected.
+      report: activeProvider === 'kimi' && report ? relabelUsageReportModels(report, kimiModelLabels) : report,
+    };
+  }, [kimiModelLabels, activeProvider, usage]);
   const activeReport = activeProviderCard.report;
   const stats = useMemo(
     () => (activeReport ? computeUsageStats(activeReport, countsInCredits(activeReport) ? 'credits' : 'tokens') : null),
@@ -151,22 +278,14 @@ export function ClaudeUsageSettingsContent() {
 
   return (
     <div className="space-y-6 pb-10">
-      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-        <div className="min-w-0 truncate text-[12px] leading-4 text-[var(--text-muted)]" role="status" data-usage-report-status="">
-          {usage.report ? <>
-            Updated {formatLocalTime(usage.report.fetchedAt)}
-            {usage.loading || rangeUsage.loading ? ' · Refreshing…' : usage.error ? ' · Update failed; showing saved data' : ''}
-          </> : null}
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          {tokenReportHidden ? null : <UsageRangeSwitch value={rangeDays} onChange={setRangeDays} />}
-          <UsageProviderPicker
-            provider={activeProviderCard}
-            providers={providers}
-            onSelectProvider={setActiveProvider}
-          />
-        </div>
-      </div>
+      <UsageToolbar
+        status={usage.report ? <>
+          Updated {formatLocalTime(usage.report.fetchedAt)}
+          {usage.loading || rangeUsage.loading ? ' · Refreshing…' : usage.error ? ' · Update failed; showing saved data' : ''}
+        </> : null}
+        range={tokenReportHidden ? null : <UsageRangeSwitch value={rangeDays} onChange={setRangeDays} />}
+        picker={picker}
+      />
 
       {planLimits ? <PlanLimitStrip limits={planLimits} /> : null}
 
@@ -198,13 +317,20 @@ export function ClaudeUsageSettingsContent() {
   );
 }
 
-function UsageProviderPicker({ provider, providers, onSelectProvider }: {
-  provider: UsageProviderCard;
-  providers: UsageProviderCard[];
-  onSelectProvider: (id: AgentProvider) => void;
+function UsageProviderPicker({ value, onSelect }: {
+  value: UsageSettingsProvider;
+  onSelect: (id: UsageSettingsProvider) => void;
 }) {
   return <div className="usage-provider-picker flex items-center" data-settings-label="Usage provider">
-    <PreferenceSelect label="Usage provider" value={provider.id} options={providers.map(entry => ({value: entry.id, label: entry.title, icon: entry.logo}))} onChange={value => onSelectProvider(value as AgentProvider)} />
+    <PreferenceSelect
+      label="Usage provider"
+      value={value}
+      options={[
+        { value: 'all', label: 'All agents', icon: <LayoutGrid className="h-3.5 w-3.5 flex-shrink-0 text-[var(--text-secondary)]" aria-hidden="true" />, divider: true },
+        ...USAGE_PROVIDERS.map((entry) => ({ value: entry.id, label: entry.title, icon: usageProviderLogo(entry.id) })),
+      ]}
+      onChange={(next) => onSelect(next as UsageSettingsProvider)}
+    />
   </div>;
 }
 
@@ -363,12 +489,6 @@ function UsageRangeSwitch({ value, onChange }: { value: ClaudeUsageRangeDays; on
 }
 
 /* ---------- Model ledger ---------- */
-
-/** The range's tokens as the table adds them up, so the headline and its Total row agree. */
-function ledgerTotalTokens(report: ClaudeUsageReport): number {
-  const sum = report.models.reduce((total, model) => total + model.totalTokens, 0);
-  return sum > 0 ? sum : report.totals.totalTokens;
-}
 
 const LEDGER_VISIBLE_MODELS = 5;
 
@@ -636,13 +756,6 @@ function countsInCredits(report: ClaudeUsageReport): boolean {
   return (report.billing?.credits ?? 0) > 0 && (report.billing?.agentMessages ?? 0) <= 0 && ledgerTotalTokens(report) <= 0;
 }
 
-/** Credits are small and fractional: two decimals, and a floor so a used amount never reads as zero. */
-function formatCredits(value: number): string {
-  if (!(value > 0)) return '0';
-  if (value < 0.01) return '<0.01';
-  return value.toLocaleString('en-US', { maximumFractionDigits: 2 });
-}
-
 /**
  * The model table for an agent counted in credits: credits with a share bar,
  * share, sessions, a trend and when each model was last used. Rows carry the
@@ -746,11 +859,6 @@ function heatLevel(value: number, thresholds: number[]): number {
 
 function heatFill(level: number): string {
   return level === 0 ? 'var(--bg-tertiary)' : HEATMAP_LEVEL_COLORS[level - 1];
-}
-
-function parseDateKey(dateKey: string): Date {
-  const [year, month, day] = dateKey.split('-').map(Number);
-  return new Date(year, (month || 1) - 1, day || 1);
 }
 
 const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -1576,63 +1684,9 @@ function getProviderLogoForModel(model: string): string | null {
   return null;
 }
 
-function formatCompactNumber(value: number): string {
-  if (value >= 1_000_000_000) {
-    return `${trimTrailingZero((value / 1_000_000_000).toFixed(1))}B`;
-  }
-  if (value >= 1_000_000) {
-    return `${trimTrailingZero((value / 1_000_000).toFixed(1))}M`;
-  }
-  if (value >= 1_000) {
-    return `${trimTrailingZero((value / 1_000).toFixed(1))}K`;
-  }
-  return value.toLocaleString('en-US');
-}
-
-function formatCurrency(value: number, estimated = false): string {
-  if (value === 0) {
-    return '$0.00';
-  }
-
-  if (value > 0 && value < 0.0001) return '<$0.0001';
-  if (value < 0.01) {
-    return `${estimated ? '≈' : ''}$${value.toFixed(4)}`;
-  }
-
-  return `${estimated ? '≈' : ''}${value.toLocaleString('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
-}
-
-function formatPercent(value: number): string {
-  return `${(value * 100).toFixed(1)}%`;
-}
-
-function formatShortDate(dateKey: string): string {
-  return parseDateKey(dateKey).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-}
-
-function formatLongDate(dateKey: string): string {
-  const date = parseDateKey(dateKey);
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-}
-
-function trimTrailingZero(value: string): string {
-  return value.endsWith('.0') ? value.slice(0, -2) : value;
-}
-
 /** Devin turns can bill messages or credits with no token usage (a turn that failed after billing). */
 function hasBilledUsage(report: ClaudeUsageReport): boolean {
   return (report.billing?.agentMessages ?? 0) > 0 || (report.billing?.credits ?? 0) > 0;
-}
-
-/** A billed count (messages, credits); credits can be fractional. */
-function formatBillingCount(value: number): string {
-  if (!(value > 0)) return '—';
-  return Number.isInteger(value) ? value.toLocaleString('en-US') : value.toLocaleString('en-US', { maximumFractionDigits: 2 });
 }
 
 function formatBillingSummary(messages: number, credits: number): string {

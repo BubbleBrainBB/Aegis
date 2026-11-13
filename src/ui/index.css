@@ -50,6 +50,13 @@
   --context-skills: #55923d;
   --context-other: #9a9a9a;
 
+  /* Usage overview: the four agents that cost most, then everyone else. */
+  --usage-series-1: #2f82d6;
+  --usage-series-2: #c95a37;
+  --usage-series-3: #039580;
+  --usage-series-4: #ae7102;
+  --usage-series-other: #b9b9c0;
+
 
   /* Tool status colors */
   --tool-pending: #d97706;
@@ -183,6 +190,12 @@
   --context-system-prompt: #de79a3;
   --context-skills: #76b161;
   --context-other: #8a8a8a;
+
+  --usage-series-1: #58a2f2;
+  --usage-series-2: #e77c5b;
+  --usage-series-3: #3ab59e;
+  --usage-series-4: #d38e22;
+  --usage-series-other: #5c5c64;
 
 
   /* Tool status colors */
