@@ -10,6 +10,7 @@
   "verify:workstream-duration": 2,
   "verify:workstream-execution": 4,
   "verify:codex-usage-cost": 21,
+  "verify:usage-overview": 12,
   "verify:composer-agent-selection": 2,
   "verify:reasoning-picker": 33,
   "verify:codex-reasoning": 2,

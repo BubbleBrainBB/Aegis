@@ -63,9 +63,16 @@ app.whenReady().then(async()=>{
   assert.equal(current.daily.reduce((sum,day)=>sum+day.totalTokens,0),509000);
   assert(Math.abs(current.daily.reduce((sum,day)=>sum+Object.values(day.byModelCostUsd).reduce((a,b)=>a+b,0),0)-1.6945)<1e-10);
   assert.equal(store.getCodexUsageReport(365),current,'cache retains cost basis and coverage');
+  // Cost by type: the same dollars, split by what was billed, with uncached input apart from the cache buckets.
+  const typed=r=>r.costByType.inputCostUsd+r.costByType.cacheReadCostUsd+r.costByType.cacheWriteCostUsd+r.costByType.outputCostUsd+r.costByType.unsplitCostUsd;
+  const typeTokens=r=>[r.costByType.inputTokens,r.costByType.cacheReadTokens,r.costByType.cacheWriteTokens,r.costByType.outputTokens];
+  assert(Math.abs(typed(current)-1.6945)<1e-10);assert.deepEqual(typeTokens(current),[290000,170000,40000,9000]);
+  assert(Math.abs(current.costByType.cacheWriteCostUsd-(5+2.5+12.5+.25)*10000/1e6)<1e-10,'cache writes at their own rates');
+  assert.equal(current.costByType.unsplitCostUsd,0);
   const mixed=reportFor([known,['future-unpriced-model',1000000,500000,100]]);
   assert.equal(mixed.costMode,'partial');assert(Math.abs(mixed.totals.totalCostUsd-.305)<1e-10);
   assert.deepEqual(mixed.costCoverage,{pricedTokens:101000,unpricedTokens:1000100,unpricedModels:['future-unpriced-model']});
+  assert(Math.abs(typed(mixed)-.305)<1e-10,'an unpriced model adds tokens and no dollars');assert.equal(typeTokens(mixed)[1],550000);
   assert(!Object.hasOwn(mixed.daily.find(day=>day.totalTokens>0).byModelCostUsd,'future-unpriced-model'));
   const unknown=reportFor([['future-unpriced-model',1000,900,20]]);
   assert.equal(unknown.costMode,'unavailable');assert.equal(unknown.costCoverage.pricedTokens,0);
@@ -81,6 +88,9 @@ app.whenReady().then(async()=>{
   store.addMessage(native.id,{type:'result',subtype:'success',duration_ms:1,total_cost_usd:0,usage:{input_tokens:1000,output_tokens:100}});
   const reported=store.getAgentUsageReport('claude',365);assert.equal(reported.totals.totalCostUsd,12.34);
   assert(!reported.costMode || reported.costMode==='actual');
+  // A reported amount is shared out by the model's list rates: 1000 in at $3, 100 out at $15, once for the paid turn.
+  assert(Math.abs(typed(reported)-12.34)<1e-10);assert(Math.abs(reported.costByType.inputCostUsd-12.34*3000/4500)<1e-10);
+  assert.deepEqual(typeTokens(reported),[2000,0,0,200]);
   // Claude's total_cost_usd and modelUsage are running totals of its session
   // (usage is the turn alone): a turn counts for what it added to them.
   {
@@ -176,6 +186,9 @@ app.whenReady().then(async()=>{
    // The week still counts the task that began before it from its base (5), next to the tasks that began in it.
    close(cost(7)-beforeWeek,5+5+2.5,'only the task with earlier results gets a base');
    close(cost(),12.34+6+8+9.5+15+5+2.5);
+   // Cost by type follows the same turns: it adds up to the total, and tokens are counted once.
+   const split=store.getAgentUsageReport('claude',365);close(typed(split),split.totals.totalCostUsd,'cost by type');
+   assert.equal(split.costByType.outputTokens,split.models.reduce((sum,m)=>sum+m.outputTokens,0));
   }
   // Codex's adapter emits a placeholder zero, not a reported bill.
   store.addMessage(session.id,{type:'result',subtype:'success',duration_ms:1,total_cost_usd:0,usage:{input_tokens:0,output_tokens:0}});
@@ -187,6 +200,7 @@ app.whenReady().then(async()=>{
   store.addMessage(session.id,{type:'result',subtype:'success',createdAt:clock+1500,duration_ms:1,total_cost_usd:42,costSource:'reported',usage:{input_tokens:100000,output_tokens:2000}});
   const combined=store.getCodexUsageReport(365);
   assert(Math.abs(combined.totals.totalCostUsd-42.855)<1e-10,'reported first turn replaces its estimate; next turn uses API fallback');
+  assert(Math.abs(typed(combined)-42.855)<1e-10);assert(Math.abs(combined.costByType.unsplitCostUsd-42)<1e-10,'a reported amount for a model without rates stays unsplit');
   assert.equal(combined.costBasis,'reported-and-api');assert.equal(combined.costMode,'estimated');assert.equal(combined.costCoverage.unpricedTokens,0);
   store.addMessage(session.id,{type:'result',subtype:'success',createdAt:clock+2500,duration_ms:1,total_cost_usd:0,costSource:'reported',usage:{input_tokens:100000,output_tokens:2000}});
   const nativeOnly=store.getCodexUsageReport(365);
@@ -239,6 +253,7 @@ app.whenReady().then(async()=>{
   for(const cost of [0,undefined,7])oc.prepare('INSERT INTO message VALUES(?,?,?)').run('oc-cost',Date.now(),JSON.stringify({
     role:'assistant',modelID:'gpt-5.5',tokens:{input:1000,output:100},...(cost===undefined?{}:{cost})}));
   const or=store.getAgentUsageReport('opencode',365);near(or.totals.totalCostUsd,7.008);assert.equal(or.costMode,'estimated');oc.close();
+  near(typed(or),7.008);near(or.costByType.inputCostUsd,7.008*5000/8000);assert.deepEqual(typeTokens(or),[3000,0,0,300]);
   store.close();store.initialize();near(store.getAgentUsageReport('bubble',365).totals.totalCostUsd,12.016);
   // DeepSeek's historical double-fold repair and request-time estimates stay intact.
   const {estimateDeepseekUsageCost,DEEPSEEK_COST_ACCOUNTING}=require(path.join(root,'dist-electron/electron/libs/deepseek-pricing.js'));

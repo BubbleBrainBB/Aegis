@@ -50,7 +50,8 @@ export interface CodexTokenUsage {
   outputTokens: number;
 }
 
-export function estimateCodexUsageCost(model: string, usage: CodexTokenUsage): number | null {
+/** One request's priced terms (USD per million tokens times tokens), before the long-context multipliers. */
+function codexCostTerms(model: string, usage: CodexTokenUsage) {
   const price = getCodexPriceEntry(model);
   if (!price) return null;
   const count = (value: number | undefined) => typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : 0;
@@ -60,9 +61,33 @@ export function estimateCodexUsageCost(model: string, usage: CodexTokenUsage): n
   const uncached = input - cached - written;
   // Apply the threshold to this request, never to a session/model aggregate.
   const longContext = price.longContext && input > 272_000;
-  const inputMultiplier = longContext ? 2 : 1;
-  const outputMultiplier = longContext ? 1.5 : 1;
-  return ((uncached * price.input + cached * (price.cached ?? price.input)
-    + written * (price.cacheWrite ?? price.input)) * inputMultiplier
-    + count(usage.outputTokens) * price.output * outputMultiplier) / 1_000_000;
+  return {
+    uncached: uncached * price.input,
+    cached: cached * (price.cached ?? price.input),
+    written: written * (price.cacheWrite ?? price.input),
+    output: count(usage.outputTokens) * price.output,
+    inputMultiplier: longContext ? 2 : 1,
+    outputMultiplier: longContext ? 1.5 : 1,
+  };
+}
+
+export function estimateCodexUsageCost(model: string, usage: CodexTokenUsage): number | null {
+  const terms = codexCostTerms(model, usage);
+  if (!terms) return null;
+  return ((terms.uncached + terms.cached + terms.written) * terms.inputMultiplier
+    + terms.output * terms.outputMultiplier) / 1_000_000;
+}
+
+/** The same estimate, split by what was billed: uncached input, cache reads, cache writes and output. */
+export function estimateCodexUsageCostParts(model: string, usage: CodexTokenUsage): {
+  input: number; cacheRead: number; cacheWrite: number; output: number;
+} | null {
+  const terms = codexCostTerms(model, usage);
+  if (!terms) return null;
+  return {
+    input: terms.uncached * terms.inputMultiplier / 1_000_000,
+    cacheRead: terms.cached * terms.inputMultiplier / 1_000_000,
+    cacheWrite: terms.written * terms.inputMultiplier / 1_000_000,
+    output: terms.output * terms.outputMultiplier / 1_000_000,
+  };
 }

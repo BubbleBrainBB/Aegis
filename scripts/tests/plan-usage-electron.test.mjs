@@ -22,6 +22,9 @@ window.electron = {
  getGrokPlanUsage: () => load('grok'), getQoderPlanUsage: () => load('qoder'),
 };
 const { ClaudeUsageSettingsContent } = await import('/src/ui/components/settings/ClaudeUsageSettings');
+// Plan limits belong to an agent's own page; Usage opens on the overview of all agents.
+const { useAppStore } = await import('/src/ui/store/useAppStore');
+useAppStore.getState().setUsageSettingsProvider('claude');
 window.qa = { calls, advance: () => { clock += 60001; }, fail: id => pending[id].reject(Error('Offline')),
  complete: id => {
  const reports = {

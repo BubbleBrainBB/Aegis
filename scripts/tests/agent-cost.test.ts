@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { addAgentCost, costFields, emptyCostDetails, estimateAgentApiCost } from '../../src/electron/libs/agent-cost';
+import {
+  addAgentCost, addCostByType, apiCostWeights, costFields, emptyCostByType, emptyCostDetails, estimateAgentApiCost, usageTokenParts,
+} from '../../src/electron/libs/agent-cost';
 const usage = { input_tokens: 100000, output_tokens: 1000, cache_read_input_tokens: 50000 };
 const near = (a: number | null, b: number) => assert(a !== null && Math.abs(a - b) < 1e-9, `${a} != ${b}`);
 near(estimateAgentApiCost('bubble', 'openai:gpt-5.5', usage), .305);
@@ -50,4 +52,36 @@ for (const invalid of [-1, NaN, Infinity, '3', null]) {
 near(estimateAgentApiCost('claude', 'claude-sonnet-5', { input_tokens: 1000, output_tokens: 100 }), .003);
 assert.equal(estimateAgentApiCost('claude', 'claude-sonnet-5', {input_tokens: 1000, output_tokens: 100, cache_creation_input_tokens: 10}), null);
 assert.equal(costFields(emptyCostDetails()).costDetails.unpricedCount, 1);
-console.log('agent cost: native priority, zero, partial steps, cache semantics and unknown prices passed');
+
+// Cost by type: the weights are the estimate, split four ways.
+const sumOf = (parts: { input: number; cacheRead: number; cacheWrite: number; output: number } | null) =>
+  parts === null ? null : parts.input + parts.cacheRead + parts.cacheWrite + parts.output;
+const writes = { ...usage, cache_creation_input_tokens: 10000 };
+for (const [provider, model, record] of [
+  ['bubble', 'openai:gpt-5.5', usage], ['pi', 'openai/gpt-5.5', usage], ['pi', 'zai/glm-5.3-flash', usage],
+  ['kimi', 'kimi-code/k3', usage], ['kimi', 'kimi-code/k3', writes], ['kimi', 'moonshot-cn/kimi-k2.7-code-highspeed', writes],
+  ['minimax', 'm:minimax:MiniMax-M3.1-Flash:v:thinking', minimaxUsage], ['minimax', 'MiniMax-M3', { ...minimaxUsage, cache_creation_input_tokens: 1000 }],
+  ['opencode', 'claude-sonnet-4-6', usage], ['codex', 'gpt-5.6-sol', { input_tokens: 100000, output_tokens: 2000, cache_read_input_tokens: 30000, cache_creation_input_tokens: 10000 }],
+] as const) {
+  near(sumOf(apiCostWeights(provider, model, record)), estimateAgentApiCost(provider, model, record)!);
+}
+// Bubble and Codex count cached input inside input; the split takes it back out.
+assert.deepEqual(usageTokenParts('bubble', usage), { input: 50000, cacheRead: 50000, cacheWrite: 0, output: 1000 });
+assert.deepEqual(usageTokenParts('pi', usage), { input: 100000, cacheRead: 50000, cacheWrite: 0, output: 1000 });
+// A Claude model that is not in the price list splits by Anthropic's rate structure.
+const shape = apiCostWeights('claude', 'claude-next-9', { input_tokens: 1000, output_tokens: 1000, cache_read_input_tokens: 1000, cache_creation_input_tokens: 1000 })!;
+near(shape.cacheRead / shape.input, 0.1); near(shape.cacheWrite / shape.input, 1.25); near(shape.output / shape.input, 5);
+// An unknown cache TTL refuses a price but still gives proportions.
+assert.equal(estimateAgentApiCost('claude', 'claude-sonnet-4-6', writes), null);
+assert(sumOf(apiCostWeights('claude', 'claude-sonnet-4-6', writes))! > 0);
+assert.equal(apiCostWeights('pi', 'custom/k3', usage), null, 'no rates, no proportions');
+const split = emptyCostByType();
+addCostByType(split, usageTokenParts('pi', usage), 10, apiCostWeights('pi', 'openai/gpt-5.5', usage));
+near(split.inputCostUsd + split.cacheReadCostUsd + split.cacheWriteCostUsd + split.outputCostUsd, 10);
+near(split.inputCostUsd, 10 * .5 / .555); near(split.cacheReadCostUsd, 10 * .025 / .555);
+assert.deepEqual([split.inputTokens, split.cacheReadTokens, split.cacheWriteTokens, split.outputTokens], [100000, 50000, 0, 1000]);
+addCostByType(split, usageTokenParts('pi', usage), 4, null);
+near(split.unsplitCostUsd, 4); assert.equal(split.inputTokens, 200000, 'tokens count even when the cost cannot be split');
+addCostByType(split, usageTokenParts('pi', usage), 0, null);
+near(split.unsplitCostUsd, 4);
+console.log('agent cost: native priority, zero, partial steps, cache semantics and unknown prices, cost by type passed');

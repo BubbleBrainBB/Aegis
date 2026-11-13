@@ -1,5 +1,5 @@
-import { addAgentCost, emptyCostDetails, validUsd } from './agent-cost';
-import { estimateCodexUsageCost, CODEX_API_PRICING_VERIFIED_AT } from './codex-pricing';
+import { addAgentCost, addCostByType, apiCostWeights, emptyCostByType, emptyCostDetails, usageTokenParts, validUsd, type UsageTypeParts } from './agent-cost';
+import { estimateCodexUsageCost, estimateCodexUsageCostParts, CODEX_API_PRICING_VERIFIED_AT } from './codex-pricing';
 import { canonicalProjectPath } from './project-paths';
 import type { SessionOrganizationChange, SessionOrganizationSnapshot } from '../../shared/session-organization';
 import type { SessionPullRequest } from '../../shared/types';
@@ -39,6 +39,8 @@ import type {
   ClaudeUsageModelSummary,
   ClaudeUsageRangeDays,
   ClaudeUsageReport,
+  Usage,
+  UsageCostByType,
   SessionSource,
   SessionScope,
   SessionTeamMode,
@@ -3140,6 +3142,7 @@ function createEmptyUsageReport(
       cacheReadTokens: 0,
       cacheHitRate: 0,
     },
+    costByType: emptyCostByType(),
     models: [],
     daily: [],
   };
@@ -3355,6 +3358,9 @@ function getCodexSnapshotKey(snapshot: CodexUsageSnapshot): string {
 
 interface CodexReportedCostWindow { start: number; end: number; usd: number }
 
+/** For adding a cost whose tokens are already counted. */
+const NO_TOKENS: UsageTypeParts = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 };
+
 /** Result amounts cover the preceding turn. Legacy Codex adapter zeros mean
  * unavailable; only an explicitly reported zero can replace an API estimate. */
 function readCodexReportedCosts(sessionId: string): CodexReportedCostWindow[] {
@@ -3400,6 +3406,7 @@ function parseCodexRolloutUsage(params: {
   modelSessions: Map<string, Set<string>>;
   sessionId: string;
   reportedCosts: CodexReportedCostWindow[];
+  costByType: UsageCostByType;
 }): {
   reportedTokens: number;
   estimatedTokens: number;
@@ -3428,7 +3435,7 @@ function parseCodexRolloutUsage(params: {
   const content = readFileSync(params.rolloutPath, 'utf8');
   let currentModel = params.fallbackModel;
   let previousSnapshotKey: string | null = null;
-  const reportedBuckets = new Map<CodexReportedCostWindow, { tokens: number; entries: Array<{ model: string; date: string; tokens: number; inRange: boolean }> }>();
+  const reportedBuckets = new Map<CodexReportedCostWindow, { tokens: number; entries: Array<{ model: string; date: string; tokens: number; inRange: boolean; weights: UsageTypeParts | null }> }>();
 
   for (const line of content.split('\n')) {
     const trimmed = line.trim();
@@ -3486,14 +3493,24 @@ function parseCodexRolloutUsage(params: {
     };
     const reported = params.reportedCosts.find(window => timestamp > window.start && timestamp <= window.end);
     const dateKey = formatDateKey(timestamp);
+    const typeWeights = estimateCodexUsageCostParts(model, usage);
     if (reported) {
       const bucket = reportedBuckets.get(reported) || { tokens: 0, entries: [] };
       bucket.tokens += usage.totalTokens;
-      bucket.entries.push({ model, date: dateKey, tokens: usage.totalTokens, inRange: timestamp >= params.rangeStart });
+      bucket.entries.push({ model, date: dateKey, tokens: usage.totalTokens, inRange: timestamp >= params.rangeStart, weights: typeWeights });
       reportedBuckets.set(reported, bucket);
     }
     if (timestamp < params.rangeStart) continue;
     const estimatedCostUsd = reported ? null : estimateCodexUsageCost(model, usage);
+    // A reported turn's amount is shared out below; its tokens count here.
+    const cachedTokens = Math.min(usage.inputTokens, usage.cachedInputTokens);
+    const writtenTokens = Math.min(usage.inputTokens - cachedTokens, usage.cacheWriteInputTokens ?? 0);
+    addCostByType(params.costByType, {
+      input: usage.inputTokens - cachedTokens - writtenTokens,
+      cacheRead: cachedTokens,
+      cacheWrite: writtenTokens,
+      output: usage.outputTokens,
+    }, estimatedCostUsd ?? 0, typeWeights);
     if (reported) result.reportedTokens += usage.totalTokens;
     else if (estimatedCostUsd !== null) result.estimatedTokens += usage.totalTokens;
     else result.unpricedByModel.set(model, (result.unpricedByModel.get(model) || 0) + usage.totalTokens);
@@ -3535,6 +3552,7 @@ function parseCodexRolloutUsage(params: {
       if (!entry.inRange) continue;
       const usd = window.usd * entry.tokens / bucket.tokens;
       result.totalCostUsd += usd;
+      addCostByType(params.costByType, NO_TOKENS, usd, entry.weights);
       const summary = params.modelSummaries.get(entry.model);
       if (summary) summary.totalCostUsd += usd;
       const day = params.dailyMap.get(entry.date);
@@ -4043,6 +4061,7 @@ function getClaudeProtocolUsageReport(
   };
   let totalCacheReadTokens = 0;
   let totalCacheCreationTokens = 0;
+  const costByType = emptyCostByType();
 
   for (const row of rows) {
     let parsed: StreamMessage;
@@ -4140,6 +4159,13 @@ function getClaudeProtocolUsageReport(
         summary.totalTokens += modelTotalTokens;
         const modelCost = allocations[modelNames.indexOf(model)];
         summary.totalCostUsd += modelCost;
+        const modelUsage: Usage = {
+          input_tokens: modelInputTokens, output_tokens: modelOutputTokens,
+          cache_read_input_tokens: toNumber(usage.cacheReadInputTokens),
+          cache_creation_input_tokens: toNumber(usage.cacheCreationInputTokens),
+        };
+        addCostByType(costByType, usageTokenParts(provider, modelUsage), modelCost,
+          apiCostWeights(provider, model, modelUsage, row.created_at));
         summary.cacheReadTokens += toNumber(usage.cacheReadInputTokens);
         modelSummaries.set(model, summary);
 
@@ -4175,6 +4201,14 @@ function getClaudeProtocolUsageReport(
         : resolvedModel;
     const resultCostUsd = recordCost(storedAgentCost(provider, result, resolvedModel, row.created_at), fallbackModel);
     totalCostUsd += resultCostUsd;
+    // The same (repaired) counts the totals use, with the record's cache TTL split when it has one.
+    const typedUsage = {
+      ...result.usage,
+      input_tokens: inputTokens, output_tokens: outputTokens,
+      cache_read_input_tokens: cacheReadTokens, cache_creation_input_tokens: cacheCreationTokens,
+    } as Usage;
+    addCostByType(costByType, usageTokenParts(provider, typedUsage), resultCostUsd,
+      apiCostWeights(provider, resolvedModel, typedUsage, row.created_at));
     const summary = modelSummaries.get(fallbackModel) || emptyModelSummary(fallbackModel);
     summary.inputTokens += inputTokens;
     summary.outputTokens += outputTokens;
@@ -4251,6 +4285,7 @@ function getClaudeProtocolUsageReport(
       cacheHitRate: cacheDenominator > 0 ? totalCacheReadTokens / cacheDenominator : 0,
     },
     ...(billing ? { billing } : {}),
+    costByType,
     models: modelList,
     daily: Array.from(dailyMap.entries()).map(([date, bucket]) => ({
       date,
@@ -4373,6 +4408,7 @@ export function getCodexUsageReport(days: ClaudeUsageRangeDays = 30): ClaudeUsag
       modelSessions,
       sessionId: sessionMeta.sessionId,
       reportedCosts: readCodexReportedCosts(sessionMeta.sessionId),
+      costByType: report.costByType!,
     });
 
     if (usage.totalTokens <= 0 && usage.totalCostUsd <= 0) {
@@ -4521,6 +4557,10 @@ export function getOpencodeUsageReport(days: ClaudeUsageRangeDays = 30): ClaudeU
 
     for (const key of Object.keys(costs) as Array<keyof typeof costs>) costs[key] += step[key];
     if (step.unpricedCount) unpricedModels.add(model);
+    const typedUsage: Usage = { input_tokens: inputTokens, output_tokens: outputTokens,
+      cache_read_input_tokens: cacheReadTokens, cache_creation_input_tokens: cacheWriteTokens };
+    addCostByType(report.costByType!, usageTokenParts('opencode', typedUsage), totalCostUsd,
+      apiCostWeights('opencode', model, typedUsage, row.created_at));
     const summary = modelSummaries.get(model) || emptyModelSummary(model);
     summary.inputTokens += inputTokens;
     summary.outputTokens += outputTokens;

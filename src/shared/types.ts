@@ -2381,6 +2381,21 @@ export interface ClaudeUsageDailyPoint {
   byModelCredits?: Record<string, number>;
 }
 
+/** A range's tokens and cost, split by what was billed. */
+export interface UsageCostByType {
+  /** Input that was neither read from nor written to the cache. */
+  inputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
+  inputCostUsd: number;
+  cacheReadCostUsd: number;
+  cacheWriteCostUsd: number;
+  outputCostUsd: number;
+  /** Cost the agent returned for a model with no listed rates: there is nothing to split it by. */
+  unsplitCostUsd: number;
+}
+
 export interface ClaudeUsageReport {
   rangeDays: ClaudeUsageRangeDays;
   costMode?: 'actual' | 'estimated' | 'partial' | 'unavailable';
@@ -2405,6 +2420,7 @@ export interface ClaudeUsageReport {
     agentMessages: number;
     credits: number;
   };
+  costByType?: UsageCostByType;
   models: ClaudeUsageModelSummary[];
   daily: ClaudeUsageDailyPoint[];
 }
