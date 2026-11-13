@@ -2070,10 +2070,8 @@ function buildSessionCostSummary(session: ReturnType<typeof sessions.getSession>
     0
   );
   const totalTokens = totalInputTokens + totalOutputTokens;
-  const totalCostUsd = usageMessages.reduce(
-    (sum, message) => sum + (message.total_cost_usd || 0),
-    0
-  );
+  // The same accounting as Settings > Usage: a Claude result's cost is a running total.
+  const totalCostUsd = sessions.sumUsageCostUsd(session.provider, usageMessages);
   const totalDurationMs = usageMessages.reduce(
     (sum, message) => sum + (message.duration_ms || 0),
     0
