@@ -3790,10 +3790,15 @@ function readQoderModelLabels(provider: AgentProvider, rows: JoinedClaudeMessage
 /**
  * For each of these tasks, the totals on its last result before `before`: the
  * base its first turn in a range counts from. Only tasks with turns in the
- * range are read, newest result first, up to the first one that has totals.
+ * range are read, newest result first, up to the first one `read` finds
+ * totals on.
  */
-function readQoderCreditTotalsBefore(before: number, sessionIds: ReadonlySet<string>): Map<string, QoderCreditTotals> {
-  const totals = new Map<string, QoderCreditTotals>();
+function readRunningTotalsBefore<T>(
+  before: number,
+  sessionIds: ReadonlySet<string>,
+  read: (message: StreamMessage) => T | null
+): Map<string, T> {
+  const totals = new Map<string, T>();
   const earlier = getDb().prepare(`
     SELECT data, created_at FROM messages
     WHERE session_id = ? AND message_type = 'result' AND created_at < ?
@@ -3801,21 +3806,115 @@ function readQoderCreditTotalsBefore(before: number, sessionIds: ReadonlySet<str
   `);
   for (const sessionId of sessionIds) {
     for (const row of earlier.iterate(sessionId, before) as Iterable<{ data: string; created_at: number }>) {
-      let credits: QoderCreditTotals | null = null;
+      let found: T | null = null;
       try {
-        const parsed = readStoredMessagePayload(row.data, row.created_at);
-        // A copied result holds another task's totals: no base for this one.
-        credits = parsed.type === 'result' && !isCopiedUsage(parsed) ? normalizeQoderCredits(parsed.qoderCredits) : null;
+        found = read(readStoredMessagePayload(row.data, row.created_at));
       } catch {
         // An unreadable row gives no base; the one before it may.
       }
-      if (credits) {
-        totals.set(sessionId, credits);
+      if (found) {
+        totals.set(sessionId, found);
         break;
       }
     }
   }
   return totals;
+}
+
+// A copied result holds another task's totals: no base for this one.
+const readQoderCreditTotals = (message: StreamMessage): QoderCreditTotals | null =>
+  message.type === 'result' && !isCopiedUsage(message) ? normalizeQoderCredits(message.qoderCredits) : null;
+
+type ClaudeRunningTotals = { costUsd: number; modelUsage: NonNullable<StoredClaudeResultMessage['modelUsage']> };
+
+const CLAUDE_TOKEN_COUNTERS = [
+  ['inputTokens', 'input_tokens'],
+  ['outputTokens', 'output_tokens'],
+  ['cacheReadInputTokens', 'cache_read_input_tokens'],
+  ['cacheCreationInputTokens', 'cache_creation_input_tokens'],
+] as const;
+
+/**
+ * The running totals on a Claude result, or null when it has none to count a
+ * turn by: no modelUsage, a copy from another task, or not a top-level turn.
+ */
+function readClaudeRunningTotals(message: StreamMessage): ClaudeRunningTotals | null {
+  if (message.type !== 'result' || isCopiedUsage(message)) return null;
+  if (message.sourceProvider || message.parentToolUseId || message.agentId) return null;
+  const modelUsage = (message as StoredClaudeResultMessage).modelUsage;
+  if (!modelUsage || Object.keys(modelUsage).length === 0) return null;
+  return { costUsd: toNumber(message.total_cost_usd), modelUsage };
+}
+
+/**
+ * Whether a Claude result's totals carry on from those of the result before
+ * it, so the turn is the difference between them. Otherwise they started from
+ * zero and the turn is the row as it stands.
+ *
+ * `total_cost_usd` and `modelUsage` are running totals: in rows since October
+ * 2026 they carry over a resume, in rows from July to September 2026 they
+ * sometimes restart from zero, and rows before July 2026 mostly hold one turn
+ * each. `usage` is the turn alone in all of them.
+ *
+ *  - A total below the one before, or a model that is gone, is a restart.
+ *  - Otherwise the reading that fits the turn's own `usage` better wins: the
+ *    tokens the totals moved by, or the totals as they stand. Per-turn rows
+ *    match `usage` as they stand; running rows match it by what they moved.
+ *    Subagents and side calls are in `modelUsage` only, so neither is exact.
+ *  - A row without `usage` carries on, as a tie does: counting less is the
+ *    safer mistake when the other one counts a whole session again.
+ */
+function claudeTotalsCarryOn(
+  previous: ClaudeRunningTotals,
+  current: ClaudeRunningTotals,
+  usage: StoredClaudeResultMessage['usage'] | undefined
+): boolean {
+  // Costs are sums of floats; a total may sit a hair under the one it equals.
+  const EPSILON = 1e-9;
+  if (current.costUsd < previous.costUsd - EPSILON) return false;
+  for (const [model, before] of Object.entries(previous.modelUsage)) {
+    const now = current.modelUsage[model];
+    if (!now || toNumber(now.costUSD) < toNumber(before.costUSD) - EPSILON) return false;
+    if (CLAUDE_TOKEN_COUNTERS.some(([counter]) => toNumber(now[counter]) < toNumber(before[counter]))) return false;
+  }
+  let apartMoved = 0;
+  let apartWhole = 0;
+  for (const [counter, usageKey] of CLAUDE_TOKEN_COUNTERS) {
+    const sum = (totals: ClaudeRunningTotals) =>
+      Object.values(totals.modelUsage).reduce((tokens, model) => tokens + toNumber(model[counter]), 0);
+    const whole = sum(current);
+    const own = toNumber(usage?.[usageKey]);
+    apartMoved += Math.abs(whole - sum(previous) - own);
+    apartWhole += Math.abs(whole - own);
+  }
+  return apartMoved <= apartWhole;
+}
+
+/**
+ * What one Claude turn cost and used per model: its totals less those of the
+ * result before it when they carry on (see claudeTotalsCarryOn), else the
+ * totals themselves. Models the turn did not touch are left out.
+ */
+function claudeTurnUsage(
+  previous: ClaudeRunningTotals | undefined,
+  current: ClaudeRunningTotals,
+  usage: StoredClaudeResultMessage['usage'] | undefined
+): ClaudeRunningTotals {
+  if (!previous || !claudeTotalsCarryOn(previous, current, usage)) return current;
+  const costUsd = Math.max(0, current.costUsd - previous.costUsd);
+  const moved: ClaudeRunningTotals['modelUsage'] = {};
+  const unmoved: ClaudeRunningTotals['modelUsage'] = {};
+  for (const [model, now] of Object.entries(current.modelUsage)) {
+    const before = previous.modelUsage[model];
+    const turn = { ...now };
+    for (const [counter] of CLAUDE_TOKEN_COUNTERS) turn[counter] = toNumber(now[counter]) - toNumber(before?.[counter]);
+    // A model without a cost keeps none, and is priced by its tokens.
+    if (validUsd(now.costUSD)) turn.costUSD = Math.max(0, now.costUSD - toNumber(before?.costUSD));
+    const touched = toNumber(turn.costUSD) > 0 || CLAUDE_TOKEN_COUNTERS.some(([counter]) => toNumber(turn[counter]) > 0);
+    (touched ? moved : unmoved)[model] = turn;
+  }
+  // A cost no model accounts for is shared by the models the result names.
+  return { costUsd, modelUsage: Object.keys(moved).length > 0 || !(costUsd > 0) ? moved : unmoved };
 }
 
 // Builds a usage report for any provider whose runner stores Claude-shaped
@@ -3864,9 +3963,13 @@ function getClaudeProtocolUsageReport(
   // Qoder bills in credits and reports running totals per Qoder session; a
   // turn's share is taken from the totals of the result before it.
   const qoderBilling = provider === 'qoder' ? { agentMessages: 0, credits: 0 } : null;
-  const qoderTotals = qoderBilling ? readQoderCreditTotalsBefore(rangeStart, new Set(rows.map((row) => row.session_id))) : null;
+  const rowSessionIds = new Set(rows.map((row) => row.session_id));
+  const qoderTotals = qoderBilling ? readRunningTotalsBefore(rangeStart, rowSessionIds, readQoderCreditTotals) : null;
   const qoderModelLabels = qoderBilling ? readQoderModelLabels(provider, rows) : null;
   const billing = devinBilling ?? qoderBilling;
+  // Claude reports running totals for cost and per-model usage; a turn's share
+  // is taken from the totals of the result before it (see claudeTurnUsage).
+  const claudeTotals = provider === 'claude' ? readRunningTotalsBefore(rangeStart, rowSessionIds, readClaudeRunningTotals) : null;
 
   const sessionIds = new Set<string>();
   const modelSummaries = new Map<string, ClaudeUsageModelSummary>();
@@ -3935,8 +4038,16 @@ function getClaudeProtocolUsageReport(
     // per-model split for claude itself; other providers attribute each
     // result row to the best non-alias model name available (Devin's Claude
     // ids are real picks, labeled with their thinking level below).
-    const rawModelUsage = provider === 'claude' ? result.modelUsage : undefined;
-    if (rawModelUsage && Object.keys(rawModelUsage).length > 0) {
+    // A Claude result with totals counts for what its turn added to them, and
+    // is the base for the next one. A turn that added nothing stops here too:
+    // the per-row accounting below would take its running cost for the turn's.
+    const claudeTotal = claudeTotals ? readClaudeRunningTotals(result) : null;
+    const claudeTurn = claudeTotals && claudeTotal
+      ? claudeTurnUsage(claudeTotals.get(row.session_id), claudeTotal, result.usage)
+      : null;
+    if (claudeTotals && claudeTotal) claudeTotals.set(row.session_id, claudeTotal);
+    if (claudeTurn) {
+      const rawModelUsage = claudeTurn.modelUsage;
       const modelNames = Object.keys(rawModelUsage);
       const nativeTotal = validUsd(result.total_cost_usd) && result.costSource !== 'unavailable'
         && result.costSource !== 'estimated';
@@ -3953,11 +4064,11 @@ function getClaudeProtocolUsageReport(
       const weights = modelCosts.map(c => c.reportedUsd + c.estimatedUsd);
       const weightSum = weights.reduce((a, b) => a + b, 0);
       const allocations = modelCosts.map((cost, i) => nativeTotal
-        ? result.total_cost_usd * (weightSum > 0 ? weights[i] / weightSum : 1 / modelCosts.length)
+        ? claudeTurn.costUsd * (weightSum > 0 ? weights[i] / weightSum : 1 / modelCosts.length)
         : cost.reportedUsd + cost.estimatedUsd);
       if (nativeTotal) {
-        costs.reportedCount++; costs.reportedUsd += result.total_cost_usd;
-        totalCostUsd += result.total_cost_usd;
+        costs.reportedCount++; costs.reportedUsd += claudeTurn.costUsd;
+        totalCostUsd += claudeTurn.costUsd;
       } else {
         modelCosts.forEach((cost, i) => { totalCostUsd += recordCost(cost, modelNames[i]); });
       }

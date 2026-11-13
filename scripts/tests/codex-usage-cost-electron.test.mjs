@@ -81,6 +81,82 @@ app.whenReady().then(async()=>{
   store.addMessage(native.id,{type:'result',subtype:'success',duration_ms:1,total_cost_usd:0,usage:{input_tokens:1000,output_tokens:100}});
   const reported=store.getAgentUsageReport('claude',365);assert.equal(reported.totals.totalCostUsd,12.34);
   assert(!reported.costMode || reported.costMode==='actual');
+  // Claude's total_cost_usd and modelUsage are running totals of its session
+  // (usage is the turn alone): a turn counts for what it added to them.
+  {
+   const close=(actual,expected,what)=>assert(Math.abs(actual-expected)<1e-9,(what||'')+' '+actual+' != '+expected);
+   const mu=(models)=>Object.fromEntries(Object.entries(models).map(([model,[inputTokens,outputTokens,costUSD,cacheReadInputTokens=0,cacheCreationInputTokens=0]])=>
+     [model,{inputTokens,outputTokens,cacheReadInputTokens,cacheCreationInputTokens,costUSD,contextWindow:200000,maxOutputTokens:64000,webSearchRequests:0}]));
+   const turn=(total,models,[input,output,cacheRead=0,cacheCreation=0],extra={})=>({type:'result',subtype:'success',duration_ms:1,total_cost_usd:total,
+     usage:{input_tokens:input,output_tokens:output,cache_read_input_tokens:cacheRead,cache_creation_input_tokens:cacheCreation},modelUsage:mu(models),...extra});
+   const claude=(title)=>store.createSession({provider:'claude',model:'claude-sonnet-4-6',cwd:temp,title}).id;
+   const cost=(days=365)=>store.getAgentUsageReport('claude',days).totals.totalCostUsd;
+   const model=(name,days=365)=>store.getAgentUsageReport('claude',days).models.find(m=>m.model===name);
+   const dayAgo=(days)=>Date.now()-days*86400000;
+   let before=cost();
+   // Running totals 1, 3, 6 are 6 in all, and each model ends at the last row's figures.
+   const running=claude('Running totals');
+   store.addMessage(running,turn(1,{'run-main':[100,10,1,1000,50]},[100,10,1000,50]));
+   store.addMessage(running,turn(3,{'run-main':[300,30,2.5,3000,50],'run-side':[40,4,.5]},[200,20,2000]));
+   // A stopped turn's row has no totals: it is neither counted by them nor the next row's base.
+   store.addMessage(running,{type:'result',subtype:'error_during_execution',duration_ms:1,total_cost_usd:0,usage:{input_tokens:0,output_tokens:0}});
+   // A subagent's result is not a turn of this session either.
+   store.addMessage(running,turn(.2,{'run-main':[20,2,.2]},[20,2],{parentToolUseId:'toolu_subagent'}));
+   store.addMessage(running,turn(6,{'run-main':[600,60,5.25,6000,50],'run-side':[80,8,.75]},[300,30,3000]));
+   close(cost()-before,6,'running totals count once');
+   // The same totals again (nothing added) count for nothing.
+   store.addMessage(running,turn(6,{'run-main':[600,60,5.25,6000,50],'run-side':[80,8,.75]},[0,0]));
+   close(cost()-before,6,'an unchanged total adds nothing');
+   const main=model('run-main'),side=model('run-side');
+   assert.deepEqual([main.inputTokens,main.outputTokens,main.totalTokens,main.cacheReadTokens,main.sessionCount],[600,60,660,6000,1]);
+   close(main.totalCostUsd,5.25);
+   assert.deepEqual([side.inputTokens,side.outputTokens,side.sessionCount],[80,8,1]);close(side.totalCostUsd,.75);
+   // A total below the one before is a new start and counts in full; the row after it carries on from it.
+   before=cost();
+   const restarted=claude('Restarted totals');
+   store.addMessage(restarted,turn(5,{'restart-main':[500,50,5]},[500,50]));
+   store.addMessage(restarted,turn(2,{'restart-main':[200,20,2]},[200,20]));
+   store.addMessage(restarted,turn(3,{'restart-main':[300,30,3]},[100,10]));
+   close(cost()-before,8,'5, then 2 from zero, then 1 more');
+   assert.equal(model('restart-main').inputTokens,800);close(model('restart-main').totalCostUsd,8);
+   // Rows that hold one turn each match their own usage as they stand, and count in
+   // full even when a turn is larger than the one before. A side model's tokens are in
+   // modelUsage only and do not change that.
+   before=cost();
+   const perTurn=claude('Per-turn rows');
+   store.addMessage(perTurn,turn(1,{'turn-main':[100,10,1,1000]},[100,10,1000]));
+   store.addMessage(perTurn,turn(4,{'turn-main':[400,40,3.9,5000],'turn-side':[30,3,.1]},[400,40,5000]));
+   store.addMessage(perTurn,turn(2,{'turn-main':[200,20,2,2000]},[200,20,2000]));
+   store.addMessage(perTurn,turn(2.5,{'turn-main':[250,25,2.5,2500]},[250,25,2500]));
+   close(cost()-before,9.5,'per-turn rows add up');
+   assert.equal(model('turn-main').inputTokens,950);assert.equal(model('turn-main').cacheReadTokens,10500);
+   // A session that began before the range counts only what the range added.
+   before=cost();const beforeWeek=cost(7);
+   const ranged=claude('Across the range start');
+   store.addMessage(ranged,turn(10,{'range-main':[1000,100,10]},[1000,100],{createdAt:dayAgo(10)}));
+   store.addMessage(ranged,turn(12,{'range-main':[1200,120,12]},[200,20]));
+   store.addMessage(ranged,turn(15,{'range-main':[1500,150,15]},[300,30]));
+   close(cost(7)-beforeWeek,5,'the range counts what was added inside it');
+   assert.equal(model('range-main',7).inputTokens,500);close(model('range-main',7).totalCostUsd,5);
+   close(cost()-before,15);assert.equal(model('range-main').inputTokens,1500);
+   // A copied result holds another task's totals: it is not counted and is no base, in or before the range.
+   before=cost();const copyWeek=cost(7);
+   const copied=claude('Copied history');
+   store.addMessage(copied,turn(1,{'copy-main':[100,10,1]},[100,10],{createdAt:dayAgo(10),copiedFromSessionId:running}));
+   store.addMessage(copied,turn(3,{'copy-main':[300,30,3]},[200,20]));
+   close(cost(7)-copyWeek,3,'a copy before the range is no base');
+   store.addMessage(copied,turn(4,{'copy-main':[400,40,4]},[100,10],{copiedFromSessionId:running}));
+   store.addMessage(copied,turn(5,{'copy-main':[500,50,5]},[200,20]));
+   close(cost()-before,5,'a copy in the range is no base either');
+   assert.equal(model('copy-main').inputTokens,500);
+   // Days and models add up to the total.
+   for(const days of [7,365]){
+    const report=store.getAgentUsageReport('claude',days);
+    close(report.daily.reduce((sum,day)=>sum+Object.values(day.byModelCostUsd).reduce((a,b)=>a+b,0),0),report.totals.totalCostUsd,'daily costs');
+    close(report.models.reduce((sum,m)=>sum+m.totalCostUsd,0),report.totals.totalCostUsd,'model costs');
+   }
+   close(cost(),12.34+6+8+9.5+15+5);
+  }
   // Codex's adapter emits a placeholder zero, not a reported bill.
   store.addMessage(session.id,{type:'result',subtype:'success',duration_ms:1,total_cost_usd:0,usage:{input_tokens:0,output_tokens:0}});
   assert(Math.abs(store.getCodexUsageReport(365).totals.totalCostUsd-.305)<1e-10);
