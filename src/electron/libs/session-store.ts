@@ -3789,9 +3789,11 @@ function readQoderModelLabels(provider: AgentProvider, rows: JoinedClaudeMessage
 
 /**
  * For each of these tasks, the totals on its last result before `before`: the
- * base its first turn in a range counts from. Only tasks with turns in the
- * range are read, newest result first, up to the first one `read` finds
- * totals on.
+ * base its first turn in a range counts from, newest result first, up to the
+ * first one `read` finds totals on.
+ *
+ * Most tasks with turns in a range began inside it. One pass over the results
+ * before the range names the few that did not, and only those are read.
  */
 function readRunningTotalsBefore<T>(
   before: number,
@@ -3799,12 +3801,20 @@ function readRunningTotalsBefore<T>(
   read: (message: StreamMessage) => T | null
 ): Map<string, T> {
   const totals = new Map<string, T>();
+  if (sessionIds.size === 0) return totals;
+  const withEarlierResults = (getDb().prepare(`
+    SELECT DISTINCT session_id FROM messages
+    WHERE message_type = 'result' AND created_at < ?
+  `).pluck().all(before) as string[]).filter((sessionId) => sessionIds.has(sessionId));
+  if (withEarlierResults.length === 0) return totals;
+  // The unary plus keeps SQLite on the task's own rows: with message_type
+  // usable it walks every result of every task, once per task.
   const earlier = getDb().prepare(`
     SELECT data, created_at FROM messages
-    WHERE session_id = ? AND message_type = 'result' AND created_at < ?
+    WHERE session_id = ? AND +message_type = 'result' AND created_at < ?
     ORDER BY created_at DESC
   `);
-  for (const sessionId of sessionIds) {
+  for (const sessionId of withEarlierResults) {
     for (const row of earlier.iterate(sessionId, before) as Iterable<{ data: string; created_at: number }>) {
       let found: T | null = null;
       try {
@@ -3837,6 +3847,10 @@ const CLAUDE_TOKEN_COUNTERS = [
 /**
  * The running totals on a Claude result, or null when it has none to count a
  * turn by: no modelUsage, a copy from another task, or not a top-level turn.
+ *
+ * A copy is no base for the task it was copied into. Forking a Claude session
+ * copies its messages and not its cost state (the SDK's forkSession writes
+ * transcript entries only), so the fork's totals start from zero.
  */
 function readClaudeRunningTotals(message: StreamMessage): ClaudeRunningTotals | null {
   if (message.type !== 'result' || isCopiedUsage(message)) return null;
@@ -3851,18 +3865,22 @@ function readClaudeRunningTotals(message: StreamMessage): ClaudeRunningTotals | 
  * it, so the turn is the difference between them. Otherwise they started from
  * zero and the turn is the row as it stands.
  *
- * `total_cost_usd` and `modelUsage` are running totals: in rows since October
- * 2026 they carry over a resume, in rows from July to September 2026 they
- * sometimes restart from zero, and rows before July 2026 mostly hold one turn
- * each. `usage` is the turn alone in all of them.
+ * Claude Code keeps one cost state per Claude session: `total_cost_usd` and
+ * `modelUsage` on a result are that state, while `usage` is the turn alone.
+ * Whether the state outlives the process depends on the Claude Code version:
+ * current ones write it to the transcript and restore it on resume, earlier
+ * ones started every process from zero. Stored rows hold both kinds, and
+ * nothing on a row says which it is, so it is read from the numbers:
  *
- *  - A total below the one before, or a model that is gone, is a restart.
- *  - Otherwise the reading that fits the turn's own `usage` better wins: the
- *    tokens the totals moved by, or the totals as they stand. Per-turn rows
- *    match `usage` as they stand; running rows match it by what they moved.
- *    Subagents and side calls are in `modelUsage` only, so neither is exact.
- *  - A row without `usage` carries on, as a tie does: counting less is the
- *    safer mistake when the other one counts a whole session again.
+ *  - A total below the one before, or a model that is gone, is a new start.
+ *  - Totals that carry on have grown by at least the turn's own `usage` in
+ *    every counter (they also count subagents and side calls, which `usage`
+ *    leaves out). A counter that grew by less is a new start too: its totals
+ *    happen to be above the old ones.
+ *
+ * What is left is a new start whose subagents alone used more than everything
+ * before it, in every counter. That reads as carrying on and loses the cost
+ * of the totals before it.
  */
 function claudeTotalsCarryOn(
   previous: ClaudeRunningTotals,
@@ -3877,17 +3895,11 @@ function claudeTotalsCarryOn(
     if (!now || toNumber(now.costUSD) < toNumber(before.costUSD) - EPSILON) return false;
     if (CLAUDE_TOKEN_COUNTERS.some(([counter]) => toNumber(now[counter]) < toNumber(before[counter]))) return false;
   }
-  let apartMoved = 0;
-  let apartWhole = 0;
-  for (const [counter, usageKey] of CLAUDE_TOKEN_COUNTERS) {
+  return CLAUDE_TOKEN_COUNTERS.every(([counter, usageKey]) => {
     const sum = (totals: ClaudeRunningTotals) =>
       Object.values(totals.modelUsage).reduce((tokens, model) => tokens + toNumber(model[counter]), 0);
-    const whole = sum(current);
-    const own = toNumber(usage?.[usageKey]);
-    apartMoved += Math.abs(whole - sum(previous) - own);
-    apartWhole += Math.abs(whole - own);
-  }
-  return apartMoved <= apartWhole;
+    return sum(current) - sum(previous) >= toNumber(usage?.[usageKey]);
+  });
 }
 
 /**
@@ -3915,6 +3927,33 @@ function claudeTurnUsage(
   }
   // A cost no model accounts for is shared by the models the result names.
   return { costUsd, modelUsage: Object.keys(moved).length > 0 || !(costUsd > 0) ? moved : unmoved };
+}
+
+/**
+ * What these results and usage records cost, in the order they were stored.
+ * Claude's results carry running totals, so each counts for what it added to
+ * them (see claudeTurnUsage); every other row is the cost of its own turn.
+ * Copies from another task are left out: they were paid for there.
+ * This is what /cost reports, by the same rules as the usage report.
+ */
+export function sumUsageCostUsd(provider: AgentProvider, messages: readonly StreamMessage[]): number {
+  let previous: ClaudeRunningTotals | undefined;
+  let costUsd = 0;
+  for (const message of messages) {
+    if ((message.type !== 'result' && message.type !== 'usage_record') || isCopiedUsage(message)) continue;
+    const totals = provider === 'claude' ? readClaudeRunningTotals(message) : null;
+    if (!totals) {
+      // A Claude subagent's own result is inside the task's totals already;
+      // another agent's delegated turn (sourceProvider) is not.
+      const insideTotals = provider === 'claude' && message.type === 'result'
+        && !message.sourceProvider && Boolean(message.parentToolUseId || message.agentId);
+      if (!insideTotals) costUsd += toNumber(message.total_cost_usd);
+      continue;
+    }
+    costUsd += claudeTurnUsage(previous, totals, (message as StoredClaudeResultMessage).usage).costUsd;
+    previous = totals;
+  }
+  return costUsd;
 }
 
 // Builds a usage report for any provider whose runner stores Claude-shaped

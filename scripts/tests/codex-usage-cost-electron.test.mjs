@@ -155,7 +155,27 @@ app.whenReady().then(async()=>{
     close(report.daily.reduce((sum,day)=>sum+Object.values(day.byModelCostUsd).reduce((a,b)=>a+b,0),0),report.totals.totalCostUsd,'daily costs');
     close(report.models.reduce((sum,m)=>sum+m.totalCostUsd,0),report.totals.totalCostUsd,'model costs');
    }
-   close(cost(),12.34+6+8+9.5+15+5);
+   // Totals that carry on have grown by at least the turn's own usage in every counter. Here every
+   // total is above the one before, but output grew by 160 where the turn itself wrote 200: a new start
+   // whose totals happen to be higher, counted in full. (By distance alone it reads as carrying on.)
+   before=cost();
+   const higher=claude('A new start above the old totals');
+   store.addMessage(higher,turn(1,{'higher-main':[1000,100,1]},[1000,100]));
+   store.addMessage(higher,turn(1.5,{'higher-main':[1100,260,1.5,50000]},[60,200,30000]));
+   close(cost()-before,2.5,'a counter that grew by less than the turn is a new start');
+   assert.equal(model('higher-main').outputTokens,360);
+   // /cost adds a task up the same way: running totals by what each turn added, a new start in full,
+   // copies left out, a subagent's result left out (the totals already hold it), and other agents'
+   // results as the cost of their own turn.
+   const taskCost=(id,provider='claude')=>store.sumUsageCostUsd(provider,store.getSessionHistory(id));
+   close(taskCost(running),6,'/cost: running totals');close(taskCost(restarted),8,'/cost: restart');
+   close(taskCost(perTurn),9.5,'/cost: per-turn rows');close(taskCost(ranged),15,'/cost: whole task, whatever the range');
+   close(taskCost(copied),5,'/cost: copies are not this task\'s spend');close(taskCost(higher),2.5,'/cost: new start above the old totals');
+   close(taskCost(native.id),12.34,'/cost: a row without totals is its own turn');
+   close(taskCost(running,'kimi'),1+3+.2+6+6,'/cost: another agent\'s results are per turn');
+   // The week still counts the task that began before it from its base (5), next to the tasks that began in it.
+   close(cost(7)-beforeWeek,5+5+2.5,'only the task with earlier results gets a base');
+   close(cost(),12.34+6+8+9.5+15+5+2.5);
   }
   // Codex's adapter emits a placeholder zero, not a reported bill.
   store.addMessage(session.id,{type:'result',subtype:'success',duration_ms:1,total_cost_usd:0,usage:{input_tokens:0,output_tokens:0}});
