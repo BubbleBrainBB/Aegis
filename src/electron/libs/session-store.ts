@@ -46,7 +46,6 @@ import type {
 } from '../../shared/types';
 
 let db: Database.Database | null = null;
-const DAY_MS = 24 * 60 * 60 * 1000;
 // Keyed by `${provider}:${rangeDays}` — Claude-protocol providers (claude,
 // kimi, grok, pi) all store Claude-shaped result messages and share this cache.
 const claudeUsageReportCache = new Map<
@@ -3074,6 +3073,26 @@ function formatDateKey(timestamp: number): string {
   return `${year}-${month}-${day}`;
 }
 
+// Report ranges count calendar days, not 24-hour steps: the day the clocks
+// change is 23 or 25 hours long, so stepping by 24 hours from a midnight
+// drifts off midnight and skips or repeats a date.
+
+// The local midnight `days` calendar days before the day of `dayStart`.
+function startOfLocalDayBefore(dayStart: number, days: number): number {
+  const date = new Date(dayStart);
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate() - days).getTime();
+}
+
+// The date keys of `days` consecutive calendar days, the day of `rangeStart` first.
+function listLocalDateKeys(rangeStart: number, days: number): string[] {
+  const date = new Date(rangeStart);
+  const keys: string[] = [];
+  for (let index = 0; index < days; index += 1) {
+    keys.push(formatDateKey(new Date(date.getFullYear(), date.getMonth(), date.getDate() + index).getTime()));
+  }
+  return keys;
+}
+
 function toNumber(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }
@@ -3965,7 +3984,7 @@ function getClaudeProtocolUsageReport(
 ): ClaudeUsageReport {
   const safeDays: ClaudeUsageRangeDays = days === 7 || days === 90 || days === 365 ? days : 30;
   const todayStart = startOfLocalDay(Date.now());
-  const rangeStart = todayStart - (safeDays - 1) * DAY_MS;
+  const rangeStart = startOfLocalDayBefore(todayStart, safeDays - 1);
   const cacheKey = `${provider}:${safeDays}`;
   const cached = claudeUsageReportCache.get(cacheKey);
   if (cached && cached.version === claudeUsageReportDataVersion && cached.dayStart === todayStart) {
@@ -3993,9 +4012,8 @@ function getClaudeProtocolUsageReport(
     byModelAgentMessages: Record<string, number>;
     byModelCredits: Record<string, number>;
   }>();
-  for (let index = 0; index < safeDays; index += 1) {
-    const dayStart = rangeStart + index * DAY_MS;
-    dailyMap.set(formatDateKey(dayStart), { totalTokens: 0, byModel: {}, byModelCostUsd: {}, byModelAgentMessages: {}, byModelCredits: {} });
+  for (const dateKey of listLocalDateKeys(rangeStart, safeDays)) {
+    dailyMap.set(dateKey, { totalTokens: 0, byModel: {}, byModelCostUsd: {}, byModelAgentMessages: {}, byModelCredits: {} });
   }
   // Devin bills in agent messages (quota plans) and credits (credit plans).
   const devinBilling = provider === 'devin' ? { agentMessages: 0, credits: 0 } : null;
@@ -4273,7 +4291,7 @@ export function getAgentUsageReport(
 export function getCodexUsageReport(days: ClaudeUsageRangeDays = 30): ClaudeUsageReport {
   const safeDays: ClaudeUsageRangeDays = days === 7 || days === 90 || days === 365 ? days : 30;
   const todayStart = startOfLocalDay(Date.now());
-  const rangeStart = todayStart - (safeDays - 1) * DAY_MS;
+  const rangeStart = startOfLocalDayBefore(todayStart, safeDays - 1);
   const cached = codexUsageReportCache.get(safeDays);
   if (cached && cached.version === codexUsageReportDataVersion && cached.dayStart === todayStart) {
     return cached.report;
@@ -4291,9 +4309,8 @@ export function getCodexUsageReport(days: ClaudeUsageRangeDays = 30): ClaudeUsag
     byModelCostUsd: Record<string, number>;
   }>();
 
-  for (let index = 0; index < safeDays; index += 1) {
-    const dayStart = rangeStart + index * DAY_MS;
-    dailyMap.set(formatDateKey(dayStart), { totalTokens: 0, byModel: {}, byModelCostUsd: {} });
+  for (const dateKey of listLocalDateKeys(rangeStart, safeDays)) {
+    dailyMap.set(dateKey, { totalTokens: 0, byModel: {}, byModelCostUsd: {} });
   }
 
   const sessionRows = getDb().prepare(`
@@ -4419,7 +4436,7 @@ export function getCodexUsageReport(days: ClaudeUsageRangeDays = 30): ClaudeUsag
 export function getOpencodeUsageReport(days: ClaudeUsageRangeDays = 30): ClaudeUsageReport {
   const safeDays: ClaudeUsageRangeDays = days === 7 || days === 90 || days === 365 ? days : 30;
   const todayStart = startOfLocalDay(Date.now());
-  const rangeStart = todayStart - (safeDays - 1) * DAY_MS;
+  const rangeStart = startOfLocalDayBefore(todayStart, safeDays - 1);
   const cached = opencodeUsageReportCache.get(safeDays);
   if (cached && cached.version === opencodeUsageReportDataVersion && cached.dayStart === todayStart) {
     return cached.report;
@@ -4436,9 +4453,8 @@ export function getOpencodeUsageReport(days: ClaudeUsageRangeDays = 30): ClaudeU
     byModelCostUsd: Record<string, number>;
   }>();
 
-  for (let index = 0; index < safeDays; index += 1) {
-    const dayStart = rangeStart + index * DAY_MS;
-    dailyMap.set(formatDateKey(dayStart), { totalTokens: 0, byModel: {}, byModelCostUsd: {} });
+  for (const dateKey of listLocalDateKeys(rangeStart, safeDays)) {
+    dailyMap.set(dateKey, { totalTokens: 0, byModel: {}, byModelCostUsd: {} });
   }
 
   const sessionRows = getDb().prepare(`
