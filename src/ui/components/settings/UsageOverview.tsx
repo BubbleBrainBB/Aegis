@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import type { AgentProvider, UsageCostByType } from '../../types';
 import { formatBillingCount, formatCompactNumber, formatCurrency, formatShortDate } from '../../utils/usage-format';
-import { costAxis, type OverviewAgentRow, type OverviewBucket, type UsageOverview } from '../../utils/usage-overview-model';
+import { costAxis, type OverviewAgentRow, type OverviewDay, type UsageOverview } from '../../utils/usage-overview-model';
 
 const SERIES_COLORS = ['var(--usage-series-1)', 'var(--usage-series-2)', 'var(--usage-series-3)', 'var(--usage-series-4)'];
 const OTHER_COLOR = 'var(--usage-series-other)';
@@ -65,7 +65,8 @@ function AgentList({ agents, logoFor, onSelectAgent }: {
   onSelectAgent(provider: AgentProvider): void;
 }) {
   return (
-    <div className="flex flex-none flex-col gap-2.5 border-b border-[var(--border)] px-5 py-4 @[720px]:w-[336px] @[720px]:border-b-0 @[720px]:border-r" data-usage-agents>
+    // Beside the chart the list is as wide as its longest row needs, up to 336px: the rest is the chart's.
+    <div className="flex flex-none flex-col gap-2.5 border-b border-[var(--border)] px-5 py-4 @[720px]:w-fit @[720px]:min-w-[224px] @[720px]:max-w-[336px] @[720px]:border-b-0 @[720px]:border-r" data-usage-agents>
       <div className="text-[13.5px] font-semibold text-[var(--text-primary)]">By agent</div>
       <div className="-mx-2 flex flex-col">
         {agents.map((row) => (
@@ -82,7 +83,7 @@ function AgentList({ agents, logoFor, onSelectAgent }: {
               aria-hidden="true"
             />
             {logoFor(row.provider)}
-            <span className="min-w-0 flex-1 truncate font-medium text-[var(--text-primary)]">{row.title}</span>
+            <span className="min-w-0 flex-1 truncate pr-3 font-medium text-[var(--text-primary)]" data-usage-agent-name>{row.title}</span>
             {row.costUsd === null ? (
               <span className="whitespace-nowrap text-[var(--text-secondary)]" data-usage-agent-own>{ownUnitLabel(row.own!)}</span>
             ) : (
@@ -104,49 +105,46 @@ function formatAxisUsd(value: number): string {
   return `$${Number(value.toPrecision(2))}`;
 }
 
-function bucketLabel(bucket: OverviewBucket): string {
-  return bucket.start === bucket.end ? formatShortDate(bucket.start) : `${formatShortDate(bucket.start)} – ${formatShortDate(bucket.end)}`;
-}
-
 /**
- * One line per agent over the range, a point per day (per week for long
- * ranges). The four agents that cost most have their own line; the rest share
- * one gray line. Hovering a point lists that day, each agent by its logo.
+ * One line per agent over the range, a point per day. The four agents that
+ * cost most have their own line; the rest share one gray line. Hovering a
+ * point lists that day, each agent by its logo.
  */
 function DailyCost({ overview, logoFor }: { overview: UsageOverview; logoFor(provider: AgentProvider): ReactNode }) {
   const [hovered, setHovered] = useState<number | null>(null);
-  const { buckets, agents } = overview;
+  const { days, agents } = overview;
   const rowOf = new Map(agents.map((row) => [row.provider, row]));
-  const weekly = buckets.some((bucket) => bucket.start !== bucket.end);
-  const costIn = (bucket: OverviewBucket, provider: AgentProvider) =>
-    bucket.agents.find((entry) => entry.provider === provider)?.costUsd ?? 0;
+  const costOn = (day: OverviewDay, provider: AgentProvider) =>
+    day.agents.find((entry) => entry.provider === provider)?.costUsd ?? 0;
   const dollarRows = agents.filter((row) => row.costUsd !== null);
   const lines = [
     ...dollarRows.filter((row) => row.series !== null).map((row) => ({
       key: row.provider as string,
       color: seriesColor(row),
-      values: buckets.map((bucket) => costIn(bucket, row.provider)),
+      values: days.map((day) => costOn(day, row.provider)),
     })),
     ...(dollarRows.some((row) => row.series === null) ? [{
       key: 'other',
       color: OTHER_COLOR,
-      values: buckets.map((bucket) => bucket.agents.reduce((sum, entry) => sum + (rowOf.get(entry.provider)?.series === null ? entry.costUsd : 0), 0)),
+      values: days.map((day) => day.agents.reduce((sum, entry) => sum + (rowOf.get(entry.provider)?.series === null ? entry.costUsd : 0), 0)),
     }] : []),
   ];
   const max = lines.reduce((peak, line) => Math.max(peak, ...line.values), 0);
   const { ticks, top } = costAxis(max);
   // Points run edge to edge; a single point sits in the middle.
-  const xOf = (index: number) => (buckets.length > 1 ? (index / (buckets.length - 1)) * 100 : 50);
+  const xOf = (index: number) => (days.length > 1 ? (index / (days.length - 1)) * 100 : 50);
+  // A year of days is a point every pixel or two: a finer line keeps the days apart.
+  const strokeWidth = days.length > 120 ? 1 : 1.5;
   const yOf = (value: number) => 100 - (value / top) * 100;
-  const active = hovered !== null ? buckets[hovered] : null;
+  const active = hovered !== null ? days[hovered] : null;
   // The middle label only when there is room between the two ends.
-  const axisLabels = buckets.length >= 5
-    ? [buckets[0].start, buckets[Math.floor((buckets.length - 1) / 2)].start, buckets[buckets.length - 1].end]
-    : buckets.length ? [buckets[0].start, buckets[buckets.length - 1].end] : [];
+  const axisLabels = days.length >= 5
+    ? [days[0].date, days[Math.floor((days.length - 1) / 2)].date, days[days.length - 1].date]
+    : days.length ? [days[0].date, days[days.length - 1].date] : [];
 
   return (
     <div className="flex min-w-0 flex-1 flex-col gap-3.5 px-5 py-4" data-usage-daily-cost>
-      <div className="text-[13.5px] font-semibold text-[var(--text-primary)]">{weekly ? 'Weekly cost' : 'Daily cost'}</div>
+      <div className="text-[13.5px] font-semibold text-[var(--text-primary)]">Daily cost</div>
       <div className="flex gap-2">
         <div className="relative h-[170px] w-[34px] flex-none text-[11px] tabular-nums text-[var(--text-muted)]" aria-hidden="true">
           {[0, ...ticks].map((tick) => (
@@ -169,7 +167,7 @@ function DailyCost({ overview, logoFor }: { overview: UsageOverview; logoFor(pro
                     {points.length > 1 ? (
                       <polygon points={`${xOf(0)},100 ${points.join(' ')} ${xOf(points.length - 1)},100`} style={{ fill: 'color-mix(in srgb, currentColor 8%, transparent)' }} />
                     ) : null}
-                    <polyline points={points.join(' ')} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+                    <polyline points={points.join(' ')} fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
                   </g>
                 );
               })}
@@ -190,13 +188,15 @@ function DailyCost({ overview, logoFor }: { overview: UsageOverview; logoFor(pro
             ) : null}
             {/* One strip per point, reaching halfway to its neighbours. */}
             <div className="absolute inset-0 flex">
-              {buckets.map((bucket, index) => (
+              {days.map((day, index) => (
                 <div
-                  key={bucket.start}
+                  key={day.date}
                   className="h-full min-w-0"
-                  style={{ flex: `${index === 0 || index === buckets.length - 1 ? 0.5 : 1} 0 0` }}
-                  onMouseEnter={() => setHovered(index)}
-                  data-usage-cost-point={bucket.start}
+                  style={{ flex: `${index === 0 || index === days.length - 1 ? 0.5 : 1} 0 0` }}
+                  // By moves, not by entering: React skips an enter when the pointer's last element is gone
+                  // (the page was swapped under a resting pointer), and the strip would stay dead until re-entered.
+                  onMouseMove={() => setHovered(index)}
+                  data-usage-cost-point={day.date}
                 />
               ))}
             </div>
@@ -206,10 +206,10 @@ function DailyCost({ overview, logoFor }: { overview: UsageOverview; logoFor(pro
                 className="pointer-events-none absolute top-0 z-10 flex w-[224px] flex-col gap-1.5 rounded-xl border border-[var(--border)] bg-[var(--popover-bg,var(--bg-primary))] px-3.5 py-3 text-[12.5px] tabular-nums shadow-[0_8px_24px_rgba(0,0,0,0.12),0_2px_6px_rgba(0,0,0,0.08)]"
                 // Beside the point, on the side with more room.
                 style={xOf(hovered!) < 50 ? { left: `calc(${xOf(hovered!)}% + 12px)` } : { right: `calc(${100 - xOf(hovered!)}% + 12px)` }}
-                data-usage-cost-tip
+                data-usage-cost-tip={active.date}
               >
                 <div className="flex justify-between gap-3 pb-0.5 text-[13px] font-semibold text-[var(--text-primary)]">
-                  <span>{bucketLabel(active)}</span>
+                  <span>{formatShortDate(active.date)}</span>
                   <span>{formatCurrency(active.totalCostUsd, overview.estimated)}</span>
                 </div>
                 {[...active.agents].sort((left, right) => right.costUsd - left.costUsd).map((entry) => {

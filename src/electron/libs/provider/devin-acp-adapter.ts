@@ -746,7 +746,7 @@ export class DevinAcpAdapter implements ProviderAdapter {
       this.emitAvailableCommands(session, binding.commands);
     }
     if (binding.usage) {
-      this.emitTokenUsage(session, binding.usage);
+      this.emitTokenUsage(session, binding.usage, false);
     }
     binding.commands = undefined;
     binding.usage = undefined;
@@ -1470,7 +1470,7 @@ export class DevinAcpAdapter implements ProviderAdapter {
         session.currentMode = getString(update.currentModeId) || session.currentMode;
         break;
       case 'usage_update':
-        this.emitTokenUsage(session, update);
+        this.emitTokenUsage(session, update, true);
         break;
       default:
         // session_info_update (unusable titles), user_message_chunk (replay only).
@@ -1676,8 +1676,14 @@ export class DevinAcpAdapter implements ProviderAdapter {
     });
   }
 
-  /** Context ring: Devin reports occupancy (`used`) and window (`size`) directly. */
-  private emitTokenUsage(session: ActiveDevinSession, update: DevinSessionUpdate): void {
+  /**
+   * Context ring: Devin reports occupancy (`used`) and window (`size`) directly.
+   * The update also carries the usage of the request just made, which is what
+   * the usage report counts a Devin turn by. The update kept from before the
+   * session was bound is not one: it restores the reading of a loaded
+   * session, and repeats a request already counted.
+   */
+  private emitTokenUsage(session: ActiveDevinSession, update: DevinSessionUpdate, requestUsage: boolean): void {
     const contextWindow = getNumber(update.size);
     if (contextWindow <= 0) return;
     const meta = getRecord(update._meta);
@@ -1690,9 +1696,12 @@ export class DevinAcpAdapter implements ProviderAdapter {
         uuid: `devin-token-usage:${session.threadId}:${Date.now()}`,
         session_id: session.threadId,
         provider: 'devin',
+        requestUsage,
         usage: {
           inputTokens: getNumber(meta?.['cognition.ai/inputTokens']),
           cachedInputTokens: getNumber(meta?.['cognition.ai/cachedReadTokens']),
+          // Present when Devin reports it; the usage report prices these as cache writes.
+          cacheWriteInputTokens: getNumber(meta?.['cognition.ai/cachedWriteTokens']),
           outputTokens: getNumber(meta?.['cognition.ai/outputTokens']),
           reasoningOutputTokens: 0,
           totalTokens: getNumber(update.used),

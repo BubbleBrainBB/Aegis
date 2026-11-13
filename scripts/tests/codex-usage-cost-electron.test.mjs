@@ -314,6 +314,18 @@ app.whenReady().then(async()=>{
   const devinModels=store.getAgentUsageReport('devin',365).models;
   assert.deepEqual(devinModels.map(m=>m.model).sort(),['claude-opus-5-5-high','claude-opus-5-5-medium','claude-opus-5-5-xhigh','gpt-5.1-codex-max-xhigh','swe-2-high','swe-2-low','swe-2-medium'],'Devin rows keep their Claude id and split by recorded thinking level');
   assert.equal(devinModels.find(m=>m.model==='claude-opus-5-5-high').inputTokens,2000);
+  // Devin bills in messages, but its tokens are priced as the API model behind the id: Opus 5.5 at $4 in and
+  // $20 out, whatever the thinking level. Its own models and ids with no listed rates stay unpriced.
+  const devinCost=name=>store.getAgentUsageReport('devin',365).models.find(m=>m.model===name).totalCostUsd;
+  near(devinCost('claude-opus-5-5-medium'),(1000*4+10*20)/1e6);near(devinCost('claude-opus-5-5-high'),(2000*4+20*20)/1e6);
+  assert.equal(devinCost('swe-2-high'),0);assert.equal(devinCost('gpt-5.1-codex-max-xhigh'),0);
+  assert.equal(store.getAgentUsageReport('devin',365).costMode,'partial');
+  // Devin's input count includes its cache reads, and its ids write a version's dot as a dash.
+  const devinCached=store.createSession({provider:'devin',model:'gpt-6-1-sol-medium',cwd:temp,title:'Devin cached'});
+  store.addMessage(devinCached.id,result({model:'gpt-6-1-sol-medium',costSource:'unavailable',usage:{input_tokens:10,output_tokens:1,cache_read_input_tokens:8}}));
+  near(devinCost('gpt-6-1-sol-medium'),(2*2+8*.1+1*10)/1e6);
+  {const split=store.getAgentUsageReport('devin',365).costByType;near(typed({costByType:split}),store.getAgentUsageReport('devin',365).totals.totalCostUsd);
+   assert.equal(split.cacheReadTokens,8);assert.equal(split.inputTokens,1000+500+2000+300+40+20+5+2,'uncached input, cache reads taken out');}
   // A row without a model id stays under the provider label, undecorated.
   const devinBare=store.createSession({provider:'devin',cwd:temp,title:'Devin without a model'});
   store.addMessage(devinBare.id,result({thoughtLevel:'high',costSource:'unavailable',usage:{input_tokens:7,output_tokens:0}}));
@@ -347,6 +359,198 @@ app.whenReady().then(async()=>{
   assert.deepEqual(devinToday.byModelAgentMessages,{'swe-2-high':5,'claude-opus-5-5-high':1,adaptive:1});
   assert.deepEqual(devinToday.byModelCredits,{'swe-2-high':0,'claude-opus-5-5-high':1.25,adaptive:0});
   assert.equal(store.getAgentUsageReport('minimax',365).billing,undefined,'other agents carry no Devin billing');
+  // A Devin result holds only its turn's last request. The turn is counted by the usage updates Devin sent
+  // while it ran: every request once (an update comes twice), each priced on its own.
+  {
+   const report=()=>store.getAgentUsageReport('devin',365);
+   const update=(task,input,cached,output,write,extra={})=>({type:'system',subtype:'token_usage',uuid:'devin-usage-'+Math.random(),session_id:task.id,provider:'devin',requestUsage:true,
+     usage:{inputTokens:input,cachedInputTokens:cached,outputTokens:output,reasoningOutputTokens:0,totalTokens:input+output,contextWindow:1000000,...(write?{cacheWriteInputTokens:write}:{})},...extra});
+   // An update as stored before it said whether a request was behind it.
+   const unmarked=(...args)=>{const message=update(...args);delete message.requestUsage;return message};
+   const devinTask=(title,model='claude-opus-5-5-medium')=>store.createSession({provider:'devin',model,cwd:temp,title});
+   const done=(input,output,cached,extra={})=>result({costSource:'unavailable',usage:{input_tokens:input,output_tokens:output,...(cached?{cache_read_input_tokens:cached}:{})},...extra});
+   const opus=(input,cached,output,write=0)=>((input-cached-write)*4+cached*.2+write*5+output*20)/1e6;
+   const sol=(input,cached,output)=>((input-cached)*2+cached*.1+output*10)/1e6;
+   const tokens=()=>{const r=report();return [r.totals.inputTokens,r.totals.outputTokens,r.totals.cacheReadTokens,r.totals.totalCostUsd,r.totals.sessionCount]};
+   const grew=(before,expected,what)=>{const now=tokens();assert.deepEqual(now.slice(0,3).map((v,i)=>v-before[i]),expected.slice(0,3),what);near(now[3]-before[3],expected[3]);return now};
+   const requests=devinTask('Devin requests');
+   let seen=tokens();
+   store.addMessage(requests.id,update(requests,1000,0,10));store.addMessage(requests.id,update(requests,1000,0,10));
+   store.addMessage(requests.id,update(requests,3000,2000,20));
+   store.addMessage(requests.id,done(3000,20,2000));
+   seen=grew(seen,[4000,30,2000,opus(1000,0,10)+opus(3000,2000,20)],'both requests of the turn, not just the last');
+   // A request past a long-context boundary pays that rate itself; the turn's other request does not.
+   const long=devinTask('Devin long request','gpt-6-1-sol-medium');
+   store.addMessage(long.id,update(long,300000,250000,100));store.addMessage(long.id,update(long,1000,0,10));
+   store.addMessage(long.id,done(1000,10));
+   seen=grew(seen,[301000,110,250000,((50000*2+250000*.1)*2+100*10*1.5+1000*2+10*10)/1e6],'each request at its own tier');
+   // Cache writes, when Devin reports them, are priced as writes (the 5-minute rate), not as plain input.
+   store.addMessage(requests.id,update(requests,5000,3000,10,1000));
+   store.addMessage(requests.id,done(5000,10,3000));
+   seen=grew(seen,[5000,10,3000,opus(5000,3000,10,1000)],'a cache write');
+   // Requests after the last result (a turn still running) are counted too, under the task's model.
+   store.addMessage(requests.id,update(requests,2000,0,5));
+   seen=grew(seen,[2000,5,0,opus(2000,0,5)],'a turn without a result yet');
+   // A result from before requests were kept stands on its own, and the task's later turns go by their requests.
+   const old=devinTask('Devin before updates','gpt-6-1-sol-medium');
+   store.addMessage(old.id,done(100,10));
+   seen=grew(seen,[100,10,0,sol(100,0,10)],'a result without any request before it stands on its own');
+   store.addMessage(old.id,update(old,400,0,4));store.addMessage(old.id,done(400,4));
+   seen=grew(seen,[400,4,0,sol(400,0,4)],'the next turn by its request');
+   // Where a task's requests are known, a result with none of its own adds nothing: what it reports is counted already.
+   store.addMessage(long.id,done(1000,10));
+   seen=grew(seen,[0,0,0,0],'a result is not counted on top of the requests');
+
+   // What is a request, and what is not. Devin sends each update twice; a session loaded again starts with the
+   // reading it had, which is no request. A request whose counts equal the last one's is still a request.
+   const turns=devinTask('Devin repeated counts');
+   store.addMessage(turns.id,update(turns,1000,0,10));store.addMessage(turns.id,done(1000,10));
+   seen=grew(seen,[1000,10,0,opus(1000,0,10)],'the first turn');
+   store.addMessage(turns.id,update(turns,1000,0,10,0,{requestUsage:false}));
+   store.addMessage(turns.id,update(turns,1000,0,10));store.addMessage(turns.id,update(turns,1000,0,10));
+   store.addMessage(turns.id,update(turns,2000,0,20));store.addMessage(turns.id,done(2000,20));
+   seen=grew(seen,[3000,30,0,opus(1000,0,10)+opus(2000,0,20)],'a request with the counts of the turn before is counted; the restored reading and the second copy are not');
+   const paced=devinTask('Devin equal requests in a turn');const pacedAt=Date.now()-60000;
+   store.addMessage(paced.id,update(paced,500,0,5,0,{createdAt:pacedAt}));store.addMessage(paced.id,update(paced,500,0,5,0,{createdAt:pacedAt+3}));
+   store.addMessage(paced.id,update(paced,500,0,5,0,{createdAt:pacedAt+5000}));
+   store.addMessage(paced.id,done(500,5,0,{createdAt:pacedAt+6000}));
+   seen=grew(seen,[1000,10,0,opus(500,0,5)*2],'two requests of one turn with the same counts, seconds apart, are two');
+   // Updates stored before they were marked: the first after a turn that repeats its last request is the restored reading.
+   const unmarkedTask=devinTask('Devin unmarked updates');
+   store.addMessage(unmarkedTask.id,unmarked(unmarkedTask,1000,0,10));store.addMessage(unmarkedTask.id,unmarked(unmarkedTask,1000,0,10));
+   store.addMessage(unmarkedTask.id,done(1000,10));
+   seen=grew(seen,[1000,10,0,opus(1000,0,10)],'an unmarked update sent twice');
+   store.addMessage(unmarkedTask.id,unmarked(unmarkedTask,1000,0,10));
+   store.addMessage(unmarkedTask.id,unmarked(unmarkedTask,1500,1000,15));store.addMessage(unmarkedTask.id,done(1500,15,1000));
+   seen=grew(seen,[1500,15,1000,opus(1500,1000,15)],'an unmarked reading restored on load');
+
+   // History copied into a task (a fork, a handoff) brings its updates along. Their requests were made in the
+   // task they came from, by the agent that ran there: the copy counts only its own.
+   const origin=devinTask('Devin original');
+   store.addMessage(origin.id,update(origin,6000,0,60));store.addMessage(origin.id,done(6000,60));
+   seen=grew(seen,[6000,60,0,opus(6000,0,60)],'the original turn');
+   const copy=devinTask('Devin copy');store.copySessionHistory(origin.id,copy.id);
+   seen=grew(seen,[0,0,0,0],'copied history adds nothing');
+   store.addMessage(copy.id,update(copy,7000,6000,70));store.addMessage(copy.id,done(7000,70,6000));
+   seen=grew(seen,[7000,70,6000,opus(7000,6000,70)],'the copy counts its own turn only');
+   const other=store.createSession({provider:'codex',model:'gpt-5.5',cwd:temp,title:'Handed to Devin'});
+   store.addMessage(other.id,{type:'system',subtype:'token_usage',uuid:'codex-usage-'+Math.random(),session_id:other.id,provider:'codex',
+     usage:{inputTokens:8000,cachedInputTokens:0,outputTokens:80,reasoningOutputTokens:0,totalTokens:8080,contextWindow:400000}});
+   const handed=devinTask('Devin after a handoff');store.copySessionHistory(other.id,handed.id);
+   store.addMessage(handed.id,update(handed,2000,0,20));store.addMessage(handed.id,done(2000,20));
+   seen=grew(seen,[2000,20,0,opus(2000,0,20)],'another agent\'s history is not Devin\'s usage');
+
+   // Devin's own session database, when it is there, has every request with its model and its cache writes.
+   // It is used for a task in place of the updates, each request once (it sits on more than one row).
+   const ownDir=path.join(temp,'home','.local','share','devin','cli');fs.mkdirSync(ownDir,{recursive:true});
+   const own=new Database(path.join(ownDir,'sessions.db'));
+   own.exec('CREATE TABLE message_nodes(row_id INTEGER PRIMARY KEY AUTOINCREMENT,session_id TEXT NOT NULL,node_id INTEGER NOT NULL,parent_node_id INTEGER,chat_message TEXT NOT NULL,created_at INTEGER NOT NULL,metadata TEXT)');
+   own.exec('CREATE INDEX idx_message_nodes_session ON message_nodes(session_id)');
+   let node=0;
+   const nowSecond=()=>Math.floor(Date.now()/1000);
+   const record=(session,requestId,model,metrics,role='assistant',second=nowSecond()-5)=>own.prepare('INSERT INTO message_nodes(session_id,node_id,chat_message,created_at) VALUES(?,?,?,?)')
+     .run(session,++node,JSON.stringify({role,content:'',metadata:{request_id:requestId,generation_model:model,metrics}}),second);
+   const plain=(input,output)=>({input_tokens:input,cache_read_tokens:null,cache_creation_tokens:null,output_tokens:output});
+   // The report is built again when the task's history gains usage; Devin's database changing does not tell it.
+   const refresh=task=>store.addMessage(task.id,update(task,1,0,1,0,{requestUsage:false}));
+   const modelRow=name=>report().models.find(m=>m.model===name)??{inputTokens:0,outputTokens:0,totalCostUsd:0,agentMessages:0};
+   const recorded=devinTask('Devin own records');
+   const rowsBefore=['claude-opus-5-5-high','gpt-6-1-sol-medium','compactor'].map(modelRow);
+   store.updateDevinSessionId(recorded.id,'devin-own-1');
+   store.addMessage(recorded.id,update(recorded,5000,3000,10));store.addMessage(recorded.id,update(recorded,700,0,7));
+   const first={input_tokens:1000,cache_read_tokens:3000,cache_creation_tokens:1000,output_tokens:10};
+   record('devin-own-1','req-1','claude-opus-5-5-high',first);record('devin-own-1','req-1','claude-opus-5-5-high',first);
+   record('devin-own-1','req-2','gpt-6-1-sol-medium',plain(700,7));
+   // A call of Devin's own (compacting the context) is in its records and not in the updates: its tokens count, without a price.
+   record('devin-own-1','req-3','compactor',plain(50,5));
+   record('devin-own-1','req-4','claude-opus-5-5-high',{input_tokens:9,output_tokens:9},'user');
+   // A task whose records are short of its updates (another machine's session, rows Devin removed) keeps the updates.
+   const partial=devinTask('Devin partly recorded');
+   record('devin-own-2','req-9','claude-opus-5-5-high',plain(1,1));
+   store.addMessage(recorded.id,done(700,7,0,{model:'claude-opus-5-5-medium',devinBilling:{agentMessages:2,credits:0}}));
+   seen=grew(seen,[5000+700+50,10+7+5,3000,opus(5000,3000,10,1000)+sol(700,0,7)],'three recorded requests, each by its own model, the cache write as a write');
+   assert.equal(report().costByType.cacheWriteTokens,1000+1000,'the write is counted as one (with the reported write above)');
+   // Each request is under the model that answered it, not under the one the turn's result names.
+   {const [opusRow,solRow,compactor]=['claude-opus-5-5-high','gpt-6-1-sol-medium','compactor'].map(modelRow);
+    assert.deepEqual([opusRow.inputTokens-rowsBefore[0].inputTokens,solRow.inputTokens-rowsBefore[1].inputTokens,compactor.inputTokens],[5000,700,50]);
+    assert.deepEqual([opusRow.outputTokens-rowsBefore[0].outputTokens,solRow.outputTokens-rowsBefore[1].outputTokens,compactor.outputTokens],[10,7,5]);
+    near(opusRow.totalCostUsd-rowsBefore[0].totalCostUsd,opus(5000,3000,10,1000));near(solRow.totalCostUsd-rowsBefore[1].totalCostUsd,sol(700,0,7));
+    assert.equal(compactor.totalCostUsd,0);assert(/excluded: .*\bcompactor\b/.test(report().note),'a model without a price is named as such');
+    assert.equal(report().daily.at(-1).byModel.compactor,55,'and has its own share of the day');
+    // The turn's messages are one amount: under the model that used most of it.
+    assert.equal((opusRow.agentMessages||0)-(rowsBefore[0].agentMessages||0),2);assert(!compactor.agentMessages&&!((solRow.agentMessages||0)-(rowsBefore[1].agentMessages||0)));}
+   store.updateDevinSessionId(partial.id,'devin-own-2');
+   store.addMessage(partial.id,update(partial,1000,0,10));store.addMessage(partial.id,update(partial,2000,0,20));
+   store.addMessage(partial.id,done(2000,20));
+   seen=grew(seen,[3000,30,0,opus(1000,0,10)+opus(2000,0,20)],'updates stand where the records fall short');
+   // Holding as many requests, or more, does not make the records whole: a request of the task that is missing
+   // from them is still missing when calls of Devin's own make up the number. The updates stand then too.
+   for(const extra of [1,2]){
+    const short=devinTask('Devin records short by one, '+extra+' of its own');const id='devin-own-short-'+extra;
+    record(id,'k-1','claude-opus-5-5-high',plain(1000,10));
+    for(let call=0;call<extra;call++)record(id,'k-c'+call,'compactor',plain(50,5));
+    store.updateDevinSessionId(short.id,id);
+    store.addMessage(short.id,update(short,1000,0,10));store.addMessage(short.id,update(short,2000,0,20));
+    store.addMessage(short.id,done(2000,20));
+    seen=grew(seen,[3000,30,0,opus(1000,0,10)+opus(2000,0,20)],'a missing request is not made up for by '+extra+' other record(s)');
+   }
+   // Only what a session gained since the last read is read: a later copy of a request already counted is not
+   // a request, and rows read before are not read again. A session that lost rows is read from the start.
+   record('devin-own-1','req-1','claude-opus-5-5-high',first,'assistant',nowSecond());record('devin-own-1','req-5','claude-opus-5-5-high',plain(100,1),'assistant',nowSecond());
+   store.addMessage(recorded.id,update(recorded,100,0,1));
+   seen=grew(seen,[100,1,0,opus(100,0,1)],'the new request only');
+   own.prepare("UPDATE message_nodes SET chat_message=json_set(chat_message,'$.metadata.metrics.output_tokens',105) WHERE session_id='devin-own-1' AND json_extract(chat_message,'$.metadata.request_id')='req-3'").run();
+   record('devin-own-1','req-6','claude-opus-5-5-high',plain(200,2),'assistant',nowSecond());store.addMessage(recorded.id,update(recorded,200,0,2));
+   seen=grew(seen,[200,2,0,opus(200,0,2)],'rows read before are not read again');
+   own.prepare("DELETE FROM message_nodes WHERE session_id='devin-own-1' AND json_extract(chat_message,'$.role')='user'").run();refresh(recorded);
+   seen=grew(seen,[0,100,0,0],'a session that lost rows is read again');
+   // What was read is kept in Aegis's own database, so the next run does not read Devin's sessions from the
+   // start: after a restart a row read before is still not read again, and a new one is.
+   const keptDb=options=>new Database(path.join(app.getPath('userData'),'sessions.db'),options);
+   store.close();
+   own.prepare("UPDATE message_nodes SET chat_message=json_set(chat_message,'$.metadata.metrics.output_tokens',1105) WHERE session_id='devin-own-1' AND json_extract(chat_message,'$.metadata.request_id')='req-3'").run();
+   record('devin-own-1','req-7','claude-opus-5-5-high',plain(300,3),'assistant',nowSecond());
+   store.initialize();store.addMessage(recorded.id,update(recorded,300,0,3));
+   seen=grew(seen,[300,3,0,opus(300,0,3)],'after a restart, only the new request is read');
+   // A copy kept in another version's layout is dropped and the session read again; so is one whose task is gone.
+   store.close();
+   {const kept=keptDb();
+    assert.equal(kept.prepare("SELECT count(*) FROM devin_request_cache WHERE devin_session_id='devin-own-1'").pluck().get(),1);
+    kept.prepare("UPDATE devin_request_cache SET version=0 WHERE devin_session_id='devin-own-1'").run();
+    kept.prepare("INSERT INTO devin_request_cache(db_path,devin_session_id,version,last_row_id,row_count,requests) VALUES('x','devin-gone',1,1,1,'[]')").run();kept.close();}
+   store.initialize();refresh(recorded);
+   seen=grew(seen,[0,1000,0,0],'a copy kept by another version is not used');
+   {const kept=keptDb({readonly:true});
+    assert.deepEqual(kept.prepare("SELECT version FROM devin_request_cache WHERE devin_session_id='devin-own-1'").pluck().all(),[1],'and is replaced');
+    assert.equal(kept.prepare("SELECT count(*) FROM devin_request_cache WHERE devin_session_id='devin-gone'").pluck().get(),0);kept.close();}
+   // Devin stamps a request with the second it was answered in. A request answered in the second its turn's
+   // result came in is stamped no later than that result, and so is one the next turn made in the same second:
+   // the result tells them apart, as it reports its own turn's last request.
+   const stamped=devinTask('Devin same second');store.updateDevinSessionId(stamped.id,'devin-own-3');
+   const second=nowSecond()-120;
+   record('devin-own-3','s-1','claude-opus-5-5-high',plain(1000,10),'assistant',second);
+   store.addMessage(stamped.id,done(1000,10,0,{createdAt:second*1000+100}));
+   record('devin-own-3','s-2','gpt-6-1-sol-high',plain(2000,20),'assistant',second);refresh(stamped);
+   seen=grew(seen,[3000,30,0,opus(1000,0,10)+sol(2000,0,20)],'a request of the next turn, made in the same second, is counted once');
+   const solHighMessages=modelRow('gpt-6-1-sol-high').agentMessages||0;
+   store.addMessage(stamped.id,done(2000,20,0,{createdAt:second*1000+1200,model:'claude-opus-5-5-medium',devinBilling:{agentMessages:4,credits:0}}));
+   seen=grew(seen,[0,0,0,0],'and not again when its own turn ends');
+   assert.equal((modelRow('gpt-6-1-sol-high').agentMessages||0)-solHighMessages,4,'it belongs to its own turn: that turn\'s messages are under its model');
+   // The same when the turn's last request was stamped a full second before its result.
+   record('devin-own-3','s-3','claude-opus-5-5-high',plain(300,3),'assistant',second+10);
+   store.addMessage(stamped.id,done(300,3,0,{createdAt:(second+11)*1000+10}));
+   record('devin-own-3','s-4','claude-opus-5-5-high',plain(400,4),'assistant',second+11);
+   store.addMessage(stamped.id,done(400,4,0,{createdAt:(second+12)*1000+500}));
+   seen=grew(seen,[700,7,0,opus(300,0,3)+opus(400,0,4)],'each turn its own request');
+   // Devin's records do not say which task made a request: two tasks on one Devin session go by their own updates.
+   const shared=[devinTask('Devin shared session A'),devinTask('Devin shared session B')];
+   record('devin-own-4','x-1','claude-opus-5-5-high',plain(800,8));record('devin-own-4','x-2','claude-opus-5-5-high',plain(900,9));
+   shared.forEach((task,index)=>{store.updateDevinSessionId(task.id,'devin-own-4');
+     store.addMessage(task.id,update(task,800+index*100,0,8+index));store.addMessage(task.id,done(800+index*100,8+index));});
+   seen=grew(seen,[1700,17,0,opus(800,0,8)+opus(900,0,9)],'a shared Devin session is counted once');
+   own.close();
+   const split=report().costByType;near(typed({costByType:split}),report().totals.totalCostUsd);
+  }
   const grok=store.createSession({provider:'grok',model:'claude-sonnet-4-6',cwd:temp,title:'Grok under an alias'});
   store.addMessage(grok.id,result({model:'claude-sonnet-4-6',costSource:'unavailable',usage:{input_tokens:100,output_tokens:1}}));
   const grokModels=store.getAgentUsageReport('grok',365).models.map(m=>m.model);

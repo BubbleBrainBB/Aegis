@@ -32,13 +32,12 @@ export interface OverviewAgentRow {
   series: number | null;
 }
 
-/** One point of the cost chart: a day, or a week for long ranges. */
-export interface OverviewBucket {
-  /** First and last day covered (date keys); the same day for a daily point. */
-  start: string;
-  end: string;
+/** One point of the cost chart: a day of the range. */
+export interface OverviewDay {
+  /** The day's date key. */
+  date: string;
   totalCostUsd: number;
-  /** The agents that spent in it, in the list's order. */
+  /** The agents that spent on it, in the list's order. */
   agents: Array<{ provider: AgentProvider; costUsd: number }>;
 }
 
@@ -49,7 +48,8 @@ export interface UsageOverview {
   totalTokens: number;
   sessionCount: number;
   agents: OverviewAgentRow[];
-  buckets: OverviewBucket[];
+  /** Every day of the range, oldest first. */
+  days: OverviewDay[];
   /** Null when no agent's report carries the split. */
   costByType: UsageCostByType | null;
   /** Every agent's models in one report, for the model table. */
@@ -73,12 +73,13 @@ function hasUsage(report: ClaudeUsageReport): boolean {
 }
 
 /**
- * An agent whose usage adds up in dollars. Devin and Qoder bill in messages
- * and credits, and an agent with no priced usage has no dollars to add: those
- * show their own unit instead.
+ * An agent whose usage adds up in dollars: anything with a cost, returned or
+ * estimated at API prices. That includes Devin, which bills in messages but
+ * whose Claude and GPT tokens have API prices. An agent with no priced usage
+ * (Qoder's credits, a model without listed rates) shows its own unit instead.
  */
 function countsInDollars(report: ClaudeUsageReport): boolean {
-  return !report.billing && report.totals.totalCostUsd > 0;
+  return report.totals.totalCostUsd > 0;
 }
 
 function dayCostUsd(point: ClaudeUsageDailyPoint): number {
@@ -112,14 +113,9 @@ const COST_BY_TYPE_KEYS: Array<keyof UsageCostByType> = [
   'inputCostUsd', 'cacheReadCostUsd', 'cacheWriteCostUsd', 'outputCostUsd', 'unsplitCostUsd',
 ];
 
-/** Long ranges draw a point per week: a year of daily points is too jagged to read. */
-export function overviewBucketDays(rangeDays: ClaudeUsageRangeDays): 1 | 7 {
-  return rangeDays > 30 ? 7 : 1;
-}
-
 /**
  * Every agent's usage in one view: the cost total, agents ranked by cost, cost
- * per day (or week) by agent, cost by type, and one model report.
+ * per day by agent, cost by type, and one model report.
  */
 export function buildUsageOverview(inputs: OverviewAgentInput[], rangeDays: ClaudeUsageRangeDays): UsageOverview {
   const used = inputs.flatMap((input) => (input.range && hasUsage(input.range) ? [{ ...input, range: input.range }] : []));
@@ -156,36 +152,24 @@ export function buildUsageOverview(inputs: OverviewAgentInput[], rangeDays: Clau
     })),
   ];
 
-  // Cost per day by agent, then days folded into weeks counted back from today.
-  const dates = [...new Set(dollarAgents.flatMap((input) => input.range.daily.map((point) => point.date)))].sort();
+  // Cost per day by agent, for every day of the range.
   const costOn = new Map<string, Map<AgentProvider, number>>();
   for (const input of dollarAgents) {
     for (const point of input.range.daily) {
       const usd = dayCostUsd(point);
-      if (!(usd > 0)) continue;
       const day = costOn.get(point.date) ?? new Map<AgentProvider, number>();
-      day.set(input.provider, usd);
+      if (usd > 0) day.set(input.provider, usd);
       costOn.set(point.date, day);
     }
   }
-  const size = overviewBucketDays(rangeDays);
-  const buckets: OverviewBucket[] = [];
-  // Only whole weeks: the few days left over at the start would draw as a dip.
-  for (let end = dates.length; end >= size; end -= size) {
-    const span = dates.slice(end - size, end);
-    const bucketAgents = dollarAgents
-      .map((input) => ({
-        provider: input.provider,
-        costUsd: span.reduce((sum, date) => sum + (costOn.get(date)?.get(input.provider) ?? 0), 0),
-      }))
-      .filter((entry) => entry.costUsd > 0);
-    buckets.unshift({
-      start: span[0],
-      end: span[span.length - 1],
-      totalCostUsd: bucketAgents.reduce((sum, entry) => sum + entry.costUsd, 0),
-      agents: bucketAgents,
+  const days: OverviewDay[] = [...costOn.keys()].sort().map((date) => {
+    const spent = costOn.get(date)!;
+    const dayAgents = dollarAgents.flatMap((input) => {
+      const costUsd = spent.get(input.provider);
+      return costUsd ? [{ provider: input.provider, costUsd }] : [];
     });
-  }
+    return { date, totalCostUsd: dayAgents.reduce((sum, entry) => sum + entry.costUsd, 0), agents: dayAgents };
+  });
 
   const typed = dollarAgents.flatMap((input) => (input.range.costByType ? [input.range.costByType] : []));
   const costByType = typed.length
@@ -266,7 +250,7 @@ export function buildUsageOverview(inputs: OverviewAgentInput[], rangeDays: Clau
   const yearDaily = mergeDaily(inputs.flatMap((input) =>
     (input.year ? [{ report: input.year, dollars: countsInDollars(input.year) }] : [])));
 
-  return { totalCostUsd, estimated, totalTokens, sessionCount, agents, buckets, costByType, report, yearDaily };
+  return { totalCostUsd, estimated, totalTokens, sessionCount, agents, days, costByType, report, yearDaily };
 }
 
 /** "Nice" dollar ticks for the cost chart: at most four above zero, and the scale's top. */

@@ -19,6 +19,37 @@ assert.equal(estimateAgentApiCost('kimi', 'kimi-code/k3', {input_tokens:0,output
 near(estimateAgentApiCost('kimi', 'moonshot-cn/kimi-k2.7-code-highspeed', usage), .217);
 near(estimateAgentApiCost('kimi', 'moonshot-cn/kimi-k2.7-code-highspeed', {...usage, cache_creation_input_tokens: 10000}), .236);
 near(estimateAgentApiCost('kimi', 'kimi-k3', usage), .33);
+// K3.1 Pro: $2 in, $0.20 cached, $10 out; cache writes $2 for 5 minutes and $4 for an hour (twice that for highspeed).
+for (const model of ['kimi-code/k3.1-pro', 'kimi-for-coding/k3.1-pro', 'kimi-k3.1-pro']) {
+  near(estimateAgentApiCost('kimi', model, usage), .22);
+  near(estimateAgentApiCost('kimi', model, {...usage, cache_creation_input_tokens: 10000}), .24);
+  near(estimateAgentApiCost('kimi', model, {...usage, cache_creation_input_tokens: 10000, cache_creation: {ephemeral_1h_input_tokens: 4000}} as typeof usage), .248);
+}
+near(estimateAgentApiCost('kimi', 'kimi-code/k3.1-pro-highspeed', usage), .43);
+near(estimateAgentApiCost('kimi', 'kimi-code/k3.1-pro-highspeed', {...usage, cache_creation_input_tokens: 10000}), .47);
+// The K3 write tiers are still $3 and $6.
+near(estimateAgentApiCost('kimi', 'kimi-code/k3', {...usage, cache_creation_input_tokens: 10000, cache_creation: {ephemeral_1h_input_tokens: 4000}} as typeof usage), .33 + (6000 * 3 + 4000 * 6) / 1e6);
+// Claude's current models, for agents that return no cost of their own.
+near(estimateAgentApiCost('opencode', 'anthropic/claude-opus-5-5', usage), (100000 * 4 + 50000 * .2 + 1000 * 20) / 1e6);
+near(estimateAgentApiCost('opencode', 'claude-fable-5-2', usage), .85);
+near(estimateAgentApiCost('pi', 'anthropic/claude-sonnet-5-5', usage), .215);
+// Haiku 5.5 is priced by one request's prompt length: a turn total past 100K cannot be tiered.
+const shortPrompt = { input_tokens: 10000, output_tokens: 100 };
+near(estimateAgentApiCost('opencode', 'claude-haiku-5-5', shortPrompt), (10000 * .1 + 100 * .5) / 1e6);
+assert.equal(estimateAgentApiCost('opencode', 'claude-haiku-5-5', usage), null);
+near(estimateAgentApiCost('opencode', 'claude-haiku-5-5', usage, Date.now(), true), (100000 * .5 + 50000 * .05 + 1000 * 2.5) / 1e6);
+// Devin bills in messages; its tokens are priced as the API model behind its id: the thinking level comes
+// off the end, version dashes are dots, and its input count includes the cache reads.
+near(estimateAgentApiCost('devin', 'claude-opus-5-5-medium', usage), (50000 * 4 + 50000 * .2 + 1000 * 20) / 1e6);
+near(estimateAgentApiCost('devin', 'claude-opus-5-5-high', usage), .23);
+near(estimateAgentApiCost('devin', 'gpt-6-1-sol-medium', usage), (50000 * 2 + 50000 * .1 + 1000 * 10) / 1e6);
+near(estimateAgentApiCost('devin', 'claude-opus-4-7', usage), (50000 * 5 + 50000 * .5 + 1000 * 25) / 1e6);
+assert.equal(estimateAgentApiCost('devin', 'swe-2-high', usage), null, 'Cognition\'s own model has no API price');
+assert.equal(estimateAgentApiCost('devin', 'gpt-6-1-sol-high', {input_tokens: 300000, output_tokens: 100, cache_read_input_tokens: 250000}), null, 'a turn total past the long-context boundary');
+assert.deepEqual(usageTokenParts('devin', usage), { input: 50000, cacheRead: 50000, cacheWrite: 0, output: 1000 });
+// A name that is not a priced API id stays unknown, and the prefix rule is Kimi's alone.
+assert.equal(estimateAgentApiCost('kimi', 'kimi-code/k9-ultra', usage), null);
+assert.equal(estimateAgentApiCost('pi', 'custom/k3.1-pro', usage), null);
 assert.equal(estimateAgentApiCost('qoder', 'auto', { input_tokens: 0, output_tokens: 0, total_tokens: 50000 }), null);
 assert.equal(estimateAgentApiCost('pi', 'openai/gpt-5.5', {input_tokens: 300000, output_tokens: 100}), null);
 near(estimateAgentApiCost('pi', 'openai/gpt-5.5', {input_tokens: 300000, output_tokens: 100}, Date.now(), true), 3.0045);
@@ -59,7 +90,7 @@ const sumOf = (parts: { input: number; cacheRead: number; cacheWrite: number; ou
 const writes = { ...usage, cache_creation_input_tokens: 10000 };
 for (const [provider, model, record] of [
   ['bubble', 'openai:gpt-5.5', usage], ['pi', 'openai/gpt-5.5', usage], ['pi', 'zai/glm-5.3-flash', usage],
-  ['kimi', 'kimi-code/k3', usage], ['kimi', 'kimi-code/k3', writes], ['kimi', 'moonshot-cn/kimi-k2.7-code-highspeed', writes],
+  ['kimi', 'kimi-code/k3', usage], ['kimi', 'kimi-code/k3', writes], ['kimi', 'kimi-code/k3.1-pro', usage], ['kimi', 'kimi-for-coding/k3.1-pro', writes], ['devin', 'claude-opus-5-5-medium', usage], ['devin', 'gpt-6-1-sol-medium', usage], ['opencode', 'claude-fable-5-2', usage], ['kimi', 'moonshot-cn/kimi-k2.7-code-highspeed', writes],
   ['minimax', 'm:minimax:MiniMax-M3.1-Flash:v:thinking', minimaxUsage], ['minimax', 'MiniMax-M3', { ...minimaxUsage, cache_creation_input_tokens: 1000 }],
   ['opencode', 'claude-sonnet-4-6', usage], ['codex', 'gpt-5.6-sol', { input_tokens: 100000, output_tokens: 2000, cache_read_input_tokens: 30000, cache_creation_input_tokens: 10000 }],
 ] as const) {
