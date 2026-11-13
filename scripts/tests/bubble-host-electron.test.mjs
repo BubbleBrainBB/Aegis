@@ -56,13 +56,13 @@ app.whenReady().then(async()=>{
    assert.equal(event.payload.bubblePlanExitMode,'bypassPermissions');
   }
   const snapshot=await js('qa.compact()');assert.equal(snapshot.percent,20);assert.equal(snapshot.estimated,true);
-  const contextSelector=JSON.stringify('[aria-label="Bubble context and token usage"]');
+  const contextSelector=JSON.stringify('[aria-label="Context window usage"]');
   await until('!!document.querySelector('+contextSelector+')','context ring');
   w.focus();w.webContents.focus();
   const point=await js('(()=>{const r=document.querySelector('+contextSelector+').getBoundingClientRect();return{x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()');
   w.webContents.sendInputEvent({type:'mouseMove',...point});
   await js('document.querySelector('+contextSelector+').focus()');
-  await until('document.body.innerText.includes("Used (estimated)")','estimated snapshot label');
+  await until('document.body.innerText.includes("tokens · estimated")','estimated snapshot label');
   assert(await js('document.body.innerText.includes("200")'),'post-compact tokens shown');
   fs.mkdirSync(process.env.QA_CAPTURE,{recursive:true});await delay(150);
   fs.writeFileSync(path.join(process.env.QA_CAPTURE,'bubble-host-fixed.png'),(await w.webContents.capturePage()).toPNG());
