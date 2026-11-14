@@ -13,6 +13,20 @@ import {
 export const ACTIVE_RUN_STATUSES = new Set<WorkflowRunStatus>(['planning', 'running', 'pausing', 'cancelling']);
 export const FINISHED_RUN_STATUSES = new Set<WorkflowRunStatus>(['succeeded', 'completed_with_gaps', 'cancelled', 'failed']);
 
+/**
+ * The chat sessions with a workflow of theirs still going, in a fixed order.
+ * A run waiting on the user, paused or cut off by a restart is not going.
+ */
+export function sessionsWithActiveWorkflow(
+  runs: Record<string, Pick<WorkflowRunView, 'status' | 'parent'>>,
+): string[] {
+  const ids = new Set<string>();
+  for (const run of Object.values(runs)) {
+    if (run.parent && ACTIVE_RUN_STATUSES.has(run.status)) ids.add(run.parent.sessionId);
+  }
+  return [...ids].sort();
+}
+
 export type WorkflowTone = 'success' | 'warning' | 'error' | 'muted';
 
 export const WORKFLOW_PROVIDER_LABEL: Record<string, string> = {
