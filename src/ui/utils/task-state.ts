@@ -12,6 +12,8 @@ export interface TaskStateSources {
   organization: Pick<SessionOrganizationSnapshot, 'sessions'>;
   prsBySession: Record<string, GitPullRequestSummary[] | null | undefined>;
   worktrees: SettledWorktrees;
+  /** Tasks with a workflow of theirs still going (useWorkflowRunningSessions). */
+  workflowSessions: ReadonlySet<string>;
 }
 
 /** Where a task stands, as the sidebar and My Tasks show it. */
@@ -21,6 +23,7 @@ export function taskStateOf(session: SessionView, sources: TaskStateSources): Si
     pullRequest: primaryPullRequest(sources.prsBySession[session.id]),
     worktreeSettled: isWorktreeSettled(session, sources.worktrees),
     keptOpen: sources.organization.sessions[session.id]?.keptOpen,
+    workflowRunning: sources.workflowSessions.has(session.id),
     manualStatus: sources.organization.sessions[session.id]?.manualStatus,
   });
 }
@@ -32,6 +35,7 @@ export function naturalTaskStateOf(session: SessionView, sources: TaskStateSourc
     pullRequest: primaryPullRequest(sources.prsBySession[session.id]),
     worktreeSettled: isWorktreeSettled(session, sources.worktrees),
     keptOpen: sources.organization.sessions[session.id]?.keptOpen,
+    workflowRunning: sources.workflowSessions.has(session.id),
   });
 }
 

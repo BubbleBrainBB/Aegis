@@ -3,6 +3,7 @@ import { useAppStore } from '../../store/useAppStore';
 import { useSessionOrganization } from '../../store/useSessionOrganizationStore';
 import { useSidebarPullRequests, useSidebarPullRequestStore } from '../../store/useSidebarPullRequests';
 import { rootSessionOf, subSessionParents, useFollowUpStore } from '../../store/useFollowUpStore';
+import { useWorkflowRunningSessions } from '../../store/useWorkflowStore';
 import { useSessionActionsMenu } from '../../hooks/useSessionActionsMenu';
 import { useMinuteClock } from '../../hooks/useMinuteClock';
 import { formatAge, listActiveTaskFamilies, taskAttention, type SidebarSessionState } from '../../utils/sidebar-view';
@@ -33,9 +34,10 @@ export function SidebarActiveTasks() {
   const prsBySession = useSidebarPullRequests(true);
   const settledWorktrees = useSidebarPullRequestStore((s) => s.settledWorktrees);
   const settledCheckedAt = useSidebarPullRequestStore((s) => s.settledCheckedAt);
+  const workflowSessions = useWorkflowRunningSessions();
   const sources = useMemo<TaskStateSources>(
-    () => ({ organization, prsBySession, worktrees: { settledWorktrees, settledCheckedAt } }),
-    [organization, prsBySession, settledWorktrees, settledCheckedAt]
+    () => ({ organization, prsBySession, worktrees: { settledWorktrees, settledCheckedAt }, workflowSessions }),
+    [organization, prsBySession, settledWorktrees, settledCheckedAt, workflowSessions]
   );
 
   const families = useMemo(() => {

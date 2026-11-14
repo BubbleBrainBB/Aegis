@@ -1,6 +1,9 @@
+import { useEffect, useMemo } from 'react';
 import { create } from 'zustand';
+import { useShallow } from 'zustand/react/shallow';
 import type { WorkflowAction, WorkflowActionResult, WorkflowRunView } from '../../shared/workflow';
 import { CURRENT_SESSION_AGENT } from '../../shared/workflow';
+import { sessionsWithActiveWorkflow } from '../utils/workflow-board';
 
 type WorkflowState = {
   runs: Record<string, WorkflowRunView>;
@@ -18,6 +21,9 @@ type WorkflowState = {
 };
 
 let loading: Promise<void> | null = null;
+/** A failed read is tried again a few times: nothing else brings in a run that started before this window opened. */
+let loadRetries = 5;
+const LOAD_RETRY_MS = 2_000;
 
 export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   runs: {},
@@ -36,6 +42,10 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       )
       .catch(() => {
         loading = null;
+        if (loadRetries > 0) {
+          loadRetries -= 1;
+          setTimeout(() => void get().load(), LOAD_RETRY_MS);
+        }
       });
     return loading;
   },
@@ -56,6 +66,22 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
 }));
 
 export { findRunForToolUse } from '../utils/workflow-board';
+
+/**
+ * The tasks whose workflow is still going, for the task lists: such a task is
+ * running though its own turn has ended. Changes only when that set does, not
+ * on every step of a run.
+ */
+export function useWorkflowRunningSessions(): ReadonlySet<string> {
+  const loaded = useWorkflowStore((s) => s.loaded);
+  useEffect(() => {
+    // Runs reach the store as they change; one that started before this window opened has to be read.
+    // A failed read retries itself (load).
+    if (!loaded) void useWorkflowStore.getState().load();
+  }, [loaded]);
+  const ids = useWorkflowStore(useShallow((s) => sessionsWithActiveWorkflow(s.runs)));
+  return useMemo(() => new Set(ids), [ids]);
+}
 
 /** Tab label for a member (or planner) session: "<Agent> · <role>" (the planner's focus text can be long, so it is left out). */
 export function workflowSessionLabel(runs: Record<string, WorkflowRunView>, sessionId: string): string {

@@ -37,6 +37,7 @@ import { SettingsNavPanel } from './settings/Settings';
 import { SidebarUpdateButton } from './sidebar/SidebarUpdateButton';
 import { useSessionOrganization } from '../store/useSessionOrganizationStore';
 import { useSidebarViewStore } from '../store/useSidebarViewStore';
+import { useWorkflowRunningSessions } from '../store/useWorkflowStore';
 import { deriveSidebarSessionState } from '../utils/sidebar-view';
 
 const SIDEBAR_TRIGGER_CLASS =
@@ -287,6 +288,7 @@ export function Sidebar() {
     [sessions]
   );
 
+  const workflowSessions = useWorkflowRunningSessions();
   // My Tasks stands in for the list that used to sit here: the sidebar still says when one waits on you.
   const needsInputCount = useMemo(
     () =>
@@ -296,14 +298,15 @@ export function Sidebar() {
           deriveSidebarSessionState(session, {
             unread: organization.sessions[session.id]?.unread,
             manualStatus: organization.sessions[session.id]?.manualStatus,
+            workflowRunning: workflowSessions.has(session.id),
           }) === 'needs-input'
       ).length,
-    [visibleSessions, organization]
+    [visibleSessions, organization, workflowSessions]
   );
 
   const hasRunningSession = useMemo(
-    () => visibleSessions.some((session) => session.status === 'running'),
-    [visibleSessions]
+    () => visibleSessions.some((session) => session.status === 'running' || workflowSessions.has(session.id)),
+    [visibleSessions, workflowSessions]
   );
 
   const paletteProjects = useMemo<PaletteProject[]>(() => {

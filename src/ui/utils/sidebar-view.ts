@@ -197,13 +197,18 @@ export function deriveSidebarSessionState(
     manualStatus?: ManualTaskStatus | null;
     /** It has run since you last closed it: seen or not, it waits for you to close it. */
     keptOpen?: boolean;
+    /** A workflow it started is still going: its agents work on after the turn that started it. */
+    workflowRunning?: boolean;
   }
 ): SidebarSessionState | null {
   if (session.isDraft) return null;
   const running = session.status === 'running' || session.status === 'stopping';
   if (session.permissionRequests.length > 0) return 'needs-input';
   if (running) return 'running';
-  if (context.manualStatus) return context.manualStatus;
+  // A workflow can go on with no new turn here (resumed or confirmed on its
+  // board), so nothing clears a status set while it waited: it does not hold
+  // while the workflow runs.
+  if (context.manualStatus && !context.workflowRunning) return context.manualStatus;
   // Only a failure you have not looked at yet; an old one you already saw
   // would otherwise sit in Needs input forever.
   if (session.runtimeNotice === 'error') return 'needs-input';
@@ -215,6 +220,8 @@ export function deriveSidebarSessionState(
   const outcome = session.turnReport?.outcome;
   if (outcome === 'question' || outcome === 'blocked') return 'needs-input';
   if (outcome === 'in_progress' && session.backgroundTasks?.length) return 'running';
+  // So does a workflow: starting one ends the turn, and its result comes back as a new turn.
+  if (context.workflowRunning) return 'running';
   const finished = session.runtimeNotice === 'completed' && outcome !== 'nothing_to_do';
   if (finished || context.unread || context.keptOpen) return 'review';
   const pr = context.pullRequest;

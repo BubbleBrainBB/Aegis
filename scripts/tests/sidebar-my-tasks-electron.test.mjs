@@ -246,6 +246,25 @@ app.whenReady().then(async()=>{
   // Change status from the sidebar: the agent owns Needs input and Running, you pick the rest.
   const sideRow=id=>'document.querySelector("[data-active-tasks] [data-session-id='+id+']")';
   assert.equal(await js('!!'+sideRow('running')+'.querySelector("[data-task-status-trigger]")'),false,'a running task keeps its state');
+  // A task whose turn ended by starting a workflow keeps running until the workflow is over, in both lists.
+  const workflow=(status,revision,sessionId='seen')=>js('qa.store.getState().handleServerEvent({type:"workflow.updated",payload:'+JSON.stringify({id:'wf-'+sessionId,revision,status,parent:{sessionId,toolUseId:'toolu_wf',provider:'claude'}})+'});0');
+  const listRow=id=>'document.querySelector("[data-task-list] [data-session-id='+id+']")';
+  const spins=row=>'!!'+row+'.querySelector("[aria-label=Running]")';
+  assert.equal(await js(spins(sideRow('seen'))),false,'a finished turn is not running');
+  await workflow('running',1);await until(spins(sideRow('seen'))+'&&'+spins(listRow('seen')));
+  assert.equal(await js('!!'+sideRow('seen')+'.querySelector("[data-task-status-trigger]")'),false,'its state is not yours to set while the workflow runs');
+  await shot('workflow-running');
+  await workflow('needs_input',2);await until('!('+spins(sideRow('seen'))+')');
+  await workflow('running',3);await until(spins(sideRow('seen')));
+  await workflow('succeeded',4);await until('!('+spins(sideRow('seen'))+')&&!('+spins(listRow('seen'))+')');
+  assert.equal(await js('!!'+sideRow('seen')+'.querySelector("[data-task-status-trigger]")'),true,'once it is over the task waits on you again');
+  // A sub-task's workflow counts in its folded parent's summary too.
+  const subRunning='!!document.querySelector("[data-task-list] [title=\\"1 of 2 sub-sessions running\\"]")';
+  await js('qa.view.getState().foldSubSessions("sub-sessions:parent",[]);0');await until('!'+listRow('child-b'));
+  assert.equal(await js(subRunning),false);
+  await workflow('running',1,'child-b');await until(subRunning);
+  await workflow('cancelled',2,'child-b');await until('!'+subRunning);
+  await js('qa.view.getState().toggleGroupCollapsed("sub-sessions:parent");0');await until('!!'+listRow('child-b'));
   await js(sideRow('review')+'.querySelector("[data-task-status-trigger]").click()');await until('!!'+statusMenu);
   assert.deepEqual(await js('[...'+statusMenu+'.querySelectorAll("[data-task-status-option]")].map(e=>[e.dataset.taskStatusOption,e.hasAttribute("data-disabled"),e.textContent])'),
    [['needs-input',true,'Needs input'],['running',true,'Running'],['review',false,'Ready for review1'],['completed',false,'Completed2']]);

@@ -27,6 +27,7 @@ import { sendEvent } from '../hooks/useIPC';
 import type { GitPullRequestSummary } from '../../shared/types';
 import { useSidebarViewOptions, useSidebarViewStore } from '../store/useSidebarViewStore';
 import { primaryPullRequest, useSidebarPullRequests, useSidebarPullRequestStore } from '../store/useSidebarPullRequests';
+import { useWorkflowRunningSessions } from '../store/useWorkflowStore';
 import { PULL_REQUEST_STATUS, pullRequestStatus } from './pull-request-status';
 import { getSessionProjectPath, SessionHoverCard, SessionWorktreeMarks } from './SessionHoverCard';
 import {
@@ -138,9 +139,10 @@ export function TasksView() {
   const prsBySession = useSidebarPullRequests(true);
   const settledWorktrees = useSidebarPullRequestStore((state) => state.settledWorktrees);
   const settledCheckedAt = useSidebarPullRequestStore((state) => state.settledCheckedAt);
+  const workflowSessions = useWorkflowRunningSessions();
   const sources = useMemo<TaskStateSources>(
-    () => ({ organization, prsBySession, worktrees: { settledWorktrees, settledCheckedAt } }),
-    [organization, prsBySession, settledWorktrees, settledCheckedAt]
+    () => ({ organization, prsBySession, worktrees: { settledWorktrees, settledCheckedAt }, workflowSessions }),
+    [organization, prsBySession, settledWorktrees, settledCheckedAt, workflowSessions]
   );
   const collapsedGroups = useSidebarViewStore((state) => state.collapsedGroups);
   const toggleGroupExpanded = useSidebarViewStore((state) => state.toggleGroupCollapsed);
@@ -298,7 +300,7 @@ export function TasksView() {
     const expanded = !collapsedGroups.has(foldKey) || waits.some((wait) => !dismissedWaits.has(wait));
     const nest: SubSessionNest = {
       count: children.length,
-      running: children.filter((child) => child.status === 'running').length,
+      running: childStates.filter((state) => state === 'running').length,
       waiting: waits.length > 0,
       expanded,
       onToggle: () => {

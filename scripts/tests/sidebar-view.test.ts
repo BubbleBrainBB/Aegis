@@ -15,6 +15,7 @@ import {
   sessionSortTime,
 } from '../../src/ui/utils/sidebar-view';
 import { groupTasks } from '../../src/ui/utils/task-groups';
+import { sessionsWithActiveWorkflow } from '../../src/ui/utils/workflow-board';
 import type { GitPullRequestSummary } from '../../src/shared/types';
 
 // Isolated persistence: exercise the real store without the renderer bridge.
@@ -129,6 +130,34 @@ assert.equal(deriveSidebarSessionState({ ...idle, turnReport: report('in_progres
   'a stored report outlives its tasks (restart, runner gone): nothing is running any more');
 assert.equal(deriveSidebarSessionState({ ...idle, runtimeNotice: 'completed', turnReport: report('in_progress') }, {}), 'review',
   'with no task left, the run status decides');
+
+// --- a workflow the task started ---------------------------------------------
+assert.equal(deriveSidebarSessionState({ ...idle, runtimeNotice: 'completed' }, { workflowRunning: true, keptOpen: true }), 'running',
+  'the turn that started a workflow has ended, the workflow has not');
+assert.equal(deriveSidebarSessionState({ ...idle, runtimeNotice: 'completed' }, { workflowRunning: false, keptOpen: true }), 'review',
+  'once the workflow is over the task waits on you again');
+assert.equal(deriveSidebarSessionState({ ...idle, permissionRequests: [permission] }, { workflowRunning: true }), 'needs-input',
+  'an approval still outranks it');
+assert.equal(deriveSidebarSessionState({ ...idle, turnReport: report('question') }, { workflowRunning: true }), 'needs-input',
+  'so does a question from the agent');
+assert.equal(deriveSidebarSessionState(idle, { workflowRunning: true, manualStatus: 'completed' }), 'running',
+  'a workflow resumed on its board runs again, whatever was set by hand while it waited');
+assert.equal(deriveSidebarSessionState({ ...idle, runtimeNotice: 'error' }, { workflowRunning: true, manualStatus: 'completed' }), 'needs-input',
+  'and an unseen failure still comes first');
+assert.equal(deriveSidebarSessionState(idle, { workflowRunning: false, manualStatus: 'completed' }), 'completed',
+  'a workflow that is over leaves the hand-set status alone');
+assert.deepEqual(
+  sessionsWithActiveWorkflow({
+    a: { status: 'running', parent: { sessionId: 's2', toolUseId: null, provider: 'claude' } },
+    b: { status: 'planning', parent: { sessionId: 's1', toolUseId: null, provider: 'claude' } },
+    c: { status: 'cancelling', parent: { sessionId: 's2', toolUseId: null, provider: 'claude' } },
+    d: { status: 'needs_input', parent: { sessionId: 's3', toolUseId: null, provider: 'claude' } },
+    e: { status: 'succeeded', parent: { sessionId: 's4', toolUseId: null, provider: 'claude' } },
+    f: { status: 'running', parent: null },
+  }),
+  ['s1', 's2'],
+  'only runs still going count, once per task; one waiting on you or finished does not',
+);
 assert.equal(deriveSidebarSessionState({ ...idle, runtimeNotice: 'completed', turnReport: report('nothing_to_do') }, {}), 'completed',
   'a turn with nothing to change has no result to review');
 assert.equal(deriveSidebarSessionState({ ...idle, turnReport: report('nothing_to_do') }, { unread: true }), 'review',
@@ -313,6 +342,28 @@ async function main() {
   assert.deepEqual(savedLook.properties, ['date']);
   assert.equal(savedLook.showSubSessions, false);
   assert.equal(merged.project, null);
+
+  // --- reading the workflows a window missed ------------------------------------
+  {
+    const { mock } = await import('node:test');
+    mock.timers.enable({ apis: ['setTimeout'] });
+    let calls = 0;
+    const going = { id: 'wf', revision: 1, status: 'running', parent: { sessionId: 's9', toolUseId: null, provider: 'claude' } };
+    (globalThis as unknown as { window: { electron: unknown } }).window.electron = {
+      workflows: { list: async () => { calls += 1; if (calls === 1) throw new Error('not ready'); return [going]; } },
+    };
+    const { useWorkflowStore } = await import('../../src/ui/store/useWorkflowStore');
+    await useWorkflowStore.getState().load();
+    assert.equal(useWorkflowStore.getState().loaded, false);
+    assert.equal(calls, 1);
+    mock.timers.tick(2_000);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(calls, 2, 'a failed read is tried again without a workflow event');
+    assert.equal(useWorkflowStore.getState().loaded, true);
+    assert.deepEqual(sessionsWithActiveWorkflow(useWorkflowStore.getState().runs), ['s9'],
+      'so a workflow that started before the window opened still shows as running');
+    mock.timers.reset();
+  }
 
   console.log('sidebar-view tests passed');
 }
