@@ -1,7 +1,23 @@
 import { isStartWorkflowToolName } from '../../shared/workflow';
 import { isShowWidgetToolName, isWidgetGuideToolName, widgetFromToolInput } from '../../shared/widget';
 import { isProposeFollowUpToolName, isStartSessionToolName, isWithdrawFollowUpToolName } from '../../shared/follow-up';
+import { GET_TASK_TOOL, isMainBotLookupToolName, isMainBotTaskActionToolName, LIST_PROJECTS_TOOL, mainBotToolKind } from '../../shared/main-bot';
 import { isReportStatusToolName, TURN_REPORT_OUTCOMES, turnReportLabel, type TurnReportOutcome } from '../../shared/turn-report';
+
+/** The task a main bot call names: the new task's title, or the one it was pointed at. */
+const mainBotTaskOf = (input: unknown) => {
+  const value = input && typeof input === 'object' ? (input as { title?: unknown; task?: unknown }) : {};
+  const name = typeof value.title === 'string' && value.title.trim() ? value.title : value.task;
+  return typeof name === 'string' && name.trim() ? name.trim() : 'a task';
+};
+
+/** What a main bot lookup read. */
+const mainBotLookupOf = (name: string, input: unknown) => {
+  const bare = name.replace(/^mcp__.+?__/, '');
+  if (bare === LIST_PROJECTS_TOOL) return 'projects';
+  if (bare === GET_TASK_TOOL) return mainBotTaskOf(input);
+  return 'tasks';
+};
 
 const followUpTitle = (input: unknown) => {
   const title = (input as { title?: unknown } | null)?.title;
@@ -68,6 +84,11 @@ export function getToolSummary(name: string, input: unknown): string {
   if (isProposeFollowUpToolName(name)) return `Follow-up: ${followUpTitle(input)}`;
   if (isWithdrawFollowUpToolName(name)) return 'Withdrew a follow-up task';
   if (isStartSessionToolName(name)) return `Sub-session: ${followUpTitle(input)}`;
+  if (isMainBotTaskActionToolName(name)) {
+    const kind = mainBotToolKind(name);
+    return `${kind === 'start' ? 'Started' : kind === 'stop' ? 'Stopped' : 'Sent to'} ${mainBotTaskOf(input)}`;
+  }
+  if (isMainBotLookupToolName(name)) return `Checked ${mainBotLookupOf(name, input)}`;
   if (isReportStatusToolName(name)) return reportedStatus(input);
   const design = designToolDisplay(name, input, 'success');
   if (design) return design.target;
@@ -386,6 +407,18 @@ export function deriveReadableToolDisplay(
   if (isStartSessionToolName(name)) {
     return { verb: status === 'pending' ? 'Starting session' : 'Started session', target: followUpTitle(input) };
   }
+  if (isMainBotTaskActionToolName(name)) {
+    const kind = mainBotToolKind(name);
+    const verb = kind === 'start'
+      ? (status === 'pending' ? 'Starting' : 'Started')
+      : kind === 'stop'
+        ? (status === 'pending' ? 'Stopping' : 'Stopped')
+        : status === 'pending' ? 'Sending to' : 'Sent to';
+    return { verb, target: mainBotTaskOf(input) };
+  }
+  if (isMainBotLookupToolName(name)) {
+    return { verb: status === 'pending' ? 'Checking' : 'Checked', target: mainBotLookupOf(name, input) };
+  }
   if (isReportStatusToolName(name)) {
     return { verb: status === 'pending' ? 'Reporting' : 'Reported', target: reportedStatus(input) };
   }
@@ -571,6 +604,8 @@ export function classifyToolUse(toolName: string, input: unknown): CanonicalTool
   if (isStartWorkflowToolName(normalized)) return 'subagent';
   // Sub-sessions draw as their own row in the same place, for the same reason.
   if (isStartSessionToolName(normalized)) return 'subagent';
+  // The main bot's task calls draw as the task's row or line in the same place.
+  if (isMainBotTaskActionToolName(normalized)) return 'subagent';
   if (
     normalized === 'image_gen' ||
     normalized === 'image_edit' ||

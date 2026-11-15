@@ -255,6 +255,9 @@ contextBridge.exposeInMainWorld('electron', {
     detach: (childSessionId: string) => ipcRenderer.invoke('follow-up-detach', childSessionId),
   },
 
+  openMainBot: () => ipcRenderer.invoke('main-bot-open'),
+  getMainBotSessionId: () => ipcRenderer.invoke('main-bot-session-id'),
+
   sessionHandoff: (payload: { sessionId: string; targetProvider: string }) => {
     return ipcRenderer.invoke('session-handoff', payload);
   },

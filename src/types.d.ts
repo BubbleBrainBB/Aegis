@@ -158,6 +158,9 @@ declare global {
       sessionId: string,
       options?: { hiddenFromThreads?: boolean; copyHistory?: boolean }
     ) => Promise<{ ok: boolean; session?: SessionInfo; message?: string }>;
+    /** The main bot's conversation, made on first use. */
+    openMainBot: () => Promise<SessionInfo>;
+    getMainBotSessionId: () => Promise<string | null>;
     sessionHandoff: (payload: {
       sessionId: string;
       targetProvider: import('./shared/types').AgentProvider;

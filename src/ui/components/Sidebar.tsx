@@ -14,12 +14,14 @@ import {
   Palette,
   HomeFilled,
   ListChecks,
+  MessageCircle,
   Script,
   Search,
   SquarePen,
   Clock,
 } from './icons';
 import { useAppStore } from '../store/useAppStore';
+import { MAIN_BOT_NAME } from '../../shared/main-bot';
 import { SearchPalette } from './search/SearchPalette';
 import type {
   PaletteAction,
@@ -133,12 +135,20 @@ export function Sidebar() {
     setActiveSession,
     setActiveWorkspace,
     setShowNewSession,
+    showNewSession,
+    mainBotSessionId,
+    setMainBotSessionId,
+    openMainBot,
     showSettings,
     setShowSettings,
     openDraftSession,
     searchPaletteOpen,
     setSearchPaletteOpen,
   } = useAppStore();
+  // The main bot's conversation, if one was made, so its row can show it is open.
+  useEffect(() => {
+    void window.electron.getMainBotSessionId().then(setMainBotSessionId).catch(() => undefined);
+  }, [setMainBotSessionId]);
   const sidebarCollapsed = useSidebarCollapsed();
   const organization = useSessionOrganization();
   const viewProject = useSidebarViewStore((state) => state.project);
@@ -283,9 +293,11 @@ export function Sidebar() {
       Object.values(sessions).filter(
         (session) =>
           !session.hiddenFromThreads &&
+          // The main bot is a place of its own, not a task.
+          session.id !== mainBotSessionId &&
           session.scope !== 'dm'
       ),
-    [sessions]
+    [sessions, mainBotSessionId]
   );
 
   const workflowSessions = useWorkflowRunningSessions();
@@ -501,6 +513,12 @@ export function Sidebar() {
                   label="Search"
                   title={['Search', shortcutLabel('search', shortcuts)].filter(Boolean).join(' · ')}
                   onClick={() => setSearchPaletteOpen(true)}
+                />
+                <SidebarNavRow
+                  icon={<MessageCircle className="h-[15px] w-[15px]" strokeWidth={1.5} />}
+                  label={`Ask ${MAIN_BOT_NAME}`}
+                  active={activeWorkspace === 'chat' && !showSettings && !showNewSession && Boolean(mainBotSessionId) && activeSessionId === mainBotSessionId}
+                  onClick={() => void openMainBot()}
                 />
                 <SidebarNavRow
                   icon={<ListChecks className="h-[15px] w-[15px]" strokeWidth={1.5} />}

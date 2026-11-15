@@ -3,6 +3,7 @@ import { startFailed, startSucceeded } from '../utils/start-lease';
 import { useFollowUpStore } from './useFollowUpStore';
 import { useSessionOrganizationStore, changeSessionOrganization } from './useSessionOrganizationStore';
 import { create } from 'zustand';
+import { MAIN_BOT_NAME } from '../../shared/main-bot';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import { rendererStateStorage } from '../utils/renderer-state-storage';
 import { toast } from 'sonner';
@@ -98,6 +99,7 @@ import {
   resolveRightUtilityTabOpen,
   resolveRightUtilityTabOpenPreservingActive,
   workflowMemberTab,
+  taskTab,
   createLauncherTabId,
   replaceLauncherTab,
 } from '../utils/right-utility-tabs';
@@ -814,6 +816,7 @@ export const useAppStore = create<Store>()(
       workspaceChannelsByProject: {},
       activeChannelByProject: {},
       activeSessionId: initialUiResumeState?.activeSessionId ?? null,
+      mainBotSessionId: null,
       activeWorkspace: 'chat' as ActiveWorkspace,
       chatSidebarView: 'threads' as ChatSidebarView,
       workspaceLayout: initialWorkspaceLayout,
@@ -1867,6 +1870,28 @@ export const useAppStore = create<Store>()(
     toast.success('Forked into a new pane');
   },
 
+  setMainBotSessionId: (sessionId) => set({ mainBotSessionId: sessionId }),
+
+  openMainBot: async () => {
+    let info: import('../../shared/types').SessionInfo;
+    try {
+      info = await window.electron.openMainBot();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : `${MAIN_BOT_NAME} could not be opened.`);
+      return;
+    }
+    set((state) => ({
+      mainBotSessionId: info.id,
+      sessions: state.sessions[info.id] ? state.sessions : { ...state.sessions, [info.id]: freshSessionViewFromInfo(info) },
+    }));
+    const store = get();
+    store.setShowSettings(false);
+    store.setActiveSession(info.id);
+    store.setShowNewSession(false);
+    store.setActiveWorkspace('chat');
+    store.setChatSidebarView('threads');
+  },
+
   handoffSessionToProvider: async (sessionId, targetProvider) => {
     const result = await window.electron.sessionHandoff({ sessionId, targetProvider });
     if (!result?.ok || !result.session) {
@@ -2141,6 +2166,21 @@ export const useAppStore = create<Store>()(
         rightUtilityTabs: addRightUtilityTab(state.rightUtilityTabs, target),
         activeRightUtilityTab: target,
         rightUtilityPanelHidden: false,
+        rightPanelFullscreenChat: false,
+        projectTreeCollapsed: true,
+        browserPanelOpen: false,
+      };
+    });
+  },
+
+  openTaskPanel: (sessionId) => {
+    set((state) => {
+      const target = taskTab(sessionId);
+      return {
+        rightUtilityTabs: addRightUtilityTab(state.rightUtilityTabs, target),
+        activeRightUtilityTab: target,
+        rightUtilityPanelHidden: false,
+        rightPanelFullscreen: null,
         rightPanelFullscreenChat: false,
         projectTreeCollapsed: true,
         browserPanelOpen: false,

@@ -18,7 +18,7 @@ import {createRoot} from 'react-dom/client';
 import {Tooltip} from '@base-ui-components/react/tooltip';
 import {TasksView} from '/src/ui/components/TasksView.tsx';
 import {SubSessionCard} from '/src/ui/components/follow-up/SubSessionCard.tsx';
-import {SubSessionBriefCard, SubSessionsFinishedRow} from '/src/ui/components/follow-up/SubSessionPromptRows.tsx';
+import {SubSessionBriefCard} from '/src/ui/components/follow-up/SubSessionPromptRows.tsx';
 import {SessionTitleActions} from '/src/ui/components/SessionTitleActions.tsx';
 import {useAppStore} from '/src/ui/store/useAppStore.ts';
 import {useFollowUpStore} from '/src/ui/store/useFollowUpStore.ts';
@@ -60,7 +60,6 @@ function Harness(){
   <SubSessionCard toolUseId="tu-f2" input={{title:'Add ClaudeUsageSettings tests'}} resultText={ok('f2')} failed={false}/>
   <SubSessionCard toolUseId="tu-f5" input={{title:'Bump the relay'}} resultText="The session could not start" failed={true}/>
   <SubSessionCard toolUseId="tu-none" input={{title:'Not allowed'}} resultText="Only the user can ask for a new session here." failed={true}/>
-  <SubSessionsFinishedRow text="Sub-sessions finished: Fix empty export file names · Add ClaudeUsageSettings tests"/>
   <SubSessionBriefCard sessionId="c1" createdAt={now-2*86400000} text={'Fix the empty export file name.\\n\\n- buildFileName falls back to **Untitled · date**\\n- add a unit test'}/>
  </main></div></Tooltip.Provider>;
 }
@@ -123,7 +122,6 @@ app.whenReady().then(async()=>{
   await click('document.querySelector("[data-sub-session=f2]")');
   assert.equal(await js('qa.app.getState().activeSessionId'),'c2','the row opens the session');
   assert.ok((await js('document.querySelector("main").textContent')).includes('Session not started: Only the user can ask'),'a refused start reads as a line');
-  assert.match(await text('[data-sub-sessions-finished]'),/^2 sub-sessions finished$/);
   assert.match(await text('[data-sub-session-brief]'),/Started by Claude Code from[\\s\\S]*Usage settings redesign[\\s\\S]*Task[\\s\\S]*Fix empty export file names[\\s\\S]*Untitled · date/);
   assert.equal(await text('[data-session-parent-crumb]'),'Usage settings redesign','the breadcrumb names the parent');
   await screenshot('1-expanded');

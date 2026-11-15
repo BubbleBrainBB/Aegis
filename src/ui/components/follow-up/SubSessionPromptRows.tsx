@@ -1,34 +1,13 @@
-// Prompts Aegis sends around sub-sessions, drawn as what they are rather than
-// as user messages: in the parent, the line where finished sub-sessions came
-// back; in the sub-session, the brief it started from.
+// The prompt Aegis sends a sub-session to start it, drawn as what it is rather
+// than as a user message: the brief it started from. (Its result coming back
+// to the parent draws nothing there: the session's row shows how it stands.)
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useAppStore } from '../../store/useAppStore';
 import { PROVIDERS } from '../../utils/provider';
 import { findProposalForChild, useFollowUpStore } from '../../store/useFollowUpStore';
-import { Check, ChevronDown } from '../icons';
+import { ChevronDown } from '../icons';
 import { StructuredResponse } from '../StructuredResponse';
-
-const FINISHED = /^Sub-sessions? finished: ([\s\S]*)$/;
-
-/** True for the label a delivered sub-session result carries (see reportPromptLabel). */
-export function isSubSessionsFinishedPrompt(text: string): boolean {
-  return FINISHED.test(text);
-}
-
-/** The parent picked its sub-sessions' results up: one quiet line between turns. */
-export function SubSessionsFinishedRow({ text }: { text: string }) {
-  const titles = (FINISHED.exec(text)?.[1] ?? '').split(' · ').filter(Boolean);
-  const count = Math.max(titles.length, 1);
-  return (
-    <div className="mb-1.5 mt-4 flex min-w-0 items-center gap-2 text-[12.5px]" title={titles.join('\n')} data-sub-sessions-finished>
-      <Check className="h-[13px] w-[13px] flex-shrink-0 text-[#2f7d4f]" aria-hidden="true" />
-      <span className="min-w-0 truncate font-semibold text-[var(--text-primary)]">
-        {count === 1 && titles[0] ? `${titles[0]} finished` : `${count} sub-sessions finished`}
-      </span>
-    </div>
-  );
-}
 
 const relative = new Intl.RelativeTimeFormat('en', { numeric: 'auto' });
 

@@ -20,6 +20,8 @@ import { FileTypeIcon } from '../components/FileTypeIcon';
 import { HighlightedCode } from '../components/HighlightedCode';
 import { useAppStore } from '../store/useAppStore';
 import { openDesignLink } from '../store/useDesignStore';
+import { MainBotTaskStateIcon } from '../components/main-bot/MainBotTaskChip';
+import { openTaskBeside } from '../utils/task-state';
 import { isHtmlFilePath, openHtmlFileInBrowserTab } from '../utils/html-preview';
 import { Globe, Palette } from '../components/icons';
 import { faviconUrlForHostname, isFaviconPlaceholder } from '../utils/link-favicons';
@@ -477,7 +479,20 @@ function MarkdownAnchor({
     openProjectFile(projectFile);
   };
 
-  if (href && parseSessionLink(href)) {
+  const linkedSessionId = href ? parseSessionLink(href) : null;
+  // In the main bot's conversation a link to a session names a task: it
+  // carries the task's state icon and opens the task beside the conversation.
+  const namesTask = useAppStore(state => Boolean(
+    linkedSessionId && chatSessionId && state.mainBotSessionId === chatSessionId && state.sessions[linkedSessionId]
+  ));
+  if (href && linkedSessionId && namesTask) {
+    return <a href={href} className="md-app-link md-task-link" data-main-bot-task-link={linkedSessionId} onClick={event => {
+      event.preventDefault();
+      openTaskBeside(linkedSessionId, event);
+    }}><span className="md-task-link-icon"><MainBotTaskStateIcon sessionId={linkedSessionId} /></span><span className="md-link-label">{children}</span></a>;
+  }
+
+  if (href && linkedSessionId) {
     return <a href={href} className="md-app-link" onClick={event => {
       event.preventDefault();
       void window.electron.openExternalUrl(href).then(result => {

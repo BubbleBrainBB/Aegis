@@ -99,6 +99,11 @@ export class WorkflowService {
     return store.findMemberBySession(sessionId) !== null;
   }
 
+  /** The chats whose run is still going: the run sends them their part of the work. */
+  sessionsWithActiveRun(): string[] {
+    return store.listUnfinishedRuns().flatMap((run) => (run.options.parent?.sessionId ? [run.options.parent.sessionId] : []));
+  }
+
   /** Member and planner sessions: hidden from thread lists, opened from a workflow board. */
   ownsHiddenSession(sessionId: string): boolean {
     if (this.isWorkflowSession(sessionId) || store.isPlannerSession(sessionId)) return true;

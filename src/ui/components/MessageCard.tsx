@@ -2,10 +2,11 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { stripContentReferences } from '../utils/content-references';
 import { stripLeakedContextTags } from '../utils/leaked-context-tags';
 import { DesignCommentPromptRow } from './design/DesignCommentPromptRow';
-import { isSubSessionsFinishedPrompt, SubSessionBriefCard, SubSessionsFinishedRow } from './follow-up/SubSessionPromptRows';
+import { SubSessionBriefCard } from './follow-up/SubSessionPromptRows';
+import { isDeliveredResultLabel } from '../../shared/follow-up';
 import { DesignSelectionTag } from './design/DesignSelectionChip';
 import { useDesignStore } from '../store/useDesignStore';
-import { ChevronRight, Copy, Check, History, Lightbulb, Pencil, RotateCcw, TargetArrow, Undo2, Workflow } from './icons';
+import { ChevronRight, Copy, Check, History, Lightbulb, Pencil, RotateCcw, TargetArrow, Workflow } from './icons';
 import { parseGoalInput, supportsGoalUI, isClaudeGoalClearObjective } from '../../shared/session-goal';
 import type { ThreadGoal } from '../../shared/session-goal';
 import { WORKFLOW_REPORT_SUFFIX } from '../../shared/workflow';
@@ -61,6 +62,8 @@ interface MessageCardProps {
     onResend: (prompt: string, attachments?: Attachment[]) => void;
     onRewind?: () => void;
   };
+  /** Drawn under the user's own message, before its hover actions: the tasks the main bot started for it. */
+  userPromptFooter?: ReactNode;
 }
 
 export function MessageCard({
@@ -73,6 +76,7 @@ export function MessageCard({
   hideAssistantCopyBar = false,
   completedGoals,
   userPromptActions,
+  userPromptFooter,
 }: MessageCardProps) {
   switch (message.type) {
     case 'user_prompt':
@@ -82,9 +86,9 @@ export function MessageCard({
       }
       if (message.workflowPrompt === 'task') return <WorkflowTaskRow text={message.prompt} />;
       if (message.workflowPrompt === 'follow-up') {
-        return isSubSessionsFinishedPrompt(message.prompt)
-          ? <SubSessionsFinishedRow text={message.prompt} />
-          : <FollowUpPromptChip text={message.prompt} />;
+        // A result coming back adds no row: the card that sent the work out
+        // already shows how it stands, and the answer says what came back.
+        return isDeliveredResultLabel(message.prompt) ? null : <FollowUpPromptChip text={message.prompt} />;
       }
       if (message.workflowPrompt === 'sub-session') return <SubSessionBriefCard text={message.prompt} sessionId={sessionId ?? undefined} createdAt={message.createdAt} />;
       // A comment sent from a design thread links back to it on the canvas.
@@ -106,6 +110,7 @@ export function MessageCard({
           createdAt={message.createdAt}
           actions={userPromptActions}
           sessionId={sessionId}
+          footer={userPromptFooter}
         />
       );
 
@@ -174,6 +179,7 @@ function UserPromptCard({
   createdAt,
   actions,
   sessionId,
+  footer,
 }: {
   prompt: string;
   attachments?: Attachment[];
@@ -187,6 +193,7 @@ function UserPromptCard({
     onRewind?: () => void;
   };
   sessionId?: string | null;
+  footer?: ReactNode;
 }) {
   const [copied, setCopied] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
@@ -441,6 +448,8 @@ function UserPromptCard({
             )}
           </div>
         )}
+
+        {footer ? <div className="mt-1 flex max-w-full flex-wrap justify-end gap-x-1 gap-y-0.5">{footer}</div> : null}
 
         {/* The sent mode remains visible alongside the hover-only actions. */}
         <div className="mt-1 min-h-6 max-w-full flex items-center justify-end gap-3 text-xs text-[var(--text-muted)]">
@@ -751,14 +760,13 @@ function WorkflowEventRow({ text }: { text: string }) {
 }
 
 /**
- * A follow-up result (or task) Aegis sent to this conversation: no row of its
- * own, just a small chip above the reply naming what the reply answers.
+ * A follow-up task the user chose to run in this conversation: no row of its
+ * own, just a small chip above the reply naming what the reply works on.
+ * (Results that come back draw nothing: see isDeliveredResultLabel.)
  */
 function FollowUpPromptChip({ text }: { text: string }) {
-  const match = /^(?:Follow-up|Sub-session) (results?|task): ([\s\S]*)$/.exec(text);
-  const isTask = match?.[1] === 'task';
-  const label = match ? match[2] : text;
-  const Icon = isTask ? Lightbulb : Undo2;
+  const label = /^Follow-up task: ([\s\S]*)$/.exec(text)?.[1] ?? text;
+  const Icon = Lightbulb;
   return (
     <div className="mb-1.5 mt-4 flex" data-follow-up-prompt>
       <span

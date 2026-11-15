@@ -131,6 +131,8 @@ export function TasksView() {
   const followUpProposals = useFollowUpStore(s => s.proposals);
   const subSessionParentMap = useMemo(() => subSessionParents(followUpProposals), [followUpProposals]);
   const sessions = useAppStore((s) => s.sessions);
+  // The main bot is a place of its own, not a task in the list.
+  const mainBotSessionId = useAppStore((s) => s.mainBotSessionId);
   const organization = useSessionOrganization();
   const view = useSidebarViewOptions();
   const setViewOption = useSidebarViewStore((state) => state.setOption);
@@ -165,7 +167,7 @@ export function TasksView() {
     // A chat nothing has been sent from is not a task yet: it shows on screen,
     // not in any list. New Task goes back to it (openDraftSession).
     const allSessions = Object.values(sessions).filter(
-      (session) => !session.hiddenFromThreads && session.scope !== 'dm' && !session.isDraft
+      (session) => !session.hiddenFromThreads && session.id !== mainBotSessionId && session.scope !== 'dm' && !session.isDraft
     );
     let sessionList = allSessions.filter((session) => {
       const archived = Boolean(organization.sessions[session.id]?.archived);
@@ -261,6 +263,7 @@ export function TasksView() {
     };
   }, [
     subSessionParentMap,
+    mainBotSessionId,
     sessions,
     organization,
     prsBySession,

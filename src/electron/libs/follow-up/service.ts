@@ -135,6 +135,11 @@ export class FollowUpService {
     this.store.recoverOnBoot();
   }
 
+  /** The session a follow-up session still reports to; null for any other, and once it was detached. */
+  reportsTo(sessionId: string): string | null {
+    return this.children.has(sessionId) ? (this.store.findByChild(sessionId)?.parent_session_id ?? null) : null;
+  }
+
   /** Follow-up sessions get no proposal tool: one generation only. */
   isFollowUpSession(sessionId: string): boolean {
     return this.children.has(sessionId);

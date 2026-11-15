@@ -126,7 +126,9 @@ import {
 import { resolveCodexModel } from './utils/codex-model';
 import { startQueueAutoFlush } from './lib/queue-auto-flush';
 import * as DialogPrimitive from '@/ui/components/ui/dialog';
-import { getWorkflowMemberSessionId, isSideChatPendingTab } from './utils/right-utility-tabs';
+import { getTaskTabSessionId, getWorkflowMemberSessionId, isSideChatPendingTab } from './utils/right-utility-tabs';
+import { MainBotTaskStateIcon } from './components/main-bot/MainBotTaskChip';
+import { openTask } from './utils/task-state';
 import { useWorkflowStore, workflowSessionLabel } from './store/useWorkflowStore';
 import { getDockedRightPanelMaxWidth, resolveDockedRightPanelWidth, RIGHT_PANEL_MIN_WIDTH } from './utils/right-panel-width';
 import { ResizableRightPane } from './components/ResizableRightPane';
@@ -768,6 +770,15 @@ export function App() {
         .filter((id): id is string => Boolean(id) && s.sessions[id!]?.status === 'running')
     )
   );
+  // A task tab is named after its task; one entry per tab, empty for the other kinds.
+  const taskTabTitles = useAppStore(
+    useShallow((s) =>
+      s.rightUtilityTabs.map((tab) => {
+        const id = getTaskTabSessionId(tab);
+        return id ? s.sessions[id]?.title ?? '' : '';
+      })
+    )
+  );
   useEffect(subscribeDesignChanges, []);
   const designTitles = useDesignStore((s) => s.titles);
   const simulatorViews = useIosSimulatorStore((s) => s.views);
@@ -809,6 +820,7 @@ export function App() {
           running: memberSessionId ? workflowMemberRunningIds.includes(memberSessionId) : false,
         };
       }
+      if (kind === 'task') return { id: tab, kind, label: taskTabTitles[rightUtilityTabs.indexOf(tab)] || 'Task' };
       if (kind === 'sources') return { id: tab, kind, label: sessionSourceTabPath(tab)?.split(/[\\/]/).pop() || 'Sources' };
       if (kind === 'terminal') {
         // Numbered from the second one on: Terminal, Terminal 2…
@@ -869,6 +881,7 @@ export function App() {
     sourceImageLabel,
     workflowRuns,
     workflowMemberRunningIds,
+    taskTabTitles,
   ]);
 
   const updateProjectFileTabLabel = useCallback((
@@ -1508,6 +1521,28 @@ export function App() {
               </div>
             );
           })}
+          {rightUtilityTabs.filter((tab) => tab.startsWith('task:')).map((tabId) => {
+            const taskSessionId = getTaskTabSessionId(tabId) ?? '';
+            const visible = activeRightUtilityTab === tabId;
+            // A task the main bot handed out, beside the bot's conversation:
+            // the whole task, with its composer and its approvals.
+            return (
+              <div
+                key={`${activeSessionId ?? 'new'}:${tabId}`}
+                className={visible ? 'absolute inset-0 z-20 flex min-h-0 min-w-0 flex-col' : 'hidden'}
+                data-task-tab={taskSessionId}
+              >
+                <ChatPane
+                  paneId={`task:${taskSessionId}`}
+                  sessionId={taskSessionId}
+                  isActive={visible}
+                  onActivate={() => setActiveRightUtilityTab(tabId)}
+                  codexModelConfig={codexModelConfig}
+                  showHeader={false}
+                />
+              </div>
+            );
+          })}
           {sideChatUtilityTabs.map((tabId) => {
             const visible = activeRightUtilityTab === tabId;
             if (isSideChatPendingTab(tabId)) {
@@ -1631,6 +1666,7 @@ function getUtilityTabIcon(target: ProjectUtilityPanelKind) {
   if (target === 'review') return FileDiff;
   if (target === 'subagent') return Users;
   if (target === 'workflow-member') return Workflow;
+  if (target === 'task') return MessageSquare;
   return FolderClosed;
 }
 
@@ -1916,7 +1952,11 @@ function RightUtilityTabStrip({
                   className="flex min-w-0 flex-1 items-center gap-1.5 pl-2.5 pr-1 text-left"
                   title={tab.label}
                 >
-                  {tab.kind === 'subagent' && tab.subagentId ? (
+                  {tab.kind === 'task' ? (
+                    <span className="flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center [&>svg]:h-3.5 [&>svg]:w-3.5">
+                      <MainBotTaskStateIcon sessionId={getTaskTabSessionId(tab.id) ?? ''} />
+                    </span>
+                  ) : tab.kind === 'subagent' && tab.subagentId ? (
                     <SubagentAvatar
                       id={tab.subagentId}
                       hue={getSubagentPersona(tab.subagentId).colorHue}
@@ -1975,6 +2015,18 @@ function RightUtilityTabStrip({
 
       <div className="no-drag ml-1 flex h-full shrink-0 items-center gap-0.5">
         {activeTab?.startsWith('images:') && <ImageStudioFileActions sessionId={activeTab.slice(7)} />}
+        {activeTab?.startsWith('task:') ? (
+          <button
+            type="button"
+            onClick={() => openTask(activeTab.slice('task:'.length))}
+            className="no-drag inline-flex h-7 w-7 items-center justify-center rounded-lg text-[var(--text-secondary)] transition-colors hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)]"
+            title="Open as full task"
+            aria-label="Open as full task"
+            data-task-tab-open
+          >
+            <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+        ) : null}
         {trailingActions ? (
           <>
             {trailingActions}

@@ -30,6 +30,7 @@ export function SidebarActiveTasks() {
   const proposals = useFollowUpStore((s) => s.proposals);
   const parents = useMemo(() => subSessionParents(proposals), [proposals]);
   const sessions = useAppStore((s) => s.sessions);
+  const mainBotSessionId = useAppStore((s) => s.mainBotSessionId);
   const organization = useSessionOrganization();
   const prsBySession = useSidebarPullRequests(true);
   const settledWorktrees = useSidebarPullRequestStore((s) => s.settledWorktrees);
@@ -44,12 +45,13 @@ export function SidebarActiveTasks() {
     const tasks = Object.values(sessions).filter(
       (session) =>
         !session.hiddenFromThreads &&
+        session.id !== mainBotSessionId &&
         session.scope !== 'dm' &&
         !session.isDraft &&
         !organization.sessions[session.id]?.archived
     );
     return listActiveTaskFamilies(tasks, (id) => rootSessionOf(parents, id), (task) => taskStateOf(task, sources));
-  }, [sessions, organization, parents, sources]);
+  }, [sessions, organization, parents, sources, mainBotSessionId]);
 
   if (families.length === 0) {
     return <div className="px-2 py-1 text-[13px] text-[var(--text-muted)]" data-active-tasks-empty>No active tasks</div>;
