@@ -8,7 +8,7 @@ import { FontFamilySelect } from './FontFamilySelect';
 import { SettingsToggle } from './SettingsPrimitives';
 import type { ThemeRecipe, Theme, ThemeChoice, AppearanceState, ThemeVariant } from '../../types';
 import { availablePresets, exportTheme, importTheme, presetRecipe, windowGlassState } from '../../theme/themes';
-import type { ThemePreset } from '../../theme/theme-types';
+import { isThemeBackdrop, type ThemePreset } from '../../theme/theme-types';
 import * as DropdownMenu from '../ui/dropdown-menu';
 import { Check, ChevronDown } from '../icons';
 import './theme-editor-card.css';
@@ -108,6 +108,19 @@ export function ThemeEditorCard({ variant, pack, themeState, onReset, onCodeThem
           <SettingsToggle checked={pack.recipe.glassWindow} onChange={checked => onThemePatch({ glassWindow: checked })} ariaLabel={`${title} frosted glass window`} />
         </div>
       </ThemePackRow>}
+      <ThemePackRow label="Backdrop">
+        <PreferenceSelect label={`${title} backdrop`} value={pack.recipe.backdrop ?? 'none'} options={[{ value: 'none', label: 'None' }, variant === 'dark' ? { value: 'aurora', label: 'Aurora' } : { value: 'contour', label: 'Contour' }]}
+          onChange={value => onThemePatch({ backdrop: isThemeBackdrop(value) ? value : undefined })} />
+      </ThemePackRow>
+      {pack.recipe.backdrop && <>
+        <ThemePackRow label="Backdrop strength">
+          <div className="theme-contrast-control">
+            <input aria-label={`${title} backdrop strength`} type="range" min={0} max={100} step={1} value={pack.recipe.backdropStrength ?? 100} onChange={event => onThemePatch({ backdropStrength: Number(event.target.value) })} />
+            <span>{pack.recipe.backdropStrength ?? 100}</span>
+          </div>
+        </ThemePackRow>
+        <ThemePackRow label="Backdrop motion"><SettingsToggle checked={pack.recipe.backdropMotion !== false} onChange={checked => onThemePatch({ backdropMotion: checked })} ariaLabel={`${title} backdrop motion`} /></ThemePackRow>
+      </>}
       <ThemePackRow label="Translucent sidebar"><SettingsToggle checked={!pack.recipe.opaqueWindows} onChange={checked => onThemePatch({ opaqueWindows: !checked })} ariaLabel={`${title} translucent sidebar`} /></ThemePackRow>
       <ThemePackRow label="Contrast">
         <div className="theme-contrast-control">
