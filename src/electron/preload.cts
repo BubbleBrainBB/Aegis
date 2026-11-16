@@ -257,6 +257,7 @@ contextBridge.exposeInMainWorld('electron', {
 
   openMainBot: () => ipcRenderer.invoke('main-bot-open'),
   getMainBotSessionId: () => ipcRenderer.invoke('main-bot-session-id'),
+  refreshMainBotContext: () => ipcRenderer.invoke('main-bot-refresh-context'),
 
   sessionHandoff: (payload: { sessionId: string; targetProvider: string }) => {
     return ipcRenderer.invoke('session-handoff', payload);

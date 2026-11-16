@@ -2,8 +2,10 @@
 // wrote to. A row is armed until that task's turn ends; then it holds the
 // report until the bot's conversation can take it. A task armed again before
 // its report was taken keeps that report beside the one to come.
-// Beside it, the tasks the bot has taken on: the ones it may write to without
-// the user asking again.
+// Beside it, what the bot handed out: one row per task it started or was asked
+// to write to, with the goal it serves and its last report. That row stays
+// after the report was taken, so the bot can look up how a piece of work went
+// without having it in its conversation. And a few values of its own.
 
 export interface MainBotDb {
   exec(sql: string): unknown;
@@ -32,6 +34,66 @@ export interface MainBotWatch {
   report: MainBotReport | null;
   /** Reports of earlier turns the bot has not taken yet, oldest first. */
   earlier: MainBotReport[];
+}
+
+/** A task the bot handed work to: one it started, or one of the person's it was asked to write to. */
+export interface MainBotDispatch {
+  taskId: string;
+  /** As they were when the bot last touched it; a list shows the task as it is now. */
+  title: string;
+  device: string;
+  project: string | null;
+  agent: string;
+  /** What the person wanted that this task serves. */
+  goal: string;
+  origin: 'started' | 'adopted';
+  createdAt: number;
+  updatedAt: number;
+  /** Its last report; `readAt` once the bot's conversation took it. */
+  report: { status: string; gist: string; at: number; readAt: number | null } | null;
+  /** Set once the task was found deleted. */
+  goneAt: number | null;
+}
+
+interface DispatchRow {
+  task_id: string;
+  title: string;
+  device: string;
+  project: string | null;
+  agent: string;
+  goal: string;
+  origin: string;
+  created_at: number | bigint;
+  updated_at: number | bigint;
+  report_status: string | null;
+  report_gist: string | null;
+  report_at: number | bigint | null;
+  report_read_at: number | bigint | null;
+  gone_at: number | bigint | null;
+}
+
+function dispatchFromRow(row: DispatchRow): MainBotDispatch {
+  return {
+    taskId: row.task_id,
+    title: row.title,
+    device: row.device,
+    project: row.project,
+    agent: row.agent,
+    goal: row.goal,
+    origin: row.origin === 'started' ? 'started' : 'adopted',
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+    report:
+      row.report_status === null
+        ? null
+        : {
+            status: row.report_status,
+            gist: row.report_gist ?? '',
+            at: Number(row.report_at ?? 0),
+            readAt: row.report_read_at === null ? null : Number(row.report_read_at),
+          },
+    goneAt: row.gone_at === null ? null : Number(row.gone_at),
+  };
 }
 
 interface Row {
@@ -96,7 +158,33 @@ export class MainBotStore {
     `);
     const columns = db.prepare('PRAGMA table_info(main_bot_watches)').all() as Array<{ name: string }>;
     if (!columns.some((column) => column.name === 'earlier')) db.exec('ALTER TABLE main_bot_watches ADD COLUMN earlier TEXT');
-    db.exec('CREATE TABLE IF NOT EXISTS main_bot_tasks (task_id TEXT PRIMARY KEY, taken_at INTEGER NOT NULL)');
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS main_bot_dispatches (
+        task_id TEXT PRIMARY KEY,
+        title TEXT NOT NULL DEFAULT '',
+        device TEXT NOT NULL DEFAULT '',
+        project TEXT,
+        agent TEXT NOT NULL DEFAULT '',
+        goal TEXT NOT NULL DEFAULT '',
+        origin TEXT NOT NULL DEFAULT 'adopted',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        report_status TEXT,
+        report_gist TEXT,
+        report_at INTEGER,
+        report_read_at INTEGER,
+        gone_at INTEGER
+      )
+    `);
+    db.exec('CREATE TABLE IF NOT EXISTS main_bot_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+    // Earlier builds kept only which tasks the bot had taken on.
+    if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'main_bot_tasks'").get() !== undefined) {
+      db.exec(`
+        INSERT OR IGNORE INTO main_bot_dispatches (task_id, origin, created_at, updated_at)
+        SELECT task_id, 'adopted', taken_at, taken_at FROM main_bot_tasks
+      `);
+      db.exec('DROP TABLE main_bot_tasks');
+    }
   }
 
   get(taskId: string): MainBotWatch | null {
@@ -171,22 +259,75 @@ export class MainBotStore {
     this.db.prepare('DELETE FROM main_bot_watches WHERE task_id = ?').run(taskId);
   }
 
-  // ---- The tasks the bot has taken on ----
+  // ---- What the bot handed out ----
 
-  /** The bot started this task, or the user had it write to it. */
-  take(taskId: string, at: number): void {
-    this.db.prepare('INSERT OR IGNORE INTO main_bot_tasks (task_id, taken_at) VALUES (?, ?)').run(taskId, at);
+  /**
+   * The bot started this task, or the person had it write to it. Writing to a
+   * task again brings its row up to date; the goal it was first given, and
+   * how it came to the bot, stay.
+   */
+  record(input: {
+    taskId: string;
+    title: string;
+    device: string;
+    project: string | null;
+    agent: string;
+    goal: string;
+    origin: 'started' | 'adopted';
+    at: number;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO main_bot_dispatches (task_id, title, device, project, agent, goal, origin, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(task_id) DO UPDATE SET
+           title = excluded.title, device = excluded.device, project = excluded.project, agent = excluded.agent,
+           goal = CASE WHEN main_bot_dispatches.goal = '' THEN excluded.goal ELSE main_bot_dispatches.goal END,
+           updated_at = excluded.updated_at, gone_at = NULL`,
+      )
+      .run(input.taskId, input.title, input.device, input.project, input.agent, input.goal, input.origin, input.at, input.at);
   }
 
+  dispatch(taskId: string): MainBotDispatch | null {
+    const row = this.db.prepare('SELECT * FROM main_bot_dispatches WHERE task_id = ?').get(taskId) as DispatchRow | undefined;
+    return row ? dispatchFromRow(row) : null;
+  }
+
+  /** Latest first. */
+  dispatches(): MainBotDispatch[] {
+    return (this.db.prepare('SELECT * FROM main_bot_dispatches ORDER BY updated_at DESC, created_at DESC, rowid DESC').all() as DispatchRow[]).map(dispatchFromRow);
+  }
+
+  /** A task the bot may write to without the person asking again. */
   hasTaken(taskId: string): boolean {
-    return this.db.prepare('SELECT 1 FROM main_bot_tasks WHERE task_id = ?').get(taskId) !== undefined;
+    return this.db.prepare('SELECT 1 FROM main_bot_dispatches WHERE task_id = ? AND gone_at IS NULL').get(taskId) !== undefined;
   }
 
-  taken(): string[] {
-    return (this.db.prepare('SELECT task_id FROM main_bot_tasks').all() as Array<{ task_id: string }>).map((row) => row.task_id);
+  /** A turn of the task ended: what it said, not yet taken by the bot. */
+  setDispatchReport(taskId: string, report: { status: string; gist: string; at: number }): void {
+    this.db
+      .prepare('UPDATE main_bot_dispatches SET report_status = ?, report_gist = ?, report_at = ?, report_read_at = NULL, updated_at = ? WHERE task_id = ?')
+      .run(report.status, report.gist, report.at, report.at, taskId);
   }
 
-  forget(taskId: string): void {
-    this.db.prepare('DELETE FROM main_bot_tasks WHERE task_id = ?').run(taskId);
+  /** The bot's conversation took the report of `reportAt`. One that came in meanwhile stays untaken. */
+  markReportRead(taskId: string, reportAt: number, at: number): void {
+    this.db.prepare('UPDATE main_bot_dispatches SET report_read_at = ? WHERE task_id = ? AND report_at = ?').run(at, taskId, reportAt);
+  }
+
+  markGone(taskId: string, at: number): void {
+    this.db.prepare('UPDATE main_bot_dispatches SET gone_at = ? WHERE task_id = ? AND gone_at IS NULL').run(at, taskId);
+  }
+
+  // ---- Values of its own ----
+
+  meta(key: string): string | null {
+    const row = this.db.prepare('SELECT value FROM main_bot_meta WHERE key = ?').get(key) as { value: string } | undefined;
+    return row ? row.value : null;
+  }
+
+  setMeta(key: string, value: string | null): void {
+    if (value === null) this.db.prepare('DELETE FROM main_bot_meta WHERE key = ?').run(key);
+    else this.db.prepare('INSERT INTO main_bot_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value);
   }
 }

@@ -22,6 +22,7 @@ import { machineName } from '../../remote/relay-auth';
 import { getAgentRuntimeDirectory } from '../agent-runtime-directory';
 import * as sessions from '../session-store';
 import { assistantText } from '../workflow/session-hooks';
+import { MainBotMemory } from './memory';
 import { MainBotService, type MainBotAgent, type MainBotDevice, type MainBotHost, type MainBotStart, type MainBotTask } from './service';
 import { MainBotStore, type MainBotDb } from './store';
 import { setMainBotTools } from './tools';
@@ -42,6 +43,12 @@ export interface MainBotDeps {
   isGitRepo(path: string): Promise<boolean>;
   /** Start fields an agent needs beyond the prompt (Codex's file references). */
   startExtras(provider: AgentProvider, prompt: string, cwd: string): Promise<Partial<SessionStartPayload>>;
+  /**
+   * Put the bot's agent on an empty thread, and mark the place in its
+   * conversation. False when a turn of it runs or is being sent; `entering`
+   * says the caller is that send.
+   */
+  freshThread(sessionId: string, entering: boolean): boolean;
 }
 
 const AGENTS_TTL_MS = 60_000;
@@ -85,6 +92,27 @@ export function mainBotTurnContext(sessionId: string): string {
   }
 }
 
+/** A turn of a conversation is about to be sent: the bot's own may have to start on a fresh context first. */
+export function prepareMainBotTurn(sessionId: string): void {
+  if (!service || mainBotSession()?.id !== sessionId) return;
+  try {
+    service.beforeMainTurn();
+  } catch (error) {
+    console.error('[main-bot] could not start a fresh context:', error);
+  }
+}
+
+/** The person asked for a fresh context: done now, or with the bot's next turn when one runs. */
+export function refreshMainBotContext(): 'done' | 'pending' | 'unavailable' {
+  if (!service || !mainBotSession()) return 'unavailable';
+  try {
+    return service.freshContext();
+  } catch (error) {
+    console.error('[main-bot] could not start a fresh context:', error);
+    return 'unavailable';
+  }
+}
+
 /** A turn ended on this Mac: the bot's own, or a task's it may be waiting on. */
 export function noteMainBotTurnEnded(sessionId: string, status: 'completed' | 'error' | 'stopped', error?: string): void {
   const bot = service;
@@ -92,7 +120,7 @@ export function noteMainBotTurnEnded(sessionId: string, status: 'completed' | 'e
   const main = mainBotSession()?.id === sessionId;
   // After the rest of the turn's teardown, so the conversation reads as idle once it is.
   setTimeout(() => {
-    (main ? bot.onMainTurnEnded() : bot.onTaskTurnEnded(sessionId, status, error)).catch((failure) => {
+    (main ? bot.onMainTurnEnded(status) : bot.onTaskTurnEnded(sessionId, status, error)).catch((failure) => {
       console.error('[main-bot] could not handle a turn end:', failure);
     });
   }, 0);
@@ -294,16 +322,32 @@ async function lastTurn(taskId: string): Promise<{ asked: string | null; reply: 
 function mainState(): ReturnType<MainBotHost['main']> {
   const row = mainBotSession();
   if (!row) return null;
+  // Asked on every tool call, of a conversation that only grows: its last prompts, not its history.
+  const opener = sessions.getLatestUserPrompts(row.id, 20).find((message) => opensTurn(message));
+  return {
+    id: row.id,
+    busy: row.status === 'running',
+    turn: opener ? { startedAt: Number(opener.createdAt ?? 0), typed: !opener.workflowPrompt } : null,
+  };
+}
+
+/** The last turns of the bot's conversation that have an answer, oldest first. Read once, when its context starts afresh. */
+function recentReplies(limit: number): Array<{ asked: string | null; reply: string }> {
+  const row = mainBotSession();
+  if (!row) return [];
   const history = sessions.getSessionHistory(row.id);
-  let turn: { startedAt: number; typed: boolean } | null = null;
-  for (let index = history.length - 1; index >= 0; index -= 1) {
+  const turns: Array<{ asked: string | null; reply: string }> = [];
+  let end = history.length;
+  for (let index = history.length - 1; index >= 0 && turns.length < limit; index -= 1) {
     const message = history[index];
-    if (message.type === 'user_prompt' && opensTurn(message)) {
-      turn = { startedAt: Number(message.createdAt ?? 0), typed: !message.workflowPrompt };
-      break;
-    }
+    if (!opensTurn(message)) continue;
+    // What it said last in the turn is the answer; before that it thought aloud.
+    const reply = history.slice(index + 1, end).map((entry) => assistantText(entry).trim()).filter(Boolean).pop() ?? '';
+    // A turn without an answer (the one being sent, one that failed) says nothing.
+    if (reply) turns.unshift({ asked: message.type === 'user_prompt' && !message.workflowPrompt ? message.prompt : null, reply });
+    end = index;
   }
-  return { id: row.id, busy: row.status === 'running', turn };
+  return turns;
 }
 
 export function setupMainBot(needs: MainBotDeps): MainBotService {
@@ -330,14 +374,22 @@ export function setupMainBot(needs: MainBotDeps): MainBotService {
       return { ok: true };
     },
     lastTurn,
+    exists: (taskId) => isRemoteSessionId(taskId) || Boolean(sessions.getSession(taskId)),
     main: mainState,
+    freshThread: (entering) => {
+      const row = mainBotSession();
+      return row ? needs.freshThread(row.id, entering) : false;
+    },
+    recentReplies,
     tellMain: (label, text) => {
       const row = mainBotSession();
       if (!row) return Promise.resolve(false);
       return needs.continue({ sessionId: row.id, prompt: label, effectivePrompt: text, workflowPrompt: 'follow-up' } as SessionContinuePayload);
     },
   };
-  const bot = new MainBotService(new MainBotStore(sessions.getDatabase() as unknown as MainBotDb), host);
+  // Beside the bot's own folder, so the person can open and correct what it noted.
+  const memory = new MainBotMemory(join(needs.userDataDir, 'main-bot', 'memory'));
+  const bot = new MainBotService(new MainBotStore(sessions.getDatabase() as unknown as MainBotDb), host, memory);
   service = bot;
   setMainBotTools(bot, () => mainBotSession()?.id ?? null);
   // Tasks whose turn ended while the app was closed report now.

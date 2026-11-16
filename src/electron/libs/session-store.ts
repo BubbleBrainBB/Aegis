@@ -2822,6 +2822,22 @@ export function getSessionUsageRecords(sessionId: string): Array<Extract<StreamM
   });
 }
 
+/** The last prompts of a conversation, latest first: enough to tell how its last turn began without reading its history. */
+export function getLatestUserPrompts(sessionId: string, limit = 20): Array<Extract<StreamMessage, { type: 'user_prompt' }>> {
+  const rows = getDb().prepare(`
+    SELECT data, created_at FROM messages WHERE session_id = ? AND message_type = 'user_prompt'
+    ORDER BY COALESCE(sort_key, created_at) DESC, created_at DESC LIMIT ?
+  `).all(sessionId, Math.max(1, Math.min(100, Math.floor(limit)))) as { data: string; created_at: number }[];
+  return rows.flatMap((row) => {
+    try {
+      const message = readStoredMessagePayload(row.data, row.created_at);
+      return message.type === 'user_prompt' ? [message] : [];
+    } catch {
+      return [];
+    }
+  });
+}
+
 /** The conversation as transcript, agents and copies see it: accounting-only usage records are not part of it. */
 export function getSessionHistory(sessionId: string): StreamMessage[] {
   const stmt = getDb().prepare(`

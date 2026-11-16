@@ -1,7 +1,7 @@
 import { isStartWorkflowToolName } from '../../shared/workflow';
 import { isShowWidgetToolName, isWidgetGuideToolName, widgetFromToolInput } from '../../shared/widget';
 import { isProposeFollowUpToolName, isStartSessionToolName, isWithdrawFollowUpToolName } from '../../shared/follow-up';
-import { GET_TASK_TOOL, isMainBotLookupToolName, isMainBotTaskActionToolName, LIST_PROJECTS_TOOL, mainBotToolKind } from '../../shared/main-bot';
+import { GET_TASK_TOOL, isMainBotLookupToolName, isMainBotNoteWriteToolName, isMainBotTaskActionToolName, LIST_HANDED_OUT_TOOL, LIST_PROJECTS_TOOL, mainBotToolKind, READ_MEMORY_TOOL } from '../../shared/main-bot';
 import { isReportStatusToolName, TURN_REPORT_OUTCOMES, turnReportLabel, type TurnReportOutcome } from '../../shared/turn-report';
 
 /** The task a main bot call names: the new task's title, or the one it was pointed at. */
@@ -12,10 +12,18 @@ const mainBotTaskOf = (input: unknown) => {
 };
 
 /** What a main bot lookup read. */
+const mainBotNoteOf = (input: unknown) => {
+  const name = (input as { name?: unknown } | null)?.name;
+  return typeof name === 'string' && name.trim() ? name.trim() : 'a note';
+};
+const mainBotNoteRemoved = (input: unknown) => (input as { mode?: unknown } | null)?.mode === 'delete';
+
 const mainBotLookupOf = (name: string, input: unknown) => {
   const bare = name.replace(/^mcp__.+?__/, '');
   if (bare === LIST_PROJECTS_TOOL) return 'projects';
   if (bare === GET_TASK_TOOL) return mainBotTaskOf(input);
+  if (bare === LIST_HANDED_OUT_TOOL) return 'handed-out work';
+  if (bare === READ_MEMORY_TOOL) return `note ${mainBotNoteOf(input)}`;
   return 'tasks';
 };
 
@@ -89,6 +97,7 @@ export function getToolSummary(name: string, input: unknown): string {
     return `${kind === 'start' ? 'Started' : kind === 'stop' ? 'Stopped' : 'Sent to'} ${mainBotTaskOf(input)}`;
   }
   if (isMainBotLookupToolName(name)) return `Checked ${mainBotLookupOf(name, input)}`;
+  if (isMainBotNoteWriteToolName(name)) return `${mainBotNoteRemoved(input) ? 'Removed' : 'Updated'} note ${mainBotNoteOf(input)}`;
   if (isReportStatusToolName(name)) return reportedStatus(input);
   const design = designToolDisplay(name, input, 'success');
   if (design) return design.target;
@@ -418,6 +427,10 @@ export function deriveReadableToolDisplay(
   }
   if (isMainBotLookupToolName(name)) {
     return { verb: status === 'pending' ? 'Checking' : 'Checked', target: mainBotLookupOf(name, input) };
+  }
+  if (isMainBotNoteWriteToolName(name)) {
+    const removed = mainBotNoteRemoved(input);
+    return { verb: status === 'pending' ? (removed ? 'Removing note' : 'Updating note') : removed ? 'Removed note' : 'Updated note', target: mainBotNoteOf(input) };
   }
   if (isReportStatusToolName(name)) {
     return { verb: status === 'pending' ? 'Reporting' : 'Reported', target: reportedStatus(input) };

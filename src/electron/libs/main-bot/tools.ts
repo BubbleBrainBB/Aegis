@@ -1,17 +1,21 @@
 // The main bot's tools, as Bubble host tools. Only its own conversation gets
-// them (bubbleHostTools). They change nothing but Aegis's own state, and each
-// task still runs under its agent's own permission mode, so they run without
-// asking, the way the composer's Send does.
+// them (bubbleHostTools). They change nothing but Aegis's own state (and the
+// bot's own notes), and each task still runs under its agent's own permission
+// mode, so they run without asking, the way the composer's Send does.
 
 import {
   GET_TASK_TOOL,
+  LIST_HANDED_OUT_TOOL,
   LIST_PROJECTS_TOOL,
   LIST_TASKS_TOOL,
   MAIN_BOT_LIMITS,
   MESSAGE_TASK_TOOL,
+  READ_MEMORY_TOOL,
   START_TASK_TOOL,
   STOP_TASK_TOOL,
+  WRITE_MEMORY_TOOL,
 } from '../../../shared/main-bot';
+import { MAIN_BOT_MEMORY_LIMITS } from './memory';
 import type { ListTasksArgs, MainBotService, StartTaskArgs, ToolOutcome } from './service';
 
 let service: MainBotService | null = null;
@@ -28,6 +32,7 @@ export function isMainBotSession(sessionId: string | null | undefined): boolean 
 }
 
 const TASK_REF = 'The task: the id list_tasks gives (such as #128), or its exact title.';
+const NOTE_NAME = 'Lowercase letters, digits and hyphens, such as "person" or "project-coworker".';
 
 const SPECS: Array<{
   name: string;
@@ -35,6 +40,21 @@ const SPECS: Array<{
   parameters: Record<string, unknown>;
   run(bot: MainBotService, args: Record<string, unknown>): ToolOutcome | Promise<ToolOutcome>;
 }> = [
+  {
+    name: LIST_HANDED_OUT_TOOL,
+    description:
+      'The work you handed out, grouped by the goal it serves: each task you started or were asked to write to, how it stands now, and what it last reported. ' +
+      'Kept by Aegis outside this conversation, so it holds what you no longer remember. Look here first when the person asks how something is going.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        goal: { type: 'string', description: 'Words from one goal: only its tasks, with more of each report.' },
+        open_only: { type: 'boolean', description: 'Only tasks still going or waiting, and those whose report has not reached you yet.' },
+      },
+    },
+    run: (bot, args) => bot.listHandedOut(args as { goal?: string; open_only?: boolean }),
+  },
   {
     name: LIST_TASKS_TOOL,
     description:
@@ -79,9 +99,10 @@ const SPECS: Array<{
     parameters: {
       type: 'object',
       additionalProperties: false,
-      required: ['title', 'prompt'],
+      required: ['title', 'prompt', 'goal'],
       properties: {
         title: { type: 'string', maxLength: MAIN_BOT_LIMITS.title, description: 'Under 60 characters; names the task in the sidebar, such as "Fix empty export file names".' },
+        goal: { type: 'string', maxLength: MAIN_BOT_LIMITS.goal, description: 'What the person wants that this task serves, in a few words, such as "Faster export". Tasks for the same thing carry the same goal: reuse, word for word, one you were shown when the work belongs to it.' },
         prompt: { type: 'string', maxLength: MAIN_BOT_LIMITS.prompt, description: 'The brief, for an agent that has not seen this conversation: the goal, where to look, what done means.' },
         project: { type: 'string', description: "The project it works in: a folder name list_projects gives, or a full path on this Mac. Left out: a conversation with no project, for work that needs no project's files." },
         device: { type: 'string', description: 'The Mac it runs on, by name. Needed only when the project is on several.' },
@@ -119,6 +140,35 @@ const SPECS: Array<{
       properties: { task: { type: 'string', description: TASK_REF } },
     },
     run: (bot, args) => bot.stopTask(args as { task: string }),
+  },
+  {
+    name: READ_MEMORY_TOOL,
+    description: 'One of your notes in full. The list of them comes with the message that explains your job.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['name'],
+      properties: { name: { type: 'string', description: NOTE_NAME } },
+    },
+    run: (bot, args) => bot.readMemory(args as { name: string }),
+  },
+  {
+    name: WRITE_MEMORY_TOOL,
+    description:
+      'Change one of your notes: what has to outlast this conversation, such as how the person wants work handed out or what to know about one project. ' +
+      `One note per subject, at most ${MAIN_BOT_MEMORY_LIMITS.bytes} bytes each. Not for how tasks stand: list_handed_out keeps that.`,
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['name'],
+      properties: {
+        name: { type: 'string', maxLength: MAIN_BOT_MEMORY_LIMITS.name, description: NOTE_NAME },
+        description: { type: 'string', maxLength: MAIN_BOT_MEMORY_LIMITS.description, description: 'One line that says what the note holds. Needed for a new note; left out, an existing one keeps its line.' },
+        content: { type: 'string', description: 'The text, in Markdown. With "replace" the whole note; with "append" what is added to its end.' },
+        mode: { type: 'string', enum: ['replace', 'append', 'delete'], description: 'Left out: replace. "delete" puts the note away.' },
+      },
+    },
+    run: (bot, args) => bot.writeMemory(args as { name: string; description?: string; content?: string; mode?: string }),
   },
 ];
 

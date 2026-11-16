@@ -44,7 +44,7 @@ import { sanitizeDesignPromptRef } from '../shared/design-comment';
 import { sanitizeDesignSelectionRef } from '../shared/design-selection';
 import { designContextText } from './design/focus';
 import { chatFolderInstructions, chatsFolderInfo, createChatFolder, noteChatFolderInstructionsDelivered, takeChatFolderInstructions } from './libs/chat-folders';
-import { ensureMainBotSession, mainBotSession, mainBotTurnContext, noteMainBotRemoteChange, noteMainBotTurnEnded, setupMainBot } from './libs/main-bot';
+import { ensureMainBotSession, mainBotSession, mainBotTurnContext, noteMainBotRemoteChange, noteMainBotTurnEnded, prepareMainBotTurn, refreshMainBotContext, setupMainBot } from './libs/main-bot';
 import { setDesignProjectRoot } from './design/styles';
 import { setDesignAgentNamer, setDesignPromptSource } from './design/tools';
 import { setDesignFollowUp } from './design/project/tools';
@@ -5298,9 +5298,34 @@ function setupMainBotEntry(mainWindow: BrowserWindow): void {
     sessionsRunningWorkflow: () => workflowRuns?.sessionsWithActiveRun() ?? [],
     isGitRepo: (cwd) => assertGitRepo(cwd).then(() => true, () => false),
     startExtras: async (provider, prompt, cwd) => (provider === 'codex' ? codexReferences(prompt, cwd) : {}),
+    freshThread: (sessionId, entering) => startMainBotFreshThread(mainWindow, sessionId, entering),
   });
+  ipcMainHandle('main-bot-refresh-context', async (): Promise<'done' | 'pending' | 'unavailable'> => refreshMainBotContext());
   ipcMainHandle('main-bot-open', async (): Promise<SessionInfo> => buildSessionInfoFromRow(ensureMainBotSession()));
   ipcMainHandle('main-bot-session-id', async (): Promise<string | null> => mainBotSession()?.id ?? null);
+}
+
+/**
+ * Put the main bot's agent on an empty Bubble thread. The conversation stays
+ * as the person sees it, with a line where the agent's memory of it ends; what
+ * the bot keeps outside it (libs/main-bot: notes, what it handed out) carries
+ * it over. Only between turns: a turn being started would run on the old
+ * thread and write its id back. `entering`: the caller is the send of the
+ * bot's next turn and holds its lease.
+ */
+function startMainBotFreshThread(mainWindow: BrowserWindow, sessionId: string, entering: boolean): boolean {
+  const session = sessions.getSession(sessionId);
+  if (!session || session.status === 'running') return false;
+  if (!entering && sessionDispatchLeases.has(sessionId)) return false;
+  // No thread yet: nothing to leave behind.
+  if (!session.bubble_session_id && !runnerHandles.has(sessionId)) return true;
+  // A kept-alive runner goes on with the thread it has, whatever the session row says.
+  retireSessionRunner(sessionId);
+  sessions.setBubbleSessionId(sessionId, null);
+  const divider: StreamMessage = { type: 'system', subtype: 'context_refreshed', uuid: uuidv4(), session_id: sessionId, createdAt: Date.now() };
+  sessions.addMessage(sessionId, divider);
+  broadcast(mainWindow, { type: 'stream.message', payload: { sessionId, message: divider } });
+  return true;
 }
 
 /** Follow-up proposals (docs/collaboration/follow-up-sessions.md): Claude sessions propose, the user starts. */
@@ -6450,6 +6475,12 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
     }
     if (session.provider !== 'bubble') {
       return { ok: false, message: 'Rewind is only available for Bubble sessions.', filesAvailable: false };
+    }
+    // Its agent's thread can start afresh mid-conversation, so the prompts on
+    // screen no longer line up with the thread's; and what it handed out would
+    // not be taken back.
+    if (session.session_role === 'main') {
+      return { ok: false, message: "Rewind is not available in Aegis's own conversation.", filesAvailable: false };
     }
 
     ensureProviderService();
@@ -10553,7 +10584,11 @@ async function handleSessionContinue(
   sessionDispatchLeases.add(payload.sessionId);
   // The main bot's tools exist on Bubble only: its conversation never moves to another agent.
   if (mainBotSession()?.id === payload.sessionId && payload.provider && payload.provider !== 'bubble') payload = { ...payload, provider: 'bubble', model: undefined };
-  try { return await handleSessionContinueImpl(mainWindow, payload, internal); }
+  try {
+    // Before the session row is read: a fresh context asked for mid-turn starts with this one.
+    prepareMainBotTurn(payload.sessionId);
+    return await handleSessionContinueImpl(mainWindow, payload, internal);
+  }
   finally { sessionDispatchLeases.delete(payload.sessionId); }
 }
 

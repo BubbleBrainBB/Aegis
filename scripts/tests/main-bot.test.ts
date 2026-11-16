@@ -1,8 +1,12 @@
 // The main bot's rules: where a task goes and to which agent, what a working
-// task does with a message, and how replies get back to the bot. Against an
-// in-memory SQLite database and a fake host.
+// task does with a message, how replies get back to the bot, and what it
+// keeps outside its conversation (notes, the record of what it handed out).
+// Against an in-memory SQLite database, a fake host and a temporary folder.
 // Run: npx tsx scripts/tests/main-bot.test.ts
 import assert from 'node:assert/strict';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { MAIN_BOT_LIMITS, mainBotReportTitles, parseMainBotTaskResult } from '../../src/shared/main-bot';
 import {
@@ -15,14 +19,18 @@ import {
   type MainBotTask,
   type ToolOutcome,
 } from '../../src/electron/libs/main-bot/service';
+import { MAIN_BOT_MEMORY_LIMITS, MainBotMemory } from '../../src/electron/libs/main-bot/memory';
 import { MainBotStore, type MainBotDb } from '../../src/electron/libs/main-bot/store';
 
 const LOCAL_ID = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 
-function setup() {
+function setup(prepare?: (db: MainBotDb) => void) {
   let clock = 1_000_000;
   const db = new DatabaseSync(':memory:') as unknown as MainBotDb;
+  prepare?.(db);
   const store = new MainBotStore(db);
+  const notesDir = join(mkdtempSync(join(tmpdir(), 'main-bot-notes-')), 'memory');
+  const memory = new MainBotMemory(notesDir);
   const world = {
     devices: [
       { id: null, name: 'MacBook', online: true, projects: [{ name: 'coworker', path: '/code/coworker' }, { name: 'notes', path: '/code/notes' }] },
@@ -48,6 +56,12 @@ function setup() {
     sendFails: false,
     tellFails: false,
     nextLocal: 1,
+    /** Tasks on this Mac that exist without being listed. */
+    archived: new Set<string>(),
+    /** Whether the bot's agent can be put on an empty thread now, and how often it was. */
+    threadFree: true,
+    freshThreads: [] as boolean[],
+    conversation: [] as Array<{ asked: string | null; reply: string }>,
   };
   const host: MainBotHost = {
     now: () => clock,
@@ -85,15 +99,22 @@ function setup() {
       return { ok: true };
     },
     lastTurn: async (taskId) => world.replies.get(taskId) ?? null,
+    exists: (taskId) => !/^[0-9a-f]{8}-/.test(taskId) || world.archived.has(taskId) || world.tasks.some((task) => task.id === taskId),
     main: () => world.main,
+    freshThread: (entering) => {
+      if (!world.threadFree && !entering) return false;
+      world.freshThreads.push(entering);
+      return true;
+    },
+    recentReplies: (limit) => world.conversation.slice(-limit),
     tellMain: async (label, text) => {
       if (world.tellFails) return false;
       world.told.push({ label, text });
       return true;
     },
   };
-  const bot = new MainBotService(store, host);
-  return { bot, store, world, tick: (ms: number) => { clock += ms; } };
+  const bot = new MainBotService(store, host, memory);
+  return { bot, store, world, memory, notesDir, db, host, tick: (ms: number) => { clock += ms; } };
 }
 
 const ok = (outcome: ToolOutcome) => {
@@ -481,6 +502,236 @@ async function main() {
     const later = Array.from({ length: 19 }, () => bot.turnContext('main'));
     assert.ok(later.slice(0, 18).every((text) => !/You are Aegis/.test(text)));
     assert.match(later[18], /You are Aegis/);
+  }
+
+  // --- Notes: what outlasts the conversation ---
+  {
+    const { bot, memory, notesDir, tick } = setup();
+    assert.match(error(bot.writeMemory({ name: 'Person', content: 'x', description: 'y' })), /lowercase letters, digits and hyphens/);
+    assert.match(error(bot.writeMemory({ name: '../escape', content: 'x', description: 'y' })), /lowercase letters/);
+    assert.match(error(bot.writeMemory({ name: 'person', content: 'Prefers Codex for reviews.' })), /"description" is required for a new note/);
+    assert.match(error(bot.writeMemory({ name: 'person', description: 'How they work' })), /"content" is required.*mode "delete"/);
+    const saved = ok(bot.writeMemory({ name: 'person', description: 'How the person wants\nwork handed out', content: 'Prefers Codex for reviews.' }));
+    assert.equal(saved.description, 'How the person wants work handed out', 'one line');
+    assert.equal(readFileSync(join(notesDir, 'person.md'), 'utf8'), '---\ndescription: How the person wants work handed out\n---\n\nPrefers Codex for reviews.\n');
+    ok(bot.writeMemory({ name: 'person', content: 'Wants one sentence per report.', mode: 'append' }));
+    const read = ok(bot.readMemory({ name: 'person' }));
+    assert.equal(read.content, 'Prefers Codex for reviews.\n\nWants one sentence per report.');
+    assert.equal(read.description, 'How the person wants work handed out', 'an existing note keeps its line');
+    assert.match(error(bot.readMemory({ name: 'nothing' })), /no note "nothing"\. Your notes: person\./);
+    assert.match(error(bot.writeMemory({ name: 'big', description: 'd', content: 'x'.repeat(MAIN_BOT_MEMORY_LIMITS.bytes + 1) })), /at most 8000 bytes/);
+    // The job comes with the notes: small ones whole, so they are read before work is handed out.
+    ok(bot.writeMemory({ name: 'project-coworker', description: 'The Aegis repository', content: 'Use Claude here. Never touch release.yml.' }));
+    const first = bot.turnContext('main');
+    assert.match(first, /Your notes \(read_memory shows one in full/);
+    assert.ok(first.indexOf('- person: How the person wants work handed out') < first.indexOf('- project-coworker: The Aegis repository'), 'the person first');
+    assert.match(first, /<note name="person">\nPrefers Codex for reviews\.\n\nWants one sentence per report\.\n<\/note>/);
+    assert.match(first, /<note name="project-coworker">\nUse Claude here\./);
+    // Afterwards they are not repeated: everything sent stays in the agent's thread.
+    assert.doesNotMatch(bot.turnContext('main'), /Your notes/);
+    // The bot's own change is no news to it.
+    ok(bot.writeMemory({ name: 'person', content: 'Prefers Codex for reviews.' }));
+    assert.doesNotMatch(bot.turnContext('main'), /Your notes/);
+    // The person editing a file by hand is.
+    tick(60_000);
+    writeFileSync(join(notesDir, 'by-hand.md'), 'Deploys go out on Fridays only.\n\nMore.\n');
+    const changed = bot.turnContext('main');
+    assert.match(changed, /Your notes changed since you last saw them listed/);
+    assert.match(changed, /- by-hand: Deploys go out on Fridays only\./, 'a note without a head is named by its first line');
+    assert.doesNotMatch(changed, /<note name=/, 'the list only');
+    assert.doesNotMatch(bot.turnContext('main'), /Your notes/);
+    // Files that are no notes are passed over, and never written through.
+    writeFileSync(join(notesDir, 'Bad Name.md'), 'x');
+    writeFileSync(join(notesDir, 'huge.md'), 'x'.repeat(20_000));
+    symlinkSync(join(notesDir, 'person.md'), join(notesDir, 'linked.md'));
+    assert.deepEqual(memory.index().map((note) => note.name), ['by-hand', 'person', 'project-coworker']);
+    assert.match(error(bot.writeMemory({ name: 'linked', description: 'd', content: 'through the link' })), /no note \(too large, or a link\)/);
+    assert.equal(ok(bot.readMemory({ name: 'person' })).content, 'Prefers Codex for reviews.');
+    // Removing puts a note away where the person can take it back.
+    assert.equal(ok(bot.writeMemory({ name: 'by-hand', mode: 'delete' })).removed, 'by-hand');
+    assert.equal(existsSync(join(notesDir, 'by-hand.md')), false);
+    assert.equal(readdirSync(join(notesDir, '.trash')).length, 1);
+    assert.match(error(bot.writeMemory({ name: 'by-hand', mode: 'delete' })), /no note "by-hand" to remove/);
+    // Large notes are listed, not sent whole.
+    ok(bot.writeMemory({ name: 'project-notes', description: 'Long', content: 'y'.repeat(5_000) }));
+    const { bot: again } = (() => {
+      const next = setup();
+      return { bot: new MainBotService(next.store, next.host, memory) };
+    })();
+    const restarted = again.turnContext('main');
+    assert.match(restarted, /- project-notes: Long \(changed [^)]*\)\n/);
+    assert.doesNotMatch(restarted, /<note name="project-notes">/);
+    assert.match(restarted, /<note name="person">/);
+    // No more than there is room for.
+    for (let index = 0; memory.index().length < MAIN_BOT_MEMORY_LIMITS.notes; index += 1) ok(bot.writeMemory({ name: `n-${index}`, description: 'd', content: 'c' }));
+    assert.match(error(bot.writeMemory({ name: 'one-too-many', description: 'd', content: 'c' })), /40 notes, the most there can be/);
+  }
+
+  // --- The record of what was handed out ---
+  {
+    const { bot, store, world, tick } = setup();
+    const a = ok(await bot.startTask({ title: 'Profile the export', prompt: 'Find the slow part', project: 'notes', goal: '  Faster\n export ' }));
+    assert.equal(a.goal, 'Faster export', 'one line');
+    const b = ok(await bot.startTask({ title: 'Cache the totals', prompt: 'Add a cache', project: 'server', goal: 'faster export' }));
+    const c = ok(await bot.startTask({ title: 'Fix the typo', prompt: 'Fix it', project: 'notes' }));
+    assert.equal(c.goal, 'Fix the typo', 'a task given no goal stands for itself');
+    // One of the person's own tasks the bot was asked to write to.
+    world.tasks.push({ id: LOCAL_ID(70), number: 70, title: 'Their own', deviceId: null, device: 'MacBook', project: 'coworker', agent: 'Codex', state: 'idle', updatedAt: 1 });
+    world.sendFails = true;
+    error(await bot.messageTask({ task: '#70', message: 'Ship it' }));
+    assert.equal(store.dispatch(LOCAL_ID(70)), null, 'a message that did not go out takes nothing on');
+    world.sendFails = false;
+    ok(await bot.messageTask({ task: '#70', message: 'Ship it' }));
+    assert.equal(store.dispatch(LOCAL_ID(70))?.origin, 'adopted');
+    // Writing to its own task again keeps what it was started for.
+    tick(1_000);
+    world.tasks.find((task) => task.id === a.sessionId)!.title = 'Profile the export (renamed)';
+    finish(world.tasks.find((task) => task.id === a.sessionId));
+    ok(await bot.messageTask({ task: a.sessionId, message: 'Also the import' }));
+    const kept = store.dispatch(a.sessionId)!;
+    assert.deepEqual([kept.goal, kept.origin, kept.createdAt, kept.title], ['Faster export', 'started', 1_000_000, 'Profile the export (renamed)']);
+
+    // A report is kept with the record, and marked once the bot took it.
+    world.main.busy = true;
+    world.replies.set(a.sessionId, { asked: 'x', reply: `The slow part is the totals. ${'detail '.repeat(300)}Done.` });
+    finish(world.tasks.find((task) => task.id === a.sessionId));
+    await bot.onTaskTurnEnded(a.sessionId, 'completed');
+    const waiting = store.dispatch(a.sessionId)!.report!;
+    assert.equal(waiting.readAt, null);
+    assert.ok(waiting.gist.length <= MAIN_BOT_LIMITS.gist + 3 && waiting.gist.startsWith('The slow part') && waiting.gist.endsWith('Done.'), 'a long reply keeps its start and its end');
+    const before = ok(bot.listHandedOut());
+    assert.deepEqual(before.goals.map((group: { goal: string; tasks: unknown[] }) => [group.goal, group.tasks.length]), [['Faster export', 2], ['Their own', 1], ['Fix the typo', 1]], 'by goal, whatever its case; latest first');
+    const profile = before.goals[0].tasks[0];
+    assert.equal(profile.title, 'Profile the export (renamed)');
+    assert.equal(profile.state, 'idle', 'read from Aegis now');
+    assert.match(profile.lastReport.note, /Not yet delivered/);
+    assert.equal(profile.lastReport.said.length, MAIN_BOT_LIMITS.gistListed + 1, 'cut short in a list of everything');
+    assert.equal(before.goals[1].tasks[0].yours, false);
+    assert.equal(before.goals[0].tasks[1].state, 'working');
+    assert.equal(before.goals[0].tasks[1].id, b.sessionId);
+    world.main.busy = false;
+    tick(120_000);
+    await bot.onMainTurnEnded();
+    assert.match(world.told[0].text, /\[Report from "Profile the export \(renamed\)"\] \(aegis:\/\/sessions\/[^)]+\) Part of "Faster export"\. Its reply/);
+    assert.equal(store.get(a.sessionId), null, 'the queue lets go of it');
+    assert.equal(store.dispatch(a.sessionId)!.report!.readAt, 1_121_000, 'the record keeps it, as taken');
+    const one = ok(bot.listHandedOut({ goal: 'EXPORT' }));
+    assert.equal(one.goals.length, 1);
+    assert.equal(one.goals[0].tasks[0].lastReport.note, undefined);
+    assert.ok(one.goals[0].tasks[0].lastReport.said.length > 900, 'more of it for one goal');
+    assert.equal(one.goals[0].tasks[0].lastReport.when, '2 min ago');
+    // A report that comes in while one is being taken is not marked with it.
+    store.setDispatchReport(a.sessionId, { status: 'completed', gist: 'newer', at: 1_500_000 });
+    store.markReportRead(a.sessionId, 1_001_000, 1_600_000);
+    assert.equal(store.dispatch(a.sessionId)!.report!.readAt, null);
+
+    // What is still open: going, waiting, or not yet reported to the bot.
+    assert.deepEqual(
+      ok(bot.listHandedOut({ open_only: true })).goals.flatMap((group: { tasks: Array<{ title: string }> }) => group.tasks.map((task) => task.title)).sort(),
+      ['Cache the totals', 'Fix the typo', 'Profile the export (renamed)', 'Their own'],
+    );
+    store.markReportRead(a.sessionId, 1_500_000, 1_600_000);
+    finish(world.tasks.find((task) => task.id === LOCAL_ID(70)));
+    await bot.onTaskTurnEnded(LOCAL_ID(70), 'completed');
+    assert.deepEqual(
+      ok(bot.listHandedOut({ open_only: true })).goals.flatMap((group: { tasks: Array<{ title: string }> }) => group.tasks.map((task) => task.title)).sort(),
+      ['Cache the totals', 'Fix the typo'],
+    );
+
+    // Archived is not deleted; a Mac out of reach says nothing about its task.
+    world.archived.add(c.sessionId);
+    world.tasks = world.tasks.filter((task) => task.id !== c.sessionId && task.id !== b.sessionId && task.id !== LOCAL_ID(70));
+    const later = ok(bot.listHandedOut());
+    const stateOf = (title: string) => later.goals.flatMap((group: { tasks: Array<{ title: string; state: string }> }) => group.tasks).find((task: { title: string }) => task.title === title)?.state;
+    assert.equal(stateOf('Fix the typo'), 'archived');
+    assert.equal(stateOf('Cache the totals'), 'unreachable');
+    assert.equal(stateOf('Their own'), 'deleted');
+    assert.equal(store.hasTaken(LOCAL_ID(70)), false, 'a deleted task is no longer one it has taken on');
+    assert.equal(store.hasTaken(c.sessionId), true);
+    await bot.recover();
+    assert.equal(store.dispatch(c.sessionId)!.goneAt, null, 'recovering leaves an archived task alone');
+    assert.ok(store.dispatch(LOCAL_ID(70)), 'and the record of a deleted one stays');
+  }
+
+  // --- The record takes over what earlier builds kept ---
+  {
+    const { bot, store, world } = setup((db) => {
+      db.exec('CREATE TABLE main_bot_tasks (task_id TEXT PRIMARY KEY, taken_at INTEGER NOT NULL)');
+      db.prepare('INSERT INTO main_bot_tasks (task_id, taken_at) VALUES (?, ?)').run(LOCAL_ID(31), 500);
+    });
+    assert.equal(store.hasTaken(LOCAL_ID(31)), true);
+    assert.deepEqual([store.dispatch(LOCAL_ID(31))!.origin, store.dispatch(LOCAL_ID(31))!.createdAt], ['adopted', 500]);
+    world.tasks.push({ id: LOCAL_ID(31), number: 31, title: 'From before', deviceId: null, device: 'MacBook', project: 'notes', agent: 'Claude', state: 'idle', updatedAt: 1 });
+    assert.equal(ok(bot.listHandedOut()).goals[0].goal, 'From before', 'named by the task as it is now');
+    world.main.turn = { startedAt: 2, typed: false };
+    ok(await bot.messageTask({ task: '#31', message: 'Go on' }));
+    assert.equal(store.dispatch(LOCAL_ID(31))!.goal, 'From before');
+  }
+
+  // --- What stands with each message ---
+  {
+    const { bot, world } = setup();
+    ok(await bot.startTask({ title: 'Profile the export', prompt: 'x', project: 'notes', goal: 'Faster export' }));
+    for (let index = 0; index < 10; index += 1) {
+      world.tasks.push({ id: LOCAL_ID(200 + index), number: 200 + index, title: `Theirs ${index}`, deviceId: null, device: 'MacBook', project: 'coworker', agent: 'Claude', state: 'working', updatedAt: 1_000_000 });
+    }
+    const text = bot.turnContext('main');
+    assert.match(text, /Handed out by you, still working:\n- "Profile the export" \(#101, claude, notes\), for "Faster export", last active just now/);
+    assert.match(text, /Also working, not handed out by you:\n- "Theirs 0" \(#200, Claude, coworker\), last active just now/);
+    assert.match(text, /- "Theirs 7"[^\n]*\n- and 2 more \(list_tasks shows all\)/, 'titles of the first few, the rest counted');
+    assert.doesNotMatch(text, /Theirs 8/);
+  }
+
+  // --- A fresh context: the agent starts on an empty thread and is told what went before ---
+  {
+    const { bot, store, world, tick } = setup();
+    const id = ok(await bot.startTask({ title: 'Profile the export', prompt: 'x', project: 'notes', goal: 'Faster export' })).sessionId as string;
+    world.replies.set(id, { asked: 'x', reply: 'The slow part is the totals.' });
+    finish(world.tasks.find((task) => task.id === id));
+    await bot.onTaskTurnEnded(id, 'completed');
+    ok(bot.writeMemory({ name: 'person', description: 'How they work', content: 'Short answers.' }));
+    bot.turnContext('main');
+    assert.doesNotMatch(bot.turnContext('main'), /You are Aegis/);
+    world.conversation = [
+      { asked: 'Make the export faster', reply: 'I gave the profiling to Claude in notes.' },
+      { asked: null, reply: 'The slow part is the totals. Shall I have them cached?' },
+    ];
+    // Asked while a turn runs: it waits for the next turn, and survives a restart.
+    world.threadFree = false;
+    assert.equal(bot.freshContext(), 'pending');
+    assert.deepEqual(world.freshThreads, []);
+    const restarted = new MainBotService(store, { ...bot['host'] } as MainBotHost, bot['notes']);
+    restarted.beforeMainTurn();
+    assert.deepEqual(world.freshThreads, [true], 'done as the next turn is sent');
+    restarted.beforeMainTurn();
+    assert.deepEqual(world.freshThreads, [true], 'once');
+    tick(60_000);
+    const brief = restarted.turnContext('main');
+    assert.match(brief, /You are Aegis/);
+    assert.match(brief, /Your context starts afresh here/);
+    assert.match(brief, /- The person wrote: "Make the export faster" You answered: "I gave the profiling to Claude in notes\."/);
+    assert.match(brief, /- A task reported back\. You answered: "The slow part is the totals\. Shall I have them cached\?"/);
+    assert.match(brief, /- "Profile the export", for "Faster export" finished a turn 1 min ago: "The slow part is the totals\."/, 'reports are not in the conversation: they come from the record');
+    assert.match(brief, /<note name="person">\nShort answers\.\n<\/note>/);
+    // A turn that fails may have told the agent nothing: the next one gets it all again.
+    await restarted.onMainTurnEnded('error');
+    assert.match(restarted.turnContext('main'), /Your context starts afresh here/);
+    await restarted.onMainTurnEnded('completed');
+    const after = restarted.turnContext('main');
+    assert.doesNotMatch(after, /Your context starts afresh here/);
+    assert.doesNotMatch(after, /You are Aegis/);
+    // With nothing running it happens at once.
+    world.threadFree = true;
+    assert.equal(restarted.freshContext(), 'done');
+    assert.deepEqual(world.freshThreads, [true, false]);
+    assert.match(restarted.turnContext('main'), /Your context starts afresh here/);
+    // An ordinary turn that fails is told its job again, without the rest.
+    const plain = setup();
+    plain.bot.turnContext('main');
+    await plain.bot.onMainTurnEnded('error');
+    const retold = plain.bot.turnContext('main');
+    assert.match(retold, /You are Aegis/);
+    assert.doesNotMatch(retold, /Your context starts afresh here/);
   }
 
   assert.deepEqual(parseMainBotTaskResult('{"sessionId":"s","title":"T","agent":"Claude"}'), { sessionId: 's', title: 'T', agent: 'Claude', device: undefined, project: undefined, note: undefined });

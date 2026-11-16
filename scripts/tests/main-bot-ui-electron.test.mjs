@@ -68,6 +68,7 @@ function Harness(){
   </div>
   <div data-qa="link" className="markdown-content" style={{maxWidth:560}}><DesignLinkSessionContext.Provider value="main"><StructuredResponse content={'['+'Ship the docs](aegis://sessions/'+linked+') is ready.'} streaming={false}/></DesignLinkSessionContext.Provider></div>
   <div data-qa="plain-link" className="markdown-content" style={{maxWidth:560}}><DesignLinkSessionContext.Provider value="t1"><StructuredResponse content={'['+'Ship the docs](aegis://sessions/'+linked+') is ready.'} streaming={false}/></DesignLinkSessionContext.Provider></div>
+  <div data-qa="fresh" style={{maxWidth:560}}><MessageCard sessionId="main" message={{type:'system',subtype:'context_refreshed',uuid:'fresh-1',session_id:'main',createdAt:now}}/></div>
   <div data-qa="here" style={{maxWidth:560}}><MessageCard sessionId="main" message={{type:'user_prompt',prompt:'Follow-up task: Fix empty file names',workflowPrompt:'follow-up',createdAt:now}}/></div>
  </main></div></Tooltip.Provider>;
 }
@@ -159,6 +160,13 @@ app.whenReady().then(async()=>{
   assert.equal(await js('window.qa.summary("list_projects",{})'),'Checked projects');
   assert.deepEqual(await js('window.qa.display("get_task",{task:"#12"},"success")'),{verb:'Checked',target:'#12'});
   assert.equal(await js('window.qa.kind("start_task")'),'subagent');
+  // What the bot keeps outside its conversation: looked up like its tasks, and a note it changes is named.
+  assert.equal(await js('window.qa.summary("list_handed_out",{})'),'Checked handed-out work');
+  assert.equal(await js('window.qa.summary("read_memory",{name:"person"})'),'Checked note person');
+  assert.deepEqual(await js('window.qa.display("write_memory",{name:"person",content:"x"},"success")'),{verb:'Updated note',target:'person'});
+  assert.equal(await js('window.qa.summary("write_memory",{name:"person",mode:"delete"})'),'Removed note person');
+  // Where its agent started on an empty thread, the conversation shows a line.
+  assert.equal(await js('document.querySelector("[data-qa=fresh] [data-context-refreshed]").textContent'),'Fresh context from here');
   assert.deepEqual(errors.filter(e=>!/No handler registered|Unable to load preload|ENOENT/.test(e)),[]);
   console.log(JSON.stringify({ok:true}));
   app.exit(0);

@@ -1241,6 +1241,8 @@ export function ChatPane({
       const promptMessage = session.messages[userPromptIndex];
       // A steered prompt joined a running turn: no checkpoint opens there.
       if (promptMessage?.type !== 'user_prompt' || promptMessage.steer) return null;
+      // The main bot's agent may have started afresh mid-conversation, and what it handed out is not taken back.
+      if (useAppStore.getState().mainBotSessionId === sessionId) return null;
 
       if (session.provider === 'bubble') {
         let ordinal = 0;

@@ -5,12 +5,12 @@ import { ipcMainHandle } from '../util';
 const symbols: Record<SessionMenuIcon, string> = {
   pin: 'pin', copy: 'doc.on.doc', link: 'link', folder: 'folder',
   fork: 'arrow.triangle.branch', worktree: 'arrow.triangle.branch',
-  apply: 'arrow.triangle.merge', trash: 'trash', rename: 'pencil', unread: 'circle', archive: 'archivebox', section: 'rectangle.3.group', share: 'square.and.arrow.up', window: 'macwindow',
+  apply: 'arrow.triangle.merge', trash: 'trash', rename: 'pencil', unread: 'circle', archive: 'archivebox', section: 'rectangle.3.group', share: 'square.and.arrow.up', window: 'macwindow', refresh: 'arrow.counterclockwise',
 };
 const actions = new Set<SessionMenuAction>([
   'pin', 'copy-link', 'copy-cwd', 'fork', 'new-worktree-thread',
   'move-worktree', 'apply-worktree', 'discard-worktree', 'delete',
-  'rename', 'unread', 'archive', 'copy-markdown', 'project-choose', 'section-none', 'section-new', 'fork-local', 'fork-worktree', 'open-window', 'export', 'share', 'detach', 'toggle-sub-sessions',
+  'rename', 'unread', 'archive', 'copy-markdown', 'project-choose', 'section-none', 'section-new', 'fork-local', 'fork-worktree', 'open-window', 'export', 'share', 'detach', 'toggle-sub-sessions', 'fresh-context',
 ]);
 
 export function buildSessionNativeMenu(request: SessionMenuRequest, select: (action: SessionMenuAction) => void): Menu {

@@ -118,6 +118,7 @@ export function MessageCard({
       if (message.subtype === 'background_task_ended') {
         return <BackgroundTaskEndedRow sessionId={sessionId} outcome={message.outcome} />;
       }
+      if (message.subtype === 'context_refreshed') return <ContextRefreshedRow />;
       return null;
 
     case 'assistant':
@@ -151,6 +152,22 @@ export function MessageCard({
     default:
       return null;
   }
+}
+
+/** Where the main bot's agent started on an empty thread: it has nothing of what is above. */
+function ContextRefreshedRow() {
+  return (
+    <div
+      role="separator"
+      className="my-5 flex items-center gap-3 text-[12px] text-[var(--text-muted)]"
+      title="Aegis starts from a fresh context here. It keeps its notes and what it handed out, not the conversation above."
+      data-context-refreshed
+    >
+      <span className="h-px flex-1 bg-[var(--border)]" aria-hidden="true" />
+      <span className="flex-shrink-0">Fresh context from here</span>
+      <span className="h-px flex-1 bg-[var(--border)]" aria-hidden="true" />
+    </div>
+  );
 }
 
 function ProposedPlanCard({ planMarkdown }: { planMarkdown: string }) {
