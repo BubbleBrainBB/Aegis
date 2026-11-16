@@ -114,6 +114,16 @@ export function deriveThemeTokens(recipe: ThemeRecipe, variant: ThemeVariant, ov
     '--app-glass-sidebar': withAlpha(surface, (dark ? 0.08 : 0.03) + 0.04 * depth),
     // Content sheets keep enough of the surface for long text to stay easy to read.
     '--app-glass-sheet': withAlpha(canvas, (dark ? 0.66 : 0.46) + 0.16 * depth),
+    // Tints laid over a dot-matrix backdrop (see ThemeRecipe.backdrop). The
+    // sidebar and the reading sheet also blur what is behind them; the home
+    // sheet is nearly clear so the dots stay sharp there.
+    '--app-field-base': surface,
+    '--app-field-scrim': withAlpha(surface, dark ? 0.6 : 0.66),
+    '--app-field-sidebar': withAlpha(surface, (dark ? 0.46 : 0.32) + 0.1 * depth),
+    '--app-field-sheet': withAlpha(surface, 0.12 + 0.08 * depth),
+    '--app-field-read': withAlpha(canvas, (dark ? 0.6 : 0.5) + 0.1 * depth),
+    '--app-field-card': withAlpha(dark ? raised : paper, dark ? 0.64 : 0.74),
+    '--app-field-strength': String(Math.min(1, Math.max(0, (recipe.backdropStrength ?? 100) / 100))),
     '--panel-soft-divider': inkAt(dark ? 0.07 : 0.06),
     // Text
     '--text-primary': ink,

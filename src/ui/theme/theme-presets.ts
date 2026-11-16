@@ -1,4 +1,4 @@
-import type { ThemePreset, ThemeRecipe, ThemeSignals, ThemeTypefaces, ThemeVariant } from './theme-types';
+import type { ThemeBackdrop, ThemePreset, ThemeRecipe, ThemeSignals, ThemeTypefaces, ThemeVariant } from './theme-types';
 
 /**
  * Built-in looks. Each preset gives the base colors for the variants it
@@ -19,6 +19,7 @@ interface Look {
   contrast?: number;
   opaque?: boolean;
   glass?: boolean;
+  backdrop?: ThemeBackdrop;
   fonts?: Partial<ThemeTypefaces>;
   signals?: Partial<ThemeSignals>;
 }
@@ -33,6 +34,7 @@ function look(variant: ThemeVariant, spec: Look): ThemeRecipe {
     fonts: { ui: null, code: null, ...spec.fonts },
     opaqueWindows: spec.opaque ?? false,
     glassWindow: spec.glass ?? false,
+    ...(spec.backdrop ? { backdrop: spec.backdrop } : {}),
     semanticColors: { ...SIGNALS[variant], ...spec.signals },
   };
 }
@@ -75,6 +77,11 @@ export const THEME_PRESETS: readonly ThemePreset[] = [
     { surface: '#1c1c1e', ink: '#f5f5f7', accent: '#0a84ff', glass: true },
     { surface: '#ffffff', ink: '#1d1d1f', accent: '#007aff', glass: true }
   ),
+  // Dot-matrix backdrops: the window paints a slow picture in dots under
+  // translucent panels. Aurora is light on a night surface; Hano (contour
+  // lines, like a map) is ink on paper, so each exists for one variant only.
+  preset('aurora', 'Aurora', 'aegis', { surface: '#0a0b12', ink: '#eceef6', accent: '#62b0ff', backdrop: 'aurora' }),
+  preset('hano', 'Hano', 'aegis', undefined, { surface: '#f7f7fa', ink: '#23263a', accent: '#4a5fe0', backdrop: 'contour' }),
   // Brand looks
   preset(
     'absolutely',

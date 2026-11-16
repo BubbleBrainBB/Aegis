@@ -8,8 +8,10 @@ import {
   LOCAL_FACE_PREFIX,
   type FontOverrides,
 } from './theme-tokens';
+import { isThemeBackdrop } from './theme-types';
 import type {
   AppearanceState,
+  ThemeBackdrop,
   ThemeChoice,
   ThemeMode,
   ThemePreset,
@@ -102,7 +104,26 @@ export function normalizeRecipe(value: unknown, variant: ThemeVariant, fallback 
     fonts: normalizeTypefaces(input.fonts),
     opaqueWindows: typeof input.opaqueWindows === 'boolean' ? input.opaqueWindows : fallback.opaqueWindows,
     glassWindow: typeof input.glassWindow === 'boolean' ? input.glassWindow : fallback.glassWindow,
+    ...normalizeBackdrop(input, fallback),
     semanticColors: normalizeSignals(input.semanticColors, fallback.semanticColors),
+  };
+}
+
+/**
+ * The backdrop fields are optional and only written when set, so recipes
+ * saved before they existed stay as they were. A key that is present but
+ * empty (an edit that turns the backdrop off) clears it; an absent key
+ * takes the fallback's.
+ */
+function normalizeBackdrop(input: Record<string, unknown>, fallback: ThemeRecipe): Pick<ThemeRecipe, 'backdrop' | 'backdropStrength' | 'backdropMotion'> {
+  const backdrop = 'backdrop' in input ? (isThemeBackdrop(input.backdrop) ? input.backdrop : undefined) : fallback.backdrop;
+  if (!backdrop) return {};
+  const strength = typeof input.backdropStrength === 'number' && Number.isFinite(input.backdropStrength) ? input.backdropStrength : fallback.backdropStrength;
+  const motion = typeof input.backdropMotion === 'boolean' ? input.backdropMotion : fallback.backdropMotion;
+  return {
+    backdrop,
+    ...(strength !== undefined && Math.round(strength) < 100 ? { backdropStrength: Math.round(Math.max(0, strength)) } : {}),
+    ...(motion === false ? { backdropMotion: false } : {}),
   };
 }
 
@@ -244,7 +265,7 @@ function registerLocalFace(face: SystemFontFace | undefined): void {
   });
 }
 
-/** Fired on window after a different appearance lands, for parts that paint outside CSS (terminals). */
+/** Fired on window after a different appearance lands, for parts that paint outside CSS (terminals, the backdrop). */
 export const THEME_APPLIED_EVENT = 'aegis:theme-applied';
 
 let lastApplied = '';
@@ -283,8 +304,12 @@ export function renderAppearance(input: { mode: ThemeMode; state: AppearanceStat
   // What the theme asks for goes to the main process; the page only turns
   // transparent when this window can actually show glass.
   const wanted = choice.recipe.glassWindow ? 'glass' : 'solid';
-  const material = wanted === 'glass' && windowGlassState().active && !windowFullScreen ? 'glass' : 'solid';
-  const signature = JSON.stringify([input.mode, variant, wanted, material, variables]);
+  const glass = wanted === 'glass' && windowGlassState().active && !windowFullScreen;
+  // A backdrop is painted by the page itself, so it needs nothing from the window.
+  const backdrop = glass ? undefined : choice.recipe.backdrop;
+  const material = glass ? 'glass' : backdrop ? 'field' : 'solid';
+  const motion = choice.recipe.backdropMotion !== false;
+  const signature = JSON.stringify([input.mode, variant, wanted, material, backdrop, motion, variables]);
   if (signature === lastApplied) return;
   lastApplied = signature;
 
@@ -296,6 +321,9 @@ export function renderAppearance(input: { mode: ThemeMode; state: AppearanceStat
   root.dataset.themeMode = input.mode;
   root.dataset.themeVariant = variant;
   root.dataset.windowMaterial = material;
+  if (backdrop) root.dataset.windowBackdrop = backdrop;
+  else delete root.dataset.windowBackdrop;
+  root.dataset.backdropMotion = motion ? 'on' : 'off';
   for (const [name, value] of Object.entries(variables)) root.style.setProperty(name, value);
   void root.offsetHeight;
   requestAnimationFrame(() => root.classList.remove('no-transitions'));
@@ -307,4 +335,11 @@ export function renderAppearance(input: { mode: ThemeMode; state: AppearanceStat
     lastSentToMain = forMain;
     void window.electron.setTheme(input.mode, { variant, background, material: wanted }).catch(() => undefined);
   }
+}
+
+/** The backdrop the document shows right now, as renderAppearance left it. */
+export function currentBackdrop(): { kind: ThemeBackdrop | null; motion: boolean } {
+  const data = typeof document === 'undefined' ? undefined : document.documentElement.dataset;
+  const kind = isThemeBackdrop(data?.windowBackdrop) ? data.windowBackdrop : null;
+  return { kind, motion: data?.backdropMotion !== 'off' };
 }

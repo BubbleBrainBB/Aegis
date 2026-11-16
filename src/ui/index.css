@@ -666,6 +666,104 @@ html[data-window-material='glass'] .aegis-window-left-surface {
   -webkit-backdrop-filter: none;
 }
 
+/* Field: the window paints a dot-matrix picture under its panels (a theme
+   with a backdrop). Unlike glass nothing comes from the system: the canvas
+   sits at the bottom of the shell and each panel is a tint of the surface
+   over it. Chrome shows the dots directly, the sidebar and anything that is
+   read frost them, and the new-task home leaves them sharp. */
+.aegis-dot-field {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: var(--app-field-strength, 1);
+}
+
+.aegis-dot-field canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+html[data-window-material='field'] .aegis-window-shell {
+  position: relative;
+  isolation: isolate;
+  background-color: var(--app-field-base);
+}
+
+/* The title-bar row: a fade over the dots so its controls stay readable. */
+html[data-window-material='field'] .aegis-window-shell::after {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: -1;
+  height: 44px;
+  background: linear-gradient(to bottom, var(--app-field-scrim), transparent);
+  pointer-events: none;
+}
+
+html[data-window-material='field'] {
+  --field-frost: blur(30px) saturate(140%);
+  --chat-pane-surface: transparent;
+  --chat-pane-surface-muted: color-mix(in srgb, var(--bg-secondary) 24%, transparent);
+  --utility-pane-surface: var(--app-field-read);
+  --utility-pane-surface-strong: color-mix(in srgb, var(--bg-primary) 40%, transparent);
+  --utility-pane-backdrop: var(--field-frost);
+  --chat-chrome-chip-surface: color-mix(in srgb, var(--bg-primary) 55%, transparent);
+  --chat-chrome-chip-backdrop: blur(10px) saturate(140%);
+}
+
+html[data-window-material='field'] .aegis-sheet,
+html[data-window-material='field'] .aegis-content-card {
+  background-color: var(--app-field-read);
+  backdrop-filter: var(--field-frost);
+  -webkit-backdrop-filter: var(--field-frost);
+}
+
+/* The new-task home has nothing to read behind its heading: the picture stays sharp. */
+html[data-window-material='field'] .aegis-sheet:has(.aegis-new-thread-landing) {
+  background-color: var(--app-field-sheet);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+html[data-window-material='field'] .aegis-new-thread-landing {
+  --new-thread-composer-background: var(--app-field-card);
+}
+
+/* The heading sits right on the dots: a halo in the surface colour keeps its letters clear of them. */
+html[data-window-material='field'] .aegis-new-thread-heading {
+  text-shadow: 0 0 2px var(--app-field-base), 0 0 10px var(--app-field-base), 0 0 22px var(--app-field-base);
+}
+
+html[data-window-material='field'] .aegis-composer-context-row {
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+/* The pane's sheet is already frosted; what sits in it must not tint it again. */
+html[data-window-material='field'] [data-right-utility-workspace] [class~="bg-[var(--bg-primary)]"] {
+  background-color: transparent;
+}
+
+html[data-window-material='field'] [data-right-utility-workspace] {
+  --preview-surface: transparent;
+}
+
+html[data-window-material='field'] [data-right-utility-workspace] .aegis-md-editor {
+  --aegis-md-editor-surface: transparent;
+  --aegis-md-editor-chrome-surface: transparent;
+}
+
+html[data-window-material='field'] .aegis-sidebar-panel,
+html[data-window-material='field'] .aegis-window-left-surface {
+  background-color: var(--app-field-sidebar);
+  backdrop-filter: blur(28px) saturate(150%);
+  -webkit-backdrop-filter: blur(28px) saturate(150%);
+}
+
 /* Skin (wallpaper) — a user-picked image layered under the chat workspace.
    Chat and utility surfaces paint through these vars so the wallpaper shows only while
    a skin is active; without one they resolve to the normal opaque colors. */
