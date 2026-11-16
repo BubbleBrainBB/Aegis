@@ -119,7 +119,9 @@ export function deriveThemeTokens(recipe: ThemeRecipe, variant: ThemeVariant, ov
     // sheet is nearly clear so the dots stay sharp there.
     '--app-field-base': surface,
     '--app-field-scrim': withAlpha(surface, dark ? 0.6 : 0.66),
-    '--app-field-sidebar': withAlpha(surface, (dark ? 0.46 : 0.32) + 0.1 * depth),
+    // "Translucent sidebar" off keeps the sidebar solid here too.
+    '--app-field-sidebar': opaque ? surface : withAlpha(surface, (dark ? 0.46 : 0.32) + 0.1 * depth),
+    '--app-field-sidebar-backdrop': opaque ? 'none' : 'blur(28px) saturate(150%)',
     '--app-field-sheet': withAlpha(surface, 0.12 + 0.08 * depth),
     '--app-field-read': withAlpha(canvas, (dark ? 0.6 : 0.5) + 0.1 * depth),
     '--app-field-card': withAlpha(dark ? raised : paper, dark ? 0.64 : 0.74),

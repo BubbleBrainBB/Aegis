@@ -45,6 +45,22 @@ const shared = exportTheme('dark', choiceFor(state, 'dark'));
 assert.equal(choiceFor(importTheme(DEFAULT_APPEARANCE, 'dark', shared), 'dark').recipe.backdrop, 'aurora');
 assert.equal(choiceFor(applyPreset(state, 'dark', 'linear'), 'dark').recipe.backdrop, undefined);
 assert.equal(choiceFor(patchRecipe(state, 'dark', { backdrop: undefined }), 'dark').recipe.backdrop, undefined);
+// A preset's backdrop that was turned off stays off through a share string (an import fills gaps from the preset).
+const cleared = patchRecipe(state, 'dark', { backdrop: undefined });
+assert.equal(choiceFor(cleared, 'dark').presetId, 'aurora');
+assert.equal(choiceFor(importTheme(DEFAULT_APPEARANCE, 'dark', exportTheme('dark', choiceFor(cleared, 'dark'))), 'dark').recipe.backdrop, undefined);
+assert.equal(choiceFor(importTheme(DEFAULT_APPEARANCE, 'dark', exportTheme('dark', choiceFor(cleared, 'dark'))), 'dark').presetId, 'aurora');
+// A string from before backdrops existed has no such key: a plain theme stays plain.
+const plain = exportTheme('dark', choiceFor(DEFAULT_APPEARANCE, 'dark')).replace(',"backdrop":null', '');
+assert.ok(!plain.includes('backdrop'));
+assert.equal(choiceFor(importTheme(DEFAULT_APPEARANCE, 'dark', plain), 'dark').recipe.backdrop, undefined);
+// "Translucent sidebar" off: the sidebar is solid over a backdrop as well.
+const frosted = themeVariables(choiceFor(state, 'dark'), 'dark');
+const solid = themeVariables(choiceFor(patchRecipe(state, 'dark', { opaqueWindows: true }), 'dark'), 'dark');
+assert.match(frosted['--app-field-sidebar'], /^rgba\(/);
+assert.match(frosted['--app-field-sidebar-backdrop'], /blur/);
+assert.equal(solid['--app-field-sidebar'], choiceFor(state, 'dark').recipe.surface);
+assert.equal(solid['--app-field-sidebar-backdrop'], 'none');
 // Any dark theme can take the aurora, keeping its own colours.
 const linear = patchRecipe(applyPreset(DEFAULT_APPEARANCE, 'dark', 'linear'), 'dark', { backdrop: 'aurora' });
 assert.equal(choiceFor(linear, 'dark').recipe.backdrop, 'aurora');

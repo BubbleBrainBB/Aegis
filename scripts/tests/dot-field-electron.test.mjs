@@ -115,6 +115,13 @@ app.whenReady().then(async()=>{
   assert.equal(await moves(),false,'motion off keeps it still');
   await js('qa.app.getState().updateThemeVariant("dark",{backdropMotion:true})');await delay(300);
 
+  // "Translucent sidebar" off makes the sidebar solid over the backdrop too.
+  await js('qa.app.getState().updateThemeVariant("dark",{opaqueWindows:true})');await delay(300);
+  assert.equal(await style('.aegis-sidebar-panel','backdropFilter'),'none','an opaque sidebar is not frosted');
+  assert.doesNotMatch(await style('.aegis-sidebar-panel','backgroundColor'),/rgba\(/,'and has no see-through tint');
+  await js('qa.app.getState().updateThemeVariant("dark",{opaqueWindows:false})');await delay(300);
+  assert.match(await style('.aegis-sidebar-panel','backdropFilter'),/blur\(28px\)/);
+
   // Strength, and turning it off, from the theme editor's own fields.
   await js('qa.app.getState().updateThemeVariant("dark",{backdropStrength:40})');await delay(300);
   assert.equal(await style('.aegis-dot-field','opacity'),'0.4');

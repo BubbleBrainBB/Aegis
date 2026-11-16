@@ -204,7 +204,10 @@ export function migrateLegacyFonts(state: AppearanceState, uiFont: string, codeF
 // ===== Share strings =====
 
 export function exportTheme(variant: ThemeVariant, choice: ThemeChoice): string {
-  return SHARE_PREFIX + JSON.stringify({ variant, preset: choice.presetId, recipe: choice.recipe });
+  // An import fills what a recipe leaves out from its preset. "No backdrop" is
+  // written out, or a preset that has one would turn it back on.
+  const recipe = { ...choice.recipe, backdrop: choice.recipe.backdrop ?? null };
+  return SHARE_PREFIX + JSON.stringify({ variant, preset: choice.presetId, recipe });
 }
 
 function readPayload(body: string): Record<string, unknown> {

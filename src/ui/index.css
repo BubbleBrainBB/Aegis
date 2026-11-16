@@ -760,8 +760,8 @@ html[data-window-material='field'] [data-right-utility-workspace] .aegis-md-edit
 html[data-window-material='field'] .aegis-sidebar-panel,
 html[data-window-material='field'] .aegis-window-left-surface {
   background-color: var(--app-field-sidebar);
-  backdrop-filter: blur(28px) saturate(150%);
-  -webkit-backdrop-filter: blur(28px) saturate(150%);
+  backdrop-filter: var(--app-field-sidebar-backdrop);
+  -webkit-backdrop-filter: var(--app-field-sidebar-backdrop);
 }
 
 /* Skin (wallpaper) — a user-picked image layered under the chat workspace.
