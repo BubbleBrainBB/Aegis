@@ -11,6 +11,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { MAIN_BOT_LIMITS, isMainBotLookupToolName, mainBotReportTitles, parseMainBotTaskResult } from '../../src/shared/main-bot';
 import {
   MainBotService,
+  NOT_SIGNED_IN,
+  claudeForModel,
   mainBotContextLimit,
   taskBrief,
   type MainBotAgent,
@@ -22,6 +24,7 @@ import {
   type ToolOutcome,
 } from '../../src/electron/libs/main-bot/service';
 import { MAIN_BOT_MEMORY_LIMITS, MainBotMemory } from '../../src/electron/libs/main-bot/memory';
+import { STARTUP_FAILED, startTaskSession } from '../../src/electron/libs/main-bot/start';
 import { MainBotStore, type MainBotDb } from '../../src/electron/libs/main-bot/store';
 
 const LOCAL_ID = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -47,6 +50,8 @@ function setup(prepare?: (db: MainBotDb) => void) {
       ] as MainBotAgent[] | null,
       mini: [{ provider: 'codex', label: 'Codex', unavailable: null }] as MainBotAgent[] | null,
     },
+    /** The model each question about a Mac's agents came with. */
+    agentModels: [] as Array<string | undefined>,
     preferred: 'claude',
     gitRepos: new Set(['/code/coworker']),
     starts: [] as MainBotStart[],
@@ -76,7 +81,10 @@ function setup(prepare?: (db: MainBotDb) => void) {
     now: () => clock,
     devices: () => world.devices,
     tasks: () => world.tasks,
-    agents: async (deviceId) => (deviceId === null ? world.agents.local : world.agents.mini),
+    agents: async (deviceId, model) => {
+      world.agentModels.push(model);
+      return deviceId === null ? world.agents.local : world.agents.mini;
+    },
     preferredAgent: () => world.preferred,
     isGitRepo: async (path) => world.gitRepos.has(path),
     start: async (input) => {
@@ -342,6 +350,88 @@ async function main() {
     await bot.checkRemote();
     assert.ok(store.get(id));
     world.tasks.push(...kept);
+    // Still listed, as it stood when its Mac went offline: that says nothing of the turn. It keeps waiting too.
+    const mini = world.devices.find((device) => device.id === 'mini');
+    assert.ok(mini);
+    mini.online = false;
+    finish(world.tasks.find((task) => task.id === id));
+    world.replies.set(id, { asked: 'once more', reply: 'done once more' });
+    tick(60_000);
+    await bot.checkRemote();
+    assert.equal(world.told.length, 2, 'an offline Mac reports nothing');
+    assert.ok(store.get(id));
+    assert.equal(bot.waitsOnRemote(), true);
+    mini.online = true;
+    await bot.checkRemote();
+    assert.equal(world.told.length, 3);
+    assert.match(world.told[2].text, /done once more/);
+  }
+
+  // --- A session that exists but whose agent never started: the bot hears of it ---
+  {
+    const calls: Array<[string, string]> = [];
+    const failed = (sessionId: string, why: string) => void calls.push([sessionId, why]);
+    // The id is the answer as soon as the session exists; a start that comes to nothing afterwards is reported.
+    assert.equal(await startTaskSession(async (created) => (created('s1'), null), failed), 's1');
+    await new Promise((done) => setImmediate(done));
+    assert.deepEqual(calls, [['s1', STARTUP_FAILED]]);
+    // So is one that throws afterwards, with what it threw.
+    calls.length = 0;
+    assert.equal(await startTaskSession(async (created) => { created('s2'); throw new Error('no worktree'); }, failed), 's2');
+    await new Promise((done) => setImmediate(done));
+    assert.deepEqual(calls, [['s2', `${STARTUP_FAILED} (no worktree)`]]);
+    // A start that went well, and one that made no session, report nothing here.
+    calls.length = 0;
+    assert.equal(await startTaskSession(async (created) => (created('s3'), 's3'), failed), 's3');
+    assert.equal(await startTaskSession(async () => null, failed), null);
+    await assert.rejects(startTaskSession(async () => { throw new Error('refused'); }, failed), /refused/);
+    await new Promise((done) => setImmediate(done));
+    assert.deepEqual(calls, []);
+
+    // With the bot: it waits on the task by the time the failure arrives, and gets a report for it.
+    const { bot, store, world, host } = setup();
+    const plain = host.start;
+    host.start = async (input) => {
+      const made = await plain(input);
+      if ('error' in made) return made;
+      const id = await startTaskSession(
+        async (created) => (created(made.id), null),
+        // As the app does it: after the rest of the turn's teardown.
+        (sessionId, why) => setTimeout(() => {
+          finish(world.tasks.find((task) => task.id === sessionId), 'failed');
+          void bot.onTaskTurnEnded(sessionId, 'error', why);
+        }, 0),
+      );
+      return id ? { id } : { error: 'The task could not start.' };
+    };
+    const id = ok(await bot.startTask({ title: 'Never ran', prompt: 'run', project: 'notes' })).sessionId as string;
+    await new Promise((done) => setTimeout(done, 20));
+    assert.equal(world.told.length, 1, 'the bot is told instead of waiting until the app starts again');
+    assert.match(world.told[0].text, /\[Report from "Never ran"\].* It stopped with an error\./);
+    assert.ok(world.told[0].text.includes(STARTUP_FAILED));
+    assert.equal(store.get(id), null);
+  }
+
+  // --- Claude without an Anthropic login: ready when the task's model needs none ---
+  {
+    const listed: MainBotAgent[] = [
+      { provider: 'claude', label: 'Claude', unavailable: NOT_SIGNED_IN },
+      { provider: 'kimi', label: 'Kimi', unavailable: NOT_SIGNED_IN },
+    ];
+    assert.deepEqual(await claudeForModel(listed, async () => true), [{ provider: 'claude', label: 'Claude', unavailable: null }, listed[1]]);
+    assert.equal(await claudeForModel(listed, async () => false), listed);
+    assert.equal(await claudeForModel(listed, async () => { throw new Error('no probe'); }), listed);
+    // Only the login is a question of the model: a Claude that is not installed stays that.
+    const broken: MainBotAgent[] = [{ provider: 'claude', label: 'Claude', unavailable: 'not installed or not working' }];
+    let asked = 0;
+    assert.equal(await claudeForModel(broken, async () => (asked++, true)), broken);
+    assert.equal(asked, 0);
+    // The question about a Mac's agents carries the model the bot named for the task.
+    const { bot, world } = setup();
+    ok(await bot.startTask({ title: 'With a model', prompt: 'run', project: 'notes', model: ' glm-5 ' }));
+    assert.equal(world.agentModels.at(-1), 'glm-5');
+    ok(await bot.startTask({ title: 'Without one', prompt: 'run', project: 'notes' }));
+    assert.equal(world.agentModels.at(-1), undefined);
   }
 
   // --- A report the bot has not taken yet survives writing to the task again ---
