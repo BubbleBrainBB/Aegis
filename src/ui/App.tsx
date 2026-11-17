@@ -1,5 +1,6 @@
 import { opensTurn } from '../shared/turn-boundary';
 import { EnvironmentPanelProvider } from './components/environment/EnvironmentPanelLayout';
+import { DotFieldBackdrop } from './components/DotFieldBackdrop';
 import { Image as ImageStudioIcon } from './components/icons';
 import { ImageStudioPanel, ImageStudioFileActions } from './components/ImageStudioPanel';
 import { Palette as DesignIcon } from './components/icons';
@@ -129,6 +130,7 @@ import * as DialogPrimitive from '@/ui/components/ui/dialog';
 import { getTaskTabSessionId, getWorkflowMemberSessionId, isSideChatPendingTab } from './utils/right-utility-tabs';
 import { MainBotTaskStateIcon } from './components/main-bot/MainBotTaskChip';
 import { openTask } from './utils/task-state';
+import { buildWorkspaceReviewSelection } from './utils/review-diff-selection';
 import { useWorkflowStore, workflowSessionLabel } from './store/useWorkflowStore';
 import { getDockedRightPanelMaxWidth, resolveDockedRightPanelWidth, RIGHT_PANEL_MIN_WIDTH } from './utils/right-panel-width';
 import { ResizableRightPane } from './components/ResizableRightPane';
@@ -146,6 +148,7 @@ import type {
   ProjectUtilityPanelKind,
   ProjectUtilityPanelTarget,
   ProjectUtilityTabDescriptor,
+  GitPatchScope,
 } from './types';
 
 const COMMIT_GENERATION_MIN_VISIBLE_MS = 450;
@@ -618,7 +621,12 @@ export function App() {
     setProjectTreeCollapsed,
   ]);
 
-  const openEnvironmentProjectPanel = useCallback((view: 'files' | 'changes') => {
+  const openEnvironmentProjectPanel = useCallback((view: 'files' | 'changes', scope?: GitPatchScope) => {
+    // The panel keeps its last source (often a turn); a row that shows totals
+    // for one scope has to land on that scope.
+    if (view === 'changes' && scope) {
+      useAppStore.getState().setReviewDiffSelection(buildWorkspaceReviewSelection(scope));
+    }
     openRightUtilityTab(view === 'changes' ? 'review' : 'files');
   }, [openRightUtilityTab]);
 
@@ -1190,6 +1198,8 @@ export function App() {
         windowShellRounded ? 'aegis-window-shell--rounded' : ''
       }`}
     >
+      {/* Themes with a backdrop paint it here, under every panel; it rests while an answer is being written. */}
+      <DotFieldBackdrop />
       {/* Codex-style chrome: every column starts with a title-bar row on the
           window chrome; below it the sidebar panel, the main view and the
           right pane form one rounded sheet. */}

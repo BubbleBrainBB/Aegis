@@ -52,6 +52,47 @@ function report(error: unknown, where?: string) {
     }, 50);
 }
 
+// ── Compiling board source ─────────────────────────────────────────────────
+
+/**
+ * Turns source text into a function without eval. A frame also obeys the
+ * policy of the page that hosts it, and the packaged app's forbids eval, so
+ * `new Function` works in development and fails once the app is installed.
+ * A script element carrying the frame's nonce is allowed by both policies.
+ */
+const compiledSlots: Record<string, unknown> = {};
+(window as unknown as { __aegisCompiled: typeof compiledSlots }).__aegisCompiled = compiledSlots;
+let compiledCount = 0;
+function compile<T extends (...args: never[]) => unknown>(params: string, body: string): T {
+  const slot = `f${++compiledCount}`;
+  let failure: unknown = null;
+  // A syntax error in an inline script is reported to the window, not thrown here.
+  const onError = (event: ErrorEvent) => {
+    failure = event.error ?? new SyntaxError(event.message);
+    event.preventDefault();
+  };
+  const element = document.createElement("script");
+  element.nonce = nonce;
+  element.setAttribute("data-aegis-frame", "");
+  const text = `function(${params}){${body}\n}`;
+  element.textContent = `window.__aegisCompiled[${JSON.stringify(slot)}]=${text}`;
+  window.addEventListener("error", onError);
+  try {
+    // An inline script runs while it is being inserted.
+    (document.head ?? document.documentElement).appendChild(element);
+  } finally {
+    window.removeEventListener("error", onError);
+    element.remove();
+  }
+  const made = compiledSlots[slot];
+  delete compiledSlots[slot];
+  if (typeof made !== "function") throw failure ?? new Error("the frame's security policy did not let this script run");
+  // `new Function` parsed the body on its own. Here a stray closing brace would end the
+  // wrapper early and still leave some function in the slot; its text gives that away.
+  if (Function.prototype.toString.call(made) !== text) throw new SyntaxError("Unexpected '}': the source closes a block it did not open");
+  return made as T;
+}
+
 // ── Expressions ────────────────────────────────────────────────────────────
 
 type Scope = Record<string, unknown>;
@@ -64,7 +105,7 @@ function expr(source: string, where: string): Expr {
   if (!fn) {
     try {
       // Sloppy-mode `with` so bare names resolve from the scope, then globals.
-      const compiled = new Function("$scope", `with($scope){return (${source});}`) as Expr;
+      const compiled = compile<Expr>("$scope", `with($scope){return (${source});}`);
       fn = (scope) => {
         try {
           return compiled(scope);
@@ -85,7 +126,7 @@ function expr(source: string, where: string): Expr {
 function handler(source: string, where: string): (scope: Scope) => void {
   let compiled: ((scope: Scope) => unknown) | null = null;
   try {
-    compiled = new Function("$scope", `with($scope){${source};}`) as (scope: Scope) => unknown;
+    compiled = compile<(scope: Scope) => unknown>("$scope", `with($scope){${source};}`);
   } catch (error) {
     report(error, `${where} ${source.slice(0, 80)}`);
   }
@@ -308,7 +349,7 @@ function compileLogic(source: string | null, where: string): LogicClass | null {
   if (logicCache.has(source)) return logicCache.get(source)!;
   let cls: LogicClass | null = null;
   try {
-    const made = new Function("AegisBoard", `${source}\n;return typeof Board !== "undefined" ? Board : (typeof Component !== "undefined" ? Component : null);`)(AegisBoard);
+    const made = compile<(base: typeof AegisBoard) => unknown>("AegisBoard", `${source}\n;return typeof Board !== "undefined" ? Board : (typeof Component !== "undefined" ? Component : null);`)(AegisBoard);
     if (typeof made !== "function") throw new Error("logic must define `class Board extends AegisBoard { … }`");
     cls = made as LogicClass;
   } catch (error) {
@@ -472,6 +513,28 @@ function render(nodes: TNode[], scope: Scope, ctx: RenderContext, keyPrefix = ""
   return out;
 }
 
+/**
+ * The elements this runtime rendered. Anything else in the page was put there
+ * by hand, by the board's logic (or by the canvas, as an insert preview).
+ */
+const rendered = new WeakSet<Element>();
+const track = (el: Element | null) => {
+  if (el) rendered.add(el);
+};
+/** Tag names of what logic added to the page, outermost elements only. */
+function addedByLogic(): string[] {
+  const out: string[] = [];
+  const walk = (parent: Element) => {
+    for (const el of Array.from(parent.children)) {
+      if (out.length >= 200) return;
+      if (rendered.has(el)) walk(el);
+      else if (!el.hasAttribute("data-aegis-insert-preview")) out.push(el.localName);
+    }
+  };
+  walk(document.body);
+  return out;
+}
+
 function element(n: TElement, scope: Scope, ctx: RenderContext, key: string): ReactNode {
   if (n.slot) return h(Fragment, { key }, ctx.slot ? render(ctx.slot.nodes, ctx.slot.scope, ctx.slot.ctx, key + "s") : null);
   if (n.component !== undefined || n.tag === "aegis-use") return h(Instance, { key, node: n, scope, ctx });
@@ -481,6 +544,7 @@ function element(n: TElement, scope: Scope, ctx: RenderContext, key: string): Re
     setProp(props, n.tag, name, p ? join(p, scope) : raw);
   }
   for (const [name, value] of n.binds) setProp(props, n.tag, name, value(scope));
+  props.ref = track;
   if (ctx.instance !== undefined && !ctx.inComponent) props["data-aegis-instance"] = ctx.instance;
   if (ctx.rootId) {
     props["data-aegis-node-id"] = ctx.rootId;
@@ -551,6 +615,8 @@ function useLogic(cls: LogicClass | null, props: Record<string, unknown>, holder
   }
   // mounted() once per instance: a saved edit remounts the tree but keeps the
   // board's instance (and its timers), so it is neither re-mounted nor unmounted.
+  // The page under it is new, though: whatever the logic added or changed by
+  // hand is gone, and updated() is where it learns that and puts it back.
   useEffect(() => {
     if (!instance) return;
     if (!mountedInstances.has(instance)) {
@@ -559,6 +625,12 @@ function useLogic(cls: LogicClass | null, props: Record<string, unknown>, holder
         instance.mounted();
       } catch (error) {
         report(error, "mounted()");
+      }
+    } else {
+      try {
+        instance.updated();
+      } catch (error) {
+        report(error, "updated()");
       }
     }
     return () => {
@@ -600,6 +672,7 @@ function Instance({ node, scope, ctx }: { node: TElement; scope: Scope; ctx: Ren
   const layerName = node.attrs.find(([a]) => a === "data-aegis-layer-name")?.[1] || name;
   if (!compiled)
     return h("div", {
+      ref: track,
       "data-aegis-node-id": id,
       "data-aegis-layer-name": layerName,
       style: { padding: 12, border: "1px dashed #d33", color: "#d33", font: "12px system-ui" },
@@ -614,7 +687,7 @@ function Instance({ node, scope, ctx }: { node: TElement; scope: Scope; ctx: Ren
   // One root takes the instance's layer id, so the canvas selects the instance.
   if (roots.length === 1 && roots[0].kind === "element")
     return h(Fragment, null, render(roots, inner, { ...childCtx, rootId: id, rootName: layerName }));
-  return h("div", { "data-aegis-node-id": id, "data-aegis-layer-name": layerName, style: { display: "block" } }, render(compiled.template, inner, childCtx));
+  return h("div", { ref: track, "data-aegis-node-id": id, "data-aegis-layer-name": layerName, style: { display: "block" } }, render(compiled.template, inner, childCtx));
 }
 
 class Boundary extends ReactComponent<{ children?: ReactNode; epoch: number }, { failed: boolean; epoch: number }> {
@@ -630,7 +703,7 @@ class Boundary extends ReactComponent<{ children?: ReactNode; epoch: number }, {
   }
   render() {
     return this.state.failed
-      ? h("div", { style: { padding: 16, font: "13px system-ui", color: "#b42318" } }, "This board's logic failed to render. Its errors are listed for the agent.")
+      ? h("div", { ref: track, style: { padding: 16, font: "13px system-ui", color: "#b42318" } }, "This board's logic failed to render. Its errors are listed for the agent.")
       : this.props.children;
   }
 }
@@ -682,7 +755,10 @@ function boot() {
   post("ready", { mode });
 }
 
-/** A saved change: new head styles, body attributes and template; logic state survives when its source is unchanged. */
+/**
+ * A saved change: new head styles, body attributes and template. Logic state
+ * survives when its source is unchanged, and the kept instance gets updated().
+ */
 function update(html: string) {
   const next = new DOMParser().parseFromString(html, "text/html");
   const owned = (n: Element) => n.hasAttribute("data-aegis-frame") || n.hasAttribute("data-aegis-runtime") || n.matches(`script[type="${COMPONENTS_TYPE}"]`);
@@ -702,6 +778,8 @@ const runtime = {
   update(html: string) {
     update(html);
   },
+  /** For design_preview: what the logic has added to the page by hand. */
+  added: addedByLogic,
 };
 (window as unknown as { __aegisRuntime: typeof runtime }).__aegisRuntime = runtime;
 runtime.ready = new Promise<void>((resolve) => {

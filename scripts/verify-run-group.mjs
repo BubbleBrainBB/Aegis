@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Compiles + runs the fan-out run-group tests (git plumbing against a real
-// scratch repository: worktree hygiene, base_ref locking, recycling).
+// Compiles + runs the git plumbing tests against real scratch repositories:
+// the fan-out run-group (worktree hygiene, base_ref locking, recycling) and
+// the branch totals behind the Environment card.
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -16,7 +17,7 @@ const tscBin = path.join(
   process.platform === 'win32' ? 'tsc.cmd' : 'tsc'
 );
 
-const testFiles = ['scripts/tests/run-group-git.test.ts'];
+const testFiles = ['scripts/tests/run-group-git.test.ts', 'scripts/tests/git-branch-changes.test.ts'];
 
 const compile = spawnSync(
   tscBin,

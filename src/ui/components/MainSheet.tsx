@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
-import { TitlebarControls, useSidebarCollapsed } from './Sidebar';
+import { TitlebarControls } from './Sidebar';
+import { useSidebarCollapsed } from '../store/sidebar-collapse';
 
 /**
  * A main-column view, Codex-style: two tones only. The view's title and

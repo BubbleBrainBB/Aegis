@@ -1,8 +1,12 @@
 // The design component runtime in a real Chromium frame: template + logic +
 // props render with layer ids intact; events and board links work only in
-// play mode; a saved update keeps logic state; broken logic reports errors.
-const { app, BrowserWindow } = require('electron');
+// play mode; a saved update keeps logic state and tells the logic through
+// updated(), so it can put back what it added; broken logic reports errors.
+const { app, BrowserWindow, session } = require('electron');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
 
 app.on('window-all-closed', () => {});
 const dist = '../../dist-electron';
@@ -93,17 +97,105 @@ app.whenReady().then(async () => {
     const bad = await open(broken, 'play');
     const errors = await js(bad, 'window.__aegisRuntime.errors');
     assert.ok(errors.some((e) => /logic/.test(e)), `logic error reported: ${errors}`);
+    assert.ok(errors.some((e) => /board logic: .*Unexpected/.test(e)), `the syntax error itself is reported: ${errors}`);
+    assert.ok(!errors.some((e) => /security policy/.test(e)), `a syntax error is not mistaken for a blocked script: ${errors}`);
     assert.ok(errors.some((e) => /n\.missing\.deep/.test(e)), `expression error reported: ${errors}`);
     assert.equal(await js(bad, 'document.querySelectorAll("[data-aegis-node-id=item]").length'), 3, 'template renders without logic');
     bad.destroy();
+    // Source that closes its own wrapper early is refused, as it was when it was parsed on its own.
+    const stray = await open(BOARD.replace('values() { return { count: this.props.items.length }; }\n}', 'values() { return { count: this.props.items.length }; }\n}\n}\nfunction leaked(x) { return x;'), 'play');
+    const strayErrors = await js(stray, 'window.__aegisRuntime.errors');
+    assert.ok(strayErrors.some((e) => /board logic: .*closes a block/.test(e)), `a stray closing brace is a logic error: ${strayErrors}`);
+    stray.destroy();
+    // Inside the packaged app: a board frame is a srcdoc iframe, so it obeys the
+    // window's policy as well as its own, and that policy forbids eval. Logic and
+    // expressions still have to run (development has no such policy, so only this catches it).
+    const appPolicy = /"(default-src 'self'; script-src [^"]+)"/.exec(fs.readFileSync(path.join(__dirname, '../../src/electron/main.ts'), 'utf8'))?.[1];
+    assert.ok(appPolicy, "the packaged app's policy is found in main.ts");
+    assert.ok(!/unsafe-eval/.test(appPolicy), "the packaged app's policy forbids eval");
+    const framed = designFrameHtml(BOARD, 'n0nce', true, { mode: 'edit' });
+    const attr = (text) => text.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+    // Delivered the way the packaged window gets it: a response header on a page loaded
+    // from a file. (A header also hides the nonce attribute, unlike a meta tag.)
+    const packaged = session.fromPartition(`packaged-policy-${Date.now()}`);
+    packaged.webRequest.onHeadersReceived((details, callback) => callback({ responseHeaders: { ...details.responseHeaders, 'Content-Security-Policy': [appPolicy] } }));
+    const hostDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aegis-board-host-'));
+    const hosted = async (html) => {
+      const file = path.join(hostDir, `${Math.random().toString(36).slice(2)}.html`);
+      fs.writeFileSync(file, `<!doctype html><iframe sandbox="allow-scripts" srcdoc="${attr(designFrameHtml(html, 'n0nce', true, { mode: 'edit' }))}"></iframe>`);
+      const w = new BrowserWindow({ show: false, width: 800, height: 600, webPreferences: { session: packaged, sandbox: true, contextIsolation: true, nodeIntegration: false } });
+      await w.loadFile(file);
+      let frame = null;
+      for (let i = 0; i < 100 && !frame; i++) {
+        const candidate = w.webContents.mainFrame.frames[0];
+        if (candidate && (await candidate.executeJavaScript('!!window.__aegisRuntime').catch(() => false))) frame = candidate;
+        else await new Promise((r) => setTimeout(r, 50));
+      }
+      assert.ok(frame, 'the board frame loads inside a page with the packaged policy');
+      await frame.executeJavaScript('window.__aegisRuntime.ready');
+      return { w, frame };
+    };
+    const { w: host, frame: inner } = await hosted(BOARD);
+    assert.equal(await host.webContents.executeJavaScript('(()=>{try{new Function("return 1")();return "eval allowed"}catch{return "eval blocked"}})()'), 'eval blocked', 'the host page really runs under the packaged policy');
+    assert.deepEqual(await inner.executeJavaScript('window.__aegisRuntime.errors'), [], 'no logic error under the packaged policy');
+    assert.equal(await inner.executeJavaScript('document.querySelector("[data-aegis-node-id=title]").textContent'), 'Preview title', 'expressions evaluate');
+    assert.deepEqual(await inner.executeJavaScript('[...document.querySelectorAll("[data-aegis-node-id=item]")].map(e=>e.className)'), ['on', '', ''], 'logic state reaches the template');
+    assert.equal(await inner.executeJavaScript('document.querySelector("[data-aegis-node-id=count]").textContent'), '3 items', 'values() runs');
+    assert.ok(!framed.includes('unsafe-eval'), 'a board frame asks for no eval either');
+    host.destroy();
+    // Broken source is still reported as what it is, not as a blocked script.
+    const { w: brokenHost, frame: brokenInner } = await hosted(broken);
+    const hostedErrors = await brokenInner.executeJavaScript('window.__aegisRuntime.errors');
+    assert.ok(hostedErrors.some((e) => /board logic: .*Unexpected/.test(e)), `syntax error reported under the packaged policy: ${hostedErrors}`);
+    assert.ok(!hostedErrors.some((e) => /security policy/.test(e)), `nothing was blocked: ${hostedErrors}`);
+    brokenHost.destroy();
+    fs.rmSync(hostDir, { recursive: true, force: true });
+
     // mounted() runs once per logic instance, not on every saved edit.
-    const COUNT = `<!doctype html><html><head></head><body><p data-aegis-node-id="n" data-aegis-if="true">{{ $board.count }}</p><script type="text/x-aegis-logic">class Board extends AegisBoard { count = 0; mounted() { this.count++; } }</script></body></html>`;
+    const COUNT = `<!doctype html><html><head></head><body><p data-aegis-node-id="n" data-aegis-if="true">{{ $board.count }}</p><script type="text/x-aegis-logic">class Board extends AegisBoard { count = 0; mounted() { this.count++; } updated() { window.updatedCalls = (window.updatedCalls || 0) + 1; } unmounted() { window.unmountedCalls = 1; } }</script></body></html>`;
     const mw = new BrowserWindow({ show: false, width: 400, height: 200, webPreferences: { sandbox: true, contextIsolation: true } });
     await mw.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(designFrameHtml(COUNT, 'n0nce', false, { mode: 'play' }))}`);
     await js(mw, 'window.__aegisRuntime.ready');
     await js(mw, `window.__aegisRuntime.update(${JSON.stringify(sanitizeDesignHtml(COUNT.replace('<p ', '<p title="edited" ')))});window.__aegisRuntime.update(${JSON.stringify(sanitizeDesignHtml(COUNT))})`);
     assert.equal(await js(mw, 'document.querySelector("[data-aegis-node-id=n]").textContent'), '1', 'mounted once across saved edits');
+    assert.equal(await js(mw, 'window.updatedCalls'), 2, 'updated() once per saved edit: the page under the kept logic is new');
+    assert.equal(await js(mw, 'window.unmountedCalls'), undefined, 'kept logic is not unmounted');
     mw.destroy();
+
+    // What logic adds to the page by hand: a saved edit rebuilds the page, so the
+    // logic puts it back from updated(). Driven as the canvas does, by message.
+    const stage = (logic) => `<!doctype html><html><head></head><body><main data-aegis-node-id="stage" class="stage"><h1 data-aegis-node-id="t">Title</h1></main><script type="text/x-aegis-logic">${logic}</script></body></html>`;
+    const draw = `this.canvas = document.createElement('canvas'); this.canvas.width = 20; this.canvas.height = 20; this.canvas.getContext('2d').fillRect(0, 0, 20, 20);`;
+    const KEEPS = stage(`class Board extends AegisBoard {
+  mounted() { this.attach(); }
+  updated() { this.attach(); }
+  attach() { const host = document.querySelector('.stage'); if (!host) return; if (!this.canvas) { ${draw} } if (this.canvas.parentNode !== host) host.append(this.canvas); }
+}`);
+    const LOSES = stage(`class Board extends AegisBoard { mounted() { ${draw} document.querySelector('.stage').append(this.canvas); } }`);
+    const canvasFrame = async (html) => {
+      const w = new BrowserWindow({ show: false, width: 400, height: 300, webPreferences: { sandbox: true, contextIsolation: true } });
+      await w.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(designFrameHtml(html, 'n0nce', true, { mode: 'edit' }))}`);
+      await js(w, 'window.__aegisRuntime.ready');
+      return w;
+    };
+    const patch = (w, html) => js(w, `new Promise(r=>{const on=e=>{if(e.data?.type==='aegis-design-patched'){removeEventListener('message',on);r(e.data.ok)}};addEventListener('message',on);postMessage({type:'aegis-design-patch',nonce:'n0nce',request:'r',html:${JSON.stringify(sanitizeDesignHtml(html))}},'*')})`);
+    // [canvases in the stage, the first one still holds its drawing, the title]
+    const seen = (w) => js(w, `(()=>{const c=document.querySelectorAll('.stage canvas');return [c.length, c.length ? c[0].getContext('2d').getImageData(10,10,1,1).data[3] : 0, document.querySelector('[data-aegis-node-id=t]').textContent]})()`);
+    const kw = await canvasFrame(KEEPS);
+    assert.deepEqual(await seen(kw), [1, 255, 'Title']);
+    assert.deepEqual(await js(kw, 'window.__aegisRuntime.added()'), ['canvas'], 'the runtime knows what logic added');
+    assert.equal(await patch(kw, KEEPS), true);
+    assert.deepEqual(await seen(kw), [1, 255, 'Title'], 'the added node is back after an edit with the same HTML');
+    assert.equal(await patch(kw, KEEPS.replace('>Title<', '>Renamed<')), true);
+    assert.deepEqual(await seen(kw), [1, 255, 'Renamed'], 'and after an edit that changed the HTML');
+    assert.deepEqual(await js(kw, 'window.__aegisRuntime.errors'), []);
+    kw.destroy();
+    const lw = await canvasFrame(LOSES);
+    assert.deepEqual(await seen(lw), [1, 255, 'Title']);
+    assert.equal(await patch(lw, LOSES), true);
+    assert.deepEqual(await seen(lw), [0, 0, 'Title'], 'logic that only adds its node in mounted() loses it (design_preview reports this)');
+    assert.deepEqual(await js(lw, 'window.__aegisRuntime.added()'), []);
+    lw.destroy();
 
     // Components: props from attributes and bindings, slots, own state per instance, styles, missing ones.
     const components = { Card: { html: '<style>.card{padding:4px}</style><div class="card"><h3 data-aegis-node-id="c-title">{{ title }}</h3><aegis-slot></aegis-slot><button data-aegis-node-id="c-btn" data-aegis-on-click="n = n + 1">{{ n }}</button></div>', logic: 'class Component extends AegisBoard { state = { n: 0 } }', props: { title: { type: 'string', default: 'Card' } } } };
@@ -125,7 +217,7 @@ app.whenReady().then(async () => {
     assert.match(await js(cw, 'document.querySelector("[data-aegis-node-id=missing]").textContent'), /Missing component Nope/);
     assert.ok((await js(cw, 'window.__aegisRuntime.errors')).some((e) => /Nope/.test(e)));
     cw.destroy();
-    console.log('PASS design runtime: format helpers, sanitizer, props/$preview, loops, if/else, values, play-only events, state assignment, board links, updates keep state, error reporting, components (props, bindings, slots, per-instance state, styles, missing)');
+    console.log('PASS design runtime: format helpers, sanitizer, props/$preview, loops, if/else, values, play-only events, state assignment, board links, updates keep state, updated() after a saved edit, added nodes restored by message patch, error reporting, the packaged app policy, components (props, bindings, slots, per-instance state, styles, missing)');
   } catch (error) {
     console.error(error);
     code = 1;

@@ -200,7 +200,7 @@ const specs: DesignToolSpec[] = [
   },
   {
     name: DESIGN_PREVIEW_TOOL,
-    description: 'Render one saved board and return a screenshot plus checks: text overlapping other text, text cut off by a clipping container, an empty page, content wider or taller than the board, images that did not load, and errors from the board logic. Fix what the warnings and the screenshot show in one pass; warnings are hints, not a pass/fail verdict. Use the current document revision. Does not change the design.',
+    description: 'Render one saved board and return a screenshot plus checks: text overlapping other text, text cut off by a clipping container, an empty page, content wider or taller than the board, images that did not load, errors from the board logic, and nodes the logic added that are gone once the canvas applies a saved edit. Fix what the warnings and the screenshot show in one pass; warnings are hints, not a pass/fail verdict. Use the current document revision. Does not change the design.',
     readOnly: true,
     shape: { documentId: z.string(), boardId: z.string(), revision: z.number().int().min(0), slide: z.number().int().min(0).optional().describe("A deck's slide to render (0-based); default the first.") },
     jsonSchema: object({ documentId: string, boardId: string, revision: integer, slide: { type: 'integer', minimum: 0, description: "A deck's slide to render (0-based); default the first." } }, ['documentId', 'boardId', 'revision']),

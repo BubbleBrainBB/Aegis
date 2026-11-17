@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useAppStore } from '../store/useAppStore';
+import { toggleSidebar } from '../store/sidebar-collapse';
 import { useTabsStore } from '../store/useTabsStore';
 import { useSidebarViewStore } from '../store/useSidebarViewStore';
 import { useAppPreferences } from '../store/useAppPreferences';
@@ -55,7 +56,7 @@ export function useKeyboardShortcuts(actions: { toggleRightPanel: () => void; to
       event.preventDefault();
       switch (id) {
         case 'search': state.toggleSearchPalette(); break;
-        case 'sidebar': state.setSidebarCollapsed(!state.sidebarCollapsed); break;
+        case 'sidebar': toggleSidebar(); break;
         case 'activity':
           state.setActiveWorkspace('tasks');
           useSidebarViewStore.getState().toggleStateView();

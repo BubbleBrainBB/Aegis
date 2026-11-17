@@ -1449,11 +1449,25 @@ export interface GitOverviewResult {
   hasOriginRemote: boolean;
   isGitHubRemote: boolean;
   isDefaultBranch: boolean;
+  /** Uncommitted files, and the lines they add and remove against HEAD. */
   totalChanges: number;
   insertions: number;
   deletions: number;
+  /**
+   * What the branch holds on top of its base: commits since the merge-base
+   * plus the uncommitted and untracked work. Null when no base is known.
+   */
+  branchChanges: GitBranchChanges | null;
   prStatus: GitPullRequestLookupStatus;
   pr: GitPullRequestSummary | null;
+}
+
+export interface GitBranchChanges {
+  /** The ref the branch is measured against, e.g. `origin/main`. */
+  baseRef: string;
+  files: number;
+  insertions: number;
+  deletions: number;
 }
 
 export interface GitChangeEntry {

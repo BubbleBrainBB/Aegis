@@ -91,6 +91,11 @@ Rules:
 - Logic runs in a sandbox with no network, storage or host access: no fetch, timers only for animation or demo state. Put sample data in props, not in logic.
 - Keep data-aegis-node-id on template elements as usual; repeated items share their template layer, so a hand edit applies to every item.
 - On the canvas, logic runs but input goes to the editor; Play (and exported HTML) is where it responds. design_preview reports logic errors as warnings; fix them before you finish.
+- Every saved edit (yours or the user's by hand) rebuilds the board's page on the canvas and keeps the logic running: state and timers carry on, mounted() does not run again, updated() does. What the logic did to the page by hand is gone at that point: nodes it added (a canvas it draws on), text, styles or classes it set, and any element it kept a reference to. So:
+  - Do that work in one method that mounted() and updated() both call. updated() also runs after every setState, so the method first checks what is missing and returns when nothing is.
+  - Look elements up when you use them (document.querySelector in the method or the animation frame), not once in mounted().
+  - Keep a node you created and append it again, so what it holds (a canvas's drawing) survives: attach() { const host = document.querySelector('.stage'); if (!host) return; this.canvas ??= document.createElement('canvas'); if (this.canvas.parentNode !== host) host.append(this.canvas); }
+  design_preview replays one saved edit and reports added nodes that did not come back; design_verify treats that as a problem to fix.
 - Change logic with logic_patch for small edits, props with props, and the template with patch, as you would any board.`,
   decks: `## Decks (slides)
 A deck is one board, sized as a slide (1920 × 1080 unless asked otherwise), whose deck element holds the slides:

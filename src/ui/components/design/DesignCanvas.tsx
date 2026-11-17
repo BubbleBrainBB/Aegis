@@ -645,6 +645,13 @@ export function DesignCanvas(props: Props) {
       if (next) changeView(next);
     }
   }, [boards, marks]);
+  useLayoutEffect(() => {
+    // A view nobody has moved stays fitted while the canvas's room changes
+    // (the sidebar folding away as the design opens, the window resizing).
+    if (!ready.current || touched.current) return;
+    const next = fitView([...boards, ...marks], size());
+    if (next) changeView(next);
+  }, [viewportSize.width, viewportSize.height]);
   useEffect(() => {
     if (previewId && !previewBoard) {
       setPreviewId(undefined);
