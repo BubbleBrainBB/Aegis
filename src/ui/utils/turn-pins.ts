@@ -1,5 +1,6 @@
 import { isStartWorkflowToolName } from '../../shared/workflow';
 import { isStartSessionToolName } from '../../shared/follow-up';
+import { isMainBotTaskActionToolName } from '../../shared/main-bot';
 import { isShowWidgetToolName, widgetFromToolInput } from '../../shared/widget';
 import type { WorkstreamEntry } from './workstream';
 import { stripLeakedContextTags } from './leaked-context-tags';
@@ -21,9 +22,18 @@ export function isRejectedWidget(entry: WidgetEntry): boolean {
   return entry.status === 'error' || entry.result?.is_error === true;
 }
 
-/** A start_workflow board or a start_session row: part of the answer, kept outside a collapsed trace. */
+/** A start_workflow board, a start_session row or a main bot task row: part of the answer, kept outside a collapsed trace. */
 export function isWorkflowEntry(entry: WorkstreamEntry): entry is TaskEntry {
-  return entry.type === 'task' && (isStartWorkflowToolName(entry.toolName) || isStartSessionToolName(entry.toolName));
+  return entry.type === 'task' && (isStartWorkflowToolName(entry.toolName) || isStartSessionToolName(entry.toolName) || isMainBotTaskActionToolName(entry.toolName));
+}
+
+/**
+ * A row for work handed to a session: a start_session row, or what the main
+ * bot did to a task. Once the turn is done these sit after its answer, where
+ * the next thing to arrive is that session's result (see taskCardCallsInMessages).
+ */
+export function isTaskCardEntry(entry: WorkstreamEntry): entry is TaskEntry {
+  return entry.type === 'task' && (isStartSessionToolName(entry.toolName) || isMainBotTaskActionToolName(entry.toolName));
 }
 
 function hasVisibleText(entry: NoteEntry): boolean {

@@ -2027,6 +2027,17 @@ export type StreamMessage =
       compactionId?: string;
       compactMetadata: CompactMetadata;
     })
+  // The main bot's agent was put on an empty thread here (libs/main-bot): the
+  // conversation above stays on screen, the agent no longer has it. A row of
+  // its own in the transcript.
+  | (StreamMessageBase & {
+      type: 'system';
+      subtype: 'context_refreshed';
+      uuid: string;
+      session_id: string;
+      /** 'auto': its context had filled up; absent or 'manual': the person asked. */
+      trigger?: 'manual' | 'auto';
+    })
   // Emitted when the runtime starts compacting (PreCompact hook), so the UI
   // can show a live "Compacting…" status. The matching compact_boundary marks
   // the end of the compaction.

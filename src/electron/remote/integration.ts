@@ -154,6 +154,16 @@ export function closeRemoteGateway() {
 let hostBridge: RemoteHostBridge | undefined;
 export { isRemoteSessionId };
 export const remoteHostSessions = () => hostBridge?.sessions() ?? [];
+/** For the main bot: the Macs this one controls, and the same actions the chat UI has on their sessions. */
+export const remoteHostOverview = () => hostBridge?.overview() ?? [];
+export const remoteHostAgents = (id: string) => hostBridge!.agents(id);
+export const createRemoteTask = (id: string, input: Parameters<RemoteHostBridge["createTask"]>[1]) =>
+  hostBridge ? hostBridge.createTask(id, input) : Promise.resolve({ error: "This device is no longer connected." });
+export const sendToRemoteTask = (id: string, prompt: string) =>
+  hostBridge ? hostBridge.sendTo(id, prompt) : Promise.resolve({ error: "This device is no longer connected." });
+export const stopRemoteTask = (id: string) =>
+  hostBridge ? hostBridge.stopTask(id) : Promise.resolve({ error: "This device is no longer connected." });
+export const readRemoteTask = (id: string) => hostBridge!.read(id);
 export const handleRemoteHostEvent = (event: ClientEvent) => hostBridge?.handleClientEvent(event) ?? false;
 export const loadOlderRemoteHistory = (id: string, cursor: string) => hostBridge!.older(id, cursor);
 /** Other Macs this one controls, kept in the keychain-encrypted store beside the gateway's. */

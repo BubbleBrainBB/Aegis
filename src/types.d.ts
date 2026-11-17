@@ -158,6 +158,11 @@ declare global {
       sessionId: string,
       options?: { hiddenFromThreads?: boolean; copyHistory?: boolean }
     ) => Promise<{ ok: boolean; session?: SessionInfo; message?: string }>;
+    /** The main bot's conversation, made on first use. */
+    openMainBot: () => Promise<SessionInfo>;
+    getMainBotSessionId: () => Promise<string | null>;
+    /** Put the main bot's agent on an empty thread: done now, or with its next turn while one runs. */
+    refreshMainBotContext: () => Promise<'done' | 'pending' | 'unavailable'>;
     sessionHandoff: (payload: {
       sessionId: string;
       targetProvider: import('./shared/types').AgentProvider;

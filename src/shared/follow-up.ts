@@ -96,3 +96,13 @@ export interface FollowUpActionResult {
   error?: string;
   proposal?: FollowUpProposalView;
 }
+
+/**
+ * True for the label of a result Aegis delivered to the conversation that
+ * handed the work out: a sub-session's, a follow-up task's or a main bot
+ * task's. The chat draws nothing for it; the card that sent the work shows how
+ * it stands, and the agent's answer says what came back.
+ */
+export function isDeliveredResultLabel(text: string): boolean {
+  return /^(?:Sub-sessions? (?:finished|results?)|Follow-up results?|Task reports?): /.test(text);
+}

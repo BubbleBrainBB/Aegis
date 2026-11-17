@@ -205,7 +205,7 @@ export interface SessionStreamingState {
 export type ActiveWorkspace = 'chat' | 'tasks' | 'design' | 'skills' | 'automations' | 'prs';
 export type ChatSidebarView = 'threads' | 'skills';
 export type ProjectPanelView = 'files' | 'changes';
-export type ProjectUtilityPanelKind = 'files' | 'side-chat' | 'browser' | 'review' | 'terminal' | 'subagent' | 'goal' | 'images' | 'sources' | 'workflow-member' | 'launcher' | 'design' | 'simulator';
+export type ProjectUtilityPanelKind = 'files' | 'side-chat' | 'browser' | 'review' | 'terminal' | 'subagent' | 'goal' | 'images' | 'sources' | 'workflow-member' | 'task' | 'launcher' | 'design' | 'simulator';
 export type ProjectUtilityPanelTarget =
   | ProjectUtilityPanelKind
   | `files:${string}`
@@ -222,6 +222,9 @@ export type ProjectUtilityPanelTarget =
   // A workflow member's session (its id after the colon), opened from the
   // workflow board in the chat that started the workflow. Never persisted.
   | `workflow-member:${string}`
+  // A task the main bot handed out (its session id after the colon), opened
+  // beside the bot's conversation. Never persisted.
+  | `task:${string}`
   // Codex-style "New tab": the pane's tool launcher as a tab of its own (a
   // fresh id after the colon, so several can be open). Picking a tool in it
   // replaces the tab in place. Never persisted.
@@ -461,6 +464,8 @@ export interface AppState {
   workspaceChannelsByProject: Record<string, WorkspaceChannel[]>;
   activeChannelByProject: Record<string, string>;
   activeSessionId: string | null;
+  /** The main bot's conversation, once it exists. */
+  mainBotSessionId: string | null;
   activeWorkspace: ActiveWorkspace;
   /** The last draft chat that became a real session (views holding the draft id follow it). */
   draftPromotion: { from: string; to: string } | null;
@@ -619,6 +624,9 @@ export interface AppActions {
   ) => void;
   // Fork a session's conversation and open the fork in a new pane.
   forkSessionToPane: (sessionId: string, destination?: 'pane' | 'local' | 'worktree') => Promise<void>;
+  setMainBotSessionId: (sessionId: string | null) => void;
+  /** Open the main bot, making its conversation on first use. */
+  openMainBot: () => Promise<void>;
   handoffSessionToProvider: (sessionId: string, targetProvider: AgentProvider) => Promise<void>;
   setSessionAgentSelection: (
     sessionId: string,
@@ -670,6 +678,8 @@ export interface AppActions {
   openSubagentPanel: (subagentId: string) => void;
   /** Open (or focus) a workflow member's session in the right panel of the chat that started the workflow. */
   openWorkflowMemberPanel: (sessionId: string) => void;
+  /** Opens a task beside the conversation that names it, as a tab of the right panel. */
+  openTaskPanel: (sessionId: string) => void;
   closeRightUtilityTab: (target: ProjectUtilityPanelTarget) => void;
   /** Fork the source conversation into a new ephemeral right-panel side chat tab. */
   openSideChat: (sourceSessionId: string | null) => Promise<void>;

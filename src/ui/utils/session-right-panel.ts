@@ -7,6 +7,7 @@ import type {
 import {
   getRightUtilityTabKind,
   getSideChatSessionId,
+  getTaskTabSessionId,
   isRightUtilitySideChatTab,
   isSideChatPendingTab,
 } from './right-utility-tabs';
@@ -69,6 +70,9 @@ export function filterRestorableRightUtilityTabs(
     if (isRightUtilitySideChatTab(tab)) {
       return Boolean(sessions[getSideChatSessionId(tab)]);
     }
+    // A task that has since been deleted leaves no tab behind.
+    const taskSessionId = getTaskTabSessionId(tab);
+    if (taskSessionId) return Boolean(sessions[taskSessionId]);
     return true;
   });
 }

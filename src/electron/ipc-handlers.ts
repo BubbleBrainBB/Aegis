@@ -44,6 +44,7 @@ import { sanitizeDesignPromptRef } from '../shared/design-comment';
 import { sanitizeDesignSelectionRef } from '../shared/design-selection';
 import { designContextText } from './design/focus';
 import { chatFolderInstructions, chatsFolderInfo, createChatFolder, noteChatFolderInstructionsDelivered, takeChatFolderInstructions } from './libs/chat-folders';
+import { ensureMainBotSession, mainBotSession, mainBotTurnContext, noteMainBotContextUsage, noteMainBotRemoteChange, noteMainBotTurnEnded, prepareMainBotTurn, refreshMainBotContext, setupMainBot } from './libs/main-bot';
 import { setDesignProjectRoot } from './design/styles';
 import { setDesignAgentNamer, setDesignPromptSource } from './design/tools';
 import { setDesignFollowUp } from './design/project/tools';
@@ -5061,7 +5062,7 @@ async function openInEnvironmentEditor(input: OpenInEditorInput): Promise<{ ok: 
 // 初始化 IPC 处理器
 /** App-level agent workflows (docs/collaboration/README.md): member sessions run through the normal session path. */
 function setupWorkflows(mainWindow: BrowserWindow): void {
-  const service = new WorkflowService({
+  const service = (workflowRuns = new WorkflowService({
     bridge: {
       start: (payload, onCreated) => handleSessionStart(mainWindow, payload, onCreated),
       continue: (payload) => handleSessionContinue(mainWindow, payload),
@@ -5095,7 +5096,7 @@ function setupWorkflows(mainWindow: BrowserWindow): void {
     discardIsolated: (sessionId) => discardIsolatedWorkspace(sessionId),
     modelCatalog: workflowModelCatalog,
     effortLevels: workflowEffortLevels,
-  });
+  }));
   setupWorkflowIPC(service);
   // Phones see the workflows their chats started, and open their members' sessions.
   setRemoteWorkflows(service);
@@ -5179,6 +5180,7 @@ function setupWorkflows(mainWindow: BrowserWindow): void {
 }
 
 let followUps: FollowUpService | null = null;
+let workflowRuns: WorkflowService | null = null;
 
 type RunnerSettings = Pick<
   NonNullable<ReturnType<typeof runnerHandles.get>>,
@@ -5256,6 +5258,8 @@ function sharedWorktreeRefusal(sessionId: string): { ok: false; message: string 
 /** Turn-end observers: workflow members, and follow-up sessions reporting back to their parent. */
 function settleWorkflowTurn(sessionId: string, status: 'completed' | 'error' | 'stopped', error?: string): void {
   settleWorkflowMemberTurn(sessionId, status, error);
+  // The main bot hears of its own turn ending, and of a task's it waits on.
+  noteMainBotTurnEnded(sessionId, status, error);
   const service = followUps;
   if (!service) return;
   try {
@@ -5269,6 +5273,55 @@ function settleWorkflowTurn(sessionId: string, status: 'completed' | 'error' | '
       console.error('[follow-up] could not deliver a result:', failure);
     });
   }, 0);
+}
+
+/**
+ * The main bot (libs/main-bot): one Bubble conversation that starts, messages
+ * and stops tasks through the same entry points the composer and the phone use.
+ */
+function setupMainBotEntry(mainWindow: BrowserWindow): void {
+  setupMainBot({
+    userDataDir: app.getPath('userData'),
+    // Answered once the session exists; the agent's startup follows, and its errors land in the session.
+    start: (payload) =>
+      new Promise<string | null>((resolve, reject) => {
+        handleSessionStart(mainWindow, payload, resolve).then(resolve, reject);
+      }),
+    continue: (payload) => handleSessionContinue(mainWindow, payload),
+    stop: (sessionId) => handleSessionStop(mainWindow, sessionId),
+    waitsForApproval: (sessionId) => (sessionStates.get(sessionId)?.pendingPermissions.size ?? 0) > 0,
+    reportsTo: (sessionId) => followUps?.reportsTo(sessionId) ?? null,
+    sessionsRunningWorkflow: () => workflowRuns?.sessionsWithActiveRun() ?? [],
+    isGitRepo: (cwd) => assertGitRepo(cwd).then(() => true, () => false),
+    startExtras: async (provider, prompt, cwd) => (provider === 'codex' ? codexReferences(prompt, cwd) : {}),
+    freshThread: (sessionId, entering, automatic) => startMainBotFreshThread(mainWindow, sessionId, entering, automatic),
+  });
+  ipcMainHandle('main-bot-refresh-context', async (): Promise<'done' | 'pending' | 'unavailable'> => refreshMainBotContext());
+  ipcMainHandle('main-bot-open', async (): Promise<SessionInfo> => buildSessionInfoFromRow(ensureMainBotSession()));
+  ipcMainHandle('main-bot-session-id', async (): Promise<string | null> => mainBotSession()?.id ?? null);
+}
+
+/**
+ * Put the main bot's agent on an empty Bubble thread. The conversation stays
+ * as the person sees it, with a line where the agent's memory of it ends; what
+ * the bot keeps outside it (libs/main-bot: notes, what it handed out) carries
+ * it over. Only between turns: a turn being started would run on the old
+ * thread and write its id back. `entering`: the caller is the send of the
+ * bot's next turn and holds its lease.
+ */
+function startMainBotFreshThread(mainWindow: BrowserWindow, sessionId: string, entering: boolean, automatic: boolean): boolean {
+  const session = sessions.getSession(sessionId);
+  if (!session || session.status === 'running') return false;
+  if (!entering && sessionDispatchLeases.has(sessionId)) return false;
+  // No thread yet: nothing to leave behind.
+  if (!session.bubble_session_id && !runnerHandles.has(sessionId)) return true;
+  // A kept-alive runner goes on with the thread it has, whatever the session row says.
+  retireSessionRunner(sessionId);
+  sessions.setBubbleSessionId(sessionId, null);
+  const divider: StreamMessage = { type: 'system', subtype: 'context_refreshed', uuid: uuidv4(), session_id: sessionId, trigger: automatic ? 'auto' : 'manual', createdAt: Date.now() };
+  sessions.addMessage(sessionId, divider);
+  broadcast(mainWindow, { type: 'stream.message', payload: { sessionId, message: divider } });
+  return true;
 }
 
 /** Follow-up proposals (docs/collaboration/follow-up-sessions.md): Claude sessions propose, the user starts. */
@@ -5393,8 +5446,15 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
   sessions.initialize();
   setupTurnReports(mainWindow);
   setupRemoteHosts(
-    (event) => broadcastSessionEvent(mainWindow, event),
-    () => handleSessionList(mainWindow),
+    (event) => {
+      broadcastSessionEvent(mainWindow, event);
+      // A task on another Mac the main bot waits on may have finished its turn.
+      if (event.type === 'session.status') noteMainBotRemoteChange();
+    },
+    () => {
+      handleSessionList(mainWindow);
+      noteMainBotRemoteChange();
+    },
   );
   setupRemoteIPC(mainWindow, {
     hasBackgroundWork: hasSessionBackgroundWork,
@@ -5878,6 +5938,7 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
   registerDesignIpc();
   setupWorkflows(mainWindow);
   setupFollowUps(mainWindow);
+  setupMainBotEntry(mainWindow);
   setupSessionGoalIPC({
     changeClaudeGoal: async (sessionId, action, settings) => {
       const session = sessions.getSession(sessionId);
@@ -6410,6 +6471,12 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
     }
     if (session.provider !== 'bubble') {
       return { ok: false, message: 'Rewind is only available for Bubble sessions.', filesAvailable: false };
+    }
+    // Its agent's thread can start afresh mid-conversation, so the prompts on
+    // screen no longer line up with the thread's; and what it handed out would
+    // not be taken back.
+    if (session.session_role === 'main') {
+      return { ok: false, message: "Rewind is not available in Aegis's own conversation.", filesAvailable: false };
     }
 
     ensureProviderService();
@@ -10505,7 +10572,13 @@ async function handleSessionContinue(
     return false;
   }
   sessionDispatchLeases.add(payload.sessionId);
-  try { return await handleSessionContinueImpl(mainWindow, payload, internal); }
+  // The main bot's tools exist on Bubble only: its conversation never moves to another agent.
+  if (mainBotSession()?.id === payload.sessionId && payload.provider && payload.provider !== 'bubble') payload = { ...payload, provider: 'bubble', model: undefined };
+  try {
+    // Before the session row is read: a fresh context asked for mid-turn starts with this one.
+    prepareMainBotTurn(payload.sessionId);
+    return await handleSessionContinueImpl(mainWindow, payload, internal);
+  }
   finally { sessionDispatchLeases.delete(payload.sessionId); }
 }
 
@@ -10701,7 +10774,7 @@ async function handleSessionContinueImpl(
   // Goal commands reach the agent verbatim: Claude's, and Kimi's `/goal --`
   // start prompt (context appended would become part of the objective).
   const runnerPrompt = (nextProvider === 'claude' || nextProvider === 'kimi') && parseGoalInput(prompt, false).isGoal ? prompt.trim() : augmentPromptForLiveWidgetProtocol(
-    await buildRunnerPromptWithMemory(nextProvider, effectiveRunnerPrompt + referenceContext + designContextText(sessionId, designSelection) + sessions.buildProjectSourcesContext(session.project_cwd || session.cwd, session.cwd, session.env_mode === 'worktree' && Boolean(session.worktree_path)) + takeChatFolderInstructions(sessionId, session.cwd, session.is_chat === 1), session.cwd || undefined),
+    await buildRunnerPromptWithMemory(nextProvider, effectiveRunnerPrompt + referenceContext + designContextText(sessionId, designSelection) + sessions.buildProjectSourcesContext(session.project_cwd || session.cwd, session.cwd, session.env_mode === 'worktree' && Boolean(session.worktree_path)) + (session.session_role === 'main' ? mainBotTurnContext(sessionId) : takeChatFolderInstructions(sessionId, session.cwd, session.is_chat === 1)), session.cwd || undefined),
     historyBeforeContinue
   );
   const previousOpenCodePermissionMode = normalizeOpenCodePermissionMode(session.opencode_permission_mode);
@@ -11926,6 +11999,10 @@ function startRunner(
             localFailureMessage || detectLocalRunnerFailureMessage(extractAssistantText(attributedMessage));
         }
         const shouldPersistMessage = shouldPersistProviderMessage(attributedMessage);
+        // The main bot's context starts afresh by itself once it fills up (libs/main-bot).
+        if (session.session_role === 'main' && attributedMessage.type === 'system' && attributedMessage.subtype === 'token_usage' && !attributedMessage.parentToolUseId) {
+          noteMainBotContextUsage(session.id, attributedMessage.usage.totalTokens, attributedMessage.usage.contextWindow);
+        }
         if (shouldPersistMessage) {
           // 保存消息. Stored Claude messages reload in the order they arrived.
           sessions.addMessage(

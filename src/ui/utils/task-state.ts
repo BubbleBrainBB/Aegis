@@ -39,6 +39,18 @@ export function naturalTaskStateOf(session: SessionView, sources: TaskStateSourc
   });
 }
 
+/**
+ * Opens a task next to the conversation that names it, as a tab of the right
+ * panel; with ⌘ or Ctrl held, as the full task instead.
+ */
+export function openTaskBeside(sessionId: string, event?: { metaKey: boolean; ctrlKey: boolean }) {
+  if (event?.metaKey || event?.ctrlKey) {
+    openTask(sessionId);
+    return;
+  }
+  useAppStore.getState().openTaskPanel(sessionId);
+}
+
 /** Opens a task's chat from a list. */
 export function openTask(sessionId: string) {
   const app = useAppStore.getState();

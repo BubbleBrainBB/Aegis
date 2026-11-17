@@ -419,8 +419,14 @@ export function getLatestBubbleContextSnapshot(
   const billing = getLatestOpenCodeContextSnapshot(messages, model, 'Bubble');
   let latest: Extract<StreamMessage, { type: 'system'; subtype: 'token_usage' }> | undefined;
   let contextWindow = 0;
+  // The main bot's agent went on from an empty thread and has not said how full that is yet.
+  let emptied = false;
   for (let index = messages.length - 1; index >= 0; index--) {
     const message = messages[index];
+    if (message.type === 'system' && message.subtype === 'context_refreshed') {
+      emptied ||= !latest;
+      continue;
+    }
     if (message.type !== 'system' || message.subtype !== 'token_usage' || message.provider !== 'bubble') continue;
     if (model && message.model && message.model !== model) continue;
     if (latest?.model && message.model && latest.model !== message.model) continue;
@@ -435,12 +441,13 @@ export function getLatestBubbleContextSnapshot(
   contextWindow ||= billing?.total ?? 0;
   if (latest && contextWindow > 0) {
     const usage = latest.usage;
+    const used = emptied ? 0 : usage.totalTokens;
     return {
       model: model || 'Bubble',
       estimated: usage.estimated,
-      used: usage.totalTokens,
+      used,
       total: contextWindow,
-      percent: Math.min(100, Math.max(0, Math.round(usage.totalTokens / contextWindow * 100))),
+      percent: Math.min(100, Math.max(0, Math.round(used / contextWindow * 100))),
       costUSD: billing?.costUSD ?? 0,
       inputTokens: billing?.inputTokens ?? 0,
       outputTokens: billing?.outputTokens ?? 0,

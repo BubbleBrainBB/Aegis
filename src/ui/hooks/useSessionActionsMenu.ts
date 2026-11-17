@@ -181,6 +181,10 @@ export function useSessionActionsMenu(session: SessionView, subSessions?: { expa
   // A sub-session in its parent's worktree: the worktree is the parent's to apply or discard.
   const sharesParentWorktree = useFollowUpStore(s => findProposalForChild(s.proposals, session.id)?.place === 'shared') && inWorktree;
   const buildItems = (projects: string[]): SessionMenuItem[] => [
+    // The main bot's conversation never ends, so its agent can be given an empty thread to go on from.
+    ...(useAppStore.getState().mainBotSessionId === session.id
+      ? [{ id: 'fresh-context' as const, label: 'Start fresh context…', icon: 'refresh' as const }, { type: 'separator' as const }]
+      : []),
     { id: 'rename', label: 'Rename…', icon: 'rename', enabled: session.source !== 'claude_remote' },
     { id: 'pin', label: session.pinned ? 'Unpin' : 'Pin', icon: 'pin' },
     { id: 'unread', label: metadata?.unread || session.runtimeNotice ? 'Mark as read' : 'Mark as unread', icon: 'unread', enabled: editable },
@@ -312,6 +316,20 @@ export function useSessionActionsMenu(session: SessionView, subSessions?: { expa
         break;
       }
       case 'toggle-sub-sessions': subSessions?.onToggle(); break;
+      case 'fresh-context': {
+        const confirmed = await confirmDialog({
+          title: 'Start from a fresh context?',
+          description: 'Aegis goes on without what was said here so far; the conversation stays on screen. It keeps its notes and the tasks it handed out.',
+          confirmLabel: 'Start fresh',
+          tone: 'default',
+        });
+        if (!confirmed) break;
+        const outcome = await window.electron.refreshMainBotContext();
+        if (outcome === 'done') toast.success('Aegis starts from a fresh context.');
+        else if (outcome === 'pending') toast.success('Aegis starts from a fresh context with its next message.');
+        else toast.error('Could not start a fresh context.');
+        break;
+      }
       case 'section-new': {
         const name = await textInputDialog({ title: 'New section', label: 'Section name', maxLength: 80 });
         if (name) await changeSessionOrganization({ kind: 'create-section', sessionId: session.id, name });
