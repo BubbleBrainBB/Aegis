@@ -14,6 +14,11 @@ export interface ThemeTypefaces {
   codeFace?: SystemFontFace;
 }
 
+/** aurora: lit dots, for dark surfaces. contour: printed dots, for light ones. */
+export type ThemeBackdrop = 'aurora' | 'contour';
+export const THEME_BACKDROPS: readonly ThemeBackdrop[] = ['aurora', 'contour'];
+export const isThemeBackdrop = (value: unknown): value is ThemeBackdrop => THEME_BACKDROPS.includes(value as ThemeBackdrop);
+
 /** Colors that carry meaning rather than brand: additions, removals, and skills. */
 export interface ThemeSignals {
   diffAdded: string;
@@ -40,6 +45,12 @@ export interface ThemeRecipe {
   opaqueWindows: boolean;
   /** macOS: the window chrome and sidebar are frosted glass over whatever is behind the window. */
   glassWindow: boolean;
+  /** A dot-matrix picture the window paints under its panels; absent for a plain surface. */
+  backdrop?: ThemeBackdrop;
+  /** 0–100: how strongly the backdrop shows. Absent means full strength. */
+  backdropStrength?: number;
+  /** false keeps the backdrop still. Absent means it moves. */
+  backdropMotion?: boolean;
   semanticColors: ThemeSignals;
 }
 

@@ -52,6 +52,47 @@ function report(error: unknown, where?: string) {
     }, 50);
 }
 
+// ── Compiling board source ─────────────────────────────────────────────────
+
+/**
+ * Turns source text into a function without eval. A frame also obeys the
+ * policy of the page that hosts it, and the packaged app's forbids eval, so
+ * `new Function` works in development and fails once the app is installed.
+ * A script element carrying the frame's nonce is allowed by both policies.
+ */
+const compiledSlots: Record<string, unknown> = {};
+(window as unknown as { __aegisCompiled: typeof compiledSlots }).__aegisCompiled = compiledSlots;
+let compiledCount = 0;
+function compile<T extends (...args: never[]) => unknown>(params: string, body: string): T {
+  const slot = `f${++compiledCount}`;
+  let failure: unknown = null;
+  // A syntax error in an inline script is reported to the window, not thrown here.
+  const onError = (event: ErrorEvent) => {
+    failure = event.error ?? new SyntaxError(event.message);
+    event.preventDefault();
+  };
+  const element = document.createElement("script");
+  element.nonce = nonce;
+  element.setAttribute("data-aegis-frame", "");
+  const text = `function(${params}){${body}\n}`;
+  element.textContent = `window.__aegisCompiled[${JSON.stringify(slot)}]=${text}`;
+  window.addEventListener("error", onError);
+  try {
+    // An inline script runs while it is being inserted.
+    (document.head ?? document.documentElement).appendChild(element);
+  } finally {
+    window.removeEventListener("error", onError);
+    element.remove();
+  }
+  const made = compiledSlots[slot];
+  delete compiledSlots[slot];
+  if (typeof made !== "function") throw failure ?? new Error("the frame's security policy did not let this script run");
+  // `new Function` parsed the body on its own. Here a stray closing brace would end the
+  // wrapper early and still leave some function in the slot; its text gives that away.
+  if (Function.prototype.toString.call(made) !== text) throw new SyntaxError("Unexpected '}': the source closes a block it did not open");
+  return made as T;
+}
+
 // ── Expressions ────────────────────────────────────────────────────────────
 
 type Scope = Record<string, unknown>;
@@ -64,7 +105,7 @@ function expr(source: string, where: string): Expr {
   if (!fn) {
     try {
       // Sloppy-mode `with` so bare names resolve from the scope, then globals.
-      const compiled = new Function("$scope", `with($scope){return (${source});}`) as Expr;
+      const compiled = compile<Expr>("$scope", `with($scope){return (${source});}`);
       fn = (scope) => {
         try {
           return compiled(scope);
@@ -85,7 +126,7 @@ function expr(source: string, where: string): Expr {
 function handler(source: string, where: string): (scope: Scope) => void {
   let compiled: ((scope: Scope) => unknown) | null = null;
   try {
-    compiled = new Function("$scope", `with($scope){${source};}`) as (scope: Scope) => unknown;
+    compiled = compile<(scope: Scope) => unknown>("$scope", `with($scope){${source};}`);
   } catch (error) {
     report(error, `${where} ${source.slice(0, 80)}`);
   }
@@ -308,7 +349,7 @@ function compileLogic(source: string | null, where: string): LogicClass | null {
   if (logicCache.has(source)) return logicCache.get(source)!;
   let cls: LogicClass | null = null;
   try {
-    const made = new Function("AegisBoard", `${source}\n;return typeof Board !== "undefined" ? Board : (typeof Component !== "undefined" ? Component : null);`)(AegisBoard);
+    const made = compile<(base: typeof AegisBoard) => unknown>("AegisBoard", `${source}\n;return typeof Board !== "undefined" ? Board : (typeof Component !== "undefined" ? Component : null);`)(AegisBoard);
     if (typeof made !== "function") throw new Error("logic must define `class Board extends AegisBoard { … }`");
     cls = made as LogicClass;
   } catch (error) {
