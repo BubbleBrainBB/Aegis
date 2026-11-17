@@ -20,6 +20,7 @@ import {
   Clock,
 } from './icons';
 import { useAppStore } from '../store/useAppStore';
+import { toggleSidebar, useSidebarCollapsed } from '../store/sidebar-collapse';
 import { SearchPalette } from './search/SearchPalette';
 import type {
   PaletteAction,
@@ -85,23 +86,13 @@ function SidebarToggleButton({
 }
 
 /**
- * Whether the sidebar shows collapsed. Settings keeps it open, as Codex does:
- * its nav lives there, so the toggle goes away and the saved state waits for
- * Settings to close.
- */
-export function useSidebarCollapsed(): boolean {
-  return useAppStore((state) => state.sidebarCollapsed && !state.showSettings);
-}
-
-/**
  * Sidebar toggle and Back/Forward, Codex-style, right of the traffic lights.
  * Settings shows only Back/Forward.
  * The sidebar's top row hosts them while it is open; a collapsed sidebar
  * hands them to the main column's top row.
  */
 export function TitlebarControls() {
-  const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed);
-  const setSidebarCollapsed = useAppStore((state) => state.setSidebarCollapsed);
+  const sidebarCollapsed = useSidebarCollapsed();
   const showSettings = useAppStore((state) => state.showSettings);
 
   return (
@@ -109,7 +100,7 @@ export function TitlebarControls() {
       {showSettings ? null : (
         <SidebarToggleButton
           collapsed={sidebarCollapsed}
-          onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+          onClick={toggleSidebar}
         />
       )}
       <SessionHistoryButtons />

@@ -56,6 +56,9 @@ export const useDesignStore = create<{
   /** What the Design section shows; null shows the library's newest design. */
   section: DesignSectionTarget | null;
   setSection: (target: DesignSectionTarget | null) => void;
+  /** The user opened the sidebar in the Design section; closed again once they leave the section. */
+  sectionSidebarOpen: boolean;
+  setSectionSidebarOpen: (open: boolean) => void;
   remember: (doc: Pick<DesignSummary, "id" | "title">) => void;
   focusRequest: DesignFocusRequest | null;
   requestFocus: (request: Omit<DesignFocusRequest, "nonce">) => void;
@@ -76,6 +79,8 @@ export const useDesignStore = create<{
   },
   section: null,
   setSection: (section) => set({ section }),
+  sectionSidebarOpen: false,
+  setSectionSidebarOpen: (sectionSidebarOpen) => set({ sectionSidebarOpen }),
   selections: {},
   setSelection: (sessionId, selection) =>
     set((s) => {
@@ -111,6 +116,13 @@ export const useDesignStore = create<{
       s.focusRequest?.nonce === nonce ? { focusRequest: null } : s,
     ),
 }));
+
+// Leaving the Design section ends the visit the sidebar was opened for.
+useAppStore.subscribe((app, before) => {
+  if (before.activeWorkspace === "design" && app.activeWorkspace !== "design" && useDesignStore.getState().sectionSidebarOpen) {
+    useDesignStore.getState().setSectionSidebarOpen(false);
+  }
+});
 
 /**
  * Show a design: beside its chat in the right pane, or full size in the
