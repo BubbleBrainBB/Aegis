@@ -30,7 +30,8 @@ export interface DesignFrameOptions {
 
 // Only nonce-bound scripts run, in an opaque-origin, network-less iframe with
 // no preload or host capabilities: the inspector, and for design components
-// the board runtime, which evaluates the board's own logic and expressions.
+// the board runtime, which runs the board's own logic and expressions as
+// scripts carrying the same nonce (no eval: a frame also obeys its host's policy).
 export function designFrameHtml(
   html: string,
   nonce: string,
@@ -41,7 +42,7 @@ export function designFrameHtml(
   const mode = options.mode ?? (inspect ? "edit" : "play");
   const runtime = mode !== "static" && isDesignComponent(html);
   const available = { ...(options.system?.components ?? {}), ...(options.components ?? {}) };
-  const policy = `default-src 'none'; script-src 'nonce-${nonce}'${runtime ? " 'unsafe-eval'" : ""}; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'`;
+  const policy = `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'`;
   const inspector = inspect
     ? `<script data-aegis-frame nonce="${nonce}">
       ${designFramePatchScript}
