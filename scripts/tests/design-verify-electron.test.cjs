@@ -1,7 +1,8 @@
 // Decks and verification in real Chromium: one slide shows at a time and
 // switches by message; previews capture any slide; slide text under 24px is
 // flagged; PDF and PowerPoint have a page/slide per deck slide with notes;
-// design_verify stops on blocking checks, reviews every slide otherwise,
+// design_verify stops on blocking checks (logic errors, logic that loses what
+// it added once the canvas applies an edit), reviews every slide otherwise,
 // and falls back to the checks when the reviewer can't run.
 const { app, BrowserWindow, nativeImage } = require('electron');
 const assert = require('node:assert/strict');
@@ -112,10 +113,45 @@ app.whenReady().then(async () => {
     assert.equal(v.verdict, 'needs_work');
     assert.ok(v.issues.some((i) => /Logic error/.test(i.problem)));
     assert.equal(reviewed, false, 'no review while checks block');
+    // Logic that adds a node only in mounted() is fine on a fresh load and blank after
+    // the canvas applies an edit: previews replay one edit and say so, and it blocks.
+    const stage = '<main class="stage" style="padding:24px"><h1>Signal</h1></main>';
+    const make = `const c = document.createElement('canvas'); c.width = 40; c.height = 40; c.getContext('2d').fillRect(0, 0, 40, 40);`;
+    const addBoard = (name, js) => {
+      d = repo.update('s1', { documentId: d.id, operationId: name, operations: [{ type: 'add', name, width: 400, height: 300, html: stage, js }] });
+      return d.boards.find((b) => b.name === name);
+    };
+    const fragile = addBoard('Fragile', `class Board extends AegisBoard { mounted() { ${make} document.querySelector('.stage').append(c); } }`);
+    const sturdy = addBoard('Sturdy', `class Board extends AegisBoard { mounted() { this.attach(); } updated() { this.attach(); } attach() { const host = document.querySelector('.stage'); if (!this.canvas) { ${make} this.canvas = c; } if (this.canvas.parentNode !== host) host.append(this.canvas); } }`);
+    // A node that goes away on its own is not the edit's doing.
+    const passing = addBoard('Passing', `class Board extends AegisBoard { mounted() { const n = document.createElement('aside'); n.textContent = 'Saved'; document.querySelector('.stage').append(n); setTimeout(() => n.remove(), 60); } }`);
+    // updated() that fails once the page was rebuilt.
+    const throws = addBoard('Throws', `class Board extends AegisBoard { state = { n: 0 }; updated() { throw new Error('stale node'); } }`);
+    const lost = (p) => p.warnings.filter((x) => /^After a saved edit/.test(x));
+    const fragilePreview = await previewDesign('s1', d.id, fragile.id, d.revision);
+    assert.equal(lost(fragilePreview).length, 1, fragilePreview.warnings.join('\n'));
+    assert.match(lost(fragilePreview)[0], /\(canvas\)/);
+    assert.match(lost(fragilePreview)[0], /mounted\(\) and updated\(\)/);
+    assert.deepEqual(lost(await previewDesign('s1', d.id, sturdy.id, d.revision)), [], 'logic that puts its node back is clean');
+    assert.deepEqual(lost(await previewDesign('s1', d.id, passing.id, d.revision)), [], 'a node that left on its own is not reported');
+    assert.deepEqual(lost(await previewDesign('s1', d.id, fragile.id, d.revision, undefined, 4096, 1, false)), [], 'exports skip the replay');
+    const throwsPreview = await previewDesign('s1', d.id, throws.id, d.revision);
+    assert.ok(throwsPreview.warnings.some((x) => /^Logic error after a saved edit .*stale node/.test(x)), throwsPreview.warnings.join('\n'));
+    reviewed = false;
+    v = await verifyDesign('s1', { documentId: d.id, boardIds: [fragile.id] });
+    assert.equal(v.source, 'checks');
+    assert.equal(v.verdict, 'needs_work');
+    assert.ok(v.issues.some((i) => i.board === 'Fragile' && /^After a saved edit/.test(i.problem)));
+    assert.equal(reviewed, false, 'a board that breaks after one edit never reaches review');
+    v = await verifyDesign('s1', { documentId: d.id, boardIds: [throws.id] });
+    assert.equal(v.source, 'checks');
+    v = await verifyDesign('s1', { documentId: d.id, boardIds: [sturdy.id] });
+    assert.equal(v.verdict, 'done');
+    assert.equal(reviewed, true);
     // Review skipped on request.
     v = await verifyDesign('s1', { documentId: d.id, boardIds: [deck.id], review: false });
     assert.equal(v.source, 'checks-only');
-    console.log('PASS decks and verification: slide switching, slide previews, small slide text, PDF page per slide, PowerPoint with notes, review of every slide, reviewer fallback, blocking checks, skipped review');
+    console.log('PASS decks and verification: slide switching, slide previews, small slide text, PDF page per slide, PowerPoint with notes, review of every slide, reviewer fallback, blocking checks, saved-edit replay for logic boards, skipped review');
   } catch (error) {
     console.error(error);
     code = 1;

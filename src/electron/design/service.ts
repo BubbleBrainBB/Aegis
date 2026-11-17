@@ -2,7 +2,7 @@ import { app, BrowserWindow, session as electronSession } from "electron";
 import { join } from "path";
 import { randomUUID } from "crypto";
 import { DesignRepository } from "./repository";
-import { designFrameHtml } from "./html";
+import { designFrameHtml, sanitizeDesignHtml } from "./html";
 import { renderChecksScript } from "./render-checks";
 import { moveDesignFocus } from "./focus";
 import { designProjectRoot } from "./styles";
@@ -10,7 +10,8 @@ import type { DesignDocument, DesignPreview } from "../../shared/design-types";
 import { designSystemPack, withLibraryFonts } from "./system-pack";
 import { adherenceWarnings } from "./adherence";
 import { designSlides, isDesignDeck } from "../../shared/design-deck";
-import type { DesignSystemPack } from "../../shared/design-system-pack";
+import { resolveFrameAssets, type DesignSystemPack } from "../../shared/design-system-pack";
+import { designLogicOf } from "../../shared/design-component";
 
 let repository: DesignRepository | undefined;
 export function getDesignRepository() {
@@ -117,6 +118,45 @@ const RUNTIME_READY_MS = 5_000;
 /** A design component's logic errors, for the agent: they don't show in a screenshot. */
 const RUNTIME_ERRORS =
   "(window.__aegisRuntime?[...window.__aegisRuntime.errors]:[])";
+const SAVED_EDIT_MS = 4_000;
+/** Reported from inside the board, so it is the board's text: quoted, one line, short. */
+const quoted = (text: string) => JSON.stringify(text.replace(/[\u0000-\u001f\u2028\u2029]+/g, " ").slice(0, 200));
+/**
+ * The canvas applies every saved edit by rebuilding the board's page under its
+ * running logic, which a fresh load never exercises. This replays one such
+ * edit (the same HTML) and reports what the logic had added to the page and
+ * did not put back, and the errors it raised. Nodes that come and go on their
+ * own are left alone: only a kind of node that was there, stayed there, and is
+ * entirely gone after the edit counts.
+ */
+async function savedEditWarnings(w: BrowserWindow, html: string, known: readonly string[]): Promise<string[]> {
+  const script = `(async()=>{const rt=window.__aegisRuntime;if(!rt||typeof rt.added!=="function")return null;const wait=ms=>new Promise(r=>setTimeout(r,ms));const first=rt.added();if(first.length)await wait(250);const before=rt.added();rt.update(${JSON.stringify(html)});await wait(300);return {first,before,after:rt.added(),errors:[...rt.errors]}})()`;
+  const result = (await Promise.race([
+    w.webContents.executeJavaScript(script).catch(() => null),
+    new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), SAVED_EDIT_MS)),
+  ])) as { first?: unknown; before?: unknown; after?: unknown; errors?: unknown } | "hung" | null;
+  if (result === "hung") return ["After a saved edit the board's logic did not finish within 4 s; its updated() may loop forever."];
+  if (!result || typeof result !== "object") return [];
+  const tags = (value: unknown) => {
+    const counts = new Map<string, number>();
+    if (Array.isArray(value))
+      for (const tag of value.slice(0, 200))
+        if (typeof tag === "string" && /^[a-z][a-z0-9-]{0,40}$/.test(tag)) counts.set(tag, (counts.get(tag) ?? 0) + 1);
+    return counts;
+  };
+  const first = tags(result.first), before = tags(result.before), after = tags(result.after);
+  const lost = [...before].filter(([tag]) => first.has(tag) && !after.has(tag)).slice(0, 6);
+  const out: string[] = [];
+  if (lost.length)
+    out.push(
+      `After a saved edit, what the logic added to the page is gone (${lost.map(([tag, n]) => (n > 1 ? `${n} ${tag}` : tag)).join(", ")}): the canvas rebuilds the page on every edit and keeps the logic running, so mounted() does not run again and that part of the board goes blank. Add these nodes in a method that both mounted() and updated() call (design_guide topic components).`,
+    );
+  if (Array.isArray(result.errors))
+    for (const error of result.errors.filter((e): e is string => typeof e === "string" && !known.includes(e)).slice(0, 4))
+      out.push(`Logic error after a saved edit (reported by the board): ${quoted(error)}`);
+  return out;
+}
+
 export function previewDesign(
   sessionId: string,
   documentId: string,
@@ -137,6 +177,7 @@ export function previewDesign(
       const d = getDesignRepository().read(sessionId, documentId, revision);
       const b = d.boards.find((b) => b.id === boardId);
       if (!b) throw new Error("Board not found.");
+      const system = renderSystemFor(d);
       const partition = `design-capture-${randomUUID()}`;
       const isolated = electronSession.fromPartition(partition);
       isolated.setPermissionRequestHandler((_wc, _permission, cb) => cb(false));
@@ -171,7 +212,7 @@ export function previewDesign(
         const hung = new Error("The board's logic did not finish rendering within 5 s; it may loop forever. Fix the logic (or remove it with a logic operation) and preview again.");
         const loaded = await Promise.race([
           // After a timeout the window is destroyed and this rejects; the race is already decided.
-          w.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(designFrameHtml(b.html, randomUUID(), false, { system: renderSystemFor(d), slide }))}`).then(() => true, (error) => {
+          w.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(designFrameHtml(b.html, randomUUID(), false, { system, slide }))}`).then(() => true, (error) => {
             if (w.isDestroyed()) return false;
             throw error;
           }),
@@ -191,17 +232,20 @@ export function previewDesign(
         const warnings = (await w.webContents.executeJavaScriptInIsolatedWorld(CHECKS_WORLD, [
           { code: checks ? renderChecksScript(b.width, b.height) : READY_SCRIPT },
         ]).catch(() => (checks ? ["Checks could not run on this board; judge the screenshot alone."] : []))) as string[];
+        let logicErrors: string[] = [];
         if (checks) {
-          // Reported from inside the board, so it is the board's text: quoted, one line, short.
           const errors = (await w.webContents.executeJavaScript(RUNTIME_ERRORS).catch(() => [])) as unknown[];
-          for (const error of errors.filter((e): e is string => typeof e === "string").slice(0, 8))
-            warnings.push(`Logic error (reported by the board): ${JSON.stringify(error.replace(/[\u0000-\u001f\u2028\u2029]+/g, " ").slice(0, 200))}`);
+          logicErrors = (Array.isArray(errors) ? errors : []).filter((e): e is string => typeof e === "string");
+          for (const error of logicErrors.slice(0, 8)) warnings.push(`Logic error (reported by the board): ${quoted(error)}`);
           // How far the board strays from the design system it loads.
           const pack = packForDesign(d);
           if (pack) warnings.push(...adherenceWarnings(b.html, pack));
         }
         signal?.throwIfAborted();
         let image = await w.webContents.capturePage();
+        // The screenshot is the fresh load; then one saved edit, as the canvas applies it.
+        if (checks && designLogicOf(b.html)?.trim())
+          warnings.push(...(await savedEditWarnings(w, resolveFrameAssets(sanitizeDesignHtml(b.html), system?.assets), logicErrors)));
         // HiDPI displays capture at the device pixel ratio; export exact pixels.
         if (image.getSize().width > b.width * scale)
           image = image.resize({
