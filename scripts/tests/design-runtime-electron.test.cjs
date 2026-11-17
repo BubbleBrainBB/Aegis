@@ -1,6 +1,7 @@
 // The design component runtime in a real Chromium frame: template + logic +
 // props render with layer ids intact; events and board links work only in
-// play mode; a saved update keeps logic state; broken logic reports errors.
+// play mode; a saved update keeps logic state and tells the logic through
+// updated(), so it can put back what it added; broken logic reports errors.
 const { app, BrowserWindow, session } = require('electron');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -151,13 +152,50 @@ app.whenReady().then(async () => {
     fs.rmSync(hostDir, { recursive: true, force: true });
 
     // mounted() runs once per logic instance, not on every saved edit.
-    const COUNT = `<!doctype html><html><head></head><body><p data-aegis-node-id="n" data-aegis-if="true">{{ $board.count }}</p><script type="text/x-aegis-logic">class Board extends AegisBoard { count = 0; mounted() { this.count++; } }</script></body></html>`;
+    const COUNT = `<!doctype html><html><head></head><body><p data-aegis-node-id="n" data-aegis-if="true">{{ $board.count }}</p><script type="text/x-aegis-logic">class Board extends AegisBoard { count = 0; mounted() { this.count++; } updated() { window.updatedCalls = (window.updatedCalls || 0) + 1; } unmounted() { window.unmountedCalls = 1; } }</script></body></html>`;
     const mw = new BrowserWindow({ show: false, width: 400, height: 200, webPreferences: { sandbox: true, contextIsolation: true } });
     await mw.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(designFrameHtml(COUNT, 'n0nce', false, { mode: 'play' }))}`);
     await js(mw, 'window.__aegisRuntime.ready');
     await js(mw, `window.__aegisRuntime.update(${JSON.stringify(sanitizeDesignHtml(COUNT.replace('<p ', '<p title="edited" ')))});window.__aegisRuntime.update(${JSON.stringify(sanitizeDesignHtml(COUNT))})`);
     assert.equal(await js(mw, 'document.querySelector("[data-aegis-node-id=n]").textContent'), '1', 'mounted once across saved edits');
+    assert.equal(await js(mw, 'window.updatedCalls'), 2, 'updated() once per saved edit: the page under the kept logic is new');
+    assert.equal(await js(mw, 'window.unmountedCalls'), undefined, 'kept logic is not unmounted');
     mw.destroy();
+
+    // What logic adds to the page by hand: a saved edit rebuilds the page, so the
+    // logic puts it back from updated(). Driven as the canvas does, by message.
+    const stage = (logic) => `<!doctype html><html><head></head><body><main data-aegis-node-id="stage" class="stage"><h1 data-aegis-node-id="t">Title</h1></main><script type="text/x-aegis-logic">${logic}</script></body></html>`;
+    const draw = `this.canvas = document.createElement('canvas'); this.canvas.width = 20; this.canvas.height = 20; this.canvas.getContext('2d').fillRect(0, 0, 20, 20);`;
+    const KEEPS = stage(`class Board extends AegisBoard {
+  mounted() { this.attach(); }
+  updated() { this.attach(); }
+  attach() { const host = document.querySelector('.stage'); if (!host) return; if (!this.canvas) { ${draw} } if (this.canvas.parentNode !== host) host.append(this.canvas); }
+}`);
+    const LOSES = stage(`class Board extends AegisBoard { mounted() { ${draw} document.querySelector('.stage').append(this.canvas); } }`);
+    const canvasFrame = async (html) => {
+      const w = new BrowserWindow({ show: false, width: 400, height: 300, webPreferences: { sandbox: true, contextIsolation: true } });
+      await w.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(designFrameHtml(html, 'n0nce', true, { mode: 'edit' }))}`);
+      await js(w, 'window.__aegisRuntime.ready');
+      return w;
+    };
+    const patch = (w, html) => js(w, `new Promise(r=>{const on=e=>{if(e.data?.type==='aegis-design-patched'){removeEventListener('message',on);r(e.data.ok)}};addEventListener('message',on);postMessage({type:'aegis-design-patch',nonce:'n0nce',request:'r',html:${JSON.stringify(sanitizeDesignHtml(html))}},'*')})`);
+    // [canvases in the stage, the first one still holds its drawing, the title]
+    const seen = (w) => js(w, `(()=>{const c=document.querySelectorAll('.stage canvas');return [c.length, c.length ? c[0].getContext('2d').getImageData(10,10,1,1).data[3] : 0, document.querySelector('[data-aegis-node-id=t]').textContent]})()`);
+    const kw = await canvasFrame(KEEPS);
+    assert.deepEqual(await seen(kw), [1, 255, 'Title']);
+    assert.deepEqual(await js(kw, 'window.__aegisRuntime.added()'), ['canvas'], 'the runtime knows what logic added');
+    assert.equal(await patch(kw, KEEPS), true);
+    assert.deepEqual(await seen(kw), [1, 255, 'Title'], 'the added node is back after an edit with the same HTML');
+    assert.equal(await patch(kw, KEEPS.replace('>Title<', '>Renamed<')), true);
+    assert.deepEqual(await seen(kw), [1, 255, 'Renamed'], 'and after an edit that changed the HTML');
+    assert.deepEqual(await js(kw, 'window.__aegisRuntime.errors'), []);
+    kw.destroy();
+    const lw = await canvasFrame(LOSES);
+    assert.deepEqual(await seen(lw), [1, 255, 'Title']);
+    assert.equal(await patch(lw, LOSES), true);
+    assert.deepEqual(await seen(lw), [0, 0, 'Title'], 'logic that only adds its node in mounted() loses it (design_preview reports this)');
+    assert.deepEqual(await js(lw, 'window.__aegisRuntime.added()'), []);
+    lw.destroy();
 
     // Components: props from attributes and bindings, slots, own state per instance, styles, missing ones.
     const components = { Card: { html: '<style>.card{padding:4px}</style><div class="card"><h3 data-aegis-node-id="c-title">{{ title }}</h3><aegis-slot></aegis-slot><button data-aegis-node-id="c-btn" data-aegis-on-click="n = n + 1">{{ n }}</button></div>', logic: 'class Component extends AegisBoard { state = { n: 0 } }', props: { title: { type: 'string', default: 'Card' } } } };
@@ -179,7 +217,7 @@ app.whenReady().then(async () => {
     assert.match(await js(cw, 'document.querySelector("[data-aegis-node-id=missing]").textContent'), /Missing component Nope/);
     assert.ok((await js(cw, 'window.__aegisRuntime.errors')).some((e) => /Nope/.test(e)));
     cw.destroy();
-    console.log('PASS design runtime: format helpers, sanitizer, props/$preview, loops, if/else, values, play-only events, state assignment, board links, updates keep state, error reporting, the packaged app policy, components (props, bindings, slots, per-instance state, styles, missing)');
+    console.log('PASS design runtime: format helpers, sanitizer, props/$preview, loops, if/else, values, play-only events, state assignment, board links, updates keep state, updated() after a saved edit, added nodes restored by message patch, error reporting, the packaged app policy, components (props, bindings, slots, per-instance state, styles, missing)');
   } catch (error) {
     console.error(error);
     code = 1;

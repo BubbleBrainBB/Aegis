@@ -513,6 +513,28 @@ function render(nodes: TNode[], scope: Scope, ctx: RenderContext, keyPrefix = ""
   return out;
 }
 
+/**
+ * The elements this runtime rendered. Anything else in the page was put there
+ * by hand, by the board's logic (or by the canvas, as an insert preview).
+ */
+const rendered = new WeakSet<Element>();
+const track = (el: Element | null) => {
+  if (el) rendered.add(el);
+};
+/** Tag names of what logic added to the page, outermost elements only. */
+function addedByLogic(): string[] {
+  const out: string[] = [];
+  const walk = (parent: Element) => {
+    for (const el of Array.from(parent.children)) {
+      if (out.length >= 200) return;
+      if (rendered.has(el)) walk(el);
+      else if (!el.hasAttribute("data-aegis-insert-preview")) out.push(el.localName);
+    }
+  };
+  walk(document.body);
+  return out;
+}
+
 function element(n: TElement, scope: Scope, ctx: RenderContext, key: string): ReactNode {
   if (n.slot) return h(Fragment, { key }, ctx.slot ? render(ctx.slot.nodes, ctx.slot.scope, ctx.slot.ctx, key + "s") : null);
   if (n.component !== undefined || n.tag === "aegis-use") return h(Instance, { key, node: n, scope, ctx });
@@ -522,6 +544,7 @@ function element(n: TElement, scope: Scope, ctx: RenderContext, key: string): Re
     setProp(props, n.tag, name, p ? join(p, scope) : raw);
   }
   for (const [name, value] of n.binds) setProp(props, n.tag, name, value(scope));
+  props.ref = track;
   if (ctx.instance !== undefined && !ctx.inComponent) props["data-aegis-instance"] = ctx.instance;
   if (ctx.rootId) {
     props["data-aegis-node-id"] = ctx.rootId;
@@ -592,6 +615,8 @@ function useLogic(cls: LogicClass | null, props: Record<string, unknown>, holder
   }
   // mounted() once per instance: a saved edit remounts the tree but keeps the
   // board's instance (and its timers), so it is neither re-mounted nor unmounted.
+  // The page under it is new, though: whatever the logic added or changed by
+  // hand is gone, and updated() is where it learns that and puts it back.
   useEffect(() => {
     if (!instance) return;
     if (!mountedInstances.has(instance)) {
@@ -600,6 +625,12 @@ function useLogic(cls: LogicClass | null, props: Record<string, unknown>, holder
         instance.mounted();
       } catch (error) {
         report(error, "mounted()");
+      }
+    } else {
+      try {
+        instance.updated();
+      } catch (error) {
+        report(error, "updated()");
       }
     }
     return () => {
@@ -641,6 +672,7 @@ function Instance({ node, scope, ctx }: { node: TElement; scope: Scope; ctx: Ren
   const layerName = node.attrs.find(([a]) => a === "data-aegis-layer-name")?.[1] || name;
   if (!compiled)
     return h("div", {
+      ref: track,
       "data-aegis-node-id": id,
       "data-aegis-layer-name": layerName,
       style: { padding: 12, border: "1px dashed #d33", color: "#d33", font: "12px system-ui" },
@@ -655,7 +687,7 @@ function Instance({ node, scope, ctx }: { node: TElement; scope: Scope; ctx: Ren
   // One root takes the instance's layer id, so the canvas selects the instance.
   if (roots.length === 1 && roots[0].kind === "element")
     return h(Fragment, null, render(roots, inner, { ...childCtx, rootId: id, rootName: layerName }));
-  return h("div", { "data-aegis-node-id": id, "data-aegis-layer-name": layerName, style: { display: "block" } }, render(compiled.template, inner, childCtx));
+  return h("div", { ref: track, "data-aegis-node-id": id, "data-aegis-layer-name": layerName, style: { display: "block" } }, render(compiled.template, inner, childCtx));
 }
 
 class Boundary extends ReactComponent<{ children?: ReactNode; epoch: number }, { failed: boolean; epoch: number }> {
@@ -671,7 +703,7 @@ class Boundary extends ReactComponent<{ children?: ReactNode; epoch: number }, {
   }
   render() {
     return this.state.failed
-      ? h("div", { style: { padding: 16, font: "13px system-ui", color: "#b42318" } }, "This board's logic failed to render. Its errors are listed for the agent.")
+      ? h("div", { ref: track, style: { padding: 16, font: "13px system-ui", color: "#b42318" } }, "This board's logic failed to render. Its errors are listed for the agent.")
       : this.props.children;
   }
 }
@@ -723,7 +755,10 @@ function boot() {
   post("ready", { mode });
 }
 
-/** A saved change: new head styles, body attributes and template; logic state survives when its source is unchanged. */
+/**
+ * A saved change: new head styles, body attributes and template. Logic state
+ * survives when its source is unchanged, and the kept instance gets updated().
+ */
 function update(html: string) {
   const next = new DOMParser().parseFromString(html, "text/html");
   const owned = (n: Element) => n.hasAttribute("data-aegis-frame") || n.hasAttribute("data-aegis-runtime") || n.matches(`script[type="${COMPONENTS_TYPE}"]`);
@@ -743,6 +778,8 @@ const runtime = {
   update(html: string) {
     update(html);
   },
+  /** For design_preview: what the logic has added to the page by hand. */
+  added: addedByLogic,
 };
 (window as unknown as { __aegisRuntime: typeof runtime }).__aegisRuntime = runtime;
 runtime.ready = new Promise<void>((resolve) => {

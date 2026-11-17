@@ -4,8 +4,9 @@ import { designSlides, isDesignDeck } from "../../shared/design-deck";
 
 /**
  * Verification before a design is handed over: every chosen board is
- * rendered and checked; blocking problems (logic errors, an empty board,
- * images that don't load) come back at once; otherwise a separate,
+ * rendered and checked; blocking problems (logic errors, logic that loses
+ * what it added once the canvas applies an edit, an empty board, images that
+ * don't load) come back at once; otherwise a separate,
  * read-only reviewer looks at the screenshots against the request and says
  * done or needs work. The reviewer never edits: the agent that drew the
  * design fixes what it reports.
@@ -29,7 +30,7 @@ export type DesignReviewer = (input: {
 const MAX_BOARDS = 6;
 /** Screenshots the reviewer looks at (deck slides count one each). */
 const MAX_SHOTS = 8;
-const BLOCKING = [/^Logic error\b/, /renders empty/, /could not be loaded/, /did not finish rendering/];
+const BLOCKING = [/^Logic error\b/, /^After a saved edit\b/, /renders empty/, /could not be loaded/, /did not finish rendering/];
 
 const REVIEW_SYSTEM = `You review UI designs before they are shown to the person who asked for them. You cannot edit anything; another agent fixes what you report.
 
