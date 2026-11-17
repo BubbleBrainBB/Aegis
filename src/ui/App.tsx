@@ -128,6 +128,7 @@ import { resolveCodexModel } from './utils/codex-model';
 import { startQueueAutoFlush } from './lib/queue-auto-flush';
 import * as DialogPrimitive from '@/ui/components/ui/dialog';
 import { getWorkflowMemberSessionId, isSideChatPendingTab } from './utils/right-utility-tabs';
+import { buildWorkspaceReviewSelection } from './utils/review-diff-selection';
 import { useWorkflowStore, workflowSessionLabel } from './store/useWorkflowStore';
 import { getDockedRightPanelMaxWidth, resolveDockedRightPanelWidth, RIGHT_PANEL_MIN_WIDTH } from './utils/right-panel-width';
 import { ResizableRightPane } from './components/ResizableRightPane';
@@ -145,6 +146,7 @@ import type {
   ProjectUtilityPanelKind,
   ProjectUtilityPanelTarget,
   ProjectUtilityTabDescriptor,
+  GitPatchScope,
 } from './types';
 
 const COMMIT_GENERATION_MIN_VISIBLE_MS = 450;
@@ -617,7 +619,12 @@ export function App() {
     setProjectTreeCollapsed,
   ]);
 
-  const openEnvironmentProjectPanel = useCallback((view: 'files' | 'changes') => {
+  const openEnvironmentProjectPanel = useCallback((view: 'files' | 'changes', scope?: GitPatchScope) => {
+    // The panel keeps its last source (often a turn); a row that shows totals
+    // for one scope has to land on that scope.
+    if (view === 'changes' && scope) {
+      useAppStore.getState().setReviewDiffSelection(buildWorkspaceReviewSelection(scope));
+    }
     openRightUtilityTab(view === 'changes' ? 'review' : 'files');
   }, [openRightUtilityTab]);
 

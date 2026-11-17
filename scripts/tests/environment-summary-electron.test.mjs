@@ -12,6 +12,7 @@ import React, {useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import '/src/ui/index.css';
 window.qa={calls:[],refreshes:0,branchReads:0,attached:[],listeners:new Set()};
+window.rowButton=label=>[...document.querySelectorAll('button.environment-summary-row')].find(e=>e.querySelector('span')?.textContent.trim()===label);
 Object.defineProperty(navigator,'clipboard',{value:{writeText:async text=>{qa.copied=text}}});
 window.electron={
  getUiResumeStateSync:()=>null, getRendererStateAllSync:()=>({}), saveUiResumeState:async()=>{},
@@ -25,6 +26,8 @@ window.electron={
  },
  detachSessionPullRequest:async(id,url)=>{qa.attached=qa.attached.filter(pr=>pr.url!==url);qa.listeners.forEach(fn=>fn(id))},
  getGitChanges:async()=>({ok:true,entries:[]}),
+ getGitPatch:async(cwd,scope)=>{qa.patchReads=(qa.patchReads||0)+1;return {ok:true,error:null,scope,patch:qa.patchText,repoRoot:cwd,truncated:false}},
+ getGitCommits:async()=>({ok:true,commits:[]}),
  gitGenerateCommitMessage:async()=>({ok:true,message:'style: update card'}),
  gitCommit:async()=>{qa.calls.push('commit');return {ok:true}},
  gitPush:async()=>{qa.calls.push('push');await new Promise(r=>setTimeout(r,400));qa.patch({aheadCount:0,hasUpstream:true});return {ok:true}},
@@ -52,19 +55,30 @@ function GitProbe(){
  qa.secondProbe=useGitEnvironment(cwd,'second-pane');
  return <output id="probe-branch">{git.overview.branch||'unknown'}</output>;
 }
+const {useAegisDiffPanelData}=await import('/src/ui/hooks/useAegisDiffPanelData.ts');
+const {buildWorkspaceReviewSelection}=await import('/src/ui/utils/review-diff-selection.ts');
+const patchOf=lines=>'diff --git a/a.txt b/a.txt\\nindex 1111111..2222222 100644\\n--- a/a.txt\\n+++ b/a.txt\\n@@ -1 +1,'+(lines.length+1)+' @@\\n one\\n'+lines.map(line=>'+'+line+'\\n').join('');
+qa.patches={before:patchOf(['two']),after:patchOf(['two','three'])};
+// The diff panel's data, driven the way the Changes row drives it.
+function DiffProbe(){
+ const [selection,setSelection]=useState(null);qa.selectDiff=scope=>setSelection(buildWorkspaceReviewSelection(scope));
+ qa.diff=useAegisDiffPanelData({cwd:'/repo/diff',session:null,selection,active:true});
+ return null;
+}
 function Harness(){
  const [sources,setSources]=useState([]);qa.setSources=setSources;
  const [layoutWidth,setLayoutWidth]=useState(0);qa.setLayoutWidth=setLayoutWidth;
  const [activePane,setActivePane]=useState(0);qa.setActivePane=setActivePane;
  const [mounted,setMounted]=useState(true);qa.setMounted=setMounted;
  const [probe,setProbe]=useState(false);qa.setProbe=setProbe;
+ const [diffProbe,setDiffProbe]=useState(false);qa.setDiffProbe=setDiffProbe;
  const [sessionId,setSessionId]=useState('fixture');qa.setSessionId=setSessionId;
  const [mode,setMode]=useState('local');const [patch,setPatch]=useState({});const [narrow,setNarrow]=useState(false);qa.setMode=value=>{setPatch({});setMode(value)};qa.patch=setPatch;qa.setNarrow=setNarrow;
  const repo=!['local','local-extras','loading','error','draft'].includes(mode);
  const session={...base,id:sessionId,cwd:repo?'/projects/aegis':'/projects/podcast',envMode:mode==='worktree'?'worktree':'local',worktreePath:mode==='worktree'?'/projects/aegis-wt':null,status:mode==='running'?'running':'idle',associatedWorktreeBranch:'stale/session-branch'};
  if(mode==='local-extras')session.computerUseGrants=[{app:'Test app'}];
  const context={paneId:'main',paneLabel:'Main',sessionId,session,title:'Fixture',projectCwd:session.cwd,effectiveCwd:session.worktreePath||session.cwd,envMode:session.envMode,worktreePath:session.worktreePath,isRunning:mode==='running',isDraft:false,isDm:false,contextKey:mode,unavailableReason:mode==='draft'?'Choose a workspace to inspect its environment.':null};
- const overview={ok:repo,error:mode==='error'?'git-error':repo?null:'not-a-repo',hasRepo:repo,repoRoot:repo?session.cwd:null,repository:repo?{fullName:'aegis/desktop',webUrl:'https://github.com/aegis/desktop',defaultBranch:'main'}:null,branch:repo?'feature/card':null,upstream:'origin/feature/card',hasUpstream:true,aheadCount:1,behindCount:0,hasOriginRemote:true,isGitHubRemote:true,isDefaultBranch:false,totalChanges:2,insertions:24,deletions:6,prStatus:'not_found',pr:null};
+ const overview={ok:repo,error:mode==='error'?'git-error':repo?null:'not-a-repo',hasRepo:repo,repoRoot:repo?session.cwd:null,repository:repo?{fullName:'aegis/desktop',webUrl:'https://github.com/aegis/desktop',defaultBranch:'main'}:null,branch:repo?'feature/card':null,upstream:'origin/feature/card',hasUpstream:true,aheadCount:1,behindCount:0,hasOriginRemote:true,isGitHubRemote:true,isDefaultBranch:false,totalChanges:2,insertions:24,deletions:6,branchChanges:repo?{baseRef:'origin/main',files:5,insertions:120,deletions:30}:null,prStatus:'not_found',pr:null};
  if(mode==='loading')overview.error=null;
  if(mode==='branch-loading')overview.branch=null;
  if(mode==='detached')overview.branch='HEAD';
@@ -81,7 +95,7 @@ function Harness(){
  Object.assign(overview,patch);
  qa.overview=overview;
  const git={overview,loading:mode==='loading'||mode==='pr-loading',lastUpdatedAt:Date.now(),refresh:async()=>{qa.refreshes++},getSnapshot:()=>({contextKey:mode,cwd:context.effectiveCwd,repoRoot:overview.repoRoot,branch:overview.branch,signature:[overview.repoRoot||'',overview.branch||'',overview.upstream||'',overview.aheadCount,overview.behindCount,overview.totalChanges,overview.insertions,overview.deletions,overview.prStatus,overview.pr?.number||''].join(':')})};
- return <EnvironmentPanelProvider><Toaster/><div hidden>{probe?<GitProbe/>:null}</div><main style={{display:'flex',height:'100vh',background:'var(--bg-primary)'}}><div style={{width:layoutWidth|| (narrow?420:720),padding:layoutWidth?0:20,flexShrink:0,display:'flex',flexDirection:'column'}}><header style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><span>Environment preview</span><>{mounted?<EnvironmentHub context={context} git={git} onOpenProjectPanel={view=>qa.view=view} sources={sources} onOpenSources={path=>qa.sourcePath=path}/>:null}</></header>{layoutWidth?<div style={{display:'flex',flex:1,minHeight:0}}>{[0,1].map(index=><div key={index} style={{display:'flex',flexDirection:'column',width:index===0?'100%':600,flexShrink:0}}><EnvironmentChatSurface active={activePane===index}><div data-chat-scroll-container style={{flex:1,paddingBlock:16,paddingLeft:16,overflow:'auto'}}><div className="message-container" style={{background:'var(--bg-secondary)',height:1600}}>Chat messages</div></div><div data-composer-home="fixture"><div><div className="aegis-chat-composer px-8 pb-4"><div style={{background:'var(--bg-secondary)',height:100}}>Composer</div></div></div></div></EnvironmentChatSurface></div>)}</div>:<button id="outside" style={{marginTop:480}}>Outside</button>}</div><aside style={{flex:1,borderLeft:'1px solid var(--border)',padding:20}}>Files</aside></main></EnvironmentPanelProvider>;
+ return <EnvironmentPanelProvider><Toaster/><div hidden>{probe?<GitProbe/>:null}{diffProbe?<DiffProbe/>:null}</div><main style={{display:'flex',height:'100vh',background:'var(--bg-primary)'}}><div style={{width:layoutWidth|| (narrow?420:720),padding:layoutWidth?0:20,flexShrink:0,display:'flex',flexDirection:'column'}}><header style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><span>Environment preview</span><>{mounted?<EnvironmentHub context={context} git={git} onOpenProjectPanel={(view,scope)=>{qa.view=view;qa.scope=scope}} sources={sources} onOpenSources={path=>qa.sourcePath=path}/>:null}</></header>{layoutWidth?<div style={{display:'flex',flex:1,minHeight:0}}>{[0,1].map(index=><div key={index} style={{display:'flex',flexDirection:'column',width:index===0?'100%':600,flexShrink:0}}><EnvironmentChatSurface active={activePane===index}><div data-chat-scroll-container style={{flex:1,paddingBlock:16,paddingLeft:16,overflow:'auto'}}><div className="message-container" style={{background:'var(--bg-secondary)',height:1600}}>Chat messages</div></div><div data-composer-home="fixture"><div><div className="aegis-chat-composer px-8 pb-4"><div style={{background:'var(--bg-secondary)',height:100}}>Composer</div></div></div></div></EnvironmentChatSurface></div>)}</div>:<button id="outside" style={{marginTop:480}}>Outside</button>}</div><aside style={{flex:1,borderLeft:'1px solid var(--border)',padding:20}}>Files</aside></main></EnvironmentPanelProvider>;
 }
 createRoot(document.getElementById('root')).render(<Harness/>);
 `;
@@ -97,6 +111,8 @@ app.whenReady().then(async()=>{
  const js=code=>win.webContents.executeJavaScript(code,true);
  const click=async label=>{await js('(()=>{const e=[...document.querySelectorAll("button, [role=menuitem]")].find(e=>e.getAttribute("aria-label")==='+JSON.stringify(label)+'||e.textContent.trim()==='+JSON.stringify(label)+'||e.querySelector("span")?.textContent.trim()==='+JSON.stringify(label)+');if(!e)throw Error("Missing button: '+label+'");e.click()})()');await delay(150)};
  const visible=()=>js('document.body.innerText');
+ // A card row's text with its trailing detail, or null when the row is absent.
+ const row=label=>js('(()=>{const e=rowButton('+JSON.stringify(label)+');return e?[...e.querySelectorAll("span")].filter(s=>!s.children.length).map(s=>s.textContent.trim()).join(" "):null})()');
  // PR rows show their state as a colored glyph only; the label carries it in words.
  const prRows=()=>js('[...document.querySelectorAll("button")].map(e=>e.getAttribute("aria-label")||"").filter(l=>l.startsWith("PR #")).join(" | ")');
  const mode=async value=>{await js('qa.setMode('+JSON.stringify(value)+')');await delay(200)};
@@ -126,6 +142,16 @@ app.whenReady().then(async()=>{
  await mode('error');assert.match(await visible(),/Unable to read Git status/);
  await mode('draft');assert.match(await visible(),/Choose a workspace/);assert.doesNotMatch(await visible(),/Copy workspace path/);
  await mode('git');assert.match(await visible(),/feature\\/card/);assert.match(await visible(),/Changes/);await click('Changes');assert.equal(await js('qa.view'),'changes');
+ // The Changes row counts the branch against its base, so committing does not
+ // empty it, and it opens the panel on the scope it counted.
+ assert.equal(await js('qa.scope'),'branch');assert.equal(await row('Changes'),'Changes +120 -30');assert.equal(await js('rowButton("Changes").title'),'Compared with origin/main');
+ assert.equal(await row('Uncommitted'),'Uncommitted 2 files');await click('Uncommitted');assert.equal(await js('qa.scope'),'working-tree');
+ await js('qa.patch({totalChanges:1})');await delay(100);assert.equal(await row('Uncommitted'),'Uncommitted 1 file');
+ await js('qa.patch({totalChanges:0,insertions:0,deletions:0})');await delay(100);assert.equal(await row('Changes'),'Changes +120 -30','committed work stays counted');assert.equal(await row('Uncommitted'),null);
+ await js('qa.patch({totalChanges:0,insertions:0,deletions:0,branchChanges:{baseRef:"origin/main",files:0,insertions:0,deletions:0}})');await delay(100);assert.equal(await row('Changes'),'Changes','nothing to count shows no numbers');
+ await js('qa.patch({branchChanges:null})');await delay(100);assert.equal(await row('Changes'),'Changes +24 -6','without a base the row counts uncommitted work');assert.equal(await row('Uncommitted'),null);
+ await click('Changes');assert.equal(await js('qa.scope'),'working-tree');assert.equal(await js('rowButton("Changes").title'),'Uncommitted changes');
+ await js('qa.patch({})');await delay(100);
  assert.match(await visible(),/Commit or push/);assert.doesNotMatch(await visible(),/Copy workspace path|Open repository|Create pull request|Sync/);await snap('git');
  await click('Environment options');assert.match(await visible(),/Copy workspace path/);assert.match(await visible(),/Open repository/);
  await js('document.querySelector("[data-environment-hub-layer]").dispatchEvent(new MouseEvent("mousedown",{bubbles:true}))');
@@ -304,6 +330,13 @@ app.whenReady().then(async()=>{
  await js('qa.preferences.setState({reduceMotion:"on"})');await delay(100);
  assert.equal(await js('getComputedStyle(document.querySelector("[data-chat-scroll-container]")).transitionDuration'),'0s');
  assert.equal(await js('getComputedStyle(document.querySelector("[data-environment-panel]")).animationName'),'none');
+ // Clicking Changes again asks for the branch as it is now, not the patch
+ // fetched for the first click.
+ await js('qa.patchText=qa.patches.before;qa.setDiffProbe(true)');await delay(200);
+ await js('qa.selectDiff("branch")');await delay(200);assert.equal(await js('qa.diff.summary.addedLines'),1);
+ const patchReads=await js('qa.patchReads');await delay(200);assert.equal(await js('qa.patchReads'),patchReads,'an unchanged selection is not fetched again');
+ await js('qa.patchText=qa.patches.after;qa.selectDiff("branch")');await delay(200);
+ assert.equal(await js('qa.patchReads'),patchReads+1,'the same scope chosen again is fetched again');assert.equal(await js('qa.diff.summary.addedLines'),2);
  assert.deepEqual(errors,[]);
  console.log('environment-summary: initial and cached branch, detached HEAD, non-Git sections, stale replies, combined commit/push, publish, PR states and creation, sync, worktree menu, clipboard menu, portals, running guards, anchor, dismissal, responsive layout and per-session open state passed');app.exit(0);
  }catch(e){console.error(e);console.error(errors);console.error(await visible());await snap('failure');app.exit(1)}

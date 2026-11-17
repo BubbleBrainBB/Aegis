@@ -141,6 +141,9 @@ export function useAegisDiffPanelData({
   // Workspace scopes and commit patches share one fetch pipeline; the key
   // distinguishes them so switching sources always refetches.
   const gitSourceKey = workspaceScope ? `scope:${workspaceScope}` : commitSha ? `commit:${commitSha}` : null;
+  // Choosing a source again is a request to see it as it is now: a row that
+  // shows fresh totals must not open onto the patch fetched for an older click.
+  const selectionRequestedAt = effectiveSelection.requestedAt;
 
   useEffect(() => {
     if (!active || !gitSourceKey) {
@@ -165,7 +168,7 @@ export function useAegisDiffPanelData({
       return;
     }
 
-    const requestKey = `${cwd}\0${gitSourceKey}\0${reloadToken}`;
+    const requestKey = `${cwd}\0${gitSourceKey}\0${selectionRequestedAt}\0${reloadToken}`;
     if (workspaceState.cacheKey === requestKey && !workspaceState.loading) {
       return;
     }
@@ -231,7 +234,7 @@ export function useAegisDiffPanelData({
           gitResult: null,
         }));
       });
-  }, [active, commitSha, cwd, gitSourceKey, reloadToken, workspaceScope, workspaceState.cacheKey, workspaceState.loading]);
+  }, [active, commitSha, cwd, gitSourceKey, reloadToken, selectionRequestedAt, workspaceScope, workspaceState.cacheKey, workspaceState.loading]);
 
   // Recent commits feed the "Committed" submenu of the scope dropdown.
   const [commits, setCommits] = useState<GitCommitSummary[]>([]);
