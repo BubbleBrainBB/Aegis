@@ -2021,6 +2021,8 @@ export type StreamMessage =
       subtype: 'context_refreshed';
       uuid: string;
       session_id: string;
+      /** 'auto': its context had filled up; absent or 'manual': the person asked. */
+      trigger?: 'manual' | 'auto';
     })
   // Emitted when the runtime starts compacting (PreCompact hook), so the UI
   // can show a live "Compacting…" status. The matching compact_boundary marks

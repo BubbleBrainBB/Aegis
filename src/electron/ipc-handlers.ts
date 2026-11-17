@@ -44,7 +44,7 @@ import { sanitizeDesignPromptRef } from '../shared/design-comment';
 import { sanitizeDesignSelectionRef } from '../shared/design-selection';
 import { designContextText } from './design/focus';
 import { chatFolderInstructions, chatsFolderInfo, createChatFolder, noteChatFolderInstructionsDelivered, takeChatFolderInstructions } from './libs/chat-folders';
-import { ensureMainBotSession, mainBotSession, mainBotTurnContext, noteMainBotRemoteChange, noteMainBotTurnEnded, prepareMainBotTurn, refreshMainBotContext, setupMainBot } from './libs/main-bot';
+import { ensureMainBotSession, mainBotSession, mainBotTurnContext, noteMainBotContextUsage, noteMainBotRemoteChange, noteMainBotTurnEnded, prepareMainBotTurn, refreshMainBotContext, setupMainBot } from './libs/main-bot';
 import { setDesignProjectRoot } from './design/styles';
 import { setDesignAgentNamer, setDesignPromptSource } from './design/tools';
 import { setDesignFollowUp } from './design/project/tools';
@@ -5298,7 +5298,7 @@ function setupMainBotEntry(mainWindow: BrowserWindow): void {
     sessionsRunningWorkflow: () => workflowRuns?.sessionsWithActiveRun() ?? [],
     isGitRepo: (cwd) => assertGitRepo(cwd).then(() => true, () => false),
     startExtras: async (provider, prompt, cwd) => (provider === 'codex' ? codexReferences(prompt, cwd) : {}),
-    freshThread: (sessionId, entering) => startMainBotFreshThread(mainWindow, sessionId, entering),
+    freshThread: (sessionId, entering, automatic) => startMainBotFreshThread(mainWindow, sessionId, entering, automatic),
   });
   ipcMainHandle('main-bot-refresh-context', async (): Promise<'done' | 'pending' | 'unavailable'> => refreshMainBotContext());
   ipcMainHandle('main-bot-open', async (): Promise<SessionInfo> => buildSessionInfoFromRow(ensureMainBotSession()));
@@ -5313,7 +5313,7 @@ function setupMainBotEntry(mainWindow: BrowserWindow): void {
  * thread and write its id back. `entering`: the caller is the send of the
  * bot's next turn and holds its lease.
  */
-function startMainBotFreshThread(mainWindow: BrowserWindow, sessionId: string, entering: boolean): boolean {
+function startMainBotFreshThread(mainWindow: BrowserWindow, sessionId: string, entering: boolean, automatic: boolean): boolean {
   const session = sessions.getSession(sessionId);
   if (!session || session.status === 'running') return false;
   if (!entering && sessionDispatchLeases.has(sessionId)) return false;
@@ -5322,7 +5322,7 @@ function startMainBotFreshThread(mainWindow: BrowserWindow, sessionId: string, e
   // A kept-alive runner goes on with the thread it has, whatever the session row says.
   retireSessionRunner(sessionId);
   sessions.setBubbleSessionId(sessionId, null);
-  const divider: StreamMessage = { type: 'system', subtype: 'context_refreshed', uuid: uuidv4(), session_id: sessionId, createdAt: Date.now() };
+  const divider: StreamMessage = { type: 'system', subtype: 'context_refreshed', uuid: uuidv4(), session_id: sessionId, trigger: automatic ? 'auto' : 'manual', createdAt: Date.now() };
   sessions.addMessage(sessionId, divider);
   broadcast(mainWindow, { type: 'stream.message', payload: { sessionId, message: divider } });
   return true;
@@ -12009,6 +12009,10 @@ function startRunner(
             localFailureMessage || detectLocalRunnerFailureMessage(extractAssistantText(attributedMessage));
         }
         const shouldPersistMessage = shouldPersistProviderMessage(attributedMessage);
+        // The main bot's context starts afresh by itself once it fills up (libs/main-bot).
+        if (session.session_role === 'main' && attributedMessage.type === 'system' && attributedMessage.subtype === 'token_usage' && !attributedMessage.parentToolUseId) {
+          noteMainBotContextUsage(session.id, attributedMessage.usage.totalTokens, attributedMessage.usage.contextWindow);
+        }
         if (shouldPersistMessage) {
           // 保存消息. Stored Claude messages reload in the order they arrived.
           sessions.addMessage(

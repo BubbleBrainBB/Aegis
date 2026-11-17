@@ -23,7 +23,7 @@ import { getAgentRuntimeDirectory } from '../agent-runtime-directory';
 import * as sessions from '../session-store';
 import { assistantText } from '../workflow/session-hooks';
 import { MainBotMemory } from './memory';
-import { MainBotService, type MainBotAgent, type MainBotDevice, type MainBotHost, type MainBotStart, type MainBotTask } from './service';
+import { MainBotService, type MainBotAgent, type MainBotChatLine, type MainBotDevice, type MainBotHost, type MainBotStart, type MainBotTask } from './service';
 import { MainBotStore, type MainBotDb } from './store';
 import { setMainBotTools } from './tools';
 
@@ -46,9 +46,10 @@ export interface MainBotDeps {
   /**
    * Put the bot's agent on an empty thread, and mark the place in its
    * conversation. False when a turn of it runs or is being sent; `entering`
-   * says the caller is that send.
+   * says the caller is that send. `automatic`: its context filled up, the
+   * person did not ask.
    */
-  freshThread(sessionId: string, entering: boolean): boolean;
+  freshThread(sessionId: string, entering: boolean, automatic: boolean): boolean;
 }
 
 const AGENTS_TTL_MS = 60_000;
@@ -100,6 +101,12 @@ export function prepareMainBotTurn(sessionId: string): void {
   } catch (error) {
     console.error('[main-bot] could not start a fresh context:', error);
   }
+}
+
+/** The agent of a conversation said how full its context is: the bot's own starts afresh by itself when it fills up. */
+export function noteMainBotContextUsage(sessionId: string, usedTokens: number, contextWindow: number): void {
+  if (!service || mainBotSession()?.id !== sessionId) return;
+  service.noteContextUsage(usedTokens, contextWindow);
 }
 
 /** The person asked for a fresh context: done now, or with the bot's next turn when one runs. */
@@ -331,23 +338,29 @@ function mainState(): ReturnType<MainBotHost['main']> {
   };
 }
 
-/** The last turns of the bot's conversation that have an answer, oldest first. Read once, when its context starts afresh. */
-function recentReplies(limit: number): Array<{ asked: string | null; reply: string }> {
+/**
+ * Everything said in the bot's conversation, oldest first: what the person
+ * wrote, what the bot said, the label of each report that came in, and where
+ * its context started afresh. Read when its context starts afresh and when it
+ * looks something up, not with every message.
+ */
+function conversation(): MainBotChatLine[] {
   const row = mainBotSession();
   if (!row) return [];
-  const history = sessions.getSessionHistory(row.id);
-  const turns: Array<{ asked: string | null; reply: string }> = [];
-  let end = history.length;
-  for (let index = history.length - 1; index >= 0 && turns.length < limit; index -= 1) {
-    const message = history[index];
-    if (!opensTurn(message)) continue;
-    // What it said last in the turn is the answer; before that it thought aloud.
-    const reply = history.slice(index + 1, end).map((entry) => assistantText(entry).trim()).filter(Boolean).pop() ?? '';
-    // A turn without an answer (the one being sent, one that failed) says nothing.
-    if (reply) turns.unshift({ asked: message.type === 'user_prompt' && !message.workflowPrompt ? message.prompt : null, reply });
-    end = index;
+  const lines: MainBotChatLine[] = [];
+  const add = (who: MainBotChatLine['who'], text: string, at: unknown) => lines.push({ seq: lines.length + 1, at: Number(at ?? 0), who, text });
+  for (const message of sessions.getSessionHistory(row.id)) {
+    if (message.type === 'user_prompt') {
+      if (message.prompt.trim()) add(message.workflowPrompt ? 'report' : 'person', message.prompt, message.createdAt);
+    } else if (message.type === 'system' && message.subtype === 'context_refreshed') {
+      add('fresh', '', message.createdAt);
+    } else if (!message.parentToolUseId) {
+      // (What a sub-agent of its said is not the bot's own word; Bubble marks that this way.)
+      const text = assistantText(message).trim();
+      if (text) add('you', text, message.createdAt);
+    }
   }
-  return turns;
+  return lines;
 }
 
 export function setupMainBot(needs: MainBotDeps): MainBotService {
@@ -376,11 +389,11 @@ export function setupMainBot(needs: MainBotDeps): MainBotService {
     lastTurn,
     exists: (taskId) => isRemoteSessionId(taskId) || Boolean(sessions.getSession(taskId)),
     main: mainState,
-    freshThread: (entering) => {
+    freshThread: (entering, automatic) => {
       const row = mainBotSession();
-      return row ? needs.freshThread(row.id, entering) : false;
+      return row ? needs.freshThread(row.id, entering, automatic) : false;
     },
-    recentReplies,
+    conversation,
     tellMain: (label, text) => {
       const row = mainBotSession();
       if (!row) return Promise.resolve(false);

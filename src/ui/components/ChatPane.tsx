@@ -54,8 +54,8 @@ import { DesignChatCard } from './design/DesignChatCard';
 import { DesignBoardLinksContext, DesignLinkSessionContext, designBoardLinksOf } from '../utils/design-board-links';
 import { designChangesInMessages, type DesignTurnChange } from '../utils/design-entries';
 import { followUpCallsInMessages, type FollowUpCall } from '../utils/follow-up-entries';
-import { isMainBotDispatchWork, taskCardCallsInMessages, type TaskCardCall } from '../utils/follow-up-entries';
-import { isStartSessionToolName } from '../../shared/follow-up';
+import { isMainBotQuietWork, taskCardCallsInMessages, type TaskCardCall } from '../utils/follow-up-entries';
+import { isDeliveredResultLabel, isStartSessionToolName } from '../../shared/follow-up';
 import { SubSessionCard } from './follow-up/SubSessionCard';
 import { MainBotTaskLine } from './main-bot/MainBotTaskLine';
 import { MainBotTaskChip } from './main-bot/MainBotTaskChip';
@@ -1378,7 +1378,8 @@ export function ChatPane({
 
   // The main bot's conversation draws handed-out work its own way: a chip per
   // started task under the message that opened the turn (while the turn runs
-  // and after), and no trace row for work that only handed tasks out.
+  // and after), and no trace row for what the bot does on the way to its
+  // answer (isMainBotQuietWork): it reads as a chat, not as an agent's trace.
   const isMainBotChat = useAppStore((state) => Boolean(sessionId) && state.mainBotSessionId === sessionId);
   /** Keyed by the index of the message that opens the turn; -1 when that message is not loaded. */
   const taskChipsByOpener = useMemo(() => {
@@ -1395,12 +1396,12 @@ export function ChatPane({
     }
     return map;
   }, [isMainBotChat, session?.messages, toolResultsMap, turnRanges]);
-  const dispatchOnlyWork = useMemo(() => {
+  const quietWork = useMemo(() => {
     const ids = new Set<string>();
     if (!isMainBotChat) return ids;
     for (const item of timelineItems) {
       const group = item.type === 'work' ? item.group : item.inlineWorkGroup;
-      if (group && isMainBotDispatchWork(group.messages, toolResultsMap)) ids.add(group.id);
+      if (group && isMainBotQuietWork(group.messages, toolResultsMap)) ids.add(group.id);
     }
     return ids;
   }, [isMainBotChat, timelineItems, toolResultsMap]);
@@ -1578,8 +1579,24 @@ export function ChatPane({
       }
     }
 
+    // The main bot answering one report after another, with nothing typed in
+    // between, reads as one stretch: the copy button comes after its last word.
+    if (isMainBotChat) {
+      let lastAnswer = -1;
+      for (let index = 0; index < timelineItems.length; index += 1) {
+        const item = timelineItems[index];
+        if (item.type !== 'message') continue;
+        if (item.message.type === 'assistant') {
+          if (item.assistantPresentation !== 'progress') lastAnswer = index;
+        } else if (item.message.type === 'user_prompt') {
+          if (lastAnswer >= 0 && item.message.workflowPrompt === 'follow-up' && isDeliveredResultLabel(item.message.prompt)) hiddenMessageIndices.add(lastAnswer);
+          lastAnswer = -1;
+        }
+      }
+    }
+
     return { actionTextByCardIndex, hiddenMessageIndices };
-  }, [timelineItems, turnCardByTimelineIndex, taskCardTurns]);
+  }, [timelineItems, turnCardByTimelineIndex, taskCardTurns, isMainBotChat]);
 
   const handleOpenDiff = useCallback((
     record: ChangeRecord,
@@ -2299,7 +2316,7 @@ export function ChatPane({
                               : undefined
                           }
                         >
-                          {cardsAfterAnswer && !item.active && dispatchOnlyWork.has(item.group.id) ? null : (
+                          {cardsAfterAnswer && !item.active && quietWork.has(item.group.id) ? null : (
                           <TaskCardsAfterAnswerProvider value={cardsAfterAnswer}>
                           <ToolExecutionBatch
                             messages={item.group.messages}
@@ -2457,7 +2474,7 @@ export function ChatPane({
                         {taskChips && !chipsUnderPrompt ? (
                           <div className="-ml-2 my-2 flex flex-wrap gap-x-1 gap-y-0.5" data-main-bot-task-chips>{taskChips}</div>
                         ) : null}
-                        {item.inlineWorkGroup && !(inlineTurnFinished && dispatchOnlyWork.has(item.inlineWorkGroup.id)) ? (
+                        {item.inlineWorkGroup && !(inlineTurnFinished && quietWork.has(item.inlineWorkGroup.id)) ? (
                           <div className="-mt-1 pl-1">
                             <TaskCardsAfterAnswerProvider value={inlineTurnFinished}>
                             <ToolExecutionBatch

@@ -118,7 +118,7 @@ export function MessageCard({
       if (message.subtype === 'background_task_ended') {
         return <BackgroundTaskEndedRow sessionId={sessionId} outcome={message.outcome} />;
       }
-      if (message.subtype === 'context_refreshed') return <ContextRefreshedRow />;
+      if (message.subtype === 'context_refreshed') return <ContextRefreshedRow automatic={message.trigger === 'auto'} />;
       return null;
 
     case 'assistant':
@@ -154,18 +154,42 @@ export function MessageCard({
   }
 }
 
-/** Where the main bot's agent started on an empty thread: it has nothing of what is above. */
-function ContextRefreshedRow() {
+/** One period of the wavy rule, as a mask: the rule takes its colour from the theme. */
+const WAVE_MASK = `url("data:image/svg+xml,${encodeURIComponent(
+  "<svg xmlns='http://www.w3.org/2000/svg' width='14' height='6'><path d='M0 3 Q3.5 -0.4 7 3 T14 3' fill='none' stroke='black' stroke-width='1.1' stroke-linecap='round'/></svg>",
+)}")`;
+
+function WavyRule({ from }: { from: 'left' | 'right' }) {
   return (
-    <div
-      role="separator"
-      className="my-5 flex items-center gap-3 text-[12px] text-[var(--text-muted)]"
-      title="Aegis starts from a fresh context here. It keeps its notes and what it handed out, not the conversation above."
-      data-context-refreshed
-    >
-      <span className="h-px flex-1 bg-[var(--border)]" aria-hidden="true" />
-      <span className="flex-shrink-0">Fresh context from here</span>
-      <span className="h-px flex-1 bg-[var(--border)]" aria-hidden="true" />
+    <span
+      aria-hidden="true"
+      className="h-[6px] min-w-0 flex-1"
+      style={{
+        backgroundColor: 'color-mix(in srgb, var(--accent) 38%, transparent)',
+        maskImage: WAVE_MASK,
+        WebkitMaskImage: WAVE_MASK,
+        maskRepeat: 'repeat-x',
+        WebkitMaskRepeat: 'repeat-x',
+        maskSize: '14px 6px',
+        WebkitMaskSize: '14px 6px',
+        maskPosition: `${from} center`,
+        WebkitMaskPosition: `${from} center`,
+      }}
+    />
+  );
+}
+
+/**
+ * Where the main bot's agent started on an empty thread: it has nothing of
+ * what is above. A wavy rule with "New" in it; why is in the tooltip.
+ */
+function ContextRefreshedRow({ automatic }: { automatic: boolean }) {
+  const why = `${automatic ? 'The context was nearly full, so Aegis started from a fresh one here.' : 'Aegis starts from a fresh context here.'} It keeps its notes and what it handed out, not the conversation above.`;
+  return (
+    <div role="separator" aria-label={why} title={why} className="my-5 flex items-center gap-2.5" data-context-refreshed={automatic ? 'auto' : 'manual'}>
+      <WavyRule from="left" />
+      <span className="flex-shrink-0 rounded-full bg-[var(--accent-light)] px-2 py-0.5 text-[10.5px] font-semibold leading-4 tracking-[0.06em] text-[var(--accent)]">New</span>
+      <WavyRule from="right" />
     </div>
   );
 }

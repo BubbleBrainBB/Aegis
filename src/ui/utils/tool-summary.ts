@@ -1,7 +1,7 @@
 import { isStartWorkflowToolName } from '../../shared/workflow';
 import { isShowWidgetToolName, isWidgetGuideToolName, widgetFromToolInput } from '../../shared/widget';
 import { isProposeFollowUpToolName, isStartSessionToolName, isWithdrawFollowUpToolName } from '../../shared/follow-up';
-import { GET_TASK_TOOL, isMainBotLookupToolName, isMainBotNoteWriteToolName, isMainBotTaskActionToolName, LIST_HANDED_OUT_TOOL, LIST_PROJECTS_TOOL, mainBotToolKind, READ_MEMORY_TOOL } from '../../shared/main-bot';
+import { GET_TASK_TOOL, isMainBotLookupToolName, isMainBotNoteWriteToolName, isMainBotTaskActionToolName, LIST_HANDED_OUT_TOOL, LIST_PROJECTS_TOOL, mainBotToolKind, READ_CONVERSATION_TOOL, READ_MEMORY_TOOL } from '../../shared/main-bot';
 import { isReportStatusToolName, TURN_REPORT_OUTCOMES, turnReportLabel, type TurnReportOutcome } from '../../shared/turn-report';
 
 /** The task a main bot call names: the new task's title, or the one it was pointed at. */
@@ -24,6 +24,7 @@ const mainBotLookupOf = (name: string, input: unknown) => {
   if (bare === GET_TASK_TOOL) return mainBotTaskOf(input);
   if (bare === LIST_HANDED_OUT_TOOL) return 'handed-out work';
   if (bare === READ_MEMORY_TOOL) return `note ${mainBotNoteOf(input)}`;
+  if (bare === READ_CONVERSATION_TOOL) return 'the conversation';
   return 'tasks';
 };
 

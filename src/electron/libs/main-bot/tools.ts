@@ -10,6 +10,7 @@ import {
   LIST_TASKS_TOOL,
   MAIN_BOT_LIMITS,
   MESSAGE_TASK_TOOL,
+  READ_CONVERSATION_TOOL,
   READ_MEMORY_TOOL,
   START_TASK_TOOL,
   STOP_TASK_TOOL,
@@ -140,6 +141,22 @@ const SPECS: Array<{
       properties: { task: { type: 'string', description: TASK_REF } },
     },
     run: (bot, args) => bot.stopTask(args as { task: string }),
+  },
+  {
+    name: READ_CONVERSATION_TOOL,
+    description:
+      'What was said in this conversation, word for word, also the part you no longer have in front of you: by the person, by you, and which task reports came in. ' +
+      'With query: the lines that hold those words. With around: that place in full, with what was said before and after. With neither: the latest lines. ' +
+      'Not for how tasks stand (list_handed_out) or what a task did (get_task).',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        query: { type: 'string', description: 'Words to look for, as the person or you would have written them; a line with any of them is found.' },
+        around: { type: 'string', description: 'A ref such as "#412": that line and the ones either side of it.' },
+      },
+    },
+    run: (bot, args) => bot.readConversation(args as { query?: string; around?: number | string }),
   },
   {
     name: READ_MEMORY_TOOL,

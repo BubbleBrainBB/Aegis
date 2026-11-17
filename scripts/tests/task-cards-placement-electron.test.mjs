@@ -63,6 +63,15 @@ const bot=[
  result('c1r',3200,'call-start-2',JSON.stringify({sessionId:reviewId,title:'Review the hello world doc',agent:'Claude',device:'MacBook',project:'follow-up-test-repo'})),
  say('c2',3300,'FOLLOW-ON: I asked Claude to review the doc.'),
  done(3400,2000),
+ // A turn that thought, looked things up and kept a note on the way to its answer.
+ {type:'user_prompt',prompt:'How is it going?',createdAt:4000},
+ {type:'assistant',uuid:'d0',createdAt:4050,message:{content:[{type:'thinking',thinking:'Let me look at what I handed out.'}]}},
+ use('d1',4100,'call-look','list_handed_out',{}),
+ result('d1r',4150,'call-look','{"goals":[]}'),
+ use('d2',4200,'call-note','write_memory',{name:'person',content:'Short answers.'}),
+ result('d2r',4250,'call-note','{"saved":"person"}'),
+ say('d3',4300,'LOOKED-UP: The review is still running.'),
+ done(4400,5000),
 ];
 // The same in an ordinary session that started a sub-session.
 const parent=[
@@ -122,13 +131,16 @@ app.whenReady().then(async()=>{
   assert.ok(own.top>seen.back.bottom&&own.bottom<=seen.on.top&&Math.abs(own.left-seen.on.left)<=24,'the chip of a task the bot started on its own: '+JSON.stringify(seen));
   assert.equal(await js('document.querySelectorAll("#real-chat [data-follow-up-prompt]").length'),0,'the result adds no row');
   assert.equal(await js('[...document.querySelectorAll("#real-chat *")].some(e=>e.children.length===0&&/^Task report/.test(e.textContent))'),false,'the report label is not shown');
-  // Turns that only handed work out show no trace row ("Worked for 8s").
-  assert.equal(await js('document.querySelectorAll("#real-chat .workstream-toggle-row").length'),0,'no trace row for handing work out');
+  // What the bot does on the way to an answer (handing work out, thinking, looking up, keeping a note) shows no trace row ("Worked for 8s").
+  assert.equal(await js('document.querySelectorAll("#real-chat .workstream-toggle-row").length'),0,'no trace row in a finished turn of the bot');
   assert.equal(await js('document.querySelector("#real-chat [data-message-index=\\"1\\"]").childElementCount'),0,'nothing is drawn for that work');
   // No copy button between the answer that hands out and the result: it comes after the last word.
   const copies=await js('(()=>{const r=e=>e.getBoundingClientRect();const leaf=t=>[...document.querySelectorAll("#real-chat p,#real-chat span,#real-chat div")].filter(e=>e.children.length===0&&e.textContent.startsWith(t))[0];const out=r(leaf("HANDED-OUT")),back=r(leaf("CAME-BACK")),on=r(leaf("FOLLOW-ON"));const tops=[...document.querySelectorAll("#real-chat button")].filter(b=>/copy/i.test(b.getAttribute("aria-label")||b.title||"")).map(b=>r(b).top);return {between:tops.filter(t=>t>out.top&&t<back.top).length,afterResult:tops.filter(t=>t>=back.bottom&&t<on.top).length}})()');
   assert.equal(copies.between,0,'no copy button between the two answers: '+JSON.stringify(copies));
-  assert.equal(copies.afterResult,1,'the result answer keeps its copy button: '+JSON.stringify(copies));
+  // Nor between the answer to a report and the answer to the next thing that came in by itself; the last answer before the person writes again has it.
+  assert.equal(copies.afterResult,0,'no copy button before the next report: '+JSON.stringify(copies));
+  const lastCopies=await js('(()=>{const r=e=>e.getBoundingClientRect();const leaf=t=>[...document.querySelectorAll("#real-chat p,#real-chat span,#real-chat div")].filter(e=>e.children.length===0&&e.textContent.startsWith(t))[0];const on=r(leaf("FOLLOW-ON")),asked=r(leaf("How is it going?")),last=r(leaf("LOOKED-UP"));const tops=[...document.querySelectorAll("#real-chat button")].filter(b=>/copy/i.test(b.getAttribute("aria-label")||b.title||"")).map(b=>r(b).top);return {beforeAsked:tops.filter(t=>t>=on.bottom&&t<asked.top).length,afterLast:tops.filter(t=>t>=last.bottom).length}})()');
+  assert.deepEqual(lastCopies,{beforeAsked:0,afterLast:1},'the copy button comes after the last word: '+JSON.stringify(lastCopies));
   await shot('1-main-bot');
   // The chip opens the task beside the conversation, which stays where it is.
   const shown=await js('qa.store.getState().activeSessionId');

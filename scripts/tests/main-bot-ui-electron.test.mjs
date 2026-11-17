@@ -27,6 +27,7 @@ import {MessageCard} from '/src/ui/components/MessageCard.tsx';
 import {useAppStore} from '/src/ui/store/useAppStore.ts';
 import {useFollowUpStore} from '/src/ui/store/useFollowUpStore.ts';
 import {getToolSummary, deriveReadableToolDisplay, classifyToolUse} from '/src/ui/utils/tool-summary.ts';
+import {getLatestBubbleContextSnapshot} from '/src/ui/utils/context-usage.ts';
 import '/src/ui/index.css';
 const a=useAppStore.getState();const draft=a.createDraftSession('/projects/coworker');const base=useAppStore.getState().sessions[draft];
 const now=Date.now();const min=60000;
@@ -42,7 +43,9 @@ const rows=[
 ];
 useAppStore.setState({mainBotSessionId:'main',sessions:Object.fromEntries(rows.map(([id,title,extra,age])=>[id,{...base,id,isDraft:false,title,cwd:'/projects/coworker',projectCwd:'/projects/coworker',provider:'claude',messages:[],permissionRequests:[],envMode:'local',worktreePath:null,...extra,updatedAt:now-age*min,createdAt:now-age*min-1000}]))});
 useFollowUpStore.setState({loaded:true,proposals:{}});
-window.qa={app:useAppStore,summary:(name,input)=>getToolSummary(name,input),display:(name,input,status)=>deriveReadableToolDisplay(name,input,status),kind:(name)=>classifyToolUse(name,{})};
+const usage=(uuid,totalTokens)=>({type:'system',subtype:'token_usage',uuid,session_id:'main',provider:'bubble',model:'m',usage:{inputTokens:totalTokens,outputTokens:0,totalTokens,contextWindow:200000,estimated:false}});
+const refreshed={type:'system',subtype:'context_refreshed',uuid:'r',session_id:'main',trigger:'auto'};
+window.qa={context:(after)=>{const s=getLatestBubbleContextSnapshot([usage('u1',120000),refreshed,...(after?[usage('u2',after)]:[])],'m');return s&&[s.used,s.total,s.percent]},app:useAppStore,summary:(name,input)=>getToolSummary(name,input),display:(name,input,status)=>deriveReadableToolDisplay(name,input,status),kind:(name)=>classifyToolUse(name,{})};
 const started=(sessionId,title,extra={})=>JSON.stringify({sessionId,title,agent:'Claude',device:'MacBook',project:'coworker',...extra});
 function Harness(){
  return <Tooltip.Provider><div style={{display:'flex',height:'100vh',background:'var(--bg-primary)'}}>
@@ -68,6 +71,7 @@ function Harness(){
   </div>
   <div data-qa="link" className="markdown-content" style={{maxWidth:560}}><DesignLinkSessionContext.Provider value="main"><StructuredResponse content={'['+'Ship the docs](aegis://sessions/'+linked+') is ready.'} streaming={false}/></DesignLinkSessionContext.Provider></div>
   <div data-qa="plain-link" className="markdown-content" style={{maxWidth:560}}><DesignLinkSessionContext.Provider value="t1"><StructuredResponse content={'['+'Ship the docs](aegis://sessions/'+linked+') is ready.'} streaming={false}/></DesignLinkSessionContext.Provider></div>
+  <div data-qa="fresh-auto" style={{maxWidth:560}}><MessageCard sessionId="main" message={{type:'system',subtype:'context_refreshed',uuid:'fresh-2',session_id:'main',trigger:'auto',createdAt:now}}/></div>
   <div data-qa="fresh" style={{maxWidth:560}}><MessageCard sessionId="main" message={{type:'system',subtype:'context_refreshed',uuid:'fresh-1',session_id:'main',createdAt:now}}/></div>
   <div data-qa="here" style={{maxWidth:560}}><MessageCard sessionId="main" message={{type:'user_prompt',prompt:'Follow-up task: Fix empty file names',workflowPrompt:'follow-up',createdAt:now}}/></div>
  </main></div></Tooltip.Provider>;
@@ -163,10 +167,19 @@ app.whenReady().then(async()=>{
   // What the bot keeps outside its conversation: looked up like its tasks, and a note it changes is named.
   assert.equal(await js('window.qa.summary("list_handed_out",{})'),'Checked handed-out work');
   assert.equal(await js('window.qa.summary("read_memory",{name:"person"})'),'Checked note person');
+  assert.equal(await js('window.qa.summary("read_conversation",{query:"codex"})'),'Checked the conversation');
   assert.deepEqual(await js('window.qa.display("write_memory",{name:"person",content:"x"},"success")'),{verb:'Updated note',target:'person'});
   assert.equal(await js('window.qa.summary("write_memory",{name:"person",mode:"delete"})'),'Removed note person');
   // Where its agent started on an empty thread, the conversation shows a line.
-  assert.equal(await js('document.querySelector("[data-qa=fresh] [data-context-refreshed]").textContent'),'Fresh context from here');
+  // A wavy rule with "New" in it; why the context is new is in its tooltip.
+  assert.equal(await js('document.querySelector("[data-qa=fresh] [data-context-refreshed=manual]").textContent'),'New');
+  assert.equal(await js('document.querySelector("[data-qa=fresh-auto] [data-context-refreshed=auto]").textContent'),'New');
+  assert.match(await js('document.querySelector("[data-qa=fresh] [data-context-refreshed]").title'),/^Aegis starts from a fresh context here\\./);
+  assert.match(await js('document.querySelector("[data-qa=fresh-auto] [data-context-refreshed]").title'),/^The context was nearly full/);
+  assert.ok(await js('(()=>{const rule=document.querySelector("[data-qa=fresh] [data-context-refreshed] span[aria-hidden]");const style=getComputedStyle(rule);return rule.getBoundingClientRect().width>100&&(style.maskImage||style.webkitMaskImage).includes("svg")})()'),'the rule is drawn as a wave');
+  // The composer's context ring starts from zero after it, until the agent says how full the new thread is.
+  assert.deepEqual(await js('window.qa.context(0)'),[0,200000,0]);
+  assert.deepEqual(await js('window.qa.context(12000)'),[12000,200000,6]);
   assert.deepEqual(errors.filter(e=>!/No handler registered|Unable to load preload|ENOENT/.test(e)),[]);
   console.log(JSON.stringify({ok:true}));
   app.exit(0);

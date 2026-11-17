@@ -104,7 +104,7 @@ export function SessionTitleActions({ session, className = '', showMenu = true, 
       {session && tasksCrumb && !isMainBot && !session.isDraft && !session.hiddenFromThreads && session.scope !== 'dm' ? <TasksCrumb session={session} /> : null}
       {session ? <ParentCrumb sessionId={session.id} /> : null}
       <SessionTitleEditor session={session} className={className} />
-      {session?.number ? <TaskNumber number={session.number} /> : null}
+      {session?.number && !isMainBot ? <TaskNumber number={session.number} /> : null}
       {session?.device ? (
         <span data-session-machine className="no-drag inline-flex h-6 flex-shrink-0 items-center gap-[5px] rounded-[7px] bg-[var(--sidebar-item-hover)] pl-1.5 pr-2 text-[12.5px] text-[var(--text-secondary)]">
           <Monitor className="h-3.5 w-3.5" />

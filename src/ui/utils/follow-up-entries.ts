@@ -1,5 +1,5 @@
 import { isProposeFollowUpToolName, isStartSessionToolName } from '../../shared/follow-up';
-import { isMainBotLookupToolName, isMainBotTaskActionToolName } from '../../shared/main-bot';
+import { isMainBotLookupToolName, isMainBotNoteWriteToolName, isMainBotTaskActionToolName } from '../../shared/main-bot';
 import { isReportStatusToolName } from '../../shared/turn-report';
 import type { WorkstreamMessage } from './compaction';
 import type { StreamMessage } from '../types';
@@ -75,26 +75,23 @@ export function taskCardCallsInMessages(messages: StreamMessage[], results: Map<
 }
 
 /**
- * Work in the main bot's conversation that only handed tasks out (looking the
- * projects or tasks up on the way): the chips and lines the chat draws for
- * those calls say all of it, so a finished turn shows no trace row for it.
- * A lookup that failed keeps the trace, where its error can be read.
+ * Work in the main bot's conversation that a finished turn shows no trace row
+ * for ("Worked for 8s"): thinking, looking tasks, projects or notes up,
+ * keeping a note, and handing tasks out, for which the chat draws chips and
+ * lines of its own. Its answer says what came of it, as in a chat with a
+ * person. Anything else it did keeps the trace, and so does a lookup or a
+ * note that failed, where the error can be read.
  */
-export function isMainBotDispatchWork(messages: readonly WorkstreamMessage[], results: Map<string, ToolResultBlock>): boolean {
-  let handedOut = false;
+export function isMainBotQuietWork(messages: readonly WorkstreamMessage[], results: Map<string, ToolResultBlock>): boolean {
   for (const message of messages) {
     if (message.type !== 'assistant') return false;
     for (const block of getMessageContentBlocks(message)) {
       const use = normalizeToolUseBlock(block);
       if (!use) continue;
-      if (isMainBotTaskActionToolName(use.name)) {
-        handedOut = true;
-        continue;
-      }
-      if (isReportStatusToolName(use.name)) continue;
-      if (isMainBotLookupToolName(use.name) && results.get(use.id)?.is_error !== true) continue;
+      if (isMainBotTaskActionToolName(use.name) || isReportStatusToolName(use.name)) continue;
+      if ((isMainBotLookupToolName(use.name) || isMainBotNoteWriteToolName(use.name)) && results.get(use.id)?.is_error !== true) continue;
       return false;
     }
   }
-  return handedOut;
+  return true;
 }

@@ -8,11 +8,13 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeF
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { MAIN_BOT_LIMITS, mainBotReportTitles, parseMainBotTaskResult } from '../../src/shared/main-bot';
+import { MAIN_BOT_LIMITS, isMainBotLookupToolName, mainBotReportTitles, parseMainBotTaskResult } from '../../src/shared/main-bot';
 import {
   MainBotService,
+  mainBotContextLimit,
   taskBrief,
   type MainBotAgent,
+  type MainBotChatLine,
   type MainBotDevice,
   type MainBotHost,
   type MainBotStart,
@@ -60,8 +62,15 @@ function setup(prepare?: (db: MainBotDb) => void) {
     archived: new Set<string>(),
     /** Whether the bot's agent can be put on an empty thread now, and how often it was. */
     threadFree: true,
+    /** The app fails halfway through putting it there. */
+    threadBroken: false,
     freshThreads: [] as boolean[],
-    conversation: [] as Array<{ asked: string | null; reply: string }>,
+    /** Which of those started by themselves. */
+    automatic: [] as boolean[],
+    /** The bot's conversation by turns: what the person wrote (null: a report came in) and its answer. */
+    conversation: [] as Array<{ asked: string | null; reply: string; at?: number }>,
+    /** Its lines as they are, when a test needs more than turns. */
+    chat: null as MainBotChatLine[] | null,
   };
   const host: MainBotHost = {
     now: () => clock,
@@ -101,12 +110,22 @@ function setup(prepare?: (db: MainBotDb) => void) {
     lastTurn: async (taskId) => world.replies.get(taskId) ?? null,
     exists: (taskId) => !/^[0-9a-f]{8}-/.test(taskId) || world.archived.has(taskId) || world.tasks.some((task) => task.id === taskId),
     main: () => world.main,
-    freshThread: (entering) => {
+    freshThread: (entering, automatic) => {
+      if (world.threadBroken) throw new Error('the thread could not be reset');
       if (!world.threadFree && !entering) return false;
       world.freshThreads.push(entering);
+      world.automatic.push(automatic);
       return true;
     },
-    recentReplies: (limit) => world.conversation.slice(-limit),
+    conversation: () => {
+      if (world.chat) return world.chat;
+      const lines: MainBotChatLine[] = [];
+      for (const turn of world.conversation) {
+        lines.push({ seq: lines.length + 1, at: turn.at ?? clock, who: turn.asked === null ? 'report' : 'person', text: turn.asked ?? 'Task report: Profile the export' });
+        if (turn.reply) lines.push({ seq: lines.length + 1, at: turn.at ?? clock, who: 'you', text: turn.reply });
+      }
+      return lines;
+    },
     tellMain: async (label, text) => {
       if (world.tellFails) return false;
       world.told.push({ label, text });
@@ -709,8 +728,12 @@ async function main() {
     const brief = restarted.turnContext('main');
     assert.match(brief, /You are Aegis/);
     assert.match(brief, /Your context starts afresh here/);
-    assert.match(brief, /- The person wrote: "Make the export faster" You answered: "I gave the profiling to Claude in notes\."/);
-    assert.match(brief, /- A task reported back\. You answered: "The slow part is the totals\. Shall I have them cached\?"/);
+    assert.match(brief, /The end of the conversation, oldest first:\n- \[#1\] The person wrote: "Make the export faster" You answered: "I gave the profiling to Claude in notes\."/);
+    assert.match(brief, /- \[#3\] The report of "Profile the export" came in\. You answered: "The slow part is the totals\. Shall I have them cached\?"/);
+    // It is told that none of it is to be done again, and where the words themselves can be found.
+    assert.match(brief, /every request in it was answered or handed out already, so start nothing from it again\. Take new requests only from what comes after this\./);
+    assert.match(brief, /read_conversation searches all that was said here/);
+    assert.match(brief, /- read_conversation searches what was said in this conversation/, 'its job says so too');
     assert.match(brief, /- "Profile the export", for "Faster export" finished a turn 1 min ago: "The slow part is the totals\."/, 'reports are not in the conversation: they come from the record');
     assert.match(brief, /<note name="person">\nShort answers\.\n<\/note>/);
     // A turn that fails may have told the agent nothing: the next one gets it all again.
@@ -732,6 +755,185 @@ async function main() {
     const retold = plain.bot.turnContext('main');
     assert.match(retold, /You are Aegis/);
     assert.doesNotMatch(retold, /Your context starts afresh here/);
+  }
+
+  // --- A context that fills up starts afresh by itself, between turns ---
+  {
+    // The limit stays clear of where Bubble compacts a thread itself, on any window.
+    assert.deepEqual(
+      [32_000, 64_000, 128_000, 200_000, 1_000_000, 0].map(mainBotContextLimit),
+      [19_200, 24_800, 76_000, 100_000, 100_000, 25_600],
+    );
+    const { bot, store, world } = setup();
+    const turn = async (used: number, window: number, status: 'completed' | 'error' | 'stopped' = 'completed', on = bot) => {
+      on.turnContext('main');
+      on.noteContextUsage(used, window);
+      await on.onMainTurnEnded(status);
+    };
+    // Below both limits: nothing.
+    await turn(90_000, 200_000);
+    assert.deepEqual(world.freshThreads, []);
+    // A turn the person stopped decides nothing.
+    await turn(150_000, 200_000, 'stopped');
+    assert.deepEqual(world.freshThreads, []);
+    // Past the cap of a large window, well before the model's own limit.
+    await turn(100_000, 1_000_000);
+    assert.deepEqual([world.freshThreads, world.automatic], [[false], [true]]);
+    assert.match(bot.turnContext('main'), /Your context starts afresh here/);
+    bot.noteContextUsage(12_000, 200_000);
+    await bot.onMainTurnEnded('completed');
+    // What it said before it started over no longer counts, and it answers a few turns before it may start over again.
+    for (let index = 0; index < MAIN_BOT_LIMITS.turnsBetweenFresh - 2; index += 1) await turn(150_000, 200_000);
+    assert.equal(world.freshThreads.length, 1, 'not again right away');
+    // Nor after a restart of the app in between.
+    const restarted = new MainBotService(store, { ...bot['host'] } as MainBotHost, bot['notes']);
+    await turn(150_000, 200_000, 'completed', restarted);
+    assert.equal(world.freshThreads.length, 2);
+    // A thread that is that full from its first turn gains nothing by starting over: only once it has grown.
+    for (let index = 0; index < MAIN_BOT_LIMITS.turnsBetweenFresh + 2; index += 1) await turn(150_000, 200_000, 'completed', restarted);
+    assert.equal(world.freshThreads.length, 2, 'a context that will not shrink does not keep it starting over');
+    await turn(176_000, 200_000, 'completed', restarted);
+    assert.equal(world.freshThreads.length, 3);
+    // A small window: below where Bubble would compact it, not its share.
+    const small = setup();
+    await turn(24_000, 64_000, 'completed', small.bot);
+    assert.deepEqual(small.world.automatic, []);
+    await turn(25_000, 64_000, 'completed', small.bot);
+    assert.deepEqual(small.world.automatic, [true]);
+    // A window that leaves an empty thread no room is left to Bubble.
+    const tiny = setup();
+    await turn(30_000, 44_000, 'completed', tiny.bot);
+    assert.deepEqual(tiny.world.freshThreads, []);
+    // A window nobody knows: Bubble compacts at 32k then.
+    const unknown = setup();
+    await turn(25_599, 0, 'completed', unknown.bot);
+    assert.deepEqual(unknown.world.freshThreads, []);
+    await turn(25_600, 0, 'completed', unknown.bot);
+    assert.deepEqual(unknown.world.automatic, [true]);
+    // A turn that failed may have failed for being too full.
+    const failed = setup();
+    await turn(150_000, 200_000, 'error', failed.bot);
+    assert.deepEqual(failed.world.automatic, [true]);
+    // A message being sent at that moment: it starts over with the next turn, and says it was not asked for.
+    const busy = setup();
+    busy.world.threadFree = false;
+    await turn(150_000, 200_000, 'completed', busy.bot);
+    assert.deepEqual(busy.world.freshThreads, []);
+    assert.equal(busy.store.meta('refresh_pending'), 'auto');
+    busy.bot.beforeMainTurn();
+    assert.deepEqual([busy.world.freshThreads, busy.world.automatic], [[true], [true]]);
+    assert.equal(busy.store.meta('refresh_pending'), null);
+    // Unless that message's turn ended with room again (Bubble compacted): then it is no longer due.
+    const eased = setup();
+    eased.world.threadFree = false;
+    await turn(150_000, 200_000, 'completed', eased.bot);
+    assert.equal(eased.store.meta('refresh_pending'), 'auto');
+    await turn(20_000, 200_000, 'completed', eased.bot);
+    assert.equal(eased.store.meta('refresh_pending'), null);
+    eased.bot.beforeMainTurn();
+    assert.deepEqual(eased.world.freshThreads, []);
+    // What the person asked for stays theirs: when it waits for the next turn, and when the turn ends full.
+    const asked = setup();
+    asked.world.threadFree = false;
+    assert.equal(asked.bot.freshContext(), 'pending');
+    await turn(150_000, 200_000, 'completed', asked.bot);
+    assert.equal(asked.store.meta('refresh_pending'), '1');
+    asked.bot.beforeMainTurn();
+    assert.deepEqual(asked.world.automatic, [false]);
+    const askedFull = setup();
+    askedFull.world.threadFree = false;
+    assert.equal(askedFull.bot.freshContext(), 'pending');
+    askedFull.world.threadFree = true;
+    await turn(150_000, 200_000, 'completed', askedFull.bot);
+    assert.deepEqual([askedFull.world.freshThreads, askedFull.world.automatic], [[false], [false]]);
+    // The app failing to reset the thread stops nothing else: reports still go out, and the agent is told its job again.
+    const broken = setup();
+    broken.world.threadBroken = true;
+    const waiting = ok(await broken.bot.startTask({ title: 'Count the words', prompt: 'x', project: 'notes', goal: 'Word count' })).sessionId as string;
+    broken.world.main = { ...broken.world.main!, busy: true };
+    broken.world.replies.set(waiting, { asked: 'x', reply: '412 words.' });
+    finish(broken.world.tasks.find((task) => task.id === waiting));
+    await broken.bot.onTaskTurnEnded(waiting, 'completed');
+    assert.equal(broken.world.told.length, 0);
+    broken.world.main = { ...broken.world.main!, busy: false };
+    await turn(150_000, 200_000, 'completed', broken.bot);
+    assert.equal(broken.world.told.length, 1, 'the report that waited is delivered');
+    assert.match(broken.bot.turnContext('main'), /Your context starts afresh here/);
+    assert.equal(broken.bot.freshContext(), 'pending');
+    // What an agent on an empty thread is told of the conversation has an end: the latest turns, whole enough to go on from.
+    const recapOf = (told: string) => told.slice(told.indexOf('Your context starts afresh here'), told.indexOf('list_handed_out shows everything'));
+    const turns = Array.from({ length: 8 }, (_, index) => ({ asked: `Question ${index} ${'q'.repeat(700)}`, reply: `Answer ${index} ${'a'.repeat(6_000)} Closing ${index}?` }));
+    const long = setup();
+    long.world.conversation = turns;
+    long.bot.noteContextUsage(50_000, 200_000);
+    assert.equal(long.bot.freshContext(), 'done');
+    const recap = recapOf(long.bot.turnContext('main'));
+    assert.ok(recap.length <= MAIN_BOT_LIMITS.recap * (1 + MAIN_BOT_LIMITS.recapEarlierShare) + 1_000, `the recap stays within its room: ${recap.length}`);
+    assert.match(recap, /\[#15\] The person wrote: "Question 7 q+" You answered: "Answer 7 a+ … a+ Closing 7\?"/, 'a long answer keeps its end: what it asked the person');
+    assert.match(recap, /Answer 6 a+ … a+ Closing 6\?"/);
+    assert.ok(recap.indexOf('Question 6') < recap.indexOf('Question 7'), 'oldest first');
+    // Of the turns there is no room for, the person's own words still go along, cut short, with where to find the rest.
+    assert.doesNotMatch(recap, /Answer 0/, 'the oldest answers give way');
+    assert.match(recap, /What the person wrote earlier, oldest first[^\n]*\n- \[#1, just now\] "Question 0 q+ … q+"\n- \[#3, just now\] "Question 1 q+ … q+"/);
+    assert.ok(recap.indexOf('What the person wrote earlier') < recap.indexOf('The end of the conversation'));
+    // A small or unknown window is soon full again: it carries less.
+    const narrow = setup();
+    narrow.world.conversation = turns;
+    assert.equal(narrow.bot.freshContext(), 'done');
+    const less = recapOf(narrow.bot.turnContext('main'));
+    assert.ok(less.length <= MAIN_BOT_LIMITS.recapMin * (1 + MAIN_BOT_LIMITS.recapEarlierShare) + 1_000 && less.length < recap.length / 2, `less for a small window: ${less.length}`);
+    assert.match(less, /Answer 7 a+ … a+ Closing 7\?"/, 'the latest answer first of all');
+    // The answer the person may be replying to gets the most room: all of it, most of the time.
+    const pending = setup();
+    const question = `${'I looked at both branches. '.repeat(70)}Shall I merge branch A or branch B?`;
+    pending.world.conversation = [{ asked: 'Which branch is ready?', reply: question }];
+    assert.equal(pending.bot.freshContext(), 'done');
+    assert.ok(pending.bot.turnContext('main').includes(`You answered: "${question}"`));
+  }
+
+  // --- What was said stays findable after the context started afresh ---
+  {
+    const { bot, world, tick } = setup();
+    const day = 24 * 60 * 60_000;
+    const chat: MainBotChatLine[] = [];
+    const say = (who: MainBotChatLine['who'], text: string) => chat.push({ seq: chat.length + 1, at: bot['host'].now(), who, text });
+    say('person', 'From now on every task in follow-up-test-repo goes to Codex, never to Claude.');
+    say('you', 'Noted: follow-up-test-repo goes to Codex.');
+    tick(2 * day);
+    say('person', '给 ~/follow-up-test-repo 加一个 welcome 脚本');
+    say('you', `已将 添加 welcome 脚本 交给 Codex。${' 它会创建并实测运行。'.repeat(80)}`);
+    say('report', 'Task report: 添加 welcome 脚本');
+    say('you', '添加 welcome 脚本 回报完成：新增了 welcome.js。');
+    say('fresh', '');
+    say('person', 'hello');
+    say('you', 'Hello! Nothing is running right now.');
+    world.chat = chat;
+    const read = (args: { query?: string; around?: number | string }) => ok(bot.readConversation(args)) as { lines: Array<{ ref: string; when: string; who: string; text?: string }>; note?: string };
+    // Words from long ago, in either language; the line with more of them first, then the later one.
+    let found = read({ query: 'codex follow-up-test-repo' });
+    assert.deepEqual(found.lines.map((line) => line.ref), ['#2', '#1', '#4', '#3']);
+    assert.deepEqual(found.lines.slice(0, 2).map((line) => [line.ref, line.who]), [['#2', 'you'], ['#1', 'the person']], 'both words, the later line first');
+    assert.equal(found.lines[1].when, '2 d ago');
+    assert.match(found.note ?? '', /around: a ref shows that place in full/);
+    found = read({ query: '脚本' });
+    assert.deepEqual(found.lines.map((line) => line.ref), ['#6', '#5', '#4', '#3']);
+    assert.equal(found.lines[2].who, 'you');
+    assert.ok((found.lines[2].text ?? '').length <= MAIN_BOT_LIMITS.chatHit + 4 && (found.lines[2].text ?? '').includes('welcome 脚本'), 'a long line shows the part around the word');
+    assert.equal(found.lines[1].who, 'a task report came in');
+    // One place in full, with what was said either side, and where the context started afresh.
+    const place = read({ around: '#4' });
+    assert.deepEqual(place.lines.map((line) => line.ref), ['#1', '#2', '#3', '#4', '#5', '#6', '#7', '#8']);
+    assert.ok((place.lines[3].text ?? '').length > 800, 'the whole line');
+    assert.deepEqual([place.lines[6].who, place.lines[6].text], ['your context started afresh here', undefined]);
+    assert.deepEqual(read({ around: 9 }).lines.map((line) => line.ref), ['#5', '#6', '#7', '#8', '#9']);
+    assert.match(String((bot.readConversation({ around: '#40' }) as { error?: string }).error), /There is no #40 in this conversation\. It has #1 to #9\./);
+    // Without words: the latest lines. Words nobody used: said so, with where else to look.
+    assert.deepEqual(read({}).lines.map((line) => line.ref).slice(-2), ['#8', '#9']);
+    const none = read({ query: 'invoice' });
+    assert.deepEqual(none.lines, []);
+    assert.match(none.note ?? '', /Nothing in this conversation holds "invoice"/);
+    // It counts as looking, like the other lookups: the chat draws no trace row for it.
+    assert.equal(isMainBotLookupToolName('read_conversation'), true);
   }
 
   assert.deepEqual(parseMainBotTaskResult('{"sessionId":"s","title":"T","agent":"Claude"}'), { sessionId: 's', title: 'T', agent: 'Claude', device: undefined, project: undefined, note: undefined });

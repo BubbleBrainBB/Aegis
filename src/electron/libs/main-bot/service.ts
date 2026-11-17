@@ -7,6 +7,7 @@ import {
   MAIN_BOT_INSTRUCTIONS,
   MAIN_BOT_LIMITS,
   mainBotReportLabel,
+  mainBotReportTitles,
   type MainBotTaskResult,
   type MainBotTaskState,
 } from '../../../shared/main-bot';
@@ -78,6 +79,19 @@ export interface MainBotStart {
 
 type Done = { ok: true } | { error: string };
 
+/**
+ * One thing said in the bot's conversation: by the person, by the bot, or a
+ * report that came in (its label); or the place where the bot's context
+ * started afresh. `seq` counts them from 1 and never changes: the
+ * conversation only grows.
+ */
+export interface MainBotChatLine {
+  seq: number;
+  at: number;
+  who: 'person' | 'you' | 'report' | 'fresh';
+  text: string;
+}
+
 export interface MainBotHost {
   now(): number;
   /** This Mac first, then the Macs it controls. */
@@ -104,9 +118,9 @@ export interface MainBotHost {
    * when one runs or is being sent. `entering`: asked as the bot's own next
    * turn is being sent, which is no reason to refuse.
    */
-  freshThread(entering: boolean): boolean;
-  /** The last turns of the bot's conversation that it answered, oldest first: what the person wrote (null when a report began it) and its answer. */
-  recentReplies(limit: number): Array<{ asked: string | null; reply: string }>;
+  freshThread(entering: boolean, automatic: boolean): boolean;
+  /** Everything said in the bot's conversation, oldest first. Read when its context starts afresh and when it looks something up. */
+  conversation(): MainBotChatLine[];
   /** A message from Aegis to the bot. False when it could not be sent. */
   tellMain(label: string, text: string): Promise<boolean>;
 }
@@ -140,10 +154,17 @@ const INSTRUCTIONS_EVERY = 20;
 const STATE_ORDER: MainBotTaskState[] = ['needs approval', 'asks', 'failed', 'working', 'idle'];
 /** Notes this small in all go to the bot in full with its job; of the rest it gets the list. */
 const NOTES_INLINE_BYTES = 4_000;
-/** `main_bot_meta`: the person asked for a fresh context while a turn ran; it starts with the next one. */
+/** `main_bot_meta`: a fresh context is due with the bot's next turn: 'auto' when its context filled up, else the person asked. */
 const REFRESH_PENDING = 'refresh_pending';
 /** `main_bot_meta`: the agent's thread is empty and has yet to be told its job and what went before. */
 const BRIEF_PENDING = 'brief_pending';
+/** `main_bot_meta`: turns the bot answered since its context last started afresh; none before the first time. */
+const FRESH_TURNS = 'fresh_turns';
+/** `main_bot_meta`: the window of the model the bot last ran on, in tokens. */
+const CONTEXT_WINDOW = 'context_window';
+/** `main_bot_meta`: how full the context was when the thread had just started empty; 'due' until the agent says. */
+const FRESH_BASELINE = 'fresh_baseline';
+const BASELINE_DUE = 'due';
 
 const fail = (error: string): ToolOutcome => ({ ok: false, error });
 const json = (value: unknown): ToolOutcome => ({ ok: true, text: JSON.stringify(value) });
@@ -168,6 +189,66 @@ function ago(now: number, at: number): string {
 function clip(text: string, max: number): string {
   const line = text.replace(/\s+/g, ' ').trim();
   return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+}
+
+/** One line that keeps the start and the end of a long text: what the bot asked the person tends to come last. */
+function clipEnds(text: string, max: number): string {
+  const line = text.replace(/\s+/g, ' ').trim();
+  if (line.length <= max) return line;
+  const half = Math.floor((max - 3) / 2);
+  return `${line.slice(0, half)} … ${line.slice(-half)}`;
+}
+
+/** The text around the first place one of the words stands, on one line. */
+function excerptAround(text: string, terms: string[], max: number): string {
+  const line = text.replace(/\s+/g, ' ').trim();
+  if (line.length <= max) return line;
+  const lower = line.toLowerCase();
+  const found = terms.map((term) => lower.indexOf(term)).filter((at) => at >= 0);
+  const at = found.length ? Math.min(...found) : 0;
+  const start = Math.max(0, Math.min(at - Math.floor(max / 3), line.length - max));
+  return `${start > 0 ? '… ' : ''}${line.slice(start, start + max)}${start + max < line.length ? ' …' : ''}`;
+}
+
+/** The turns of a conversation that have an answer: what opened each (the person, or a report) and the last thing the bot said in it. */
+function answeredTurns(lines: MainBotChatLine[]): Array<{ opener: MainBotChatLine; reply: string }> {
+  const turns: Array<{ opener: MainBotChatLine; reply: string }> = [];
+  let opener: MainBotChatLine | null = null;
+  let reply = '';
+  const close = () => {
+    if (opener && reply) turns.push({ opener, reply });
+  };
+  for (const line of lines) {
+    if (line.who === 'person' || line.who === 'report') {
+      close();
+      opener = line;
+      reply = '';
+    } else if (line.who === 'you' && line.text.trim()) {
+      // What it said last in the turn is the answer; before that it thought aloud.
+      reply = line.text;
+    }
+  }
+  close();
+  return turns;
+}
+
+/**
+ * Where Bubble compacts a thread on its own (context/budget.js of
+ * @bubblebrain-ai/bubble 0.0.66): at the window less what it keeps for the
+ * answer (20k) and a buffer (13k); at three quarters of a window under 40k;
+ * at 32k tokens when it does not know the window.
+ */
+function bubbleCompactsAt(window: number): number {
+  if (!(window > 0)) return 32_000;
+  return window >= 40_000 ? window - 33_000 : Math.floor(window * 0.75);
+}
+
+/** How many tokens the bot's context may hold before its agent starts on an empty thread by itself. */
+export function mainBotContextLimit(window: number): number {
+  const share = window > 0 ? Math.floor(window * MAIN_BOT_LIMITS.contextShare) : MAIN_BOT_LIMITS.contextTokens;
+  // Bubble decides on an estimate that runs higher than what the agent reports, and within a turn: stay clear of it.
+  const belowCompaction = Math.floor(bubbleCompactsAt(window) * MAIN_BOT_LIMITS.contextBelowCompaction);
+  return Math.min(MAIN_BOT_LIMITS.contextTokens, share, belowCompaction);
 }
 
 /** What is kept of a report with the record of its task: all of a short one, the start and the end of a long one. */
@@ -210,6 +291,12 @@ export class MainBotService {
   private notesShown: string | null = null;
   /** The turn now running was told what went before a fresh context. */
   private briefed = false;
+  /** How full the agent's context was when it last said, since its thread last started empty. */
+  private contextUsage: { used: number; window: number } | null = null;
+  /** The next figure the agent gives is that of a thread just started empty; null until looked up. */
+  private baselineDue: boolean | null = null;
+  /** The model's window as last written down; null until looked up. */
+  private windowKept: number | null = null;
 
   constructor(
     private readonly store: MainBotStore,
@@ -324,17 +411,49 @@ export class MainBotService {
     const lines = [
       'Your context starts afresh here. This conversation went on before, and the person still sees all of it, but you no longer have it. What Aegis kept of it:',
     ];
-    let replies: Array<{ asked: string | null; reply: string }> = [];
+    let said: MainBotChatLine[] = [];
     try {
-      replies = this.host.recentReplies(3);
+      said = this.host.conversation();
     } catch (failure) {
       console.error('[main-bot] could not read the conversation so far:', failure);
     }
-    if (replies.length) {
-      lines.push('Your last answers, oldest first:');
-      for (const turn of replies) {
-        lines.push(`- ${turn.asked ? `The person wrote: "${clip(turn.asked, 300)}"` : 'A task reported back.'} You answered: "${clip(turn.reply, 400)}"`);
-      }
+    // As much as the model's window makes worth carrying: a small one is soon full again.
+    const whole = Math.max(
+      MAIN_BOT_LIMITS.recapMin,
+      Math.min(MAIN_BOT_LIMITS.recap, Math.floor(mainBotContextLimit(Number(this.store.meta(CONTEXT_WINDOW)) || 0) / 6)),
+    );
+    // The latest turns first, as far as there is room: the person may be answering what the bot just asked.
+    const turns = answeredTurns(said).slice(-MAIN_BOT_LIMITS.recapTurns);
+    const told: string[] = [];
+    let room = whole;
+    let from = Number.POSITIVE_INFINITY;
+    for (const [index, turn] of [...turns].reverse().entries()) {
+      const reply = clipEnds(turn.reply, index === 0 ? MAIN_BOT_LIMITS.recapLatest : MAIN_BOT_LIMITS.recapReply);
+      const reported = mainBotReportTitles(turn.opener.text);
+      const asked = turn.opener.who === 'person'
+        ? `The person wrote: "${clipEnds(turn.opener.text, MAIN_BOT_LIMITS.recapAsked)}"`
+        : reported?.length ? `The report of ${clip(reported.map((title) => `"${title}"`).join(', '), 200)} came in.` : 'A task reported back.';
+      const line = `- [#${turn.opener.seq}] ${asked} You answered: "${reply}"`;
+      if (line.length > room) break;
+      room -= line.length;
+      from = turn.opener.seq;
+      told.unshift(line);
+    }
+    // Before those, only the person's own words: few, and what everything else followed from.
+    const earlier: string[] = [];
+    room = Math.floor(whole * MAIN_BOT_LIMITS.recapEarlierShare);
+    for (const line of said.filter((entry) => entry.who === 'person' && entry.seq < from && entry.text.trim()).reverse()) {
+      const text = `- [#${line.seq}, ${ago(now, line.at)}] "${clipEnds(line.text, MAIN_BOT_LIMITS.recapEarlierLine)}"`;
+      if (earlier.length >= MAIN_BOT_LIMITS.recapEarlier || text.length > room) break;
+      room -= text.length;
+      earlier.unshift(text);
+    }
+    if (earlier.length) lines.push('What the person wrote earlier, oldest first (each has been answered; read_conversation shows what came of it):', ...earlier);
+    if (told.length) lines.push('The end of the conversation, oldest first:', ...told);
+    if (earlier.length || told.length) {
+      lines.push(
+        'All of that is what went before, not something to do now: every request in it was answered or handed out already, so start nothing from it again. Take new requests only from what comes after this. If your last answer asked the person something, their next message may be the reply to it.',
+      );
     }
     const reported = this.store
       .dispatches()
@@ -349,7 +468,7 @@ export class MainBotService {
         lines.push(`- "${dispatch.title || dispatch.taskId}"${goal} ${how} ${ago(now, dispatch.report.at)}: "${clip(dispatch.report.gist, MAIN_BOT_LIMITS.gistListed)}"`);
       }
     }
-    lines.push('list_handed_out shows everything you handed out; your notes are below. If the person refers to something you cannot find there, ask them rather than guess.');
+    lines.push('list_handed_out shows everything you handed out, read_conversation searches all that was said here (around: a # number above shows that place in full), and your notes are below. If the person refers to something you cannot find in any of them, ask them rather than guess.');
     return lines;
   }
 
@@ -361,26 +480,84 @@ export class MainBotService {
    * conversation (its notes, what it handed out) carries it over.
    */
   freshContext(): 'done' | 'pending' {
-    if (this.host.freshThread(false)) {
-      this.startedFresh();
-      return 'done';
-    }
+    if (this.startFresh(false, false)) return 'done';
     this.store.setMeta(REFRESH_PENDING, '1');
     return 'pending';
   }
 
   /** A turn of the bot's conversation is about to be sent. */
   beforeMainTurn(): void {
-    if (this.store.meta(REFRESH_PENDING) === null) return;
-    if (this.host.freshThread(true)) this.startedFresh();
+    const due = this.store.meta(REFRESH_PENDING);
+    if (due !== null) this.startFresh(true, due === 'auto');
+  }
+
+  /** The bot's agent said how full its context is. */
+  noteContextUsage(used: number, window: number): void {
+    if (!Number.isFinite(used) || used < 0) return;
+    this.contextUsage = { used, window: Number.isFinite(window) && window > 0 ? window : 0 };
+    // Kept for when the context starts afresh: how much of the conversation is worth carrying over.
+    if (this.contextUsage.window > 0) {
+      this.windowKept ??= Number(this.store.meta(CONTEXT_WINDOW)) || 0;
+      if (this.windowKept !== this.contextUsage.window) {
+        this.windowKept = this.contextUsage.window;
+        this.store.setMeta(CONTEXT_WINDOW, String(this.windowKept));
+      }
+    }
+    this.baselineDue ??= this.store.meta(FRESH_BASELINE) === BASELINE_DUE;
+    if (this.baselineDue && used > 0) {
+      this.store.setMeta(FRESH_BASELINE, String(Math.round(used)));
+      this.baselineDue = false;
+    }
+  }
+
+  /**
+   * Between turns, with the context nearly full: the agent starts on an empty
+   * thread by itself, before Bubble's own compaction decides what it loses.
+   * Not again until it has answered a few turns and the context has grown
+   * since, so one that an empty thread already fills cannot keep it starting
+   * over.
+   */
+  private freshenWhenFull(): void {
+    const usage = this.contextUsage;
+    const turns = Number(this.store.meta(FRESH_TURNS) ?? Number.POSITIVE_INFINITY);
+    if (!usage || turns < MAIN_BOT_LIMITS.turnsBetweenFresh) return;
+    const limit = mainBotContextLimit(usage.window);
+    const baseline = Number(this.store.meta(FRESH_BASELINE)) || 0;
+    const full = limit >= MAIN_BOT_LIMITS.contextFloor && usage.used >= limit && usage.used - baseline >= limit * MAIN_BOT_LIMITS.contextGrown;
+    const pending = this.store.meta(REFRESH_PENDING);
+    if (!full) {
+      // Due when a turn before this one ended, and no longer: Bubble has made room since.
+      if (pending === 'auto') this.store.setMeta(REFRESH_PENDING, null);
+      return;
+    }
+    // When the person had asked as well, it is theirs.
+    if (!this.startFresh(false, pending !== '1') && pending === null) this.store.setMeta(REFRESH_PENDING, 'auto');
+  }
+
+  /** Put the agent on an empty thread, when the conversation is between turns. */
+  private startFresh(entering: boolean, automatic: boolean): boolean {
+    try {
+      if (!this.host.freshThread(entering, automatic)) return false;
+    } catch (failure) {
+      console.error('[main-bot] could not start a fresh context:', failure);
+      // The thread may be empty already: better told its job twice than not at all.
+      this.store.setMeta(BRIEF_PENDING, '1');
+      return false;
+    }
+    this.startedFresh();
+    return true;
   }
 
   private startedFresh(): void {
     this.store.setMeta(REFRESH_PENDING, null);
     // Kept until a turn has gone through with it: one that fails may have told the agent nothing.
     this.store.setMeta(BRIEF_PENDING, '1');
+    this.store.setMeta(FRESH_TURNS, '0');
+    this.store.setMeta(FRESH_BASELINE, BASELINE_DUE);
     this.turnsSinceInstructed.clear();
     this.notesShown = null;
+    this.contextUsage = null;
+    this.baselineDue = true;
   }
 
   // ---- Tools ----
@@ -505,6 +682,46 @@ export class MainBotService {
       note:
         `Latest first. "state" is read from Aegis now; "said" is what the agent claimed${wanted ? '' : ', cut short (pass "goal" for more, get_task for the whole reply)'}. ` +
         '"yours: false" marks a task the person started themselves and had you write to.',
+    });
+  }
+
+  /**
+   * What was said in the bot's own conversation, also what its agent no longer
+   * has: the lines that hold the words asked for, the lines around one of
+   * them, or the latest ones.
+   */
+  readConversation(args: { query?: string; around?: number | string } = {}): ToolOutcome {
+    let said: MainBotChatLine[];
+    try {
+      said = this.host.conversation();
+    } catch (failure) {
+      return fail(`The conversation could not be read: ${failure instanceof Error ? failure.message : String(failure)}`);
+    }
+    const now = this.host.now();
+    const who = { person: 'the person', you: 'you', report: 'a task report came in', fresh: 'your context started afresh here' } as const;
+    const shown = (line: MainBotChatLine, text: string) => ({ ref: `#${line.seq}`, when: ago(now, line.at), who: who[line.who], ...(line.who === 'fresh' ? {} : { text }) });
+    const around = typeof args.around === 'number' ? args.around : Number(String(args.around ?? '').replace(/^#/, '').trim() || Number.NaN);
+    if (Number.isFinite(around)) {
+      const at = said.findIndex((line) => line.seq === around);
+      if (at < 0) return fail(`There is no #${around} in this conversation. It has #1 to #${said.length ? said[said.length - 1].seq : 0}.`);
+      const lines = said.slice(Math.max(0, at - MAIN_BOT_LIMITS.chatAround), at + MAIN_BOT_LIMITS.chatAround + 1);
+      return json({ lines: lines.map((line) => shown(line, clipEnds(line.text, MAIN_BOT_LIMITS.chatLine))) });
+    }
+    const terms = [...new Set((args.query ?? '').toLowerCase().split(/\s+/).filter(Boolean))].slice(0, MAIN_BOT_LIMITS.chatTerms);
+    if (!terms.length) {
+      const lines = said.slice(-MAIN_BOT_LIMITS.chatFound * 2);
+      return json({ lines: lines.map((line) => shown(line, clipEnds(line.text, MAIN_BOT_LIMITS.chatListed))), note: 'The latest lines. Pass query to search all of it, or around to read one place in full.' });
+    }
+    // Any of the words is a hit; a line with more of them comes first, then the later one.
+    const hits = said
+      .filter((line) => line.who !== 'fresh')
+      .map((line) => ({ line, score: terms.filter((term) => line.text.toLowerCase().includes(term)).length }))
+      .filter((hit) => hit.score > 0)
+      .sort((a, b) => b.score - a.score || b.line.seq - a.line.seq);
+    if (!hits.length) return json({ lines: [], note: `Nothing in this conversation holds ${terms.map((term) => `"${term}"`).join(' or ')}. Try other words the person may have used; list_handed_out and your notes hold what is not in the conversation.` });
+    return json({
+      lines: hits.slice(0, MAIN_BOT_LIMITS.chatFound).map((hit) => shown(hit.line, excerptAround(hit.line.text, terms, MAIN_BOT_LIMITS.chatHit))),
+      note: `${hits.length > MAIN_BOT_LIMITS.chatFound ? `${hits.length} lines match; these are the best. ` : ''}around: a ref shows that place in full, with what was said before and after.`,
     });
   }
 
@@ -693,11 +910,19 @@ export class MainBotService {
 
   /** The bot's own turn ended: it can take what came in meanwhile. */
   async onMainTurnEnded(status: 'completed' | 'error' | 'stopped' = 'completed'): Promise<void> {
-    if (status === 'completed') {
-      if (this.briefed) this.store.setMeta(BRIEF_PENDING, null);
-    } else if (status === 'error') {
-      // The agent may have read nothing of that turn: its job goes with the next one again.
-      this.turnsSinceInstructed.clear();
+    try {
+      if (status === 'completed') {
+        if (this.briefed) this.store.setMeta(BRIEF_PENDING, null);
+        const turns = this.store.meta(FRESH_TURNS);
+        if (turns !== null) this.store.setMeta(FRESH_TURNS, String((Number(turns) || 0) + 1));
+      } else if (status === 'error') {
+        // The agent may have read nothing of that turn: its job goes with the next one again.
+        this.turnsSinceInstructed.clear();
+      }
+      // A turn the person stopped decides nothing; one that failed may have failed for being too full.
+      if (status !== 'stopped') this.freshenWhenFull();
+    } catch (failure) {
+      console.error('[main-bot] could not settle the turn that ended:', failure);
     }
     this.briefed = false;
     await this.deliver();

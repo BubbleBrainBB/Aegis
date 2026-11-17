@@ -17,10 +17,11 @@ export const STOP_TASK_TOOL = 'stop_task';
 export const LIST_HANDED_OUT_TOOL = 'list_handed_out';
 export const READ_MEMORY_TOOL = 'read_memory';
 export const WRITE_MEMORY_TOOL = 'write_memory';
+export const READ_CONVERSATION_TOOL = 'read_conversation';
 
 /** The calls that act on one task: the chat draws each as a line that opens it. */
 const TASK_ACTION_TOOLS = [START_TASK_TOOL, MESSAGE_TASK_TOOL, STOP_TASK_TOOL];
-const LOOKUP_TOOLS = [LIST_TASKS_TOOL, GET_TASK_TOOL, LIST_PROJECTS_TOOL, LIST_HANDED_OUT_TOOL, READ_MEMORY_TOOL];
+const LOOKUP_TOOLS = [LIST_TASKS_TOOL, GET_TASK_TOOL, LIST_PROJECTS_TOOL, LIST_HANDED_OUT_TOOL, READ_MEMORY_TOOL, READ_CONVERSATION_TOOL];
 
 /** Tool names arrive bare from Bubble, or prefixed by an MCP server elsewhere. */
 function bareToolName(name: unknown): string {
@@ -62,6 +63,49 @@ export const MAIN_BOT_LIMITS = {
   gist: 1_000,
   /** Characters of that shown in a list of many tasks. */
   gistListed: 200,
+  /**
+   * How full the bot's context may get before its agent starts on an empty
+   * thread by itself (mainBotContextLimit): this share of the model's window,
+   * never more than this many tokens, and never more than this share of where
+   * Bubble would compact the thread on its own. So what the agent loses is
+   * decided here, not by a summary Bubble writes; and the cap keeps a model
+   * with a very large window from rereading hundreds of thousands of tokens
+   * each turn. On a window under about 175k, Bubble's lighter pruning of old
+   * tool output may still come first.
+   */
+  contextShare: 0.6,
+  contextTokens: 100_000,
+  contextBelowCompaction: 0.8,
+  /** A limit lower than this leaves an empty thread no room: such a window is left to Bubble. */
+  contextFloor: 16_000,
+  /** The share of the limit the context has to have grown by since it last started empty, or starting over frees nothing. */
+  contextGrown: 0.25,
+  /** Turns the bot answers after a fresh context before another may start by itself. */
+  turnsBetweenFresh: 5,
+  /**
+   * What an agent on an empty thread is told of the conversation: its last
+   * turns, in characters, as many as a sixth of the context limit in tokens
+   * allows (a character of Chinese is about a token) between these two; and
+   * of one message in it.
+   */
+  recap: 16_000,
+  recapMin: 6_000,
+  recapTurns: 10,
+  recapAsked: 1_000,
+  recapReply: 2_000,
+  /** The bot's last answer, which the person may be replying to. */
+  recapLatest: 4_000,
+  /** What the person wrote before those turns: a share of that room on top, the messages listed, and the characters of one. */
+  recapEarlierShare: 0.25,
+  recapEarlier: 40,
+  recapEarlierLine: 300,
+  /** read_conversation: lines one answer holds, lines either side of the one asked for, and the characters of a line there, in a search hit and in a list. */
+  chatFound: 8,
+  chatAround: 4,
+  chatLine: 3_000,
+  chatHit: 400,
+  chatListed: 600,
+  chatTerms: 6,
 };
 
 /** How a task stands, in words the bot reads. */
@@ -113,6 +157,7 @@ export const MAIN_BOT_INSTRUCTIONS = [
   '- list_handed_out shows the work you handed out, grouped by the goal it serves, with how each task stands now and what it last reported. When the person asks how something is going, look there first. Do not answer from what you remember of this conversation: it may have been cut short, and a task may have moved on since.',
   '- list_tasks shows every task on every Mac, also the ones the person started themselves; get_task shows one with its latest reply. Use them to find a task the person means, or to see whether the same work is already under way.',
   '- list_projects shows the Macs, their projects and the agents ready on each. Use it when you do not know where a piece of work belongs.',
+  '- read_conversation searches what was said in this conversation, also the part you no longer have in front of you. When the person refers to something said earlier that you cannot see, look there before you ask them.',
   '',
   'Handing work out:',
   '- New work: start_task, one call per independent piece, with the project it belongs in. Start it right away when the person named the project; do not read other tasks first unless the same work may already be under way.',
@@ -130,7 +175,7 @@ export const MAIN_BOT_INSTRUCTIONS = [
   '- Name a task by its title. For a task on this Mac, write the title as the link its result gives you, so the person can open it.',
   '',
   'What you keep:',
-  '- This conversation does not last: its start gets cut away, and it can begin afresh. What you handed out is kept for you (list_handed_out). What else has to outlast it goes into your notes with write_memory, in the turn you learn it.',
+  '- This conversation does not last: its start gets cut away, and it can begin afresh. What you handed out is kept for you (list_handed_out), and what was said can be looked up word for word (read_conversation). What you have to know without looking goes into your notes with write_memory, in the turn you learn it.',
   '- Worth a note: how the person wants work handed out (which agent for what, how much to tell them), and what to know about one project (the agent they use there, what to leave alone). One note per subject: "person", "project-<name>".',
   '- Not worth a note: how a task stands, what a report said, anything that matters only today.',
   '- When the person corrects how you work, note it before you answer. Keep notes short: replace what no longer holds instead of adding to it.',
