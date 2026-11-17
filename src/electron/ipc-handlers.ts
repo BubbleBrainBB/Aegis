@@ -368,12 +368,16 @@ import {
   createBranch,
   createWorktree,
   dropStash,
+  getChangeStatsSince,
   getCurrentBranch,
   getGitTopLevel,
+  getUntrackedChangeStats,
   assertGitRepo,
   getShortStatus,
   listBranches as listGitBranches,
+  listUntrackedPaths,
   removeWorktree,
+  resolveBranchBase,
   stashWorkingTree,
 } from './libs/git-service';
 
@@ -4586,16 +4590,8 @@ async function runGitDiff(cwd: string, args: string[]): Promise<string> {
 }
 
 async function getUntrackedPatch(cwd: string): Promise<string> {
-  const { stdout } = await execFileAsync(
-    'git',
-    ['-c', 'core.quotepath=false', 'ls-files', '--others', '--exclude-standard', '-z'],
-    {
-      cwd,
-      timeout: 10000,
-      maxBuffer: GIT_PATCH_MAX_BUFFER_BYTES,
-    }
-  );
-  const untrackedPaths = stdout.split('\0').map((item) => item.trim()).filter(Boolean);
+  // The same list the change totals count, so a patch never lacks a counted file.
+  const untrackedPaths = await listUntrackedPaths(cwd);
   const patches: string[] = [];
 
   for (const filePath of untrackedPaths) {
@@ -8556,6 +8552,7 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
         totalChanges: 0,
         insertions: 0,
         deletions: 0,
+        branchChanges: null,
         prStatus: 'not_found',
         pr: null,
       };
@@ -8581,52 +8578,20 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
         totalChanges: 0,
         insertions: 0,
         deletions: 0,
+        branchChanges: null,
         prStatus: 'not_found',
         pr: null,
       };
     }
 
     try {
+      // Untracked files are part of both the uncommitted and the branch totals,
+      // so one scan serves both. Its failure surfaces through the awaits below.
+      const untrackedStats = getUntrackedChangeStats(cwd);
+      untrackedStats.catch(() => undefined);
       const [summary, branchResult, changesResult, originRemote, upstreamRef, defaultBranch, repoRoot] =
         await Promise.all([
-          (async () => {
-            const [trackedDiff, untrackedFiles] = await Promise.all([
-              execFileAsync('git', ['diff', '--numstat', 'HEAD', '--'], {
-                cwd,
-                timeout: 10000,
-                maxBuffer: 2 * 1024 * 1024,
-              }),
-              execFileAsync('git', ['ls-files', '--others', '--exclude-standard', '-z'], {
-                cwd,
-                timeout: 10000,
-                maxBuffer: 2 * 1024 * 1024,
-              }),
-            ]);
-
-            let totals = parseGitNumstat(trackedDiff.stdout);
-            const untrackedPaths = untrackedFiles.stdout.split('\0').map((item) => item.trim()).filter(Boolean);
-            for (const filePath of untrackedPaths) {
-              try {
-                await execFileAsync('git', ['diff', '--no-index', '--numstat', '/dev/null', filePath], {
-                  cwd,
-                  timeout: 10000,
-                  maxBuffer: 2 * 1024 * 1024,
-                });
-              } catch (error: unknown) {
-                const stdout =
-                  error && typeof error === 'object' && 'stdout' in error
-                    ? String((error as { stdout?: unknown }).stdout ?? '')
-                    : '';
-                const stats = parseGitNumstat(stdout);
-                totals = {
-                  insertions: totals.insertions + stats.insertions,
-                  deletions: totals.deletions + stats.deletions,
-                };
-              }
-            }
-
-            return totals;
-          })(),
+          getChangeStatsSince(cwd, 'HEAD', untrackedStats),
           execFileAsync('git', ['branch', '--show-current'], { cwd, timeout: 5000 }),
           execFileAsync('git', ['-c', 'core.quotepath=false', 'status', '--porcelain', '-uall', '-z'], {
             cwd,
@@ -8644,8 +8609,20 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
       const originRepo = originRemote ? parseGitHubRepoFromRemote(originRemote) : null;
       const isGitHubRemote = !!originRepo;
       const hasUpstream = !!upstreamRef;
-      const { aheadCount, behindCount } = await getGitAheadBehindCounts(cwd, upstreamRef);
-      const prLookup = await getGitPullRequestInfo({ cwd, branch, originRepo });
+      const [{ aheadCount, behindCount }, prLookup, branchChanges] = await Promise.all([
+        getGitAheadBehindCounts(cwd, upstreamRef),
+        getGitPullRequestInfo({ cwd, branch, originRepo }),
+        (async () => {
+          try {
+            const base = await resolveBranchBase(cwd, { defaultBranch, upstreamRef });
+            if (!base) return null;
+            return { baseRef: base.baseRef, ...(await getChangeStatsSince(cwd, base.mergeBase, untrackedStats)) };
+          } catch {
+            // The card falls back to the uncommitted totals.
+            return null;
+          }
+        })(),
+      ]);
       const repository = {
         root: repoRoot || null,
         originUrl: originRemote,
@@ -8673,6 +8650,7 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
         totalChanges: parseGitStatusEntries(changesResult.stdout).length,
         insertions: summary.insertions,
         deletions: summary.deletions,
+        branchChanges,
         prStatus: prLookup.status,
         pr: prLookup.pr,
       };
@@ -8694,6 +8672,7 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
         totalChanges: 0,
         insertions: 0,
         deletions: 0,
+        branchChanges: null,
         prStatus: 'unknown',
         pr: null,
       };
@@ -8735,8 +8714,9 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
       }
 
       if (scope === 'branch') {
-        const baseRef = (await getGitUpstreamRef(cwd)) || (await getGitDefaultBranch(cwd));
-        if (!baseRef) {
+        const [defaultBranch, upstreamRef] = await Promise.all([getGitDefaultBranch(cwd), getGitUpstreamRef(cwd)]);
+        const base = await resolveBranchBase(cwd, { defaultBranch, upstreamRef });
+        if (!base) {
           return {
             ok: false,
             error: 'branch-base-unavailable',
@@ -8747,8 +8727,18 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
             truncated: false,
           };
         }
-        const patch = await runGitDiff(cwd, [`${baseRef}...HEAD`, '--']);
-        return normalizePatchResult(scope, patch, repoRoot, baseRef);
+        // The same span as the Environment card's branch totals: commits since
+        // the merge-base, plus whatever is still uncommitted or untracked.
+        const [trackedPatch, untrackedPatch] = await Promise.all([
+          runGitDiff(cwd, [base.mergeBase, '--']),
+          getUntrackedPatch(cwd),
+        ]);
+        return normalizePatchResult(
+          scope,
+          [trackedPatch, untrackedPatch].filter((patch) => patch.trim()).join('\n'),
+          repoRoot,
+          base.baseRef
+        );
       }
 
       const unstagedPatch = await runGitDiff(cwd, ['--']);

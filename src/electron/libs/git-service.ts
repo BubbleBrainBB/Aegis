@@ -328,6 +328,108 @@ export async function getDiffStatAgainstRef(cwd: string, ref: string): Promise<G
   return { filesChanged, insertions, deletions, untracked };
 }
 
+export interface GitBranchBase {
+  /** The ref the branch is measured against, e.g. `origin/main`. */
+  baseRef: string;
+  mergeBase: string;
+}
+
+/**
+ * Where a branch's own work starts: its merge-base with the default branch,
+ * so the default branch moving on does not count against it. The
+ * remote-tracking ref comes first because a worktree often has no local copy
+ * of the default branch, and because on the default branch itself it keeps
+ * unpushed commits in view. Without a known default branch the upstream is
+ * the only base there is.
+ */
+export async function resolveBranchBase(
+  cwd: string,
+  known: { defaultBranch: string | null; upstreamRef: string | null }
+): Promise<GitBranchBase | null> {
+  const candidates = known.defaultBranch
+    ? [`origin/${known.defaultBranch}`, known.defaultBranch]
+    : known.upstreamRef
+      ? [known.upstreamRef]
+      : [];
+  for (const baseRef of candidates) {
+    try {
+      const { stdout } = await runGit(cwd, ['merge-base', baseRef, 'HEAD'], 5000);
+      const mergeBase = stdout.trim();
+      if (mergeBase) return { baseRef, mergeBase };
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  return null;
+}
+
+export interface GitChangeStats {
+  files: number;
+  insertions: number;
+  deletions: number;
+}
+
+function parseNumstat(stdout: string): GitChangeStats {
+  const stats = { files: 0, insertions: 0, deletions: 0 };
+  for (const line of stdout.split('\n')) {
+    const match = line.match(/^(\d+|-)\t(\d+|-)\t/);
+    if (!match) continue;
+    stats.files += 1;
+    if (match[1] !== '-') stats.insertions += Number(match[1]);
+    if (match[2] !== '-') stats.deletions += Number(match[2]);
+  }
+  return stats;
+}
+
+/**
+ * Untracked, non-ignored files, relative to `cwd`. Names are kept exactly as
+ * git reports them: one with leading or trailing spaces is still a file.
+ */
+export async function listUntrackedPaths(cwd: string): Promise<string[]> {
+  const { stdout } = await runGit(cwd, ['ls-files', '--others', '--exclude-standard', '-z'], 10_000);
+  return stdout.split('\0').filter(Boolean);
+}
+
+/** Untracked files count as added in full; `git diff <ref>` never lists them. */
+export async function getUntrackedChangeStats(cwd: string): Promise<GitChangeStats> {
+  const paths = await listUntrackedPaths(cwd);
+  const stats = { files: paths.length, insertions: 0, deletions: 0 };
+  for (const filePath of paths) {
+    try {
+      await runGit(cwd, ['diff', '--no-index', '--numstat', '--', '/dev/null', filePath], 10_000);
+    } catch (error: unknown) {
+      // `--no-index` exits 1 when the files differ; the numbers are on stdout.
+      const output =
+        error && typeof error === 'object' && 'stdout' in error
+          ? String((error as { stdout?: unknown }).stdout ?? '')
+          : '';
+      stats.insertions += parseNumstat(output).insertions;
+    }
+  }
+  return stats;
+}
+
+/**
+ * Everything the working tree holds on top of `ref`: commits made since,
+ * staged and unstaged edits, and untracked files. Pass `untracked` to share
+ * one scan between several refs.
+ */
+export async function getChangeStatsSince(
+  cwd: string,
+  ref: string,
+  untracked?: Promise<GitChangeStats>
+): Promise<GitChangeStats> {
+  const [tracked, extra] = await Promise.all([
+    runGit(cwd, ['diff', '--numstat', ref, '--'], 10_000).then(({ stdout }) => parseNumstat(stdout)),
+    untracked ?? getUntrackedChangeStats(cwd),
+  ]);
+  return {
+    files: tracked.files + extra.files,
+    insertions: tracked.insertions + extra.insertions,
+    deletions: tracked.deletions + extra.deletions,
+  };
+}
+
 const MAX_DIFF_TEXT_CHARS = 400_000;
 
 export async function getDiffAgainstRef(cwd: string, ref: string): Promise<string> {

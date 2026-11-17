@@ -15,9 +15,10 @@ import {
   ExternalLink,
   FileDiff,
   MoreHorizontal,
+  Pencil,
 } from '../icons';
 import { SessionWorkspaceControl } from '../ChatPane';
-import type { EnvironmentEditorLauncher } from '../../../shared/types';
+import type { EnvironmentEditorLauncher, GitPatchScope } from '../../../shared/types';
 import type { ActiveEnvironmentContext } from './useActiveEnvironmentContext';
 import type { GitEnvironmentState } from './useGitEnvironment';
 import { EnvironmentGitActionsSection } from './EnvironmentGitActionsSection';
@@ -291,7 +292,8 @@ export function EnvironmentHub({
 }: {
   context: ActiveEnvironmentContext;
   git: GitEnvironmentState;
-  onOpenProjectPanel: (view: 'files' | 'changes') => void;
+  /** `scope` is the diff the Changes row counted, so the panel can show the same one. */
+  onOpenProjectPanel: (view: 'files' | 'changes', scope?: GitPatchScope) => void;
   sources?: Attachment[];
   sourcesError?: string | null;
   onOpenSources?: (path: string | null) => void;
@@ -316,6 +318,11 @@ export function EnvironmentHub({
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const overview = git.overview;
+  // The Changes row counts what the branch holds on top of its base, so a
+  // commit or a push does not empty it. Without a known base, only the
+  // uncommitted work can be counted.
+  const branchChanges = overview.branchChanges ?? null;
+  const changeTotals = branchChanges ?? overview;
   const previewSessionId = useAppStore((s) => s.computerUsePreviewSessionId);
   const previewOpen = Boolean(context.sessionId) && previewSessionId === context.sessionId;
   const knownNonGit = !context.unavailableReason && !overview.hasRepo && (overview.error === 'not-a-repo' || overview.ok);
@@ -459,13 +466,22 @@ export function EnvironmentHub({
                       <SectionRow
                         icon={FileDiff}
                         label="Changes"
-                        onClick={() => onOpenProjectPanel('changes')}
-                        trailing={
+                        title={branchChanges ? `Compared with ${branchChanges.baseRef}` : 'Uncommitted changes'}
+                        onClick={() => onOpenProjectPanel('changes', branchChanges ? 'branch' : 'working-tree')}
+                        trailing={changeTotals.insertions > 0 || changeTotals.deletions > 0 ? (
                           <span className="flex shrink-0 items-center gap-1 font-mono text-[11px] tabular-nums">
-                            <span className="text-emerald-600">+{overview.insertions}</span>
-                            <span className="text-[var(--error)]">-{overview.deletions}</span>
+                            <span className="text-emerald-600">+{changeTotals.insertions}</span>
+                            <span className="text-[var(--error)]">-{changeTotals.deletions}</span>
                           </span>
-                        }
+                        ) : undefined}
+                      />
+                    ) : null}
+                    {overview.hasRepo && branchChanges && overview.totalChanges > 0 ? (
+                      <SectionRow
+                        icon={Pencil}
+                        label="Uncommitted"
+                        detail={`${overview.totalChanges} ${overview.totalChanges === 1 ? 'file' : 'files'}`}
+                        onClick={() => onOpenProjectPanel('changes', 'working-tree')}
                       />
                     ) : null}
                     {overview.hasRepo && context.session && context.sessionId ? (

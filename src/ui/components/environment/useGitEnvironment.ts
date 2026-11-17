@@ -18,6 +18,7 @@ const EMPTY_GIT_OVERVIEW: GitOverviewResult = {
   totalChanges: 0,
   insertions: 0,
   deletions: 0,
+  branchChanges: null,
   prStatus: 'not_found',
   pr: null,
 };
