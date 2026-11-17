@@ -8306,6 +8306,41 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
     }
   );
 
+  // RPC: "Save as…" — copies a previewed file to a place the user picks.
+  ipcMainHandle(
+    'save-file-copy',
+    async (
+      event,
+      cwd: string,
+      filePath: string
+    ): Promise<{ ok: boolean; filePath?: string; canceled?: boolean; message?: string }> => {
+      const validation = await validateProjectFilePath(cwd, filePath);
+      if (!validation.ok) {
+        return { ok: false, message: validation.message };
+      }
+      try {
+        if (!(await fsPromises.stat(validation.targetReal)).isFile()) {
+          return { ok: false, message: 'Only files can be saved.' };
+        }
+        const owner = BrowserWindow.fromWebContents(event.sender);
+        const options = { defaultPath: join(app.getPath('downloads'), basename(validation.targetReal)) };
+        const result = owner
+          ? await dialog.showSaveDialog(owner, options)
+          : await dialog.showSaveDialog(options);
+        if (result.canceled || !result.filePath) {
+          return { ok: true, canceled: true };
+        }
+        // Saving over the source would truncate it mid-copy.
+        if (resolve(result.filePath) !== validation.targetReal) {
+          await fsPromises.copyFile(validation.targetReal, result.filePath);
+        }
+        return { ok: true, filePath: result.filePath };
+      } catch (error) {
+        return { ok: false, message: 'The file could not be saved.' };
+      }
+    }
+  );
+
   // RPC: 用指定应用打开文件（"打开方式 › 某个 App"）。
   ipcMainHandle(
     'open-file-with-app',
@@ -8899,22 +8934,24 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
    * trips of get-git-overview. Pure local git, safe to call per project.
    */
   ipcMainHandle('get-git-repo-brief', async (_event, cwd: string) => {
-    if (!cwd) return { ok: false, fullName: null, defaultBranch: null, branch: null };
+    if (!cwd) return { ok: false, root: null, fullName: null, defaultBranch: null, branch: null };
     try {
-      const [branchResult, originRemote, defaultBranch] = await Promise.all([
+      const [branchResult, originRemote, defaultBranch, root] = await Promise.all([
         execFileAsync('git', ['branch', '--show-current'], { cwd, timeout: 5000 }),
         getGitOriginRemote(cwd),
         getGitDefaultBranch(cwd),
+        getGitTopLevel(cwd).catch(() => null),
       ]);
       const originRepo = originRemote ? parseGitHubRepoFromRemote(originRemote) : null;
       return {
         ok: true,
+        root: root || null,
         fullName: originRepo ? `${originRepo.owner}/${originRepo.repo}` : null,
         defaultBranch: defaultBranch || null,
         branch: branchResult.stdout.trim() || null,
       };
     } catch {
-      return { ok: false, fullName: null, defaultBranch: null, branch: null };
+      return { ok: false, root: null, fullName: null, defaultBranch: null, branch: null };
     }
   });
 

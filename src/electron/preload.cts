@@ -1131,6 +1131,11 @@ contextBridge.exposeInMainWorld('electron', {
     return ipcRenderer.invoke('open-file-with-app', cwd, filePath, appPath);
   },
 
+  // "Save as…" for a previewed file
+  saveFileCopy: (cwd: string, filePath: string) => {
+    return ipcRenderer.invoke('save-file-copy', cwd, filePath);
+  },
+
   // 获取项目文件树
   getProjectTree: (cwd: string) => {
     return ipcRenderer.invoke('get-project-tree', cwd);

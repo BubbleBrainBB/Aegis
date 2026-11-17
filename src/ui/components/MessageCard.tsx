@@ -14,6 +14,7 @@ import { cn } from '@/ui/lib/utils';
 import { useAppStore } from '../store/useAppStore';
 import { AttachmentChips } from './AttachmentChips';
 import { AttachmentPreviewGrid } from './AttachmentPreviewGrid';
+import { openSessionSource } from '../lib/image-studio';
 import { StructuredResponse } from './StructuredResponse';
 import { splitWorkflowResult } from '../utils/workflow-result';
 import { SelectedClaudeCommandChip } from './SelectedClaudeCommandChip';
@@ -194,6 +195,7 @@ function UserPromptCard({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const {
     activeSessionId,
+    activeWorkspace,
     sessions,
     claudeUserSkills,
     claudeProjectSkills,
@@ -359,6 +361,10 @@ function UserPromptCard({
 
   const imageAttachments = (attachments || []).filter((a) => a.kind === 'image');
   const fileAttachments = (attachments || []).filter((a) => a.kind !== 'image');
+  // The preview lives in the chat workspace's right panel; the Design dock has none.
+  const openAttachment = currentSessionId && activeWorkspace === 'chat'
+    ? (attachment: Attachment) => openSessionSource(currentSessionId, attachment)
+    : undefined;
 
   return (
     <div className="flex justify-end my-3">
@@ -368,7 +374,7 @@ function UserPromptCard({
             <AttachmentPreviewGrid attachments={imageAttachments} />
             {fileAttachments.length > 0 && (
               <div className="flex min-w-0 max-w-full justify-end">
-                <AttachmentChips attachments={fileAttachments} variant="message" />
+                <AttachmentChips attachments={fileAttachments} variant="message" onOpen={openAttachment} />
               </div>
             )}
           </div>

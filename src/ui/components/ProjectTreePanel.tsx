@@ -13,6 +13,9 @@ import { ProjectMarkdownEditor } from './ProjectMarkdownEditor';
 import { ProjectMarkdownPreview } from './ProjectMarkdownPreview';
 import { ProjectTextEditor, type ProjectTextEditorHandle } from './ProjectTextEditor';
 import { IconButton } from './ui/icon-button';
+import { OpenWithButton } from './OpenWithButton';
+import { ProjectFileActions } from './FilePathActions';
+import { ProjectVideoPreview } from './ProjectVideoPreview';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -2674,7 +2677,7 @@ export function ProjectTreePanel({
     (selectedPreview?.kind === 'csv' || selectedPreview?.kind === 'xlsx');
   const isImagePreviewSurface =
     !previewLoading &&
-    selectedPreview?.kind === 'image';
+    (selectedPreview?.kind === 'image' || selectedPreview?.kind === 'video');
   const isMdxCodePreviewSurface =
     isMdxFilePreview &&
     viewMode === 'code';
@@ -3152,6 +3155,8 @@ export function ProjectTreePanel({
                   selectedFilePath.split('/').pop() ||
                   selectedFilePath
                 }
+                tree={visibleTree}
+                onOpenFile={(node) => void selectFile(node)}
               />
             ) : (
               <span
@@ -3173,7 +3178,7 @@ export function ProjectTreePanel({
                 </button>
               )}
               {selectedFilePath ? (
-                <OpenWithButton cwd={selectedFileCwd || cwd} filePath={selectedFilePath} />
+                <ProjectFileActions cwd={selectedFileCwd || cwd} filePath={selectedFilePath} />
               ) : null}
               {isMdxFilePreview && (
                 <ViewModeToggle
@@ -3308,7 +3313,7 @@ export function ProjectTreePanel({
                       </button>
                     )}
                     {selectedFilePath ? (
-                      <OpenWithButton cwd={selectedFileCwd || cwd} filePath={selectedFilePath} />
+                      <ProjectFileActions cwd={selectedFileCwd || cwd} filePath={selectedFilePath} />
                     ) : null}
                     {isMdxFilePreview && (
                       <ViewModeToggle
@@ -3371,6 +3376,8 @@ export function ProjectTreePanel({
                       selectedFilePath.split('/').pop() ||
                       selectedFilePath
                     }
+                    tree={visibleTree}
+                    onOpenFile={(node) => void selectFile(node)}
                   />
 
                   <div className="flex items-center gap-1 flex-shrink-0 no-drag">
@@ -3488,11 +3495,12 @@ export function ProjectTreePanel({
                 )}
 
                 {!previewLoading && selectedPreview?.kind === 'video' && (
-                  <video
+                  <ProjectVideoPreview
+                    key={selectedPreview.previewUrl}
                     src={selectedPreview.previewUrl}
-                    className="max-w-full rounded-md"
-                    controls
-                    playsInline
+                    name={selectedPreview.name}
+                    file={{ cwd: selectedFileCwd || cwd, path: selectedFilePath }}
+                    active={!collapsed}
                   />
                 )}
 
@@ -3660,176 +3668,131 @@ export function ProjectTreePanel({
   );
 }
 
-interface OpenWithApp {
-  name: string;
-  appPath: string;
-  iconDataUrl: string | null;
-}
-
-/** Dropdown shows at most this many apps (default first) — no scrolling list. */
-const OPEN_WITH_MAX_APPS = 5;
-
-// Session-lived cache of Launch Services results so re-selecting a file (or
-// re-rendering the header) doesn't re-spawn osascript. Keyed per file.
-const openWithAppsCache = new Map<string, OpenWithApp[]>();
-
-// Header "Open ∨" split-button. The primary side shows the DEFAULT app's icon
-// and opens the file with it; the chevron opens a short menu — the top apps
-// that can open the file (Launch Services order, capped) plus
-// "Show in Finder". The app list (and thus the default-app icon) is fetched
-// eagerly when the file is selected. On non-macOS, or when Launch Services
-// fails or knows no app, the list settles empty and the control hides.
-function OpenWithButton({
-  cwd,
-  filePath,
+// Folders of the breadcrumb open onto their contents, so a neighbouring
+// file is one click away without the tree.
+function BreadcrumbFolderMenu({
+  dir,
+  selectedPath,
+  onOpenFile,
 }: {
-  cwd: string | null;
-  filePath: string;
+  dir: ProjectTreeNode;
+  selectedPath: string;
+  onOpenFile: (node: ProjectTreeNode) => void;
 }) {
-  const [apps, setApps] = useState<OpenWithApp[] | null>(null);
-  const requestKeyRef = useRef<string>('');
-
-  useEffect(() => {
-    if (!cwd || !filePath) {
-      setApps(null);
-      return;
-    }
-    const key = `${cwd} ${filePath}`;
-    requestKeyRef.current = key;
-
-    const cached = openWithAppsCache.get(key);
-    if (cached) {
-      setApps(cached);
-      return;
-    }
-
-    setApps(null);
-    const lister = window.electron.listOpenWithApps;
-    if (typeof lister !== 'function') {
-      setApps([]);
-      return;
-    }
-    lister(cwd, filePath)
-      .then((res) => {
-        const list = res && res.ok && Array.isArray(res.apps) ? res.apps : [];
-        if (openWithAppsCache.size > 100) openWithAppsCache.clear();
-        openWithAppsCache.set(key, list);
-        // Ignore a response for a file that is no longer selected.
-        if (requestKeyRef.current !== key) return;
-        setApps(list);
-      })
-      .catch(() => {
-        if (requestKeyRef.current === key) setApps([]);
-      });
-  }, [cwd, filePath]);
-
-  const openWith = useCallback(
-    async (appPath: string) => {
-      if (!cwd) return;
-      const opener = window.electron.openFileWithApp;
-      if (typeof opener !== 'function') return;
-      const res = await opener(cwd, filePath, appPath);
-      if (res && !res.ok) toast.error(res.message || 'Failed to open the file.');
-    },
-    [cwd, filePath]
-  );
-
-  const revealFolder = useCallback(() => {
-    void window.electron.revealPath?.(filePath);
-  }, [filePath]);
-
-  // Hidden until the list resolves; hidden for good when it settles empty.
-  if (!cwd || !apps || apps.length === 0) return null;
-
-  const defaultApp = apps[0];
-  const menuApps = apps.slice(0, OPEN_WITH_MAX_APPS);
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const rows = useMemo(() => {
+    const out: Array<{ node: ProjectTreeNode; depth: number }> = [];
+    const walk = (nodes: ProjectTreeNode[], depth: number) => {
+      for (const node of nodes) {
+        out.push({ node, depth });
+        if (node.kind === 'dir' && expanded.has(node.path)) walk(node.children || [], depth + 1);
+      }
+    };
+    walk(dir.children || [], 0);
+    return out;
+  }, [dir, expanded]);
 
   return (
-    <div className="inline-flex h-7 items-stretch overflow-hidden rounded-full border border-[var(--border)] bg-[var(--bg-primary)]">
-      <button
-        type="button"
-        onClick={() => void openWith(defaultApp.appPath)}
-        className="inline-flex items-center gap-1.5 pl-2 pr-1 text-xs font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--bg-tertiary)]"
-        title={`Open with ${defaultApp.name}`}
-        aria-label={`Open with ${defaultApp.name}`}
-      >
-        {defaultApp.iconDataUrl ? (
-          <img
-            src={defaultApp.iconDataUrl}
-            alt=""
-            className="h-4 w-4 flex-shrink-0"
-            aria-hidden="true"
-          />
-        ) : (
-          <FolderOpen className="h-3.5 w-3.5 flex-shrink-0" aria-hidden="true" />
-        )}
-        <span>Open</span>
-      </button>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <button
-            type="button"
-            className="inline-flex items-center pl-1 pr-2 text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
-            title="Open with…"
-            aria-label="Open with…"
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          className="no-drag min-w-0 truncate rounded text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+          aria-label={`Browse ${dir.name}`}
+        >
+          {dir.name}
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" sideOffset={6} className="max-h-[320px] w-[320px] overflow-y-auto p-1">
+        {rows.length === 0 ? (
+          <div className="px-2 py-1.5 text-[13px] text-[var(--text-muted)]">Empty folder</div>
+        ) : rows.map(({ node, depth }) => (
+          <DropdownMenuItem
+            key={node.path}
+            closeOnClick={node.kind === 'file'}
+            onSelect={() => {
+              if (node.kind === 'file') {
+                onOpenFile(node);
+                return;
+              }
+              setExpanded((current) => {
+                const next = new Set(current);
+                if (next.has(node.path)) next.delete(node.path);
+                else next.add(node.path);
+                return next;
+              });
+            }}
+            className={`gap-1.5 rounded-md py-1.5 pr-2 text-[13px] ${
+              isSameProjectPath(node.path, selectedPath) ? 'font-medium' : ''
+            }`}
+            style={{ paddingLeft: 8 + depth * 14 }}
+            title={node.path}
           >
-            <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
-          </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" sideOffset={6} className="min-w-[10.5rem] p-1">
-          {menuApps.map((appItem) => (
-            <DropdownMenuItem
-              key={appItem.appPath}
-              onSelect={() => void openWith(appItem.appPath)}
-              className="rounded-md px-2 py-1.5 text-[13px]"
-            >
-              {appItem.iconDataUrl ? (
-                <img
-                  src={appItem.iconDataUrl}
-                  alt=""
-                  className="mr-2.5 h-4 w-4 flex-shrink-0"
-                  aria-hidden="true"
-                />
-              ) : (
-                <span className="mr-2.5 h-4 w-4 flex-shrink-0" aria-hidden="true" />
-              )}
-              <span className="truncate">{appItem.name}</span>
-            </DropdownMenuItem>
-          ))}
-          <DropdownMenuSeparator />
-          <DropdownMenuItem onSelect={revealFolder} className="rounded-md px-2 py-1.5 text-[13px]">
-            <FolderClosed className="mr-2.5 h-4 w-4 flex-shrink-0 text-[var(--text-secondary)]" aria-hidden="true" />
-            <span>Show in Finder</span>
+            {node.kind === 'dir' ? (
+              <ChevronRight
+                className={`h-3.5 w-3.5 flex-shrink-0 text-[var(--text-muted)] transition-transform ${
+                  expanded.has(node.path) ? 'rotate-90' : ''
+                }`}
+                aria-hidden="true"
+              />
+            ) : (
+              <FileTypeIcon
+                name={node.name}
+                className="h-3.5 w-3.5 flex-shrink-0"
+                fallbackClassName="h-3.5 w-3.5 flex-shrink-0 text-[var(--text-muted)]"
+              />
+            )}
+            <span className="truncate">{node.name}</span>
           </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </div>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
+}
+
+function findProjectTreeDir(tree: ProjectTreeNode, dirPath: string): ProjectTreeNode | null {
+  if (isSameProjectPath(tree.path, dirPath)) return tree.kind === 'dir' ? tree : null;
+  for (const child of tree.children || []) {
+    if (child.kind !== 'dir') continue;
+    if (isSameProjectPath(child.path, dirPath) || isPathInsideProjectPath(dirPath, child.path)) {
+      return findProjectTreeDir(child, dirPath);
+    }
+  }
+  return null;
 }
 
 // Slim path bar above the preview (`folder › file.csv`), replacing the old
-// stacked "Preview" label + filename block.
+// stacked "Preview" label + filename block. With the project tree at hand,
+// each folder is a menu of what it holds.
 function PreviewBreadcrumb({
   cwd,
   filePath,
   fileName,
+  tree,
+  onOpenFile,
 }: {
   cwd: string | null;
   filePath: string;
   fileName: string;
+  tree?: ProjectTreeNode | null;
+  onOpenFile?: (node: ProjectTreeNode) => void;
 }) {
   const segments = useMemo(() => {
     if (!cwd) return [];
     const root = normalizeProjectPath(cwd);
     const target = normalizeProjectPath(filePath);
     const rootPrefix = root.endsWith('/') ? root : `${root}/`;
-    if (!target.startsWith(rootPrefix)) return [basenameOfPath(root)];
+    const rootSegment = { name: basenameOfPath(root), path: root };
+    if (!target.startsWith(rootPrefix)) return [rootSegment];
     const dirs = target
       .slice(rootPrefix.length)
       .split('/')
       .filter(Boolean)
       .slice(0, -1);
-    return [basenameOfPath(root), ...dirs];
+    return [
+      rootSegment,
+      ...dirs.map((name, index) => ({ name, path: `${rootPrefix}${dirs.slice(0, index + 1).join('/')}` })),
+    ];
   }, [cwd, filePath]);
 
   return (
@@ -3837,12 +3800,19 @@ function PreviewBreadcrumb({
       className="flex min-w-0 items-center gap-1 text-[13px] leading-[22px]"
       title={filePath}
     >
-      {segments.map((segment, index) => (
-        <span key={`${segment}:${index}`} className="flex min-w-0 flex-shrink items-center gap-1">
-          <span className="truncate text-[var(--text-muted)]">{segment}</span>
-          <ChevronRight className="h-3.5 w-3.5 flex-shrink-0 text-[var(--text-muted)] opacity-70" />
-        </span>
-      ))}
+      {segments.map((segment, index) => {
+        const dir = tree && onOpenFile ? findProjectTreeDir(tree, segment.path) : null;
+        return (
+          <span key={`${segment.path}:${index}`} className="flex min-w-0 flex-shrink items-center gap-1">
+            {dir && onOpenFile ? (
+              <BreadcrumbFolderMenu dir={{ ...dir, name: segment.name }} selectedPath={filePath} onOpenFile={onOpenFile} />
+            ) : (
+              <span className="truncate text-[var(--text-muted)]">{segment.name}</span>
+            )}
+            <ChevronRight className="h-3.5 w-3.5 flex-shrink-0 text-[var(--text-muted)] opacity-70" />
+          </span>
+        );
+      })}
       <span className="truncate font-medium text-[var(--text-primary)]">{fileName}</span>
     </div>
   );

@@ -453,6 +453,10 @@ declare global {
       filePath: string,
       appPath: string
     ) => Promise<{ ok: boolean; message?: string }>;
+    saveFileCopy: (
+      cwd: string,
+      filePath: string
+    ) => Promise<{ ok: boolean; filePath?: string; canceled?: boolean; message?: string }>;
     getProjectTree: (cwd: string) => Promise<ProjectTreeNode | null>;
     watchProjectTree: (cwd: string) => Promise<boolean>;
     unwatchProjectTree: (cwd: string) => Promise<boolean>;
@@ -483,6 +487,7 @@ declare global {
     getGitBranch: (cwd: string) => Promise<{ ok: boolean; branch: string | null; message?: string }>;
     getGitRepoBrief: (cwd: string) => Promise<{
       ok: boolean;
+      root?: string | null;
       fullName: string | null;
       defaultBranch: string | null;
       branch: string | null;

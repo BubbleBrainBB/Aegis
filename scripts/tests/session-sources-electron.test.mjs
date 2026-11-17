@@ -20,17 +20,22 @@ import {openSessionSource} from '/src/ui/lib/image-studio';
 import {ImageStudioPanel} from '/src/ui/components/ImageStudioPanel';
 import {ImageStudioComposerHome} from '/src/ui/components/ImageStudioComposerDock';
 import {RightUtilityWorkspace} from '/src/ui/App';
+import {MessageCard} from '/src/ui/components/MessageCard';
 import '/src/ui/index.css';
 const image='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
 const file=(name,kind='file')=>({id:name,path:'/Library/Application Support/Uploads/'+name,name,kind,size:10,mimeType:kind==='image'?'image/png':'application/octet-stream'});
 const old=file('reference.png','image'),movie=file('movie.mp4'),note=file('notes.txt'),doc=file('document.docx');
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-window.qa={opened:[],reads:[]};
+window.qa={opened:[],reads:[],openedWith:[],saved:[],copied:[]};
+Object.defineProperty(navigator,'clipboard',{value:{writeText:async text=>{qa.copied.push(text)}}});window.__store=useAppStore;
 window.electron={getUiResumeStateSync:()=>null,getRendererStateAllSync:()=>({}),saveUiResumeState:async()=>{},
  listSessionPullRequests:async()=>[],onSessionPullRequestsChanged:()=>()=>{},
  getSessionSources:async id=>{qa.reads.push(id);await sleep(id==='slow'?400:50);return id==='one'?[old,movie]:id==='slow'?[file('wrong-session.png','image')]:[]},
  previewSessionSource:async(id,path)=>{await sleep(path.endsWith('.png')?150:20);return path.endsWith('.png')?{kind:'image',url:image}:path.endsWith('.mp4')?{kind:'video',url:'/scripts/tests/fixtures/video-preview.mp4'}:path.endsWith('.txt')?{kind:'text',text:'Attachment text content'}:path.endsWith('missing.pdf')?{kind:'error',message:'Attachment is missing or could not be read.'}:{kind:'file'}},
  openPath:async path=>{qa.opened.push(path);return {ok:true}},
+ listOpenWithApps:async(cwd,path)=>({ok:true,apps:path.endsWith('.mp4')?[{name:'QuickTime Player',appPath:'/System/Applications/QuickTime Player.app',iconDataUrl:null}]:[]}),
+ openFileWithApp:async(cwd,path,app)=>{qa.openedWith.push({cwd,path,app});return {ok:true}},
+ saveFileCopy:async(cwd,path)=>{qa.saved.push({cwd,path});return {ok:true,filePath:'/Downloads/'+path.split('/').pop()}},
 };
 const draft=useAppStore.getState().createDraftSession('/qa/project');
 const base=useAppStore.getState().sessions[draft];
@@ -38,6 +43,7 @@ for(const id of ['one','slow','empty'])useAppStore.setState(s=>({sessions:{...s.
 function Harness(){
  const [id,setId]=useState('one');qa.session=id=>{setId(id);useAppStore.setState({rightUtilityTabs:['sources'],activeRightUtilityTab:'sources',rightPanelFullscreen:null})};
  const [extra,setExtra]=useState([]);qa.add=()=>setExtra([file('missing.pdf')]);
+ const [chat,setChat]=useState(false);qa.chat=setChat;
  const messages=React.useMemo(()=>id==='one'?[{type:'user_prompt',prompt:'References',attachments:[movie,note,doc,...extra]}]:[],[id,extra]);
  const session={...base,id,isDraft:false,messages};
  const state=useSessionSources(session);
@@ -52,7 +58,7 @@ function Harness(){
   <main data-workspace style={{display:'flex',flex:1,minWidth:0}}>
    <div data-chat style={{display:full?'none':'flex',flex:1,flexDirection:'column'}}>
     <div style={{display:'flex',justifyContent:'flex-end'}}><EnvironmentHub context={context} git={git} sources={state.sources} sourcesError={state.error} onOpenProjectPanel={()=>{}} onOpenSources={select}/></div>
-    <div style={{flex:1}}>Original chat</div>
+    <div style={{flex:1}}>Original chat{chat&&messages.map((message,i)=><MessageCard key={i} message={message} sessionId={id} toolStatusMap={new Map()} toolResultsMap={new Map()}/>)}</div>
     <ImageStudioComposerHome sessionId={id}><input aria-label="Chat draft" defaultValue="Keep my draft"/></ImageStudioComposerHome>
    </div>
    {active&&<RightUtilityWorkspace hidden={false} instantReveal activePanel={getRightUtilityTabKind(active)} tabs={tabs.map(tab=>({id:tab,kind:getRightUtilityTabKind(tab),label:tab.startsWith('images:')?'Image canvas':sessionSourceTabPath(tab)?.split('/').pop()||'Sources'}))} activeTab={active} browserAvailable={false} width={full?760:560} resizable={false} fullscreen={!!full} onWidthChange={()=>{}} onSelectTab={useAppStore.getState().setActiveRightUtilityTab} onCloseTab={useAppStore.getState().closeRightUtilityTab} onOpenTab={useAppStore.getState().openRightUtilityTab} onTogglePanel={useAppStore.getState().closeRightUtilityPanels} onToggleFullscreen={null}>
@@ -100,8 +106,32 @@ app.whenReady().then(async()=>{
   assert(await run('document.querySelector("[data-composer-home] input")===window.originalDraft'),'close restores original composer');
   await click('movie.mp4');await wait('document.querySelector("video")?.readyState>=2');
   assert.equal(await run('document.querySelector("video").videoWidth'),160);
-  await run('(()=>{const v=document.querySelector("video");v.muted=true;return v.play()})()');await delay(300);
+  assert.equal(await run('document.querySelector("video").controls'),false,'the player draws its own controls');
+  assert(await run('(()=>{const v=document.querySelector("video").getBoundingClientRect(),c=document.querySelector("[data-video-controls]").getBoundingClientRect(),p=document.querySelector("section[aria-label^=Task]").getBoundingClientRect();return c.top>=v.bottom&&p.bottom-c.bottom<16})()'),'controls sit under the video at the bottom of the panel');
+  await run('document.querySelector("video").muted=true');await click('Play');await delay(400);
   assert(await run('document.querySelector("video").currentTime>0'),'MP4 playback advances');
+  assert(await run('!!document.querySelector("button[aria-label=Pause]")&&!!document.querySelector("button[aria-label=Unmute]")'),'buttons follow the video state');
+  await click('Pause');
+  await run('(()=>{const i=document.querySelector("input[aria-label=Seek]");Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set.call(i,String(Number(i.max)/2));i.dispatchEvent(new Event("input",{bubbles:true}))})()');await delay(150);
+  assert(await run('(()=>{const v=document.querySelector("video");return Math.abs(v.currentTime-v.duration/2)<0.2})()'),'the seek bar moves the video');
+  assert.match(await run('document.querySelector("[data-video-controls] span").textContent'),/^\d:\d\d \/ \d:\d\d$/);
+  assert(await run('[...document.querySelectorAll("section[aria-label^=Task] button")].some(b=>b.textContent==="Sources"&&b.getAttribute("aria-label")==="All sources")'),'the header is a path back to the list');
+  await click('Open with QuickTime Player');
+  assert.deepEqual(await run('qa.openedWith'),[{cwd:'/Library/Application Support/Uploads',path:'/Library/Application Support/Uploads/movie.mp4',app:'/System/Applications/QuickTime Player.app'}]);
+  const pick=async(role,text)=>{await wait('[...document.querySelectorAll("[role='+role+']")].some(e=>e.textContent.trim()==='+JSON.stringify(text)+')');await run('[...document.querySelectorAll("[role='+role+']")].find(e=>e.textContent.trim()==='+JSON.stringify(text)+').click()');await delay(150)};
+  await click('Video options');await wait('!!document.querySelector("[role=menuitem]")');
+  assert(await run('!!document.querySelector("[data-video-preview] [role=menuitem]")'),'the menu lives inside the player, so full screen keeps it');
+  assert.deepEqual(await run('[...document.querySelectorAll("[role=menu] [role=menuitem]")].map(e=>e.textContent.trim())'),['Save video as…','0.25×','0.5×','0.75×','1×','1.25×','1.5×','1.75×','2×','Picture in picture']);
+  fs.mkdirSync(process.env.QA_CAPTURE,{recursive:true});fs.writeFileSync(path.join(process.env.QA_CAPTURE,'video-menu.png'),(await win.webContents.capturePage()).toPNG());
+  assert.equal(await run('(()=>{const on=[...document.querySelectorAll("[role=menuitem][aria-checked=true]")];return on.length+":"+on[0].textContent.trim()+":"+!!on[0].querySelector("svg")})()'),'1:1×:true','the current speed carries the check');
+  await pick('menuitem','2×');assert.equal(await run('document.querySelector("video").playbackRate'),2);
+  await run('(()=>{const i=document.querySelector("input[aria-label=Volume]");Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set.call(i,"0.5");i.dispatchEvent(new Event("input",{bubbles:true}))})()');await delay(150);
+  assert.deepEqual(await run('(()=>{const v=document.querySelector("video");return [v.volume,v.muted,!!document.querySelector("button[aria-label=Mute]")]})()'),[0.5,false,true],'the volume slider sets the level and unmutes');
+  await click('Video options');await pick('menuitem','Save video as…');
+  await click('Open with…');await pick('menuitem','Save as…');
+  const movieFile={cwd:'/Library/Application Support/Uploads',path:'/Library/Application Support/Uploads/movie.mp4'};
+  assert.deepEqual(await run('qa.saved'),[movieFile,movieFile]);
+  await click('Copy path');assert.deepEqual(await run('qa.copied'),[movieFile.path]);
   await click('All sources');assert.equal(await run('!!document.querySelector("video")'),false,'leaving preview removes playback');
   await click('notes.txt');await wait('document.body.innerText.includes("Attachment text content")');
   await click('All sources');await click('document.docx');await wait('document.body.innerText.includes("Preview is unavailable")');
@@ -114,8 +144,23 @@ app.whenReady().then(async()=>{
   assert.equal(await run('document.body.innerText.includes("wrong-session")'),false,'late old-session reply is ignored');
   assert.equal(await run('!!document.querySelector("button[title=Environment]")'),false,'empty non-Git task has no card');
   await run('qa.session("one")');await delay(200);await click('Open environment panel');await click('View all (5)');
+  // The pill above a sent message opens the same preview as its Sources row.
+  await run('qa.chat(true)');await wait('document.querySelectorAll("button[data-file-attachment=message]").length===4');
+  await run('window.__store.getState().closeRightUtilityPanels()');await delay(100);await run('window.__store.setState({rightUtilityTabs:[],activeRightUtilityTab:null})');await delay(100);
+  await click('Open attachment: movie.mp4');await wait('document.querySelector("video")?.readyState>=2');
+  assert.equal(await run('window.__store.getState().rightUtilityTabs.length'),1,'a pill opens one tab, the file itself');
+  assert.equal(await run('decodeURIComponent(window.__store.getState().activeRightUtilityTab).endsWith("/movie.mp4")'),true,'the pill opens its own file tab');
+  await run('document.querySelector("video").muted=true');await click('Play');await delay(400);
+  assert(await run('document.querySelector("video").currentTime>0'),'MP4 from a message pill plays');
+  fs.mkdirSync(process.env.QA_CAPTURE,{recursive:true});fs.writeFileSync(path.join(process.env.QA_CAPTURE,'video.png'),(await win.webContents.capturePage()).toPNG());
+  await click('Open attachment: notes.txt');await wait('document.body.innerText.includes("Attachment text content")');
+  assert.equal(await run('!!document.querySelector("video")'),false,'another pill replaces the preview');
+  await run('window.__store.setState({activeWorkspace:"design"})');await delay(100);
+  assert.equal(await run('document.querySelectorAll("button[data-file-attachment=message]").length'),0,'no right panel outside chat, so pills are plain');
+  assert.equal(await run('document.querySelectorAll("[data-file-attachment=message]").length'),4);
+  await run('window.__store.setState({activeWorkspace:"chat"})');await delay(100);
   fs.mkdirSync(process.env.QA_CAPTURE,{recursive:true});fs.writeFileSync(path.join(process.env.QA_CAPTURE,'sources.png'),(await win.webContents.capturePage()).toPNG());
-  assert.deepEqual(errors,[]);console.log('PASS Sources UI: full-workspace image canvas, preserved composer, zoom, close, provider-independent viewing, non-Git card, historical/live dedupe, View all, image, MP4, text, fallback, missing file, stale replies, task switching');app.exit(0);
+  assert.deepEqual(errors,[]);console.log('PASS Sources UI: message pills open previews, full-workspace image canvas, preserved composer, zoom, close, provider-independent viewing, non-Git card, historical/live dedupe, View all, image, MP4, text, fallback, missing file, stale replies, task switching');app.exit(0);
  }catch(error){console.error(error,errors);app.exit(1)}
 });
 `;

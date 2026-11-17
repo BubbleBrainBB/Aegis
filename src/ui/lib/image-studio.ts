@@ -28,8 +28,9 @@ export function openSessionSource(sessionId: string, source: Attachment | null):
     store.setRightPanelFullscreen('images');
     return;
   }
-  store.openRightUtilityTab('sources');
+  // A file opens as its own tab; the list is a separate one, opened on request.
   if (source) store.openRightUtilityTab(sessionSourceTab(source.path), { instantReveal: true });
+  else store.openRightUtilityTab('sources');
 }
 
 export function openImageStudio(sessionId: string, path: string, view: 'single' | 'canvas' = 'single'): boolean {
