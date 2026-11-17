@@ -1,5 +1,5 @@
-// The Design section in the full app: the rail switches to it, its sidebar
-// lists designs by project, the canvas fills the main area with its toolbar in
+// The Design section in the full app: the rail switches to it and the task
+// sidebar folds away, a home lists designs by project, the canvas fills the main area with its toolbar in
 // the title bar, and the design's conversation floats as a dock that shows the
 // chat, minimizes to a pill and snaps to the corner it is dragged to. A new
 // design follows its draft chat when the chat starts and opens the canvas the
@@ -79,8 +79,15 @@ app.whenReady().then(async()=>{
   // Rail → Design: a home of design cards by project; a card opens its canvas, toolbar in the title bar, composer dock.
   const card=(id)=>'[data-design-home] [data-design-document-card="'+id+'"]';
   const goHome=async()=>{await click('[data-design-titlebar] [aria-label="All designs"]');await until('!!document.querySelector("[data-design-home]")','back to the designs home')};
+  // The Design section is its own space: the task sidebar folds away, the rail stays, and the saved state is not touched.
+  const sidebarWidth='Math.round(document.querySelector(".aegis-sidebar-panel").parentElement.getBoundingClientRect().width)';
+  const toggleSidebar=()=>js('[...document.querySelectorAll("[data-titlebar-controls] button")].find(b=>b.textContent.includes("Toggle sidebar")).click()');
+  assert.ok(await js(sidebarWidth)>200,'Home shows the sidebar');
   await click('nav[aria-label="Sections"] button[aria-label="Design"]');
   await until('!!document.querySelector("[data-design-home]")','designs home');
+  await until(sidebarWidth+'===0','the sidebar folds away in the Design section');
+  assert.equal(await js('qa.app.getState().sidebarCollapsed'),false,'the saved sidebar state is left alone');
+  assert.equal(await js('!!document.querySelector("nav[aria-label=\'Sections\'] button[aria-label=\'Design\']")'),true,'the rail stays');
   await until('!!document.querySelector(\''+card(atlas.id)+'\')','Atlas card');
   assert.match(await js('document.querySelector("[data-design-home]").textContent'),/Designs[\s\S]*workflow-test[\s\S]*Atlas website[\s\S]*Edited/);
   await until('document.querySelectorAll(\''+card(atlas.id)+' .design-cover-board\').length===2','the card shows the canvas');
@@ -90,6 +97,25 @@ app.whenReady().then(async()=>{
   await until('document.querySelectorAll("[data-design-section] .design-board").length===2','canvas with two boards');
   await until('!!document.querySelector("[data-design-titlebar] .design-toolbar .design-title")','toolbar in the title bar');
   assert.equal(await js('!!document.querySelector("[data-design-titlebar] [aria-label=\'All designs\']")'),true,'back to the home from the title bar');
+  // A view nobody moved stays fitted to the room the canvas has, with the sidebar opened over it or not.
+  const offCenter='(()=>{const v=document.querySelector("[data-design-section] .design-viewport").getBoundingClientRect();const b=[...document.querySelectorAll("[data-design-section] .design-board")].map(e=>e.getBoundingClientRect());return Math.abs((Math.min(...b.map(r=>r.left))+Math.max(...b.map(r=>r.right)))/2-(v.left+v.right)/2)})()';
+  assert.equal(await js(sidebarWidth),0,'the canvas has no task sidebar either');
+  await until(offCenter+'<2','the first view is centered');
+  await toggleSidebar();await until(sidebarWidth+'>200','the toggle opens it in the section');
+  assert.equal(await js('qa.app.getState().sidebarCollapsed'),false);
+  await until(offCenter+'<2','still centered in the narrower canvas');
+  await delay(350);await shot('design-section-sidebar');
+  await toggleSidebar();await until(sidebarWidth+'===0','and closes it again');
+  assert.equal(await js('qa.app.getState().sidebarCollapsed'),false);
+  // Opened for one visit: it stays through the section, Home has it as saved, and the next visit starts folded.
+  await toggleSidebar();await until(sidebarWidth+'>200','open on the canvas');
+  await goHome();await delay(400);assert.ok(await js(sidebarWidth)>200,'it stays open across the section');
+  await click('nav[aria-label="Sections"] button[aria-label="Home"]');await delay(400);assert.ok(await js(sidebarWidth)>200,'Home has the sidebar');
+  await click('nav[aria-label="Sections"] button[aria-label="Design"]');
+  await until('!!document.querySelector("[data-design-home]")','the designs home again');
+  await until(sidebarWidth+'===0','the next visit starts folded');
+  await click(card(atlas.id));
+  await until('document.querySelectorAll("[data-design-section] .design-board").length===2','the canvas again');
   // The title is one control: a click opens the design menu, a double click renames in place.
   const titleAt=JSON.parse(await js('JSON.stringify((r=>({x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}))(document.querySelector("[data-design-titlebar] .design-title-button").getBoundingClientRect()))'));
   const mouse=(clickCount)=>{for(const type of ['mouseDown','mouseUp'])win.webContents.sendInputEvent({type,x:titleAt.x,y:titleAt.y,button:'left',clickCount})};
