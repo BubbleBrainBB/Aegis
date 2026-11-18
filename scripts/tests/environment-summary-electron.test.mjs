@@ -26,7 +26,7 @@ window.electron={
  },
  detachSessionPullRequest:async(id,url)=>{qa.attached=qa.attached.filter(pr=>pr.url!==url);qa.listeners.forEach(fn=>fn(id))},
  getGitChanges:async()=>({ok:true,entries:[]}),
- getGitPatch:async(cwd,scope)=>{qa.patchReads=(qa.patchReads||0)+1;return {ok:true,error:null,scope,patch:qa.patchText,repoRoot:cwd,truncated:false}},
+ getGitPatch:async(cwd,scope)=>{qa.patchReads=(qa.patchReads||0)+1;return {ok:true,error:null,scope,patch:qa.patchText,repoRoot:cwd,baseRef:scope==='branch'?'origin/main':undefined,truncated:false}},
  getGitCommits:async()=>({ok:true,commits:[]}),
  gitGenerateCommitMessage:async()=>({ok:true,message:'style: update card'}),
  gitStageAll:async()=>{qa.calls.push('stage-all');return {ok:true}},
@@ -59,6 +59,10 @@ function GitProbe(){
 }
 const {useAegisDiffPanelData}=await import('/src/ui/hooks/useAegisDiffPanelData.ts');
 const {buildWorkspaceReviewSelection}=await import('/src/ui/utils/review-diff-selection.ts');
+const {AegisDiffPanel}=await import('/src/ui/components/AegisDiffPanel.tsx');
+// The real panel, for what its source selector says about the diff on screen.
+qa.selectPanelDiff=scope=>useAppStore.getState().setReviewDiffSelection(buildWorkspaceReviewSelection(scope));
+qa.panelSource=()=>{const e=document.querySelector('.aegis-diff-toolbar button');return e?{text:e.textContent.trim(),title:e.getAttribute('title')}:null};
 const patchOf=lines=>'diff --git a/a.txt b/a.txt\\nindex 1111111..2222222 100644\\n--- a/a.txt\\n+++ b/a.txt\\n@@ -1 +1,'+(lines.length+1)+' @@\\n one\\n'+lines.map(line=>'+'+line+'\\n').join('');
 qa.patches={before:patchOf(['two']),after:patchOf(['two','three'])};
 // The diff panel's data, driven the way the Changes row drives it.
@@ -74,6 +78,7 @@ function Harness(){
  const [mounted,setMounted]=useState(true);qa.setMounted=setMounted;
  const [probe,setProbe]=useState(false);qa.setProbe=setProbe;
  const [diffProbe,setDiffProbe]=useState(false);qa.setDiffProbe=setDiffProbe;
+ const [diffPanel,setDiffPanel]=useState(false);qa.setDiffPanel=setDiffPanel;
  const [sessionId,setSessionId]=useState('fixture');qa.setSessionId=setSessionId;
  const [mode,setMode]=useState('local');const [patch,setPatch]=useState({});const [narrow,setNarrow]=useState(false);qa.setMode=value=>{setPatch({});setMode(value)};qa.patch=setPatch;qa.setNarrow=setNarrow;
  const repo=!['local','local-extras','loading','error','draft'].includes(mode);
@@ -97,7 +102,7 @@ function Harness(){
  Object.assign(overview,patch);
  qa.overview=overview;
  const git={overview,loading:mode==='loading'||mode==='pr-loading',lastUpdatedAt:Date.now(),refresh:async()=>{qa.refreshes++},getSnapshot:()=>({contextKey:mode,cwd:context.effectiveCwd,repoRoot:overview.repoRoot,branch:overview.branch,signature:gitSignature(overview)})};
- return <EnvironmentPanelProvider><Toaster/><div hidden>{probe?<GitProbe/>:null}{diffProbe?<DiffProbe/>:null}</div><main style={{display:'flex',height:'100vh',background:'var(--bg-primary)'}}><div style={{width:layoutWidth|| (narrow?420:720),padding:layoutWidth?0:20,flexShrink:0,display:'flex',flexDirection:'column'}}><header style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><span>Environment preview</span><>{mounted?<EnvironmentHub context={context} git={git} onOpenProjectPanel={(view,scope)=>{qa.view=view;qa.scope=scope}} sources={sources} onOpenSources={path=>qa.sourcePath=path}/>:null}</></header>{layoutWidth?<div style={{display:'flex',flex:1,minHeight:0}}>{[0,1].map(index=><div key={index} style={{display:'flex',flexDirection:'column',width:index===0?'100%':600,flexShrink:0}}><EnvironmentChatSurface active={activePane===index}><div data-chat-scroll-container style={{flex:1,paddingBlock:16,paddingLeft:16,overflow:'auto'}}><div className="message-container" style={{background:'var(--bg-secondary)',height:1600}}>Chat messages</div></div><div data-composer-home="fixture"><div><div className="aegis-chat-composer px-8 pb-4"><div style={{background:'var(--bg-secondary)',height:100}}>Composer</div></div></div></div></EnvironmentChatSurface></div>)}</div>:<button id="outside" style={{marginTop:480}}>Outside</button>}</div><aside style={{flex:1,borderLeft:'1px solid var(--border)',padding:20}}>Files</aside></main></EnvironmentPanelProvider>;
+ return <EnvironmentPanelProvider><Toaster/><div hidden>{probe?<GitProbe/>:null}{diffProbe?<DiffProbe/>:null}{diffPanel?<div style={{position:'relative',width:480,height:320}}><AegisDiffPanel collapsed={false} cwd="/repo/diff" session={null} onClose={()=>{}} isFullscreen={false} onToggleFullscreen={()=>{}}/></div>:null}</div><main style={{display:'flex',height:'100vh',background:'var(--bg-primary)'}}><div style={{width:layoutWidth|| (narrow?420:720),padding:layoutWidth?0:20,flexShrink:0,display:'flex',flexDirection:'column'}}><header style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><span>Environment preview</span><>{mounted?<EnvironmentHub context={context} git={git} onOpenProjectPanel={(view,scope)=>{qa.view=view;qa.scope=scope}} sources={sources} onOpenSources={path=>qa.sourcePath=path}/>:null}</></header>{layoutWidth?<div style={{display:'flex',flex:1,minHeight:0}}>{[0,1].map(index=><div key={index} style={{display:'flex',flexDirection:'column',width:index===0?'100%':600,flexShrink:0}}><EnvironmentChatSurface active={activePane===index}><div data-chat-scroll-container style={{flex:1,paddingBlock:16,paddingLeft:16,overflow:'auto'}}><div className="message-container" style={{background:'var(--bg-secondary)',height:1600}}>Chat messages</div></div><div data-composer-home="fixture"><div><div className="aegis-chat-composer px-8 pb-4"><div style={{background:'var(--bg-secondary)',height:100}}>Composer</div></div></div></div></EnvironmentChatSurface></div>)}</div>:<button id="outside" style={{marginTop:480}}>Outside</button>}</div><aside style={{flex:1,borderLeft:'1px solid var(--border)',padding:20}}>Files</aside></main></EnvironmentPanelProvider>;
 }
 createRoot(document.getElementById('root')).render(<Harness/>);
 `;
@@ -147,13 +152,11 @@ app.whenReady().then(async()=>{
  // The Changes row counts the branch against its base, so committing does not
  // empty it, and it opens the panel on the scope it counted.
  assert.equal(await js('qa.scope'),'branch');assert.equal(await row('Changes'),'Changes +120 -30');assert.equal(await js('rowButton("Changes").title'),'Compared with origin/main');
- assert.equal(await row('Uncommitted'),'Uncommitted 2 files');await click('Uncommitted');assert.equal(await js('qa.scope'),'working-tree');
- await js('qa.patch({totalChanges:1})');await delay(100);assert.equal(await row('Uncommitted'),'Uncommitted 1 file');
- // Untracked files that could not be listed in time leave a count that is a lower bound.
- await js('qa.patch({totalChanges:825,totalChangesAtLeast:true})');await delay(100);assert.equal(await row('Uncommitted'),'Uncommitted at least 825 files');
- await js('qa.patch({totalChanges:0,insertions:0,deletions:0})');await delay(100);assert.equal(await row('Changes'),'Changes +120 -30','committed work stays counted');assert.equal(await row('Uncommitted'),null);
+ // Changes is the card's one row for the diff: uncommitted files get no row of their own.
+ assert.equal(await js('qa.overview.totalChanges'),2);assert.equal(await row('Uncommitted'),null);assert.doesNotMatch(await visible(),/Uncommitted|2 files/);
+ await js('qa.patch({totalChanges:0,insertions:0,deletions:0})');await delay(100);assert.equal(await row('Changes'),'Changes +120 -30','committed work stays counted');
  await js('qa.patch({totalChanges:0,insertions:0,deletions:0,branchChanges:{baseRef:"origin/main",files:0,insertions:0,deletions:0}})');await delay(100);assert.equal(await row('Changes'),'Changes','nothing to count shows no numbers');
- await js('qa.patch({branchChanges:null})');await delay(100);assert.equal(await row('Changes'),'Changes +24 -6','without a base the row counts uncommitted work');assert.equal(await row('Uncommitted'),null);
+ await js('qa.patch({branchChanges:null})');await delay(100);assert.equal(await row('Changes'),'Changes +24 -6','without a base the row counts uncommitted work');
  await click('Changes');assert.equal(await js('qa.scope'),'working-tree');assert.equal(await js('rowButton("Changes").title'),'Uncommitted changes');
  // Untracked files the scan could not count make the added lines a lower bound, and the row says so.
  await js('qa.patch({changesIncomplete:true})');await delay(100);assert.equal(await row('Changes'),'Changes at least +120 -30');assert.equal(await js('rowButton("Changes").title'),'Compared with origin/main. Some untracked files were not counted.');
@@ -372,6 +375,14 @@ app.whenReady().then(async()=>{
  // fetched for the first click.
  await js('qa.patchText=qa.patches.before;qa.setDiffProbe(true)');await delay(200);
  await js('qa.selectDiff("branch")');await delay(200);assert.equal(await js('qa.diff.summary.addedLines'),1);
+ // The Branch diff names the ref it is compared with; other scopes have none.
+ assert.equal(await js('qa.diff.baseRef'),'origin/main');
+ await js('qa.selectDiff("working-tree")');assert.equal(await js('qa.diff.baseRef'),null,'another scope does not keep the branch base');await delay(200);assert.equal(await js('qa.diff.baseRef'),null);
+ await js('qa.selectDiff("branch")');await delay(200);assert.equal(await js('qa.diff.baseRef'),'origin/main');
+ await js('qa.selectPanelDiff("branch");qa.setDiffPanel(true)');await delay(300);
+ assert.deepEqual(await js('qa.panelSource()'),{text:'Branch vs origin/main',title:'Compared with origin/main'});
+ await js('qa.selectPanelDiff("working-tree")');await delay(300);assert.deepEqual(await js('qa.panelSource()'),{text:'Uncommitted',title:null});
+ await js('qa.setDiffPanel(false)');
  const patchReads=await js('qa.patchReads');await delay(200);assert.equal(await js('qa.patchReads'),patchReads,'an unchanged selection is not fetched again');
  await js('qa.patchText=qa.patches.after;qa.selectDiff("branch")');await delay(200);
  assert.equal(await js('qa.patchReads'),patchReads+1,'the same scope chosen again is fetched again');assert.equal(await js('qa.diff.summary.addedLines'),2);

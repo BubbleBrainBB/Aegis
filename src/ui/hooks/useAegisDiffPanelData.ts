@@ -31,6 +31,8 @@ export interface AegisDiffPanelData {
   error: string | null;
   parseError: string | null;
   gitResult: GitPatchResult | null;
+  /** The ref the Branch diff on screen is compared with, e.g. `origin/main`. */
+  baseRef: string | null;
   turns: AegisDiffTurnOption[];
   commits: GitCommitSummary[];
   summary: {
@@ -92,9 +94,8 @@ export function useAegisDiffPanelData({
 
   // Until the user picks a source explicitly, default to the last captured
   // turn's diff (what the agent just changed); fall back to Uncommitted when
-  // the session has no captured turns, or follows the agent's worktree: the
-  // Environment card's Changes row there counts that worktree's uncommitted
-  // work, and older turns may predate the move.
+  // the session has no captured turns, or follows the agent's worktree, where
+  // older turns may predate the move.
   const followsAgentWorktree = Boolean(session?.agentWorktreePath);
   const defaultSelection = useMemo<ReviewDiffSelection>(() => {
     const lastTurn = turnOptions.length > 0 ? turnOptions[turnOptions.length - 1] : null;
@@ -263,6 +264,11 @@ export function useAegisDiffPanelData({
   const files = turnData ? turnData.files : workspaceState.files;
   const patch = turnData ? turnData.patch : workspaceState.patch;
   const summary = useMemo(() => summarizeDiffFiles(files), [files]);
+  // Named only once the patch on screen is the branch's: while another scope's
+  // patch is still showing, its base would label the wrong diff.
+  const baseRef = workspaceScope === 'branch' && workspaceState.gitResult?.scope === 'branch'
+    ? workspaceState.gitResult.baseRef || null
+    : null;
 
   return {
     selection: effectiveSelection,
@@ -272,6 +278,7 @@ export function useAegisDiffPanelData({
     error: turnData ? null : workspaceState.error,
     parseError: turnData ? turnData.parseError : workspaceState.parseError,
     gitResult: turnData ? null : workspaceState.gitResult,
+    baseRef,
     turns: turnOptions,
     commits,
     summary,

@@ -15,7 +15,6 @@ import {
   ExternalLink,
   FileDiff,
   MoreHorizontal,
-  Pencil,
 } from '../icons';
 import { SessionWorkspaceControl } from '../ChatPane';
 import type { EnvironmentEditorLauncher, GitPatchScope } from '../../../shared/types';
@@ -477,14 +476,6 @@ export function EnvironmentHub({
                             <span className="text-[var(--error)]">-{changeTotals.deletions}</span>
                           </span>
                         ) : undefined}
-                      />
-                    ) : null}
-                    {overview.hasRepo && branchChanges && overview.totalChanges > 0 ? (
-                      <SectionRow
-                        icon={Pencil}
-                        label="Uncommitted"
-                        detail={`${overview.totalChangesAtLeast ? 'at least ' : ''}${overview.totalChanges} ${overview.totalChanges === 1 ? 'file' : 'files'}`}
-                        onClick={() => onOpenProjectPanel('changes', 'working-tree')}
                       />
                     ) : null}
                     {overview.hasRepo && context.session && context.sessionId ? (
