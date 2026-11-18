@@ -98,8 +98,11 @@ export interface MainBotHost {
   devices(): MainBotDevice[];
   /** Every task on those, without the bot's own conversation and archived ones. */
   tasks(): MainBotTask[];
-  /** The agents of a Mac; null when it can't say. */
-  agents(deviceId: string | null): Promise<MainBotAgent[] | null>;
+  /**
+   * The agents of a Mac; null when it can't say. `model`: the one the bot
+   * named for the task, since whether an agent can take work may depend on it.
+   */
+  agents(deviceId: string | null, model?: string): Promise<MainBotAgent[] | null>;
   /** The agent the composer starts new tasks with. */
   preferredAgent(): string;
   isGitRepo(path: string): Promise<boolean>;
@@ -260,6 +263,20 @@ function gistOf(text: string): string {
 
 function isSessionId(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
+/** Why an agent with no login can't take work. */
+export const NOT_SIGNED_IN = 'not signed in';
+
+/**
+ * Claude asked about with no model in mind wants an Anthropic login, and on a
+ * model of a compatible provider it runs without one. So its "not signed in"
+ * stands only when it is not ready for the model the task would get either.
+ */
+export async function claudeForModel(agents: MainBotAgent[], ready: () => Promise<boolean>): Promise<MainBotAgent[]> {
+  const claude = agents.find((agent) => agent.provider === 'claude');
+  if (claude?.unavailable !== NOT_SIGNED_IN || !(await ready().catch(() => false))) return agents;
+  return agents.map((agent) => (agent === claude ? { ...agent, unavailable: null } : agent));
 }
 
 /** What the agent of a task is told besides the bot's own words. */
@@ -760,7 +777,7 @@ export class MainBotService {
     const { device, project } = place;
     if (!device.online) return fail(`${device.name} is offline, so nothing can start there now.`);
 
-    const picked = await this.pickAgent(device, project, args.agent);
+    const picked = await this.pickAgent(device, project, args.agent, args.model?.trim() || undefined);
     if ('error' in picked) return fail(picked.error);
 
     const worktree =
@@ -991,11 +1008,12 @@ export class MainBotService {
     const waiting = this.store.all().filter((watch) => !watch.report && !isSessionId(watch.taskId));
     if (!waiting.length) return;
     const tasks = new Map(this.host.tasks().map((task) => [task.id, task]));
+    const offline = new Set(this.host.devices().filter((device) => !device.online).map((device) => device.id));
     const now = this.host.now();
     for (const watch of waiting) {
       const task = tasks.get(watch.taskId);
-      // Not listed: that Mac is out of reach. It keeps waiting.
-      if (!task) continue;
+      // Not listed, or listed as it stood when its Mac was last heard from: that Mac is out of reach. It keeps waiting.
+      if (!task || offline.has(task.deviceId)) continue;
       if (task.state === 'working' || task.state === 'needs approval') {
         this.seenWorking.add(task.id);
         continue;
@@ -1075,8 +1093,9 @@ export class MainBotService {
     device: MainBotDevice,
     project: MainBotProject | null,
     named: string | undefined,
+    model?: string,
   ): Promise<{ provider: string; label: string; note?: string } | { error: string }> {
-    const agents = await this.host.agents(device.id).catch(() => null);
+    const agents = await this.host.agents(device.id, model).catch(() => null);
     const find = (ref: string) => agents?.find((agent) => same(agent.provider, ref) || same(agent.label, ref));
     const ready = () => (agents ?? []).filter((agent) => !agent.unavailable).map((agent) => agent.label).join(', ') || 'none';
     if (named?.trim()) {

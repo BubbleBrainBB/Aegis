@@ -44,6 +44,7 @@ import { sanitizeDesignPromptRef } from '../shared/design-comment';
 import { sanitizeDesignSelectionRef } from '../shared/design-selection';
 import { designContextText } from './design/focus';
 import { chatFolderInstructions, chatsFolderInfo, createChatFolder, noteChatFolderInstructionsDelivered, takeChatFolderInstructions } from './libs/chat-folders';
+import { startTaskSession } from './libs/main-bot/start';
 import { ensureMainBotSession, mainBotSession, mainBotTurnContext, noteMainBotContextUsage, noteMainBotRemoteChange, noteMainBotTurnEnded, prepareMainBotTurn, refreshMainBotContext, setupMainBot } from './libs/main-bot';
 import { setDesignProjectRoot } from './design/styles';
 import { setDesignAgentNamer, setDesignPromptSource } from './design/tools';
@@ -5282,11 +5283,12 @@ function settleWorkflowTurn(sessionId: string, status: 'completed' | 'error' | '
 function setupMainBotEntry(mainWindow: BrowserWindow): void {
   setupMainBot({
     userDataDir: app.getPath('userData'),
-    // Answered once the session exists; the agent's startup follows, and its errors land in the session.
+    // Answered once the session exists; the agent's startup follows. One that fails then reaches the bot as that task's turn ending in an error.
     start: (payload) =>
-      new Promise<string | null>((resolve, reject) => {
-        handleSessionStart(mainWindow, payload, resolve).then(resolve, reject);
-      }),
+      startTaskSession(
+        (onCreated) => handleSessionStart(mainWindow, payload, onCreated),
+        (sessionId, error) => noteMainBotTurnEnded(sessionId, 'error', error),
+      ),
     continue: (payload) => handleSessionContinue(mainWindow, payload),
     stop: (sessionId) => handleSessionStop(mainWindow, sessionId),
     waitsForApproval: (sessionId) => (sessionStates.get(sessionId)?.pendingPermissions.size ?? 0) > 0,

@@ -20,17 +20,22 @@ import {
 } from '../../remote/integration';
 import { machineName } from '../../remote/relay-auth';
 import { getAgentRuntimeDirectory } from '../agent-runtime-directory';
+import { getClaudeRuntimeStatusCached } from '../claude-runtime-status';
 import * as sessions from '../session-store';
 import { assistantText } from '../workflow/session-hooks';
 import { MainBotMemory } from './memory';
-import { MainBotService, type MainBotAgent, type MainBotChatLine, type MainBotDevice, type MainBotHost, type MainBotStart, type MainBotTask } from './service';
+import { MainBotService, NOT_SIGNED_IN, claudeForModel, type MainBotAgent, type MainBotChatLine, type MainBotDevice, type MainBotHost, type MainBotStart, type MainBotTask } from './service';
 import { MainBotStore, type MainBotDb } from './store';
 import { setMainBotTools } from './tools';
 
 /** What the main process lends the bot: the same entry points the composer and the phone use. */
 export interface MainBotDeps {
   userDataDir: string;
-  /** Starts a session; resolves with its id once it exists, null when it could not start. */
+  /**
+   * Starts a session; resolves with its id once it exists, null when it could
+   * not start. A startup that fails after that is a turn that ended in an
+   * error (`startTaskSession`).
+   */
   start(payload: SessionStartPayload): Promise<string | null>;
   continue(payload: SessionContinuePayload): Promise<boolean>;
   stop(sessionId: string): void;
@@ -235,21 +240,31 @@ function devices(): MainBotDevice[] {
   ];
 }
 
-async function agentsOf(deviceId: string | null): Promise<MainBotAgent[] | null> {
+async function agentsOf(deviceId: string | null, model?: string): Promise<MainBotAgent[] | null> {
   if (deviceId !== null) {
     // Another Mac lists the agents it has set up.
     const catalog = await remoteHostAgents(deviceId);
     return catalog.map((entry) => ({ provider: entry.provider, label: PROVIDER_LABELS[entry.provider] ?? entry.provider, unavailable: null }));
   }
-  if (localAgents && Date.now() - localAgents.at < AGENTS_TTL_MS) return localAgents.agents;
-  const report = await getAgentRuntimeDirectory();
-  const agents = report.entries.map((entry): MainBotAgent => ({
-    provider: entry.provider,
-    label: PROVIDER_LABELS[entry.provider] ?? entry.title,
-    unavailable: entry.state === 'ready' ? null : entry.state === 'login_required' ? 'not signed in' : 'not installed or not working',
-  }));
-  localAgents = { at: Date.now(), agents };
-  return agents;
+  let listed = localAgents;
+  if (!listed || Date.now() - listed.at >= AGENTS_TTL_MS) {
+    const report = await getAgentRuntimeDirectory();
+    const agents = report.entries.map((entry): MainBotAgent => ({
+      provider: entry.provider,
+      label: PROVIDER_LABELS[entry.provider] ?? entry.title,
+      unavailable: entry.state === 'ready' ? null : entry.state === 'login_required' ? NOT_SIGNED_IN : 'not installed or not working',
+    }));
+    listed = localAgents = { at: Date.now(), agents };
+  }
+  // The directory asks about Claude with no model in mind; the task's own start asks with its model, and so does this.
+  return claudeForModel(listed.agents, async () => (await getClaudeRuntimeStatusCached(claudeModelFor(model))).ready);
+}
+
+/** The model a Claude task would run on: the one the bot named, else the composer's. */
+function claudeModelFor(named: string | undefined): string | null {
+  if (!deps) return named ?? null;
+  const desktop = readDesktopPreferences(join(deps.userDataDir, 'renderer-state.json'));
+  return resolveAgent({ provider: 'claude', ...(named ? { model: named } : {}) }, desktop).payload.model ?? null;
 }
 
 /** A dispatched task does the work: never the composer's leftover plan mode. */
