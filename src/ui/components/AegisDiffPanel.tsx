@@ -828,12 +828,11 @@ function CommitOrPushButton({ cwd, onRefresh }: { cwd: string; onRefresh: () => 
         toast.error('No changes to commit.');
         return;
       }
-      for (const entry of changes.entries.filter((item) => !item.staged)) {
-        const staged = await window.electron.gitStagePath(cwd, entry.filePath);
-        if (!staged.ok) {
-          toast.error(staged.message || `Failed to stage ${entry.filePath}.`);
-          return;
-        }
+      // One `git add -A`, not one process per file: a large tree stages in one go.
+      const staged = await window.electron.gitStageAll(cwd);
+      if (!staged.ok) {
+        toast.error(staged.message || 'Failed to stage changes.');
+        return;
       }
       const commitResult = await window.electron.gitCommit(cwd, trimmed);
       if (!commitResult.ok) {

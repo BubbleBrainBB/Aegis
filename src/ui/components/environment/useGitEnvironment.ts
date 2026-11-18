@@ -39,7 +39,15 @@ export interface GitEnvironmentSnapshot {
   signature: string;
 }
 
-function signatureFor(overview: GitOverviewResult): string {
+const UNSETTLED_INSERTIONS = 'unsettled';
+
+/**
+ * What an action checks the repository against before it runs. Lines added
+ * to tracked files are measured by git and always compared. The untracked
+ * share comes last, on its own, because it alone can be unreliable.
+ */
+export function gitSignature(overview: GitOverviewResult): string {
+  const untrackedInsertions = overview.untrackedInsertions ?? 0;
   return [
     overview.repoRoot || '',
     overview.branch || '',
@@ -47,11 +55,30 @@ function signatureFor(overview: GitOverviewResult): string {
     overview.aheadCount,
     overview.behindCount,
     overview.totalChanges,
-    overview.insertions,
     overview.deletions,
     overview.prStatus,
     overview.pr?.number || '',
+    overview.insertions - untrackedInsertions,
+    // Cut short by time, the count can differ between two scans of an unchanged repository.
+    overview.untrackedInsertionsUnsettled ? UNSETTLED_INSERTIONS : untrackedInsertions,
   ].join(':');
+}
+
+/**
+ * Whether two signatures describe the same repository state. An untracked
+ * count that one of the scans ran out of time for says nothing either way,
+ * so such a scan is not taken for a changed repository. Everything else,
+ * the lines added to tracked files included, has to be equal.
+ */
+export function gitSignaturesMatch(a: string, b: string): boolean {
+  if (a === b) return true;
+  const split = (signature: string) => {
+    const cut = signature.lastIndexOf(':');
+    return [signature.slice(0, cut), signature.slice(cut + 1)];
+  };
+  const [stateA, untrackedA] = split(a);
+  const [stateB, untrackedB] = split(b);
+  return stateA === stateB && (untrackedA === UNSETTLED_INSERTIONS || untrackedB === UNSETTLED_INSERTIONS);
 }
 
 // Git state belongs to the working directory, not the session displaying it.
@@ -149,7 +176,7 @@ export function useGitEnvironment(cwd: string | null, contextKey: string): GitEn
       cwd: current.cwd || null,
       repoRoot: current.overview.repoRoot,
       branch: current.overview.branch,
-      signature: signatureFor(current.overview),
+      signature: gitSignature(current.overview),
     };
   }, []);
 

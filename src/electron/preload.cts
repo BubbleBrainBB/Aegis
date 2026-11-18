@@ -1241,6 +1241,10 @@ contextBridge.exposeInMainWorld('electron', {
     return ipcRenderer.invoke('git-stage-path', cwd, filePath);
   },
 
+  gitStageAll: (cwd: string) => {
+    return ipcRenderer.invoke('git-stage-all', cwd);
+  },
+
   gitUnstagePath: (cwd: string, filePath: string) => {
     return ipcRenderer.invoke('git-unstage-path', cwd, filePath);
   },
