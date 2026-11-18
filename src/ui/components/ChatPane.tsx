@@ -59,6 +59,7 @@ import { isDeliveredResultLabel, isStartSessionToolName } from '../../shared/fol
 import { SubSessionCard } from './follow-up/SubSessionCard';
 import { MainBotTaskLine } from './main-bot/MainBotTaskLine';
 import { MainBotTaskChip } from './main-bot/MainBotTaskChip';
+import { MainBotWorkflowCards } from './main-bot/MainBotWorkflowCards';
 import { mainBotToolKind } from '../../shared/main-bot';
 import { TaskCardsAfterAnswerProvider } from './AssistantWorkstream';
 import { findProposalForChild, useFollowUpStore } from '../store/useFollowUpStore';
@@ -2540,6 +2541,9 @@ export function ChatPane({
               </div>}
 
               {apiRetry ? <StreamRetryStatus retry={apiRetry} /> : null}
+
+              {/* Workflows its tasks prepared that wait to be started: answered here, under its last word. */}
+              {isMainBotChat ? <MainBotWorkflowCards messageCount={session.messages.length} /> : null}
 
               {/* Only show the idle activity label when no trace or final answer owns it. */}
               {(() => {

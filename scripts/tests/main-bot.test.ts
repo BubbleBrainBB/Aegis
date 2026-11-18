@@ -572,6 +572,55 @@ async function main() {
     assert.match(error(await bot.confirmWorkflow({ task: id, decision: 'start' })), /asks the person something only they can answer, in the task itself/);
   }
 
+  // --- Start and Cancel on the card in the bot's conversation: the person's own answer, with no turn of theirs ---
+  {
+    const { bot, store, world } = setup();
+    const id = ok(await bot.startTask({ title: 'Bump the SDK', prompt: 'bump it, then have Codex review', project: 'notes' })).sessionId as string;
+    const task = world.tasks.find((entry) => entry.id === id);
+    assert.ok(task);
+    // A task the person runs themselves, with a workflow of its own waiting: answered in that task, no card here.
+    const own = { ...task, id: 'own-task', title: 'My own task', workflowWaits: { kind: 'start' as const, title: 'Own plan', detail: '' } };
+    world.tasks.push(own);
+    assert.deepEqual(bot.workflowCards(), []);
+    task.state = 'needs approval';
+    task.workflowWaits = { kind: 'start', title: 'Codex review', detail: '' };
+    world.replies.set(id, { asked: 'bump it', reply: 'Prepared a workflow.' });
+    await bot.onTaskTurnEnded(id, 'completed');
+    assert.equal(world.told.length, 1);
+    assert.deepEqual(bot.workflowCards(), [id]);
+    // Pressed while the bot's last turn was a report: the press is the person's, so it counts.
+    world.main.turn = { startedAt: 2, typed: false };
+    assert.deepEqual(await bot.decideWorkflowCard(id, true), { ok: true });
+    assert.deepEqual(world.workflowDecisions, [[id, true]]);
+    assert.deepEqual(bot.workflowCards(), []);
+    assert.ok(store.get(id), 'started: what comes of it is reported back');
+    assert.deepEqual(await bot.decideWorkflowCard(id, true), { ok: false, error: 'No workflow of this task waits to be started.' });
+    // What the workflow came to reaches the bot.
+    task.state = 'idle';
+    world.replies.set(id, { asked: null, reply: 'Codex approved.' });
+    await bot.onTaskTurnEnded(id, 'completed');
+    assert.equal(world.told.length, 2);
+    assert.match(world.told[1].text, /Codex approved\./);
+
+    // Cancel on the card: nothing more is waited for, and the bot gets no news of what the person did right here.
+    world.main.turn = { startedAt: 3, typed: true };
+    ok(await bot.messageTask({ task: id, message: 'review again' }));
+    task.state = 'needs approval';
+    task.workflowWaits = { kind: 'start', title: 'Second review', detail: '' };
+    world.replies.set(id, { asked: 'review again', reply: 'Prepared another.' });
+    await bot.onTaskTurnEnded(id, 'completed');
+    assert.equal(world.told.length, 3);
+    assert.deepEqual(await bot.decideWorkflowCard(id, false), { ok: true });
+    assert.deepEqual(world.workflowDecisions[1], [id, false]);
+    assert.equal(store.get(id), null);
+    await bot.onWorkflowChanged(id, 'cancelled');
+    assert.equal(world.told.length, 3);
+    // A workflow that asks something is answered in the task.
+    task.workflowWaits = { kind: 'answer', title: 'Second review', detail: 'Which branch?' };
+    assert.deepEqual(bot.workflowCards(), []);
+    assert.equal((await bot.decideWorkflowCard(id, true)).ok, false);
+  }
+
   // --- Claude without an Anthropic login: ready when the task's model needs none ---
   {
     const listed: MainBotAgent[] = [

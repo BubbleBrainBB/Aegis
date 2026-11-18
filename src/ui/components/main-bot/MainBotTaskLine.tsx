@@ -8,7 +8,9 @@
 import { mainBotToolKind, mainBotWorkflowCalledOff, parseMainBotTaskResult } from '../../../shared/main-bot';
 import { turnReportNeedsUser } from '../../../shared/turn-report';
 import { useAppStore } from '../../store/useAppStore';
+import { useWorkflowRunningSessions, useWorkflowWaitingSessions } from '../../store/useWorkflowStore';
 import { cn } from '../../utils/cn';
+import { NEEDS_YOU_LABEL } from '../../utils/sidebar-view';
 import { openTaskBeside } from '../../utils/task-state';
 import { AlertTriangle, CornerDownRight, LoaderCircle, Play, Square } from '../icons';
 import { TraceLine } from '../TraceLine';
@@ -38,15 +40,18 @@ export function MainBotTaskLine({ toolName, input, resultText, failed, pending }
   const sessionId = result.sessionId ?? '';
   const session = useAppStore((state) => (sessionId ? state.sessions[sessionId] : undefined));
   const title = session?.title || result.title || field(input, 'title') || field(input, 'task') || 'a task';
+  const workflowWaits = useWorkflowWaitingSessions().has(sessionId);
+  // A workflow it started works on after its own turn has ended.
+  const workflowRuns = useWorkflowRunningSessions().has(sessionId);
 
   const state: { tone: Tone; label: string } = !session
     ? { tone: 'none', label: 'Started' }
     : session.permissionRequests?.length
-      ? { tone: 'warning', label: 'Needs you' }
-      : session.status === 'running'
+      ? { tone: 'warning', label: NEEDS_YOU_LABEL }
+      : session.status === 'running' || workflowRuns
         ? { tone: 'working', label: 'Running' }
-        : turnReportNeedsUser(session.turnReport)
-          ? { tone: 'warning', label: 'Needs you' }
+        : turnReportNeedsUser(session.turnReport) || workflowWaits
+          ? { tone: 'warning', label: NEEDS_YOU_LABEL }
           : session.status === 'error'
             ? { tone: 'danger', label: 'Failed' }
             : { tone: 'none', label: 'Done' };

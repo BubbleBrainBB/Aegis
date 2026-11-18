@@ -919,6 +919,43 @@ export class MainBotService {
     return json({ ...base, note: 'Sent; the task works on it now, and its reply comes back to you as a [Report from …] message. Do not wait for it.' });
   }
 
+  /** Starts, or calls off, the workflow a task prepared, and sets what the bot waits for to match. Null when done. */
+  private async decideWorkflow(task: MainBotTask, start: boolean): Promise<{ error: string } | null> {
+    // News of the workflow ending that arrives while this runs is no news to the bot; after it, the watch is gone.
+    if (!start) this.callingOff.add(task.id);
+    try {
+      const done = await this.host.decideWorkflow(task.id, start).catch((failure): { error: string } => ({ error: String(failure) }));
+      if ('error' in done) return done;
+      this.noted.delete(task.id);
+      // Started: what comes of it is reported back. Called off: nothing more is waited for.
+      if (start) this.store.arm({ taskId: task.id, title: task.title, device: task.device, at: this.host.now() });
+      else this.store.disarm(task.id);
+      return null;
+    } finally {
+      this.callingOff.delete(task.id);
+    }
+  }
+
+  /**
+   * The tasks whose prepared workflow the bot's conversation offers to start:
+   * the ones it handed work to, or waits on. A workflow of a task the person
+   * runs themselves is answered in that task.
+   */
+  workflowCards(): string[] {
+    return this.host
+      .tasks()
+      .filter((task) => task.workflowWaits?.kind === 'start' && isSessionId(task.id) && Boolean(this.store.dispatch(task.id) ?? this.store.get(task.id)))
+      .map((task) => task.id);
+  }
+
+  /** Start or Cancel pressed on such a card: the person's own answer, so it needs no turn of theirs. */
+  async decideWorkflowCard(taskId: string, start: boolean): Promise<{ ok: true } | { ok: false; error: string }> {
+    const task = this.host.tasks().find((entry) => entry.id === taskId);
+    if (!task || task.workflowWaits?.kind !== 'start') return { ok: false, error: 'No workflow of this task waits to be started.' };
+    const failed = await this.decideWorkflow(task, start);
+    return failed ? { ok: false, error: failed.error } : { ok: true };
+  }
+
   /** The person's answer to a workflow a task prepared: start it, or call it off. */
   async confirmWorkflow(args: { task: string; decision: string }): Promise<ToolOutcome> {
     const found = this.findTask(args.task);
@@ -933,19 +970,9 @@ export class MainBotService {
       return fail(`Only the person decides whether the workflow "${waits.title}" starts. Tell them who would do what and ask; call this once they answered.`);
     }
     const start = decision === 'start';
-    // News of the workflow ending that arrives while this runs is no news to the bot; after it, the watch is gone.
-    if (!start) this.callingOff.add(found.id);
-    try {
-      const done = await this.host.decideWorkflow(found.id, start).catch((failure): { error: string } => ({ error: String(failure) }));
-      if ('error' in done) return fail(done.error);
-      this.noted.delete(found.id);
-      this.store.record({ taskId: found.id, title: found.title, device: found.device, project: found.project, agent: found.agent, goal: found.title, origin: 'adopted', at: this.host.now() });
-      // Started: what comes of it is reported back. Called off: nothing more is waited for.
-      if (start) this.store.arm({ taskId: found.id, title: found.title, device: found.device, at: this.host.now() });
-      else this.store.disarm(found.id);
-    } finally {
-      this.callingOff.delete(found.id);
-    }
+    const done = await this.decideWorkflow(found, start);
+    if (done) return fail(done.error);
+    this.store.record({ taskId: found.id, title: found.title, device: found.device, project: found.project, agent: found.agent, goal: found.title, origin: 'adopted', at: this.host.now() });
     return json({
       sessionId: found.id,
       title: found.title,

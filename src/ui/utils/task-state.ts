@@ -14,6 +14,8 @@ export interface TaskStateSources {
   worktrees: SettledWorktrees;
   /** Tasks with a workflow of theirs still going (useWorkflowRunningSessions). */
   workflowSessions: ReadonlySet<string>;
+  /** Tasks with a workflow of theirs that waits to be started (useWorkflowWaitingSessions). */
+  workflowWaiting: ReadonlySet<string>;
 }
 
 /** Where a task stands, as the sidebar and My Tasks show it. */
@@ -24,6 +26,7 @@ export function taskStateOf(session: SessionView, sources: TaskStateSources): Si
     worktreeSettled: isWorktreeSettled(session, sources.worktrees),
     keptOpen: sources.organization.sessions[session.id]?.keptOpen,
     workflowRunning: sources.workflowSessions.has(session.id),
+    workflowWaiting: sources.workflowWaiting.has(session.id),
     manualStatus: sources.organization.sessions[session.id]?.manualStatus,
   });
 }
@@ -36,6 +39,7 @@ export function naturalTaskStateOf(session: SessionView, sources: TaskStateSourc
     worktreeSettled: isWorktreeSettled(session, sources.worktrees),
     keptOpen: sources.organization.sessions[session.id]?.keptOpen,
     workflowRunning: sources.workflowSessions.has(session.id),
+    workflowWaiting: sources.workflowWaiting.has(session.id),
   });
 }
 

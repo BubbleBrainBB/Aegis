@@ -8,7 +8,10 @@ import { createServer } from 'vite';
 // conversation is not a task in the Active list, a task it started draws as a
 // chip with the task's state icon and its agent that opens it beside the
 // conversation (here or on another Mac), a message or a stop is one line, and
-// a link to a task in the bot's reply carries the state icon too.
+// a link to a task in the bot's reply carries the state icon too. A task
+// that waits on the person says so in words on its chip and its row, and a
+// workflow one of the bot's tasks prepared is started or called off from a
+// card in the conversation.
 // QA_CAPTURE=<dir> saves screenshots.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const qaRoot = path.join(root, 'dev-fixtures');
@@ -21,6 +24,9 @@ import {Tooltip} from '@base-ui-components/react/tooltip';
 import {SidebarActiveTasks} from '/src/ui/components/sidebar/SidebarActiveTasks.tsx';
 import {MainBotTaskLine} from '/src/ui/components/main-bot/MainBotTaskLine.tsx';
 import {MainBotTaskChip} from '/src/ui/components/main-bot/MainBotTaskChip.tsx';
+import {MainBotWorkflowCards} from '/src/ui/components/main-bot/MainBotWorkflowCards.tsx';
+import {useWorkflowStore} from '/src/ui/store/useWorkflowStore.ts';
+import {Toaster} from 'sonner';
 import {StructuredResponse} from '/src/ui/components/StructuredResponse.tsx';
 import {DesignLinkSessionContext} from '/src/ui/utils/design-board-links.ts';
 import {MessageCard} from '/src/ui/components/MessageCard.tsx';
@@ -40,12 +46,18 @@ const rows=[
  ['t3','Write release notes',{status:'completed'},30],
  [remote,'Run the nightly regression',{status:'running',device:{id:'aaaaaaaaaaaa',name:'Mac mini',online:true}},6],
  [linked,'Ship the docs',{status:'completed'},40],
+ ['t4','Bump the Bubble SDK',{status:'completed',runtimeNotice:'completed'},3],
+ ['t5','Tidy the changelog',{status:'completed',runtimeNotice:'completed'},50],
 ];
+const member=(key,role,agent,provider,extra={})=>({key,role,agent,provider,model:null,modelLabel:null,focus:null,source:'user',permissionMode:null,permissionModeIsDefault:false,readOnlyMechanism:role==='implementer'?null:'confinedSandbox',degraded:[],unverified:false,currentSessionId:null,...extra});
+const run=(id,sessionId,extra={})=>({id,title:'Codex reviews the SDK bump',goal:'Have Codex review the SDK bump',cwd:'/projects/coworker',location:'current',status:'awaiting_confirmation',revision:2,createdAt:now,updatedAt:now,description:'Codex reviews the SDK bump',members:[member('current','implementer','current','claude'),member('reviewer','reviewer','codex','codex',{model:'gpt-6.2-sol',modelLabel:'GPT-6.2-Sol',effort:'xhigh'})],acceptance:[],checks:[{stepId:'types',argv:['npm','run','typecheck'],authorization:'confirm',basis:null,highlight:false,reasons:[]}],unsupported:[],assumptions:['A review only: nothing is fixed without asking'],warnings:[],confirmReasons:['runs a command'],steps:[],needsInput:null,error:null,finalVersion:null,plannerSessionId:null,isolated:null,includesUserChanges:false,spec:null,parent:{sessionId,toolUseId:null,provider:'claude'},...extra});
+// t4 is a task the bot handed work to; t5 is the person's own, with a workflow of its own waiting.
+useWorkflowStore.setState({loaded:true,runs:{w1:run('w1','t4'),w2:run('w2','t5',{title:'Changelog pass',description:'Changelog pass'})}});
 useAppStore.setState({mainBotSessionId:'main',sessions:Object.fromEntries(rows.map(([id,title,extra,age])=>[id,{...base,id,isDraft:false,title,cwd:'/projects/coworker',projectCwd:'/projects/coworker',provider:'claude',messages:[],permissionRequests:[],envMode:'local',worktreePath:null,...extra,updatedAt:now-age*min,createdAt:now-age*min-1000}]))});
 useFollowUpStore.setState({loaded:true,proposals:{}});
 const usage=(uuid,totalTokens)=>({type:'system',subtype:'token_usage',uuid,session_id:'main',provider:'bubble',model:'m',usage:{inputTokens:totalTokens,outputTokens:0,totalTokens,contextWindow:200000,estimated:false}});
 const refreshed={type:'system',subtype:'context_refreshed',uuid:'r',session_id:'main',trigger:'auto'};
-window.qa={context:(after)=>{const s=getLatestBubbleContextSnapshot([usage('u1',120000),refreshed,...(after?[usage('u2',after)]:[])],'m');return s&&[s.used,s.total,s.percent]},app:useAppStore,summary:(name,input)=>getToolSummary(name,input),display:(name,input,status)=>deriveReadableToolDisplay(name,input,status),kind:(name)=>classifyToolUse(name,{})};
+window.qa={workflows:useWorkflowStore,context:(after)=>{const s=getLatestBubbleContextSnapshot([usage('u1',120000),refreshed,...(after?[usage('u2',after)]:[])],'m');return s&&[s.used,s.total,s.percent]},app:useAppStore,summary:(name,input)=>getToolSummary(name,input),display:(name,input,status)=>deriveReadableToolDisplay(name,input,status),kind:(name)=>classifyToolUse(name,{})};
 const started=(sessionId,title,extra={})=>JSON.stringify({sessionId,title,agent:'Claude',device:'MacBook',project:'coworker',...extra});
 function Harness(){
  return <Tooltip.Provider><div style={{display:'flex',height:'100vh',background:'var(--bg-primary)'}}>
@@ -57,6 +69,7 @@ function Harness(){
    <MainBotTaskChip input={{title:'Write release notes',prompt:'x'}} resultText={started('t3','Write release notes')}/>
    <MainBotTaskChip input={{title:'Nightly',prompt:'x'}} resultText={started(remote,'Nightly',{agent:'Codex',device:'Mac mini',project:'server'})}/>
    <MainBotTaskChip input={{title:'Tidy the docs',prompt:'x'}} resultText={null}/>
+   <MainBotTaskChip input={{title:'Bump the Bubble SDK',prompt:'x'}} resultText={started('t4','Bump the Bubble SDK')}/>
    <MainBotTaskLine toolName="start_task" input={{title:'Fix black screen after rotation',prompt:'x'}} resultText={started('t1','Fix black screen after rotation')} failed={false} pending={false}/>
    <MainBotTaskLine toolName="start_task" input={{title:'Tidy the docs',prompt:'x'}} resultText={null} failed={false} pending={true}/>
    <MainBotTaskLine toolName="start_task" input={{title:'Deploy',prompt:'x'}} resultText="Mac mini is offline, so nothing can start there now." failed={true} pending={false}/>
@@ -64,6 +77,9 @@ function Harness(){
    <MainBotTaskLine toolName="stop_task" input={{task:'#12'}} resultText={started('t1','Fix black screen after rotation')} failed={false} pending={false}/>
    <MainBotTaskLine toolName="message_task" input={{task:'Nope',message:'hi'}} resultText='There is no task "Nope".' failed={true} pending={false}/>
   </div>
+  <div data-qa="waits" style={{maxWidth:560}}><MainBotTaskLine toolName="message_task" input={{task:'Bump the Bubble SDK',message:'Have Codex review it'}} resultText={started('t4','Bump the Bubble SDK')} failed={false} pending={false}/></div>
+  <div data-qa="cards" style={{maxWidth:560}}><MainBotWorkflowCards messageCount={0}/></div>
+  <Toaster/>
   <div data-qa="returned" style={{maxWidth:560}}>
    {['Task report: Fix black screen after rotation','Task reports: One · Two','Sub-session finished: Fix it','Sub-sessions finished: A · B','Sub-session result: Fix it','Follow-up result: Fix it'].map((prompt)=>(
     <MessageCard key={prompt} sessionId="main" message={{type:'user_prompt',prompt,workflowPrompt:'follow-up',createdAt:now}}/>
@@ -91,6 +107,9 @@ app.whenReady().then(async()=>{
  ipcMain.handle('list-sidebar-pull-requests',()=>({}));
  ipcMain.handle('follow-up-list',()=>[]);
  ipcMain.handle('get-app-preferences',()=>({}));
+ const decided=[];
+ ipcMain.handle('main-bot-workflow-cards',()=>['t4']);
+ ipcMain.handle('main-bot-decide-workflow',(_e,taskId,start)=>{decided.push([taskId,start]);return taskId==='t4'?{ok:true}:{ok:false,error:'No workflow of this task waits to be started.'}});
  const win=new BrowserWindow({width:1100,height:760,show:true,webPreferences:{backgroundThrottling:false,preload:path.join(root,'dist-electron/electron/preload.cjs')}});
  const errors=[];win.webContents.on('console-message',e=>{if(e.level==='error')errors.push(e.message)});
  const js=code=>win.webContents.executeJavaScript(code,true);
@@ -108,22 +127,28 @@ app.whenReady().then(async()=>{
   const rows=await js('[...document.querySelectorAll("button[data-main-bot-task]")].map(e=>({id:e.dataset.mainBotTask,text:e.textContent,title:e.title,icon:(e.querySelector("[role=img]")||{getAttribute:()=>null}).getAttribute("aria-label"),disabled:e.disabled}))');
   assert.deepEqual(rows.map(r=>[r.id,r.text,r.icon,r.disabled]),[
    ['t1','Fix black screen after rotationClaude','Running',false],
-   ['t2','Bump Electron to 39Claude','Needs input',false],
+   ['t2','Bump Electron to 39Needs you','Needs input',false],
    ['t3','Write release notesClaude','Completed',false],
    ['rh-aaaaaaaaaaaa-s1','Run the nightly regressionCodex','Running',false],
    ['starting','Tidy the docs','Starting',true],
+   ['t4','Bump the Bubble SDKNeeds you','Needs input',false],
   ]);
+  // A task that waits on the person says so in words, in place of the agent on its chip and of the age on its row;
+  // one whose prepared workflow waits to be started is such a task.
+  assert.deepEqual(await js('["t1","t2","t4"].map(id=>{const row=document.querySelector("[data-active-tasks] [data-session-id="+id+"]");return [(row.querySelector("[data-task-needs-you]")||{}).textContent||null,!!row.querySelector("[data-task-age]"),row.dataset.taskState]})'),
+   [[null,true,'running'],['Needs you',false,'needs-input'],['Needs you',false,'needs-input']]);
+  assert.equal(await js('document.querySelector("[data-qa=waits] [data-main-bot-task-mark]").dataset.mainBotTaskMark'),'warning','a line to it carries the mark too');
   assert.equal(rows[0].title,'Running · Claude · coworker · MacBook');
   assert.equal(rows[1].title,'Needs input · Claude · coworker · MacBook');
   assert.equal(rows[2].title,'Completed · Claude · coworker · MacBook');
   assert.equal(rows[3].title,'Running · Codex · server · Mac mini');
   assert.equal(rows[4].title,'Starting');
   // The chip is all a start draws: no line in the trace for it, started or still starting. A start that failed says why.
-  assert.equal(await js('document.querySelectorAll("[data-qa=rows] > *").length'),5+1+3,'chips, the failed start and three lines');
+  assert.equal(await js('document.querySelectorAll("[data-qa=rows] > *").length'),6+1+3,'chips, the failed start and three lines');
   assert.match(await js('document.querySelector("[data-main-bot-task=failed]").textContent'),/^Task not started: Mac mini is offline/);
 
   // A message or a stop: one line, named by the task's title.
-  const lines=await js('[...document.querySelectorAll("[data-main-bot-task-line]")].map(e=>e.textContent)');
+  const lines=await js('[...document.querySelectorAll("[data-qa=rows] [data-main-bot-task-line]")].map(e=>e.textContent)');
   assert.deepEqual(lines,['Sent to Fix black screen after rotation','Stopped Fix black screen after rotation','Could not send to Nope']);
 
   // A line to a task that is still working carries the same mark as its row; a stop does not.
@@ -156,6 +181,34 @@ app.whenReady().then(async()=>{
   // With \u2318 held it opens as the full task.
   await js('document.querySelector("button[data-main-bot-task=t3]").dispatchEvent(new MouseEvent("click",{bubbles:true,metaKey:true}))');await delay(100);
   assert.equal(await js('window.qa.app.getState().activeSessionId'),'t3');
+
+  // The workflow a task of the bot prepared: one card in the conversation, in short. The person's own task's is not here.
+  const card=()=>js('[...document.querySelectorAll("[data-main-bot-workflow-card]")].map(e=>[e.dataset.mainBotWorkflowCard,e.textContent])');
+  await js('new Promise(r=>{const t=()=>document.querySelector("[data-main-bot-workflow-card]")?r():setTimeout(t,50);t()})');
+  assert.deepEqual(await card(),[['w1','Codex reviews the SDK bumpWaiting for youCodexreviewer, read-onlyRunsnpm run typecheck Start CancelStarting approves these commands for this run.Details']]);
+  await screenshot('2-workflow-card');
+  // Details unfolds it into the card the task itself shows: the same header, question, members, commands and what it assumes.
+  await js('[...document.querySelectorAll("[data-main-bot-workflow-card] button")].find(b=>b.textContent==="Details").click()');await delay(100);
+  assert.equal(await js('document.querySelector("[data-main-bot-workflow-open] [data-workflow-board=w1] [data-workflow-status]").textContent'),'Waiting for you');
+  assert.equal(await js('document.querySelector("[data-main-bot-workflow-open] li").textContent'),'CodexGPT-6.2-Sol · xhigh · reviewer, read-only');
+  assert.match(await js('document.querySelector("[data-main-bot-workflow-open]").textContent'),/Start this workflow\?.*Runsnpm run typecheck.*Assumes: A review only: nothing is fixed without asking.*Start.*Cancel/);
+  await screenshot('3-workflow-card-details');
+  // Its chevron folds it back; the title of the short card opens the task beside.
+  await js('document.querySelector("[data-main-bot-workflow-open] [data-workflow-toggle]").click()');await delay(100);
+  assert.equal(await js('!!document.querySelector("[data-main-bot-workflow-open]")'),false);
+  await js('document.querySelector("[data-main-bot-workflow-card] button").click()');await delay(100);
+  assert.equal(await js('window.qa.app.getState().activeRightUtilityTab'),'task:t4');
+  // Unfolded, its Start is the same answer.
+  await js('[...document.querySelectorAll("[data-main-bot-workflow-card] button")].find(b=>b.textContent==="Details").click()');await delay(100);
+  // Start: the person's answer goes to Aegis; once the workflow runs, the card gives way to one line.
+  await js('[...document.querySelectorAll("[data-main-bot-workflow-card] button")].find(b=>b.textContent.trim()==="Start").click()');await delay(200);
+  assert.deepEqual(decided,[['t4',true]]);
+  await js('window.qa.workflows.getState().upsert({...window.qa.workflows.getState().runs.w1,status:"running",revision:3});0');await delay(200);
+  assert.deepEqual(await card(),[]);
+  assert.deepEqual(await js('[...document.querySelectorAll("[data-qa=cards] [data-main-bot-task-line]")].map(e=>[e.dataset.mainBotTaskLine,e.textContent])'),[['workflow','Started the workflow of Bump the Bubble SDK']]);
+  assert.equal(await js('document.querySelector("[data-active-tasks] [data-session-id=t4]").dataset.taskState'),'running');
+  assert.equal(await js('document.querySelector("[data-qa=cards] [data-main-bot-task-mark]").dataset.mainBotTaskMark'),'working','the line shows the workflow at work');
+  await screenshot('4-workflow-started');
 
   // How the calls read where a trace is collapsed.
   assert.equal(await js('window.qa.summary("start_task",{title:"Fix it"})'),'Started Fix it');

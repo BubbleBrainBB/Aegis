@@ -152,6 +152,22 @@ export function noteMainBotWorkflowChange(sessionId: string | null | undefined, 
   }, 0);
 }
 
+/** The tasks whose waiting workflow the bot's conversation shows a card for. */
+export function mainBotWorkflowCards(): string[] {
+  try {
+    return service?.workflowCards() ?? [];
+  } catch (error) {
+    console.error('[main-bot] could not list waiting workflows:', error);
+    return [];
+  }
+}
+
+/** Start or Cancel on such a card. */
+export async function decideMainBotWorkflowCard(taskId: string, start: boolean): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!service) return { ok: false, error: 'Ask Aegis is not available.' };
+  return service.decideWorkflowCard(taskId, start).catch((failure) => ({ ok: false as const, error: String(failure) }));
+}
+
 /** Something changed on a Mac this one controls. */
 export function noteMainBotRemoteChange(): void {
   if (!service?.waitsOnRemote()) return;

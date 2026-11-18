@@ -45,7 +45,7 @@ import { sanitizeDesignSelectionRef } from '../shared/design-selection';
 import { designContextText } from './design/focus';
 import { chatFolderInstructions, chatsFolderInfo, createChatFolder, noteChatFolderInstructionsDelivered, takeChatFolderInstructions } from './libs/chat-folders';
 import { startTaskSession } from './libs/main-bot/start';
-import { ensureMainBotSession, mainBotSession, mainBotTurnContext, noteMainBotContextUsage, noteMainBotRemoteChange, noteMainBotTurnEnded, noteMainBotWorkflowChange, prepareMainBotTurn, refreshMainBotContext, setupMainBot } from './libs/main-bot';
+import { decideMainBotWorkflowCard, ensureMainBotSession, mainBotSession, mainBotTurnContext, mainBotWorkflowCards, noteMainBotContextUsage, noteMainBotRemoteChange, noteMainBotTurnEnded, noteMainBotWorkflowChange, prepareMainBotTurn, refreshMainBotContext, setupMainBot } from './libs/main-bot';
 import { setDesignProjectRoot } from './design/styles';
 import { setDesignAgentNamer, setDesignPromptSource } from './design/tools';
 import { setDesignFollowUp } from './design/project/tools';
@@ -5266,6 +5266,9 @@ function setupMainBotEntry(mainWindow: BrowserWindow): void {
   ipcMainHandle('main-bot-refresh-context', async (): Promise<'done' | 'pending' | 'unavailable'> => refreshMainBotContext());
   ipcMainHandle('main-bot-open', async (): Promise<SessionInfo> => buildSessionInfoFromRow(ensureMainBotSession()));
   ipcMainHandle('main-bot-session-id', async (): Promise<string | null> => mainBotSession()?.id ?? null);
+  ipcMainHandle('main-bot-workflow-cards', async (): Promise<string[]> => mainBotWorkflowCards());
+  ipcMainHandle('main-bot-decide-workflow', async (_event, taskId: string, start: boolean) =>
+    typeof taskId === 'string' && typeof start === 'boolean' ? decideMainBotWorkflowCard(taskId, start) : { ok: false as const, error: 'Bad request.' });
 }
 
 /**
