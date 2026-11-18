@@ -11,6 +11,10 @@ import qoderLogo from '../../assets/qoder.svg';
 import devinLogo from '../../assets/devin-color.svg';
 import mimoLogo from '../../assets/xiaomimimo.svg';
 import zhipuLogo from '../../assets/zhipu-color.svg';
+import alibabaLogo from '../../assets/alibaba-color.svg';
+import geminiLogo from '../../assets/gemini-color.svg';
+import stepfunLogo from '../../assets/stepfun.svg';
+import volcengineLogo from '../../assets/volcengine-color.svg';
 import { OpenCodeLogo } from '../OpenCodeLogo';
 import { ChevronDown, LayoutGrid } from '../icons';
 import type {
@@ -35,7 +39,9 @@ import {
   formatBillingCount, formatCompactNumber, formatCredits, formatCurrency, formatLongDate, formatPercent,
   formatShortDate, parseDateKey,
 } from '../../utils/usage-format';
+import { bubbleModelName, relabelUsageReportModels } from '../../utils/usage-model-labels';
 import { buildUsageOverview, ledgerTotalTokens } from '../../utils/usage-overview-model';
+import { BUBBLE_PROVIDER_LOGOS } from './bubble-provider-logos';
 import { PreferenceSelect } from './GeneralSettingsContent';
 import { UsageOverviewCards } from './UsageOverview';
 
@@ -91,6 +97,30 @@ function useKimiModelLabels(): Record<string, string> {
   }, [kimiModelConfig]);
 }
 
+/**
+ * Bubble's provider ids, to tell the `<provider>:` in front of its model ids
+ * from a colon of an id's own. The ones with bundled artwork are known before
+ * Bubble's catalog answers.
+ */
+function useBubbleProviderIds(): ReadonlySet<string> {
+  const [ids, setIds] = useState<ReadonlySet<string>>(() => new Set(Object.keys(BUBBLE_PROVIDER_LOGOS)));
+  useEffect(() => {
+    let cancelled = false;
+    Promise.resolve()
+      .then(() => window.electron.getBubbleProvidersConfig())
+      .then((config) => {
+        if (!cancelled) setIds(new Set([...Object.keys(BUBBLE_PROVIDER_LOGOS), ...config.providers.map((provider) => provider.id.toLowerCase())]));
+      })
+      // Without the catalog, only the providers above lose their prefix.
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+  return ids;
+}
+
+/** A report under the names the table shows: an agent's own report goes in, the same one comes out when nothing is renamed. */
+type RelabelUsageReport = (provider: AgentProvider, report: ClaudeUsageReport) => ClaudeUsageReport;
+
 export function ClaudeUsageSettingsContent() {
   const activeProvider = useAppStore((state) => state.usageSettingsProvider);
   const setActiveProvider = useAppStore((state) => state.setUsageSettingsProvider);
@@ -98,6 +128,15 @@ export function ClaudeUsageSettingsContent() {
   // One range for both pages: opening an agent from the overview keeps it.
   const [rangeDays, setRangeDays] = useState<ClaudeUsageRangeDays>(365);
   const kimiModelLabels = useKimiModelLabels();
+  const bubbleProviderIds = useBubbleProviderIds();
+  const relabel = useMemo<RelabelUsageReport>(() => (provider, report) => {
+    // Kimi attributes usage by raw model id (e.g. kimi-code/kimi-for-coding);
+    // the picker's display names ("K2.7 Coding") match what the user selected.
+    if (provider === 'kimi') return relabelUsageReportModels(report, (model) => kimiModelLabels[model] || model);
+    // Bubble records `<provider>:<id>`: one row per model, whichever provider served it.
+    if (provider === 'bubble') return relabelUsageReportModels(report, (model) => bubbleModelName(model, bubbleProviderIds), { keepSources: true });
+    return report;
+  }, [kimiModelLabels, bubbleProviderIds]);
   const picker = <UsageProviderPicker value={activeProvider} onSelect={setActiveProvider} />;
 
   return activeProvider === 'all' ? (
@@ -105,7 +144,7 @@ export function ClaudeUsageSettingsContent() {
       rangeDays={rangeDays}
       onRangeChange={setRangeDays}
       picker={picker}
-      kimiModelLabels={kimiModelLabels}
+      relabel={relabel}
       onSelectAgent={setActiveProvider}
     />
   ) : (
@@ -114,7 +153,7 @@ export function ClaudeUsageSettingsContent() {
       rangeDays={rangeDays}
       setRangeDays={setRangeDays}
       picker={picker}
-      kimiModelLabels={kimiModelLabels}
+      relabel={relabel}
     />
   );
 }
@@ -138,11 +177,11 @@ const OVERVIEW_REQUESTS = USAGE_PROVIDERS.map((provider) => ({ provider: provide
 const OVERVIEW_IDLE_REQUESTS = USAGE_PROVIDERS.map((provider) => ({ provider: provider.id, enabled: false }));
 
 /** Every agent added together: cost total, cost by agent, by day and by type, then models and activity. */
-function UsageOverviewPage({ rangeDays, onRangeChange, picker, kimiModelLabels, onSelectAgent }: {
+function UsageOverviewPage({ rangeDays, onRangeChange, picker, relabel, onSelectAgent }: {
   rangeDays: ClaudeUsageRangeDays;
   onRangeChange(value: ClaudeUsageRangeDays): void;
   picker: ReactNode;
-  kimiModelLabels: Record<string, string>;
+  relabel: RelabelUsageReport;
   onSelectAgent(provider: AgentProvider): void;
 }) {
   const year = useAgentUsageReports(OVERVIEW_REQUESTS, 365);
@@ -154,18 +193,18 @@ function UsageOverviewPage({ rangeDays, onRangeChange, picker, kimiModelLabels, 
   const settled = snapshots.every((snapshot) => snapshot.report || !snapshot.loading);
   const built = useMemo(() => {
     if (!settled) return null;
-    const relabel = (provider: AgentProvider, report: ClaudeUsageReport | null | undefined) =>
-      report && provider === 'kimi' ? relabelUsageReportModels(report, kimiModelLabels) : report ?? null;
+    const named = (provider: AgentProvider, report: ClaudeUsageReport | null | undefined) =>
+      report ? relabel(provider, report) : null;
     return buildUsageOverview(
       USAGE_PROVIDERS.map((provider, index) => ({
         provider: provider.id,
         title: provider.title,
-        range: relabel(provider.id, range[index].report?.usage),
-        year: relabel(provider.id, year[index].report?.usage),
+        range: named(provider.id, range[index].report?.usage),
+        year: named(provider.id, year[index].report?.usage),
       })),
       rangeDays,
     );
-  }, [settled, year, range, rangeDays, kimiModelLabels]);
+  }, [settled, year, range, rangeDays, relabel]);
   // While another range loads, the last one stays on screen.
   const [shown, setShown] = useState(built);
   useEffect(() => {
@@ -216,12 +255,12 @@ function UsageOverviewPage({ rangeDays, onRangeChange, picker, kimiModelLabels, 
 }
 
 /** One agent's own page: its plan limits, its total, its models and its activity. */
-function AgentUsagePage({ activeProvider, rangeDays, setRangeDays, picker, kimiModelLabels }: {
+function AgentUsagePage({ activeProvider, rangeDays, setRangeDays, picker, relabel }: {
   activeProvider: AgentProvider;
   rangeDays: ClaudeUsageRangeDays;
   setRangeDays(value: ClaudeUsageRangeDays): void;
   picker: ReactNode;
-  kimiModelLabels: Record<string, string>;
+  relabel: RelabelUsageReport;
 }) {
   const usage = useAgentUsageReport(activeProvider, 365);
   const rangeUsage = useAgentUsageReport(activeProvider, rangeDays, rangeDays !== 365);
@@ -242,12 +281,9 @@ function AgentUsagePage({ activeProvider, rangeDays, setRangeDays, picker, kimiM
       logo: usageProviderLogo(activeProvider),
       loading: usage.loading,
       error: usage.error,
-      // Kimi attributes usage by raw model id (e.g. kimi-code/kimi-for-coding);
-      // relabel with the picker's display names ("K2.7 Coding") so the card
-      // matches what the user selected.
-      report: activeProvider === 'kimi' && report ? relabelUsageReportModels(report, kimiModelLabels) : report,
+      report: report ? relabel(activeProvider, report) : report,
     };
-  }, [kimiModelLabels, activeProvider, usage]);
+  }, [relabel, activeProvider, usage]);
   const activeReport = activeProviderCard.report;
   const stats = useMemo(
     () => (activeReport ? computeUsageStats(activeReport, countsInCredits(activeReport) ? 'credits' : 'tokens') : null),
@@ -257,8 +293,8 @@ function AgentUsagePage({ activeProvider, rangeDays, setRangeDays, picker, kimiM
   const rangeReport = useMemo(() => {
     const raw = rangeDays === 365 ? null : rangeUsage.report?.usage ?? null;
     if (!raw) return activeReport;
-    return activeProvider === 'kimi' ? relabelUsageReportModels(raw, kimiModelLabels) : raw;
-  }, [rangeDays, rangeUsage.report, activeReport, activeProvider, kimiModelLabels]);
+    return relabel(activeProvider, raw);
+  }, [rangeDays, rangeUsage.report, activeReport, activeProvider, relabel]);
   // Sessions ran but every result summed to zero tokens: the provider's CLI
   // does not report token counts (qodercli through 1.1.1 only exposes a
   // context ratio). Hide the token report entirely instead of showing a
@@ -500,12 +536,6 @@ function costColumnLabel(report: ClaudeUsageReport): string {
   return 'Total cost';
 }
 
-function formatPerMillion(value: number): string {
-  if (value >= 100) return `$${Math.round(value).toLocaleString('en-US')}`;
-  if (value >= 1) return `$${value.toFixed(2)}`;
-  return `$${value.toFixed(3)}`;
-}
-
 /** Tokens per bucket for a sparkline: days for short ranges, weeks (13) otherwise. */
 function trendSeries(daily: ClaudeUsageDailyPoint[], rangeDays: number, pick: (point: ClaudeUsageDailyPoint) => number): number[] {
   if (rangeDays <= 30) return daily.slice(-rangeDays).map(pick);
@@ -556,6 +586,8 @@ type LedgerRow = {
   sessions: number | null;
   cacheHit: number | null;
   models: string[];
+  /** The ids the row was recorded under, when it shows another name. */
+  sources?: string[];
   /** Devin: billed agent messages and credits. */
   messages: number;
   credits: number;
@@ -563,8 +595,8 @@ type LedgerRow = {
 
 /**
  * One table compares every model in the range: tokens with a share bar,
- * share, cost, cost per 1M tokens, sessions, cache hit, a trend and when it
- * was last used. The busiest models show; the rest fold into one row.
+ * share, cost, sessions, cache hit, a trend and when it was last used. The
+ * busiest models show; the rest fold into one row.
  */
 function ModelLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDaily: ClaudeUsageDailyPoint[] }) {
   const [othersOpen, setOthersOpen] = useState(false);
@@ -584,6 +616,7 @@ function ModelLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDai
     sessions: model.sessionCount,
     cacheHit: model.inputTokens + model.cacheReadTokens > 0 ? model.cacheReadTokens / (model.inputTokens + model.cacheReadTokens) : null,
     models: [model.model],
+    sources: model.sourceModels,
     messages: model.agentMessages ?? 0,
     credits: model.credits ?? 0,
   });
@@ -630,8 +663,8 @@ function ModelLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDai
           </button>
         ) : (
           <div className="flex min-w-0 items-center gap-2.5">
-            <ModelProviderLogo model={row.label} color="var(--text-muted)" />
-            <span className="min-w-0 truncate font-medium text-[var(--text-primary)]" title={row.label}>{row.label}</span>
+            <ModelProviderLogo model={row.label} sources={row.sources} color="var(--text-muted)" />
+            <span className="min-w-0 truncate font-medium text-[var(--text-primary)]" title={row.sources?.join(', ') ?? row.label}>{row.label}</span>
           </div>
         )}
       </td>
@@ -650,10 +683,7 @@ function ModelLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDai
           {showCredits ? <td className={`${cell} text-right text-[var(--text-secondary)]`} data-usage-credits>{formatBillingCount(row.credits)}</td> : null}
         </>
       ) : (
-        <>
-          <td className={`${cell} text-right text-[var(--text-primary)]`}>{row.cost === null ? '—' : formatCurrency(row.cost, estimated)}</td>
-          <td className={`${cell} text-right text-[var(--text-secondary)]`}>{row.cost && row.tokens > 0 ? formatPerMillion((row.cost / row.tokens) * 1_000_000) : '—'}</td>
-        </>
+        <td className={`${cell} text-right text-[var(--text-primary)]`}>{row.cost === null ? '—' : formatCurrency(row.cost, estimated)}</td>
       )}
       <td className={`${cell} text-right text-[var(--text-secondary)]`}>{row.sessions === null ? '—' : row.sessions.toLocaleString('en-US')}</td>
       <td className={`${cell} text-right text-[var(--text-secondary)]`}>{row.cacheHit === null ? '—' : formatPercent(row.cacheHit)}</td>
@@ -669,7 +699,7 @@ function ModelLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDai
         <div className="px-5 py-5 text-[13px] text-[var(--text-muted)]">No model activity in this range.</div>
       ) : (
         <div className="overflow-x-auto px-2 pb-1">
-          <table className={`w-full ${billing ? (showCredits ? 'min-w-[860px]' : 'min-w-[792px]') : 'min-w-[912px]'} table-fixed border-collapse text-[13px]`}>
+          <table className={`w-full ${billing ? (showCredits ? 'min-w-[860px]' : 'min-w-[792px]') : 'min-w-[844px]'} table-fixed border-collapse text-[13px]`}>
             {/* Fixed numeric columns; the model column takes the rest, one line, cut with an ellipsis. */}
             <colgroup>
               <col />
@@ -677,7 +707,7 @@ function ModelLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDai
               <col className="w-[60px]" />
               {/* The cost label is long ("API equivalent cost"); a message count needs far less. */}
               <col className={billing ? 'w-[84px]' : 'w-[136px]'} />
-              {billing && !showCredits ? null : <col className="w-[68px]" />}
+              {billing && showCredits ? <col className="w-[68px]" /> : null}
               <col className="w-[72px]" />
               <col className="w-[76px]" />
               <col className="w-[104px]" />
@@ -694,10 +724,7 @@ function ModelLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDai
                     {showCredits ? <th className={`${header} text-right`} title="Credits Devin billed">Credits</th> : null}
                   </>
                 ) : (
-                  <>
-                    <th className={`${header} whitespace-nowrap text-right`} data-usage-cost-label title={report.note}>{costColumnLabel(report)}</th>
-                    <th className={`${header} text-right`}>Per 1M</th>
-                  </>
+                  <th className={`${header} whitespace-nowrap text-right`} data-usage-cost-label title={report.note}>{costColumnLabel(report)}</th>
                 )}
                 <th className={`${header} text-right`}>Sessions</th>
                 <th className={`${header} text-right`}>Cache hit</th>
@@ -721,10 +748,7 @@ function ModelLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDai
                     {showCredits ? <td className={`${cell} text-right`}>{formatBillingCount(billing.credits)}</td> : null}
                   </>
                 ) : (
-                  <>
-                    <td className={`${cell} text-right`}>{costKnown ? formatCurrency(report.totals.totalCostUsd, estimated) : 'Unavailable'}</td>
-                    <td className={`${cell} text-right`}>{costKnown && report.totals.totalCostUsd > 0 && totalTokens > 0 ? formatPerMillion((report.totals.totalCostUsd / totalTokens) * 1_000_000) : '—'}</td>
-                  </>
+                  <td className={`${cell} text-right`}>{costKnown ? formatCurrency(report.totals.totalCostUsd, estimated) : 'Unavailable'}</td>
                 )}
                 <td className={`${cell} text-right`}>{report.totals.sessionCount.toLocaleString('en-US')}</td>
                 <td className={`${cell} text-right`}>{formatPercent(report.totals.cacheHitRate)}</td>
@@ -1045,52 +1069,6 @@ function ActivityHeatmap({ daily: points, mode, unit }: { daily: ClaudeUsageDail
       </svg>
     </div>
   );
-}
-
-/**
- * Replace raw model ids with display labels across a usage report (model
- * summaries + daily byModel buckets). Same-label ids merge additively.
- */
-function relabelUsageReportModels(
-  report: ClaudeUsageReport,
-  labels: Record<string, string>
-): ClaudeUsageReport {
-  if (Object.keys(labels).length === 0) return report;
-  const labelOf = (model: string) => labels[model] || model;
-
-  const mergedModels = new Map<string, ClaudeUsageReport['models'][number]>();
-  for (const summary of report.models) {
-    const label = labelOf(summary.model);
-    const existing = mergedModels.get(label);
-    if (!existing) {
-      mergedModels.set(label, { ...summary, model: label });
-      continue;
-    }
-    existing.inputTokens += summary.inputTokens;
-    existing.outputTokens += summary.outputTokens;
-    existing.totalTokens += summary.totalTokens;
-    existing.totalCostUsd += summary.totalCostUsd;
-    existing.cacheReadTokens += summary.cacheReadTokens;
-    existing.sessionCount += summary.sessionCount;
-  }
-
-  return {
-    ...report,
-    models: Array.from(mergedModels.values()),
-    daily: report.daily.map((day) => {
-      const byModel: Record<string, number> = {};
-      const byModelCostUsd: Record<string, number> = {};
-      for (const [model, tokens] of Object.entries(day.byModel)) {
-        const label = labelOf(model);
-        byModel[label] = (byModel[label] || 0) + tokens;
-      }
-      for (const [model, cost] of Object.entries(day.byModelCostUsd || {})) {
-        const label = labelOf(model);
-        byModelCostUsd[label] = (byModelCostUsd[label] || 0) + cost;
-      }
-      return { ...day, byModel, byModelCostUsd };
-    }),
-  };
 }
 
 /* ---------- Plan limits ---------- */
@@ -1589,14 +1567,18 @@ function formatRateLimitReachedType(value: string): string {
 
 function ModelProviderLogo({
   model,
+  sources,
   color,
   className = 'h-4 w-4',
 }: {
   model: string;
+  /** The ids the model was recorded under, when the row shows another name. */
+  sources?: string[];
   color: string;
   className?: string;
 }) {
-  const logo = getProviderLogoForModel(model);
+  // The model's own mark; one without takes that of the Bubble provider it ran through.
+  const logo = getProviderLogoForModel(model) ?? getBubbleProviderLogo(sources);
 
   if (!logo) {
     return (
@@ -1608,8 +1590,17 @@ function ModelProviderLogo({
   }
 
   // One-color marks follow the theme, like the agent picker's logos.
-  const monochrome = [claudeLogo, openaiLogo, grokLogo, moonshotLogo, mimoLogo].includes(logo);
+  const monochrome = [claudeLogo, openaiLogo, grokLogo, moonshotLogo, mimoLogo, stepfunLogo].includes(logo);
   return <img src={logo} alt="" className={`${className} flex-shrink-0 ${monochrome ? 'provider-monochrome-logo' : ''}`} aria-hidden="true" />;
+}
+
+function getBubbleProviderLogo(sources: string[] | undefined): string | null {
+  for (const source of sources ?? []) {
+    const colon = source.indexOf(':');
+    const logo = colon > 0 ? BUBBLE_PROVIDER_LOGOS[source.slice(0, colon).toLowerCase()] : undefined;
+    if (logo) return logo;
+  }
+  return null;
 }
 
 function getProviderLogoForModel(model: string): string | null {
@@ -1681,7 +1672,25 @@ function getProviderLogoForModel(model: string): string | null {
     return mimoLogo;
   }
 
-  return null;
+  if (normalized.startsWith('gemini')) {
+    return geminiLogo;
+  }
+
+  if (normalized.startsWith('qwen')) {
+    return alibabaLogo;
+  }
+
+  if (normalized.startsWith('doubao')) {
+    return volcengineLogo;
+  }
+
+  if (normalized.startsWith('step-')) {
+    return stepfunLogo;
+  }
+
+  // A routed id (`google/gemini-…`, `opencode/deepseek-…`) goes by the model at its end.
+  const slash = normalized.lastIndexOf('/');
+  return slash >= 0 ? getProviderLogoForModel(normalized.slice(slash + 1)) : null;
 }
 
 /** Devin turns can bill messages or credits with no token usage (a turn that failed after billing). */

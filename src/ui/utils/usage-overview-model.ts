@@ -185,6 +185,8 @@ export function buildUsageOverview(inputs: OverviewAgentInput[], rangeDays: Clau
   // One model table: rows that share a name add up. A row is unpriced when
   // nothing that went into it has a dollar amount.
   const models = new Map<string, ClaudeUsageModelSummary>();
+  // The ids a row was recorded under, when an agent's were renamed into it.
+  const sources = new Map<string, Set<string>>();
   const priced = new Set<string>();
   const unpriced = new Set<string>();
   let cacheReads = 0;
@@ -206,6 +208,9 @@ export function buildUsageOverview(inputs: OverviewAgentInput[], rangeDays: Clau
       row.sessionCount += model.sessionCount;
       row.cacheReadTokens += model.cacheReadTokens;
       models.set(model.model, row);
+      const ids = sources.get(model.model) ?? new Set<string>();
+      for (const id of model.sourceModels ?? [model.model]) ids.add(id);
+      sources.set(model.model, ids);
       if (cost > 0 || (fullyPriced && !agentUnpriced.has(model.model))) priced.add(model.model);
       else unpriced.add(model.model);
     }
@@ -220,6 +225,9 @@ export function buildUsageOverview(inputs: OverviewAgentInput[], rangeDays: Clau
         ? report.totals.cacheReadTokens / report.totals.cacheHitRate
         : report.totals.inputTokens;
     }
+  }
+  for (const [model, ids] of sources) {
+    if ([...ids].some((id) => id !== model)) models.get(model)!.sourceModels = [...ids];
   }
   const totalTokens = used.reduce((sum, input) => sum + ledgerTotalTokens(input.range), 0);
   const sessionCount = used.reduce((sum, input) => sum + input.range.totals.sessionCount, 0);
