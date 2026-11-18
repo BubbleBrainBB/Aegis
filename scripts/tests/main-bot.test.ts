@@ -13,6 +13,7 @@ import {
   MainBotService,
   NOT_SIGNED_IN,
   claudeForModel,
+  localTaskState,
   mainBotContextLimit,
   taskBrief,
   type MainBotAgent,
@@ -410,6 +411,41 @@ async function main() {
     assert.match(world.told[0].text, /\[Report from "Never ran"\].* It stopped with an error\./);
     assert.ok(world.told[0].text.includes(STARTUP_FAILED));
     assert.equal(store.get(id), null);
+  }
+
+  // --- A task that runs a workflow is at work, though no turn of its own runs ---
+  {
+    const stands = (task: Partial<Parameters<typeof localTaskState>[0]>) =>
+      localTaskState({ waitsForApproval: false, running: false, runsWorkflow: false, asks: null, failed: false, ...task });
+    assert.deepEqual(stands({}), { state: 'idle' });
+    assert.deepEqual(stands({ running: true }), { state: 'working' });
+    assert.deepEqual(stands({ runsWorkflow: true }), { state: 'working' });
+    // What its last own turn said is behind it once the workflow runs.
+    assert.deepEqual(stands({ runsWorkflow: true, asks: 'Which branch?', failed: true }), { state: 'working' });
+    // A command waiting for the person comes first, as before.
+    assert.deepEqual(stands({ runsWorkflow: true, waitsForApproval: true }), { state: 'needs approval' });
+    assert.deepEqual(stands({ asks: 'Which branch?', failed: true }), { state: 'asks', waitingOn: 'Which branch?' });
+    assert.deepEqual(stands({ failed: true }), { state: 'failed' });
+
+    // The bot lists it with the tasks at work, and does not claim to have stopped it.
+    const { bot, world } = setup();
+    world.tasks.push({
+      id: LOCAL_ID(7),
+      number: 107,
+      title: 'Ship the diff fix',
+      deviceId: null,
+      device: 'MacBook',
+      project: 'coworker',
+      agent: 'Claude',
+      state: 'working',
+      closedToMessages: 'It is running a workflow, which sends it its part of the work. Write to it once the workflow has ended.',
+      runsWorkflow: true,
+      updatedAt: 1_000_000,
+    });
+    const working = ok(await bot.listTasks({ state: 'working' }));
+    assert.equal(JSON.stringify(working).includes('Ship the diff fix'), true);
+    assert.match(error(await bot.stopTask({ task: 'Ship the diff fix' })), /is running a workflow, which cannot be stopped from here/);
+    assert.deepEqual(world.stops, []);
   }
 
   // --- Claude without an Anthropic login: ready when the task's model needs none ---

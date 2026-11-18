@@ -36,6 +36,8 @@ export interface MainBotTask {
    * sends it its work. Unset when it takes the bot's messages.
    */
   closedToMessages?: string;
+  /** It runs a workflow that is still going: at work through its members, whether or not a turn of its own runs. */
+  runsWorkflow?: true;
   updatedAt: number;
 }
 
@@ -263,6 +265,24 @@ function gistOf(text: string): string {
 
 function isSessionId(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
+/**
+ * How a task on this Mac stands. A workflow hands the work to its members, so
+ * the conversation that runs one is at work while no turn of its own runs.
+ */
+export function localTaskState(task: {
+  waitsForApproval: boolean;
+  running: boolean;
+  runsWorkflow: boolean;
+  /** What its last turn asked the person, when it ended on a question or was blocked. */
+  asks: string | null;
+  failed: boolean;
+}): { state: MainBotTaskState; waitingOn?: string } {
+  if (task.waitsForApproval) return { state: 'needs approval' };
+  if (task.running || task.runsWorkflow) return { state: 'working' };
+  if (task.asks !== null) return { state: 'asks', waitingOn: task.asks };
+  return { state: task.failed ? 'failed' : 'idle' };
 }
 
 /** Why an agent with no login can't take work. */
@@ -867,6 +887,8 @@ export class MainBotService {
     const found = this.findTask(args.task);
     if ('error' in found) return fail(found.error);
     const dropped = this.store.get(found.id)?.held.length ?? 0;
+    // Stopping the conversation's own turn would leave the workflow going, and the bot saying it had stopped.
+    if (found.runsWorkflow) return fail(`"${found.title}" is running a workflow, which cannot be stopped from here. The person stops it in the task itself.`);
     if (found.state !== 'working' && found.state !== 'needs approval') {
       // A report it already gave still reaches the bot.
       this.store.disarm(found.id);
