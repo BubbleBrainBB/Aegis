@@ -239,7 +239,7 @@ function answeredTurns(lines: MainBotChatLine[]): Array<{ opener: MainBotChatLin
 
 /**
  * Where Bubble compacts a thread on its own (context/budget.js of
- * @bubblebrain-ai/bubble 0.0.66): at the window less what it keeps for the
+ * @bubblebrain-ai/bubble 0.0.69): at the window less what it keeps for the
  * answer (20k) and a buffer (13k); at three quarters of a window under 40k;
  * at 32k tokens when it does not know the window.
  */
