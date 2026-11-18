@@ -45,6 +45,10 @@ export interface MainBotDeps {
   reportsTo(sessionId: string): string | null;
   /** The conversations whose workflow is still going. */
   sessionsRunningWorkflow(): string[];
+  /** Workflows of conversations that stand still until the person acts, latest first. */
+  workflowsWaiting(): Array<{ sessionId: string; kind: 'start' | 'answer'; title: string; detail: string }>;
+  /** Start, or call off, the workflow a conversation prepared that waits to be started. */
+  decideWorkflow(sessionId: string, start: boolean): Promise<{ ok: true; title: string } | { ok: false; error: string }>;
   isGitRepo(path: string): Promise<boolean>;
   /** Start fields an agent needs beyond the prompt (Codex's file references). */
   startExtras(provider: AgentProvider, prompt: string, cwd: string): Promise<Partial<SessionStartPayload>>;
@@ -138,13 +142,28 @@ export function noteMainBotTurnEnded(sessionId: string, status: 'completed' | 'e
   }, 0);
 }
 
+/** A workflow a conversation on this Mac started changed: the bot may be waiting on that conversation. */
+export function noteMainBotWorkflowChange(sessionId: string | null | undefined, status: string): void {
+  const bot = service;
+  if (!bot || !sessionId) return;
+  // After the rest of what changed it, so the task reads as it stands then.
+  setTimeout(() => {
+    bot.onWorkflowChanged(sessionId, status).catch((failure) => console.error('[main-bot] could not handle a workflow change:', failure));
+  }, 0);
+}
+
 /** Something changed on a Mac this one controls. */
 export function noteMainBotRemoteChange(): void {
   if (!service?.waitsOnRemote()) return;
   void service.checkRemote().catch((failure) => console.error('[main-bot] could not check tasks on another Mac:', failure));
 }
 
-function stateOf(row: SessionRow, waitsForApproval: boolean, runsWorkflow: boolean): { state: MainBotTaskState; waitingOn?: string } {
+function stateOf(
+  row: SessionRow,
+  waitsForApproval: boolean,
+  runsWorkflow: boolean,
+  workflowWaits: MainBotTask['workflowWaits'],
+): { state: MainBotTaskState; waitingOn?: string } {
   let report = null;
   try {
     report = parseTurnReport(row.turn_report ? JSON.parse(row.turn_report) : null);
@@ -155,6 +174,7 @@ function stateOf(row: SessionRow, waitsForApproval: boolean, runsWorkflow: boole
     waitsForApproval,
     running: row.status === 'running',
     runsWorkflow,
+    workflowWaits,
     asks: report && (report.outcome === 'question' || report.outcome === 'blocked') ? turnReportTitle(report) : null,
     failed: row.status === 'error',
   });
@@ -179,6 +199,11 @@ function closedToMessages(sessionId: string, needs: MainBotDeps, workflows: Set<
 function localTasks(needs: MainBotDeps): MainBotTask[] {
   const { waitsForApproval } = needs;
   const workflows = new Set(needs.sessionsRunningWorkflow());
+  // The latest one of a conversation is the one its card shows.
+  const waiting = new Map<string, NonNullable<MainBotTask['workflowWaits']>>();
+  for (const { sessionId, kind, title, detail } of needs.workflowsWaiting()) {
+    if (!waiting.has(sessionId)) waiting.set(sessionId, { kind, title, detail });
+  }
   const main = mainBotSession()?.id;
   const organization = sessions.getSessionOrganization().sessions;
   const device = machineName();
@@ -196,8 +221,9 @@ function localTasks(needs: MainBotDeps): MainBotTask[] {
         project: project ? basename(project) : null,
         agent: PROVIDER_LABELS[row.provider || 'claude'] ?? row.provider ?? 'Claude',
         model: row.model ?? null,
-        ...stateOf(row, waitsForApproval(row.id), workflows.has(row.id)),
+        ...stateOf(row, waitsForApproval(row.id), workflows.has(row.id), waiting.get(row.id)),
         ...(workflows.has(row.id) ? { runsWorkflow: true as const } : {}),
+        ...(waiting.has(row.id) ? { workflowWaits: waiting.get(row.id) } : {}),
         branch: row.env_mode === 'worktree' ? (row.associated_worktree_branch ?? null) : null,
         ...(() => {
           const closed = closedToMessages(row.id, needs, workflows);
@@ -403,6 +429,11 @@ export function setupMainBot(needs: MainBotDeps): MainBotService {
       if (isRemoteSessionId(taskId)) return stopRemoteTask(taskId);
       needs.stop(taskId);
       return { ok: true };
+    },
+    decideWorkflow: async (taskId, start) => {
+      if (isRemoteSessionId(taskId)) return { error: 'A workflow on another Mac is started on that Mac.' };
+      const done = await needs.decideWorkflow(taskId, start);
+      return done.ok ? done : { error: done.error };
     },
     lastTurn,
     exists: (taskId) => isRemoteSessionId(taskId) || Boolean(sessions.getSession(taskId)),

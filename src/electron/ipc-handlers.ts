@@ -45,7 +45,7 @@ import { sanitizeDesignSelectionRef } from '../shared/design-selection';
 import { designContextText } from './design/focus';
 import { chatFolderInstructions, chatsFolderInfo, createChatFolder, noteChatFolderInstructionsDelivered, takeChatFolderInstructions } from './libs/chat-folders';
 import { startTaskSession } from './libs/main-bot/start';
-import { ensureMainBotSession, mainBotSession, mainBotTurnContext, noteMainBotContextUsage, noteMainBotRemoteChange, noteMainBotTurnEnded, prepareMainBotTurn, refreshMainBotContext, setupMainBot } from './libs/main-bot';
+import { ensureMainBotSession, mainBotSession, mainBotTurnContext, noteMainBotContextUsage, noteMainBotRemoteChange, noteMainBotTurnEnded, noteMainBotWorkflowChange, prepareMainBotTurn, refreshMainBotContext, setupMainBot } from './libs/main-bot';
 import { setDesignProjectRoot } from './design/styles';
 import { setDesignAgentNamer, setDesignPromptSource } from './design/tools';
 import { setDesignFollowUp } from './design/project/tools';
@@ -5048,7 +5048,11 @@ function setupWorkflows(mainWindow: BrowserWindow): void {
         provider: (session.provider || 'claude') as AgentProvider,
       });
     },
-    broadcast: (view) => broadcast(mainWindow, { type: 'workflow.updated', payload: view }),
+    broadcast: (view) => {
+      broadcast(mainWindow, { type: 'workflow.updated', payload: view });
+      // The main bot may be waiting on the chat that started it.
+      noteMainBotWorkflowChange(view.parent?.sessionId, view.status);
+    },
     userDataDir: app.getPath('userData'),
     appGeneration: `${process.pid}-${Date.now()}`,
     provisionIsolated: (projectCwd, label) => provisionIsolatedWorkspace(projectCwd, label),
@@ -5253,6 +5257,8 @@ function setupMainBotEntry(mainWindow: BrowserWindow): void {
     waitsForApproval: (sessionId) => (sessionStates.get(sessionId)?.pendingPermissions.size ?? 0) > 0,
     reportsTo: (sessionId) => followUps?.reportsTo(sessionId) ?? null,
     sessionsRunningWorkflow: () => workflowRuns?.sessionsWithActiveRun() ?? [],
+    workflowsWaiting: () => workflowRuns?.waitingOnUser() ?? [],
+    decideWorkflow: async (sessionId, start) => workflowRuns?.decideWaiting(sessionId, start) ?? { ok: false, error: 'Workflows are not available.' },
     isGitRepo: (cwd) => assertGitRepo(cwd).then(() => true, () => false),
     startExtras: async (provider, prompt, cwd) => (provider === 'codex' ? codexReferences(prompt, cwd) : {}),
     freshThread: (sessionId, entering, automatic) => startMainBotFreshThread(mainWindow, sessionId, entering, automatic),

@@ -1,7 +1,7 @@
 import { isStartWorkflowToolName } from '../../shared/workflow';
 import { isShowWidgetToolName, isWidgetGuideToolName, widgetFromToolInput } from '../../shared/widget';
 import { isProposeFollowUpToolName, isStartSessionToolName, isWithdrawFollowUpToolName } from '../../shared/follow-up';
-import { GET_TASK_TOOL, isMainBotLookupToolName, isMainBotNoteWriteToolName, isMainBotTaskActionToolName, LIST_HANDED_OUT_TOOL, LIST_PROJECTS_TOOL, mainBotToolKind, READ_CONVERSATION_TOOL, READ_MEMORY_TOOL } from '../../shared/main-bot';
+import { GET_TASK_TOOL, isMainBotLookupToolName, isMainBotNoteWriteToolName, isMainBotTaskActionToolName, LIST_HANDED_OUT_TOOL, LIST_PROJECTS_TOOL, mainBotToolKind, mainBotWorkflowCalledOff, READ_CONVERSATION_TOOL, READ_MEMORY_TOOL } from '../../shared/main-bot';
 import { isReportStatusToolName, TURN_REPORT_OUTCOMES, turnReportLabel, type TurnReportOutcome } from '../../shared/turn-report';
 
 /** The task a main bot call names: the new task's title, or the one it was pointed at. */
@@ -95,6 +95,7 @@ export function getToolSummary(name: string, input: unknown): string {
   if (isStartSessionToolName(name)) return `Sub-session: ${followUpTitle(input)}`;
   if (isMainBotTaskActionToolName(name)) {
     const kind = mainBotToolKind(name);
+    if (kind === 'workflow') return `${mainBotWorkflowCalledOff(input) ? 'Called off' : 'Started'} the workflow of ${mainBotTaskOf(input)}`;
     return `${kind === 'start' ? 'Started' : kind === 'stop' ? 'Stopped' : 'Sent to'} ${mainBotTaskOf(input)}`;
   }
   if (isMainBotLookupToolName(name)) return `Checked ${mainBotLookupOf(name, input)}`;
@@ -419,6 +420,10 @@ export function deriveReadableToolDisplay(
   }
   if (isMainBotTaskActionToolName(name)) {
     const kind = mainBotToolKind(name);
+    if (kind === 'workflow') {
+      const off = mainBotWorkflowCalledOff(input);
+      return { verb: status === 'pending' ? (off ? 'Calling off the workflow of' : 'Starting the workflow of') : off ? 'Called off the workflow of' : 'Started the workflow of', target: mainBotTaskOf(input) };
+    }
     const verb = kind === 'start'
       ? (status === 'pending' ? 'Starting' : 'Started')
       : kind === 'stop'

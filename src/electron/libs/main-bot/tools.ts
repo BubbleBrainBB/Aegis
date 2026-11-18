@@ -4,6 +4,7 @@
 // mode, so they run without asking, the way the composer's Send does.
 
 import {
+  CONFIRM_WORKFLOW_TOOL,
   GET_TASK_TOOL,
   LIST_HANDED_OUT_TOOL,
   LIST_PROJECTS_TOOL,
@@ -141,6 +142,23 @@ const SPECS: Array<{
       properties: { task: { type: 'string', description: TASK_REF } },
     },
     run: (bot, args) => bot.stopTask(args as { task: string }),
+  },
+  {
+    name: CONFIRM_WORKFLOW_TOOL,
+    description:
+      'Give the person\'s answer to a workflow a task on this Mac prepared and that waits to be started: start it, or call it off. ' +
+      'Starting it also allows the commands it listed to run, so the person must have heard who would do what and which commands run, and said yes in this conversation. ' +
+      'Only in answer to a message they wrote; never on a report.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['task', 'decision'],
+      properties: {
+        task: { type: 'string', description: TASK_REF },
+        decision: { type: 'string', enum: ['start', 'cancel'] },
+      },
+    },
+    run: (bot, args) => bot.confirmWorkflow(args as { task: string; decision: string }),
   },
   {
     name: READ_CONVERSATION_TOOL,

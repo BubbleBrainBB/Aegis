@@ -8,7 +8,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeF
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { MAIN_BOT_LIMITS, isMainBotLookupToolName, mainBotReportTitles, parseMainBotTaskResult } from '../../src/shared/main-bot';
+import { MAIN_BOT_LIMITS, isMainBotLookupToolName, isMainBotTaskActionToolName, mainBotReportTitles, mainBotToolKind, mainBotWorkflowCalledOff, parseMainBotTaskResult } from '../../src/shared/main-bot';
 import {
   MainBotService,
   NOT_SIGNED_IN,
@@ -16,6 +16,7 @@ import {
   localTaskState,
   mainBotContextLimit,
   taskBrief,
+  workflowWaitingOn,
   type MainBotAgent,
   type MainBotChatLine,
   type MainBotDevice,
@@ -58,6 +59,8 @@ function setup(prepare?: (db: MainBotDb) => void) {
     starts: [] as MainBotStart[],
     sends: [] as Array<{ taskId: string; prompt: string }>,
     stops: [] as string[],
+    /** Answers given to workflows that waited to be started. */
+    workflowDecisions: [] as Array<[string, boolean]>,
     told: [] as Array<{ label: string; text: string }>,
     replies: new Map<string, { asked: string | null; reply: string }>(),
     main: { id: 'main', busy: false, turn: { startedAt: 1, typed: true } as { startedAt: number; typed: boolean } | null },
@@ -115,6 +118,16 @@ function setup(prepare?: (db: MainBotDb) => void) {
     stop: async (taskId) => {
       world.stops.push(taskId);
       return { ok: true };
+    },
+    decideWorkflow: async (taskId, start) => {
+      const task = world.tasks.find((entry) => entry.id === taskId);
+      const title = task?.workflowWaits?.title;
+      if (!task || !title) return { error: 'No workflow of this task waits to be started.' };
+      world.workflowDecisions.push([taskId, start]);
+      delete task.workflowWaits;
+      if (start) task.runsWorkflow = true;
+      task.state = start ? 'working' : 'idle';
+      return { ok: true, title };
     },
     lastTurn: async (taskId) => world.replies.get(taskId) ?? null,
     exists: (taskId) => !/^[0-9a-f]{8}-/.test(taskId) || world.archived.has(taskId) || world.tasks.some((task) => task.id === taskId),
@@ -446,6 +459,117 @@ async function main() {
     assert.equal(JSON.stringify(working).includes('Ship the diff fix'), true);
     assert.match(error(await bot.stopTask({ task: 'Ship the diff fix' })), /is running a workflow, which cannot be stopped from here/);
     assert.deepEqual(world.stops, []);
+  }
+
+  // --- A workflow a task prepared waits for the person: the bot hears of it, and passes their answer on ---
+  {
+    const waits = { kind: 'start' as const, title: 'Codex review', detail: 'Members: codex GPT-6.2-Sol xhigh reviewer, read-only. Runs: npm test.' };
+    assert.deepEqual(localTaskState({ waitsForApproval: false, running: false, runsWorkflow: false, workflowWaits: waits, asks: null, failed: false }), {
+      state: 'needs approval',
+      waitingOn: workflowWaitingOn(waits),
+    });
+    assert.match(workflowWaitingOn(waits), /^the person to start its workflow "Codex review" \(Members: .*\); confirm_workflow does it once they said so$/);
+    assert.match(workflowWaitingOn({ kind: 'answer', title: 'Codex review', detail: 'Which branch?' }), /^the person to answer its workflow "Codex review" in the task: Which branch\?$/);
+    assert.equal(mainBotToolKind('confirm_workflow'), 'workflow');
+    assert.equal(isMainBotTaskActionToolName('confirm_workflow'), true);
+    assert.deepEqual([mainBotWorkflowCalledOff({ decision: 'cancel' }), mainBotWorkflowCalledOff({ decision: 'start' })], [true, false]);
+
+    const { bot, store, world } = setup();
+    const id = ok(await bot.startTask({ title: 'Review the SDK bump', prompt: 'have Codex review it', project: 'notes' })).sessionId as string;
+    const task = world.tasks.find((entry) => entry.id === id);
+    assert.ok(task);
+    // Its turn ends on "the workflow runs in the background", while the workflow waits to be started.
+    task.state = 'needs approval';
+    task.workflowWaits = waits;
+    task.waitingOn = workflowWaitingOn(waits);
+    world.replies.set(id, { asked: 'have Codex review it', reply: 'Handed to Codex; the workflow runs in the background.' });
+    await bot.onTaskTurnEnded(id, 'completed');
+    assert.equal(world.told.length, 1);
+    assert.match(world.told[0].text, /\[Report from "Review the SDK bump"\].* Its reply, written by the agent that ran it:/);
+    assert.match(world.told[0].text, /\[About "Review the SDK bump"\].* From Aegis, not from the agent that runs it: It prepared the workflow "Codex review", which has NOT started/);
+    assert.ok(world.told[0].text.includes('Runs: npm test.'));
+    assert.ok(store.get(id), 'the bot keeps waiting: the result comes with a later turn');
+    assert.equal(store.get(id)?.report, null);
+    // The same wait is told once.
+    await bot.onWorkflowChanged(id, 'awaiting_confirmation');
+    assert.equal(world.told.length, 1);
+    // The bot's view of how things stand says who has to act.
+    assert.match(bot.turnContext('main'), /Waiting for the person:\n- "Review the SDK bump".*: needs approval, the person to start its workflow "Codex review"/);
+
+    // On a report the bot may not answer for the person.
+    world.main.turn = { startedAt: 2, typed: false };
+    assert.match(error(await bot.confirmWorkflow({ task: id, decision: 'start' })), /Only the person decides whether the workflow "Codex review" starts/);
+    assert.deepEqual(world.workflowDecisions, []);
+    assert.match(error(await bot.confirmWorkflow({ task: id, decision: 'maybe' })), /"decision" is "start" or "cancel"/);
+    // The person said yes in the conversation.
+    world.main.turn = { startedAt: 3, typed: true };
+    const started = ok(await bot.confirmWorkflow({ task: id, decision: 'start' }));
+    assert.match(started.note, /The workflow "Codex review" runs now/);
+    assert.equal(started.sessionId, id);
+    assert.deepEqual(world.workflowDecisions, [[id, true]]);
+    assert.match(error(await bot.confirmWorkflow({ task: id, decision: 'start' })), /No workflow of "Review the SDK bump" waits for the person/);
+    // The workflow ends and the task says what came of it: that reaches the bot, and the wait is over.
+    delete task.runsWorkflow;
+    task.state = 'idle';
+    world.replies.set(id, { asked: null, reply: 'Codex found two problems.' });
+    await bot.onTaskTurnEnded(id, 'completed');
+    assert.equal(world.told.length, 2);
+    assert.match(world.told[1].text, /Its reply, written by the agent that ran it:[\s\S]*Codex found two problems\./);
+    assert.equal(world.told[1].text.includes('[About '), false);
+    assert.equal(store.get(id), null);
+  }
+
+  // --- A workflow still being planned when the turn ends; the person calls it off in the task ---
+  {
+    const { bot, store, world } = setup();
+    const id = ok(await bot.startTask({ title: 'Plan the migration', prompt: 'plan it', project: 'notes' })).sessionId as string;
+    const task = world.tasks.find((entry) => entry.id === id);
+    assert.ok(task);
+    task.runsWorkflow = true;
+    world.replies.set(id, { asked: 'plan it', reply: 'A workflow is planning it.' });
+    await bot.onTaskTurnEnded(id, 'completed');
+    assert.equal(world.told.length, 1);
+    assert.match(world.told[0].text, /It goes on through a workflow it started\./);
+    assert.ok(store.get(id));
+    // Planned: now it waits for the person. That is news of its own.
+    delete task.runsWorkflow;
+    task.state = 'needs approval';
+    task.workflowWaits = { kind: 'start', title: 'Migration plan', detail: 'Members: claude implementer.' };
+    await bot.onWorkflowChanged(id, 'awaiting_confirmation');
+    assert.equal(world.told.length, 2);
+    assert.match(world.told[1].text, /^Something changed for a task you handed work to\./);
+    assert.match(world.told[1].text, /\[About "Plan the migration"\].*"Migration plan", which has NOT started/);
+    assert.equal(world.told[1].text.includes('[Report from'), false);
+    await bot.onWorkflowChanged(id, 'awaiting_confirmation');
+    assert.equal(world.told.length, 2);
+    // Called off in the task: no turn follows, so the bot is told and stops waiting.
+    delete task.workflowWaits;
+    task.state = 'idle';
+    await bot.onWorkflowChanged(id, 'cancelled');
+    assert.equal(world.told.length, 3);
+    assert.match(world.told[2].text, /Its workflow was called off before it ended/);
+    assert.equal(store.get(id), null);
+  }
+
+  // --- The person tells the bot to call a waiting workflow off; a question of a workflow is theirs to answer ---
+  {
+    const { bot, store, world } = setup();
+    const id = ok(await bot.startTask({ title: 'Rewrite the parser', prompt: 'rewrite', project: 'notes' })).sessionId as string;
+    const task = world.tasks.find((entry) => entry.id === id);
+    assert.ok(task);
+    task.state = 'needs approval';
+    task.workflowWaits = { kind: 'start', title: 'Parser rewrite', detail: '' };
+    world.replies.set(id, { asked: 'rewrite', reply: 'Prepared a workflow.' });
+    await bot.onTaskTurnEnded(id, 'completed');
+    assert.equal(world.told.length, 1);
+    const off = ok(await bot.confirmWorkflow({ task: id, decision: 'cancel' }));
+    assert.match(off.note, /was called off; it will not run/);
+    assert.deepEqual(world.workflowDecisions, [[id, false]]);
+    assert.equal(store.get(id), null, 'nothing more is waited for');
+    await bot.onWorkflowChanged(id, 'cancelled');
+    assert.equal(world.told.length, 1, 'its own doing is no news to it');
+    task.workflowWaits = { kind: 'answer', title: 'Parser rewrite', detail: 'Which grammar?' };
+    assert.match(error(await bot.confirmWorkflow({ task: id, decision: 'start' })), /asks the person something only they can answer, in the task itself/);
   }
 
   // --- Claude without an Anthropic login: ready when the task's model needs none ---

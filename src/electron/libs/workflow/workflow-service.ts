@@ -104,6 +104,51 @@ export class WorkflowService {
     return store.listUnfinishedRuns().flatMap((run) => (run.options.parent?.sessionId ? [run.options.parent.sessionId] : []));
   }
 
+  /**
+   * The runs chats started that stand still until the user acts: one to be
+   * started (`start`), or one that asks something or was cut off (`answer`).
+   * Latest first; `detail` is what the user would read on its card.
+   */
+  waitingOnUser(): WorkflowWaiting[] {
+    return store.listRunsWaitingOnUser().flatMap((run): WorkflowWaiting[] => {
+      const sessionId = run.options.parent?.sessionId;
+      if (!sessionId) return [];
+      if (run.status === 'awaiting_confirmation') {
+        const view = this.view(run.id);
+        if (!view) return [];
+        const members = view.members.map((member) =>
+          [
+            member.agent || member.provider,
+            member.modelLabel ?? member.model,
+            member.effort,
+            `${member.role}${member.readOnlyMechanism ? ', read-only' : ''}`,
+          ]
+            .filter(Boolean)
+            .join(' '),
+        );
+        const detail = [
+          members.length ? `Members: ${members.join('; ')}.` : '',
+          view.checks.length ? `Runs: ${view.checks.map((check) => check.argv.join(' ')).join('; ')}.` : '',
+          view.assumptions.length ? `Assumes: ${view.assumptions.join('; ')}` : '',
+          view.unsupported.length ? `Not covered: ${view.unsupported.join('; ')}` : '',
+        ]
+          .filter(Boolean)
+          .join(' ');
+        return [{ sessionId, runId: run.id, kind: 'start', title: view.title, detail }];
+      }
+      const needs = run.needsInput;
+      return [{ sessionId, runId: run.id, kind: 'answer', title: run.title, detail: needs?.question ?? needs?.detail ?? needs?.reason ?? '' }];
+    });
+  }
+
+  /** Start, or call off, the run a chat prepared that waits to be started: what Start and Cancel on its card do. */
+  async decideWaiting(sessionId: string, start: boolean): Promise<{ ok: true; title: string } | { ok: false; error: string }> {
+    const run = store.listRunsWaitingOnUser().find((entry) => entry.status === 'awaiting_confirmation' && entry.options.parent?.sessionId === sessionId);
+    if (!run) return { ok: false, error: 'No workflow of this task waits to be started.' };
+    const result = await this.act({ type: start ? 'confirm' : 'cancel', runId: run.id, expectedRevision: run.revision });
+    return result.ok ? { ok: true, title: result.run.title } : { ok: false, error: result.error };
+  }
+
   /** Member and planner sessions: hidden from thread lists, opened from a workflow board. */
   ownsHiddenSession(sessionId: string): boolean {
     if (this.isWorkflowSession(sessionId) || store.isPlannerSession(sessionId)) return true;
@@ -841,6 +886,9 @@ function titleFor(goal: string): string {
   const line = goal.split('\n')[0].trim();
   return line.length > 60 ? `${line.slice(0, 57)}…` : line;
 }
+
+/** A run that stands still until the user acts on it. */
+export type WorkflowWaiting = { sessionId: string; runId: string; kind: 'start' | 'answer'; title: string; detail: string };
 
 const REPORTED_STATUSES = new Set<WorkflowRunStatus>(['succeeded', 'completed_with_gaps', 'failed']);
 
