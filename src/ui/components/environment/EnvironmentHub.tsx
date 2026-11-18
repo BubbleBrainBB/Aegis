@@ -323,6 +323,8 @@ export function EnvironmentHub({
   // uncommitted work can be counted.
   const branchChanges = overview.branchChanges ?? null;
   const changeTotals = branchChanges ?? overview;
+  // Some untracked files were left uncounted, so the added lines are a floor.
+  const changesIncomplete = overview.changesIncomplete === true;
   const previewSessionId = useAppStore((s) => s.computerUsePreviewSessionId);
   const previewOpen = Boolean(context.sessionId) && previewSessionId === context.sessionId;
   const knownNonGit = !context.unavailableReason && !overview.hasRepo && (overview.error === 'not-a-repo' || overview.ok);
@@ -466,10 +468,11 @@ export function EnvironmentHub({
                       <SectionRow
                         icon={FileDiff}
                         label="Changes"
-                        title={branchChanges ? `Compared with ${branchChanges.baseRef}` : 'Uncommitted changes'}
+                        title={`${branchChanges ? `Compared with ${branchChanges.baseRef}` : 'Uncommitted changes'}${changesIncomplete ? '. Some untracked files were not counted.' : ''}`}
                         onClick={() => onOpenProjectPanel('changes', branchChanges ? 'branch' : 'working-tree')}
-                        trailing={changeTotals.insertions > 0 || changeTotals.deletions > 0 ? (
+                        trailing={changesIncomplete || changeTotals.insertions > 0 || changeTotals.deletions > 0 ? (
                           <span className="flex shrink-0 items-center gap-1 font-mono text-[11px] tabular-nums">
+                            {changesIncomplete ? <span className="font-sans text-[var(--text-muted)]">at least</span> : null}
                             <span className="text-emerald-600">+{changeTotals.insertions}</span>
                             <span className="text-[var(--error)]">-{changeTotals.deletions}</span>
                           </span>
@@ -480,7 +483,7 @@ export function EnvironmentHub({
                       <SectionRow
                         icon={Pencil}
                         label="Uncommitted"
-                        detail={`${overview.totalChanges} ${overview.totalChanges === 1 ? 'file' : 'files'}`}
+                        detail={`${overview.totalChangesAtLeast ? 'at least ' : ''}${overview.totalChanges} ${overview.totalChanges === 1 ? 'file' : 'files'}`}
                         onClick={() => onOpenProjectPanel('changes', 'working-tree')}
                       />
                     ) : null}

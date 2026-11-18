@@ -29,6 +29,8 @@ window.electron={
  getGitPatch:async(cwd,scope)=>{qa.patchReads=(qa.patchReads||0)+1;return {ok:true,error:null,scope,patch:qa.patchText,repoRoot:cwd,truncated:false}},
  getGitCommits:async()=>({ok:true,commits:[]}),
  gitGenerateCommitMessage:async()=>({ok:true,message:'style: update card'}),
+ gitStageAll:async()=>{qa.calls.push('stage-all');return {ok:true}},
+ gitStagePath:async()=>{qa.calls.push('stage-path');return {ok:true}},
  gitCommit:async()=>{qa.calls.push('commit');return {ok:true}},
  gitPush:async()=>{qa.calls.push('push');await new Promise(r=>setTimeout(r,400));qa.patch({aheadCount:0,hasUpstream:true});return {ok:true}},
  gitSync:async()=>{qa.calls.push('sync');return {ok:true}},
@@ -42,7 +44,7 @@ qa.preferences=useAppPreferences;qa.pinWrites=[];
 window.electron.setAppPreferences=async patch=>{qa.pinWrites.push(patch);return {...useAppPreferences.getState(),...patch}};
 const {EnvironmentHub}=await import('/src/ui/components/environment/EnvironmentHub.tsx');
 const {useEnvironmentPanelStore}=await import('/src/ui/store/useEnvironmentPanelStore.ts');qa.panelStore=useEnvironmentPanelStore;
-const {useGitEnvironment}=await import('/src/ui/components/environment/useGitEnvironment.ts');
+const {useGitEnvironment,gitSignature,gitSignaturesMatch}=await import('/src/ui/components/environment/useGitEnvironment.ts');qa.signaturesMatch=gitSignaturesMatch;
 const {useAppStore}=await import('/src/ui/store/useAppStore.ts');
 const {useSessionOrganizationStore}=await import('/src/ui/store/useSessionOrganizationStore.ts');
 qa.organization=useSessionOrganizationStore;
@@ -94,7 +96,7 @@ function Harness(){
  if(mode==='non-github')overview.isGitHubRemote=false;
  Object.assign(overview,patch);
  qa.overview=overview;
- const git={overview,loading:mode==='loading'||mode==='pr-loading',lastUpdatedAt:Date.now(),refresh:async()=>{qa.refreshes++},getSnapshot:()=>({contextKey:mode,cwd:context.effectiveCwd,repoRoot:overview.repoRoot,branch:overview.branch,signature:[overview.repoRoot||'',overview.branch||'',overview.upstream||'',overview.aheadCount,overview.behindCount,overview.totalChanges,overview.insertions,overview.deletions,overview.prStatus,overview.pr?.number||''].join(':')})};
+ const git={overview,loading:mode==='loading'||mode==='pr-loading',lastUpdatedAt:Date.now(),refresh:async()=>{qa.refreshes++},getSnapshot:()=>({contextKey:mode,cwd:context.effectiveCwd,repoRoot:overview.repoRoot,branch:overview.branch,signature:gitSignature(overview)})};
  return <EnvironmentPanelProvider><Toaster/><div hidden>{probe?<GitProbe/>:null}{diffProbe?<DiffProbe/>:null}</div><main style={{display:'flex',height:'100vh',background:'var(--bg-primary)'}}><div style={{width:layoutWidth|| (narrow?420:720),padding:layoutWidth?0:20,flexShrink:0,display:'flex',flexDirection:'column'}}><header style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><span>Environment preview</span><>{mounted?<EnvironmentHub context={context} git={git} onOpenProjectPanel={(view,scope)=>{qa.view=view;qa.scope=scope}} sources={sources} onOpenSources={path=>qa.sourcePath=path}/>:null}</></header>{layoutWidth?<div style={{display:'flex',flex:1,minHeight:0}}>{[0,1].map(index=><div key={index} style={{display:'flex',flexDirection:'column',width:index===0?'100%':600,flexShrink:0}}><EnvironmentChatSurface active={activePane===index}><div data-chat-scroll-container style={{flex:1,paddingBlock:16,paddingLeft:16,overflow:'auto'}}><div className="message-container" style={{background:'var(--bg-secondary)',height:1600}}>Chat messages</div></div><div data-composer-home="fixture"><div><div className="aegis-chat-composer px-8 pb-4"><div style={{background:'var(--bg-secondary)',height:100}}>Composer</div></div></div></div></EnvironmentChatSurface></div>)}</div>:<button id="outside" style={{marginTop:480}}>Outside</button>}</div><aside style={{flex:1,borderLeft:'1px solid var(--border)',padding:20}}>Files</aside></main></EnvironmentPanelProvider>;
 }
 createRoot(document.getElementById('root')).render(<Harness/>);
@@ -147,10 +149,15 @@ app.whenReady().then(async()=>{
  assert.equal(await js('qa.scope'),'branch');assert.equal(await row('Changes'),'Changes +120 -30');assert.equal(await js('rowButton("Changes").title'),'Compared with origin/main');
  assert.equal(await row('Uncommitted'),'Uncommitted 2 files');await click('Uncommitted');assert.equal(await js('qa.scope'),'working-tree');
  await js('qa.patch({totalChanges:1})');await delay(100);assert.equal(await row('Uncommitted'),'Uncommitted 1 file');
+ // Untracked files that could not be listed in time leave a count that is a lower bound.
+ await js('qa.patch({totalChanges:825,totalChangesAtLeast:true})');await delay(100);assert.equal(await row('Uncommitted'),'Uncommitted at least 825 files');
  await js('qa.patch({totalChanges:0,insertions:0,deletions:0})');await delay(100);assert.equal(await row('Changes'),'Changes +120 -30','committed work stays counted');assert.equal(await row('Uncommitted'),null);
  await js('qa.patch({totalChanges:0,insertions:0,deletions:0,branchChanges:{baseRef:"origin/main",files:0,insertions:0,deletions:0}})');await delay(100);assert.equal(await row('Changes'),'Changes','nothing to count shows no numbers');
  await js('qa.patch({branchChanges:null})');await delay(100);assert.equal(await row('Changes'),'Changes +24 -6','without a base the row counts uncommitted work');assert.equal(await row('Uncommitted'),null);
  await click('Changes');assert.equal(await js('qa.scope'),'working-tree');assert.equal(await js('rowButton("Changes").title'),'Uncommitted changes');
+ // Untracked files the scan could not count make the added lines a lower bound, and the row says so.
+ await js('qa.patch({changesIncomplete:true})');await delay(100);assert.equal(await row('Changes'),'Changes at least +120 -30');assert.equal(await js('rowButton("Changes").title'),'Compared with origin/main. Some untracked files were not counted.');
+ await js('qa.patch({changesIncomplete:true,branchChanges:null,insertions:0,deletions:0})');await delay(100);assert.equal(await row('Changes'),'Changes at least +0 -0','an uncounted total is not shown as no changes');
  await js('qa.patch({})');await delay(100);
  assert.match(await visible(),/Commit or push/);assert.doesNotMatch(await visible(),/Copy workspace path|Open repository|Create pull request|Sync/);await snap('git');
  await click('Environment options');assert.match(await visible(),/Copy workspace path/);assert.match(await visible(),/Open repository/);
@@ -161,6 +168,22 @@ app.whenReady().then(async()=>{
  await js('document.querySelector("textarea").dispatchEvent(new MouseEvent("mousedown",{bubbles:true}))');
  assert.equal(await js('document.querySelector("button[title=Environment]").getAttribute("aria-expanded")'),'true');
  await click('Cancel');await delay(450);assert.deepEqual(await js('qa.calls'),[]);
+ // "Commit all changes" stages with one call, never one per file. A scan that
+ // ran out of time after the dialog opened is not a changed repository; a
+ // different file count is.
+ await js('qa.originalOverview=window.electron.getGitOverview;0');
+ await click('Commit or push');await delay(600);
+ await js('window.electron.getGitOverview=async()=>({...qa.overview,totalChanges:3});0');
+ await click('Commit');await delay(300);assert.deepEqual(await js('qa.calls'),[],'a changed repository is not committed');assert.match(await visible(),/Git state changed/);
+ // Lines added to a tracked file are measured by git: they make it a changed
+ // repository however the untracked count went, cut by the file cap or by time.
+ await js('qa.calls=[];qa.dismissToasts();window.electron.getGitOverview=async()=>({...qa.overview,changesIncomplete:true,insertions:30});0');
+ await click('Commit');await delay(300);assert.deepEqual(await js('qa.calls'),[],'a capped untracked count does not hide lines added to a tracked file');
+ await js('window.electron.getGitOverview=async()=>({...qa.overview,changesIncomplete:true,untrackedInsertionsUnsettled:true,untrackedInsertions:7,insertions:37});0');
+ await click('Commit');await delay(300);assert.deepEqual(await js('qa.calls'),[],'an untracked count out of time does not hide them either');
+ await js('window.electron.getGitOverview=async()=>({...qa.overview,changesIncomplete:true,untrackedInsertionsUnsettled:true,untrackedInsertions:7,insertions:qa.overview.insertions+7});0');
+ await click('Commit');await delay(300);assert.deepEqual(await js('qa.calls'),['stage-all','commit']);assert.doesNotMatch(await visible(),/Commit all changes/);
+ await js('window.electron.getGitOverview=qa.originalOverview;qa.calls=[];qa.dismissToasts();0');await delay(450);
  await click('feature/card');assert.equal(await js('!!document.querySelector("[data-environment-hub-layer]")'),true);
  win.webContents.sendInputEvent({type:'keyDown',keyCode:'Escape'});win.webContents.sendInputEvent({type:'keyUp',keyCode:'Escape'});await delay(200);
  await mode('running');assert.doesNotMatch(await visible(),/active task is running/);
@@ -266,6 +289,21 @@ app.whenReady().then(async()=>{
  await js('qa.setProbeContext("non-git-session");window.dispatchEvent(new Event("focus"))');await delay(100);
  assert.equal(await js('qa.pending.length'),8);
  assert.equal(await js('qa.probe.overview.error'),'not-a-repo');
+ // An untracked count cut short by time can move between two scans; that alone is not a changed repository.
+ const scanned=async(index,patch)=>{await js('void qa.probe.refresh()');await delay(50);await js('qa.pending['+index+'].resolve({...qa.overview,...'+JSON.stringify(patch)+'})');await delay(100);return js('qa.probe.getSnapshot().signature')};
+ const outOfTime=untracked=>({insertions:5+untracked,untrackedInsertions:untracked,untrackedInsertionsUnsettled:true,changesIncomplete:true});
+ const unsettled=await scanned(8,outOfTime(10));
+ assert.equal(await scanned(9,outOfTime(25)),unsettled);assert.equal(await js('qa.probe.overview.insertions'),30);
+ assert.notEqual(await scanned(10,{...outOfTime(25),deletions:99}),unsettled,'everything else still counts');
+ assert.notEqual(await scanned(11,{...outOfTime(25),insertions:31}),unsettled,'lines added to tracked files always count');
+ const exact=await scanned(12,{insertions:15,untrackedInsertions:10});const grown=await scanned(13,{insertions:30,untrackedInsertions:25});assert.notEqual(grown,exact,'complete totals are compared in full');
+ // Cut by the file cap, the count leaves the same files out every time, so it is compared like a complete one.
+ assert.notEqual(await scanned(14,{insertions:30,untrackedInsertions:25,changesIncomplete:true}),await scanned(15,{insertions:15,untrackedInsertions:10,changesIncomplete:true}));
+ // One scan that finished and one that ran out of time: still the same repository, unless something else moved.
+ const matches=(a,b)=>js('qa.signaturesMatch('+JSON.stringify(a)+','+JSON.stringify(b)+')');
+ assert.equal(await matches(exact,unsettled),true);assert.equal(await matches(unsettled,grown),true);assert.equal(await matches(exact,grown),false);
+ assert.equal(await matches(exact,await scanned(16,{...outOfTime(10),deletions:99})),false);
+ assert.equal(await matches(exact,await scanned(17,{...outOfTime(10),insertions:16})),false,'a tracked file that grew is a change even next to a count out of time');
  await js('Date.now=qa.realNow;qa.setProbe(false)');await delay(50);
  // A delayed association response from another task must never flash here.
  await click('Open environment panel');

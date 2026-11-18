@@ -373,14 +373,19 @@ import {
   getChangeStatsSince,
   getCurrentBranch,
   getGitTopLevel,
-  getUntrackedChangeStats,
+  getUncommittedChangeStats,
+  getUntrackedPatch,
+  getWorkingTreeStatus,
   assertGitRepo,
+  commitStagedChanges,
   getShortStatus,
   listBranches as listGitBranches,
-  listUntrackedPaths,
   removeWorktree,
   resolveBranchBase,
+  scanWorkingTree,
+  stageAllChanges,
   stashWorkingTree,
+  type GitStatusRecord,
 } from './libs/git-service';
 
 const MAX_FILE_PREVIEW_BYTES = 5 * 1024 * 1024; // 5MB
@@ -4322,28 +4327,24 @@ function mapGitChangeStatus(indexStatus: string, workStatus: string): {
   return { status: 'M', staged: false };
 }
 
-function parseGitStatusEntries(stdout: string): Array<{ filePath: string; status: string; staged: boolean }> {
-  const entries: Array<{ filePath: string; status: string; staged: boolean }> = [];
-  const records = stdout.split('\0');
+function toGitChangeEntries(
+  records: GitStatusRecord[]
+): Array<{ filePath: string; status: 'M' | 'A' | 'D' | 'R' | '?'; staged: boolean }> {
+  return records.map((record) => ({
+    filePath: record.filePath,
+    ...mapGitChangeStatus(record.index, record.worktree),
+  }));
+}
 
-  for (let index = 0; index < records.length; index += 1) {
-    const record = records[index];
-    if (!record) continue;
-
-    const indexStatus = record[0];
-    const workStatus = record[1];
-    const filePath = record.slice(3);
-    if (!filePath) continue;
-
-    const { status, staged } = mapGitChangeStatus(indexStatus, workStatus);
-    entries.push({ filePath, status, staged });
-
-    if (indexStatus === 'R' || indexStatus === 'C' || workStatus === 'R' || workStatus === 'C') {
-      index += 1;
-    }
+/** A diff for reading, not for applying: past the size bound, its start is enough. */
+async function readGitDiffStart(cwd: string, args: string[], maxBuffer: number): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync('git', args, { cwd, timeout: 10000, maxBuffer });
+    return stdout;
+  } catch (error) {
+    if ((error as { code?: unknown }).code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') throw error;
+    return String((error as { stdout?: unknown }).stdout ?? '');
   }
-
-  return entries;
 }
 
 const execFileAsync = promisify(execFile);
@@ -4551,20 +4552,14 @@ function normalizeGitPatchScope(value: unknown): GitPatchScope {
   return 'working-tree';
 }
 
-function getExecStdout(error: unknown): string {
-  if (error && typeof error === 'object' && 'stdout' in error) {
-    return String((error as { stdout?: unknown }).stdout ?? '');
-  }
-  return '';
-}
-
 function normalizePatchResult(
   scope: GitPatchScope,
   patch: string,
   repoRoot: string | null,
-  baseRef?: string | null
+  baseRef?: string | null,
+  incomplete = false
 ): GitPatchResult {
-  const truncated = patch.length > GIT_PATCH_MAX_CHARS;
+  const truncated = incomplete || patch.length > GIT_PATCH_MAX_CHARS;
   return {
     ok: true,
     error: null,
@@ -4589,42 +4584,6 @@ async function runGitDiff(cwd: string, args: string[]): Promise<string> {
     }
   );
   return stdout;
-}
-
-async function getUntrackedPatch(cwd: string): Promise<string> {
-  // The same list the change totals count, so a patch never lacks a counted file.
-  const untrackedPaths = await listUntrackedPaths(cwd);
-  const patches: string[] = [];
-
-  for (const filePath of untrackedPaths) {
-    try {
-      const { stdout: patch } = await execFileAsync(
-        'git',
-        [
-          '-c',
-          'core.quotepath=false',
-          'diff',
-          '--no-index',
-          '--no-color',
-          '--unified=3',
-          '--',
-          '/dev/null',
-          filePath,
-        ],
-        {
-          cwd,
-          timeout: 10000,
-          maxBuffer: GIT_PATCH_MAX_BUFFER_BYTES,
-        }
-      );
-      if (patch.trim()) patches.push(patch);
-    } catch (error) {
-      const patch = getExecStdout(error);
-      if (patch.trim()) patches.push(patch);
-    }
-  }
-
-  return patches.join('\n');
 }
 
 function humanizeCommitTarget(value: string): string {
@@ -8492,13 +8451,14 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
     }
 
     try {
-      const { stdout } = await execFileAsync('git', ['-c', 'core.quotepath=false', 'status', '--porcelain', '-uall', '-z'], {
-        cwd,
-        maxBuffer: 1024 * 1024,
-        timeout: 10000,
-      });
-      const entries = parseGitStatusEntries(stdout);
-      return { ok: true, error: null, entries };
+      const status = await getWorkingTreeStatus(cwd);
+      return {
+        ok: true,
+        error: null,
+        entries: toGitChangeEntries(status.entries),
+        folded: status.folded,
+        truncated: status.truncated,
+      };
     } catch {
       return { ok: false, error: 'git-error', entries: [] };
     }
@@ -8514,29 +8474,16 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
     }
 
     try {
-      const statusResult = await execFileAsync('git', ['-c', 'core.quotepath=false', 'status', '--porcelain', '-uall', '-z'], {
-        cwd,
-        maxBuffer: 1024 * 1024,
-        timeout: 10000,
-      });
-      const entries = parseGitStatusEntries(statusResult.stdout);
+      const entries = toGitChangeEntries((await getWorkingTreeStatus(cwd)).entries);
       if (entries.length === 0) {
         return { ok: false, message: 'No local changes to summarize.' };
       }
 
       const [stagedDiff, unstagedDiff] = await Promise.all([
-        execFileAsync('git', ['diff', '--cached', '--unified=0', '--'], {
-          cwd,
-          timeout: 10000,
-          maxBuffer: 2 * 1024 * 1024,
-        }),
-        execFileAsync('git', ['diff', '--unified=0', '--'], {
-          cwd,
-          timeout: 10000,
-          maxBuffer: 2 * 1024 * 1024,
-        }),
+        readGitDiffStart(cwd, ['diff', '--cached', '--unified=0', '--'], 2 * 1024 * 1024),
+        readGitDiffStart(cwd, ['diff', '--unified=0', '--'], 2 * 1024 * 1024),
       ]);
-      const diffText = `${stagedDiff.stdout}\n${unstagedDiff.stdout}`;
+      const diffText = `${stagedDiff}\n${unstagedDiff}`;
 
       return {
         ok: true,
@@ -8654,19 +8601,16 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
     }
 
     try {
-      // Untracked files are part of both the uncommitted and the branch totals,
-      // so one scan serves both. Its failure surfaces through the awaits below.
-      const untrackedStats = getUntrackedChangeStats(cwd);
-      untrackedStats.catch(() => undefined);
-      const [summary, branchResult, changesResult, originRemote, upstreamRef, defaultBranch, repoRoot] =
+      // Untracked files are part of the change count and of both the uncommitted
+      // and the branch totals, so one walk serves all three. Its failure
+      // surfaces through the awaits below.
+      const { changeCount, untracked: untrackedStats } = scanWorkingTree(cwd);
+      const [summary, untracked, branchResult, changes, originRemote, upstreamRef, defaultBranch, repoRoot] =
         await Promise.all([
-          getChangeStatsSince(cwd, 'HEAD', untrackedStats),
+          getUncommittedChangeStats(cwd, untrackedStats),
+          untrackedStats,
           execFileAsync('git', ['branch', '--show-current'], { cwd, timeout: 5000 }),
-          execFileAsync('git', ['-c', 'core.quotepath=false', 'status', '--porcelain', '-uall', '-z'], {
-            cwd,
-            maxBuffer: 1024 * 1024,
-            timeout: 10000,
-          }),
+          changeCount,
           getGitOriginRemote(cwd),
           getGitUpstreamRef(cwd),
           getGitDefaultBranch(cwd),
@@ -8685,7 +8629,8 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
           try {
             const base = await resolveBranchBase(cwd, { defaultBranch, upstreamRef });
             if (!base) return null;
-            return { baseRef: base.baseRef, ...(await getChangeStatsSince(cwd, base.mergeBase, untrackedStats)) };
+            const { files, insertions, deletions } = await getChangeStatsSince(cwd, base.mergeBase, untrackedStats);
+            return { baseRef: base.baseRef, files, insertions, deletions };
           } catch {
             // The card falls back to the uncommitted totals.
             return null;
@@ -8716,10 +8661,14 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
         hasOriginRemote,
         isGitHubRemote,
         isDefaultBranch: !!defaultBranch && branch === defaultBranch,
-        totalChanges: parseGitStatusEntries(changesResult.stdout).length,
+        totalChanges: changes.total,
+        totalChangesAtLeast: changes.atLeast,
         insertions: summary.insertions,
         deletions: summary.deletions,
         branchChanges,
+        changesIncomplete: summary.incomplete === true,
+        untrackedInsertions: untracked.insertions,
+        untrackedInsertionsUnsettled: untracked.unsettled === true,
         prStatus: prLookup.status,
         pr: prLookup.pr,
       };
@@ -8798,33 +8747,38 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
         }
         // The same span as the Environment card's branch totals: commits since
         // the merge-base, plus whatever is still uncommitted or untracked.
-        const [trackedPatch, untrackedPatch] = await Promise.all([
+        const [trackedPatch, untracked] = await Promise.all([
           runGitDiff(cwd, [base.mergeBase, '--']),
-          getUntrackedPatch(cwd),
+          getUntrackedPatch(cwd, { maxBytes: GIT_PATCH_MAX_BUFFER_BYTES }),
         ]);
         return normalizePatchResult(
           scope,
-          [trackedPatch, untrackedPatch].filter((patch) => patch.trim()).join('\n'),
+          [trackedPatch, untracked.patch].filter((patch) => patch.trim()).join('\n'),
           repoRoot,
-          base.baseRef
+          base.baseRef,
+          untracked.incomplete
         );
       }
 
       const unstagedPatch = await runGitDiff(cwd, ['--']);
-      const untrackedPatch = await getUntrackedPatch(cwd);
+      const untracked = await getUntrackedPatch(cwd, { maxBytes: GIT_PATCH_MAX_BUFFER_BYTES });
       if (scope === 'unstaged') {
         return normalizePatchResult(
           scope,
-          [unstagedPatch, untrackedPatch].filter((patch) => patch.trim()).join('\n'),
-          repoRoot
+          [unstagedPatch, untracked.patch].filter((patch) => patch.trim()).join('\n'),
+          repoRoot,
+          undefined,
+          untracked.incomplete
         );
       }
 
       const stagedPatch = await runGitDiff(cwd, ['--cached', '--']);
       return normalizePatchResult(
         scope,
-        [stagedPatch, unstagedPatch, untrackedPatch].filter((patch) => patch.trim()).join('\n'),
-        repoRoot
+        [stagedPatch, unstagedPatch, untracked.patch].filter((patch) => patch.trim()).join('\n'),
+        repoRoot,
+        undefined,
+        untracked.incomplete
       );
     } catch (error) {
       return {
@@ -9481,6 +9435,16 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
     }
   });
 
+  ipcMainHandle('git-stage-all', async (_event, cwd: string) => {
+    if (!cwd) return { ok: false, message: 'Missing cwd.' };
+    try {
+      await stageAllChanges(cwd);
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
   ipcMainHandle('git-unstage-path', async (_event, cwd: string, filePath: string) => {
     if (!cwd || !filePath) return { ok: false, message: 'Missing cwd or file path.' };
     try {
@@ -9546,16 +9510,9 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
     const trimmed = message.trim();
     if (!cwd || !trimmed) return { ok: false, message: 'Commit message cannot be empty.' };
     try {
-      const { stdout, stderr } = await execFileAsync('git', ['commit', '-m', trimmed], {
-        cwd,
-        timeout: 120000,
-        maxBuffer: 4 * 1024 * 1024,
-      });
-      return { ok: true, output: `${stdout}${stderr}`.trim() };
+      return { ok: true, output: await commitStagedChanges(cwd, trimmed) };
     } catch (error) {
-      const err = error as { stdout?: string; stderr?: string; message?: string };
-      const combined = [err.stderr, err.stdout, err.message].filter(Boolean).join('\n').trim();
-      return { ok: false, message: combined || 'git commit failed.' };
+      return { ok: false, message: (error instanceof Error && error.message.trim()) || 'git commit failed.' };
     }
   });
 

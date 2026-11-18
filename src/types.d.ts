@@ -463,7 +463,11 @@ declare global {
     unwatchProjectTree: (cwd: string) => Promise<boolean>;
     watchProjectFile: (cwd: string, filePath: string) => Promise<boolean>;
     unwatchProjectFile: (cwd: string, filePath: string) => Promise<boolean>;
-    getGitChanges: (cwd: string) => Promise<{ ok: boolean; error: string | null; entries: import('./shared/types').GitChangeEntry[] }>;
+    /**
+     * `folded`: with too many untracked files to list, a wholly untracked folder is one entry ending in `/`.
+     * `truncated`: the list stopped at its bound.
+     */
+    getGitChanges: (cwd: string) => Promise<{ ok: boolean; error: string | null; entries: import('./shared/types').GitChangeEntry[]; folded?: boolean; truncated?: boolean }>;
     getGitWorkingTreeSummary: (cwd: string) => Promise<{ ok: boolean; error: string | null; insertions: number; deletions: number }>;
     clearAgentWorktree: (sessionId: string, onlyIfGone?: boolean) => Promise<void>;
     listSessionPullRequests: (sessionId: string, refresh?: boolean) => Promise<import('./shared/types').SessionPullRequestView[]>;
@@ -529,6 +533,8 @@ declare global {
     }>;
     getGitDiff: (cwd: string, filePath: string) => Promise<string>;
     gitStagePath: (cwd: string, filePath: string) => Promise<{ ok: boolean; message?: string }>;
+    /** Stages every change with one `git add -A`. */
+    gitStageAll: (cwd: string) => Promise<{ ok: boolean; message?: string }>;
     gitUnstagePath: (cwd: string, filePath: string) => Promise<{ ok: boolean; message?: string }>;
     gitDiscardPath: (cwd: string, filePath: string, status?: string) => Promise<{ ok: boolean; message?: string }>;
     gitCommit: (cwd: string, message: string) => Promise<{ ok: boolean; message?: string; output?: string }>;

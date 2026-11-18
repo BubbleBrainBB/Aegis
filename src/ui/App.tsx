@@ -2576,18 +2576,11 @@ function GitHeaderActions({
 
     setCommitLoading(true);
     try {
-      const changes = await window.electron.getGitChanges(cwd);
-      if (!changes.ok) {
-        toast.error('Failed to read git status.');
+      // One `git add -A`, not one process per file: a large tree stages in one go.
+      const stageResult = await window.electron.gitStageAll(cwd);
+      if (!stageResult.ok) {
+        toast.error(stageResult.message || 'Failed to stage changes.');
         return;
-      }
-
-      for (const entry of changes.entries.filter((item) => !item.staged)) {
-        const stageResult = await window.electron.gitStagePath(cwd, entry.filePath);
-        if (!stageResult.ok) {
-          toast.error(stageResult.message || `Failed to stage ${entry.filePath}.`);
-          return;
-        }
       }
 
       const result = await window.electron.gitCommit(cwd, message);
