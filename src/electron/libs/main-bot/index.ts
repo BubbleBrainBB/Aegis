@@ -24,7 +24,7 @@ import { getClaudeRuntimeStatusCached } from '../claude-runtime-status';
 import * as sessions from '../session-store';
 import { assistantText } from '../workflow/session-hooks';
 import { MainBotMemory } from './memory';
-import { MainBotService, NOT_SIGNED_IN, claudeForModel, type MainBotAgent, type MainBotChatLine, type MainBotDevice, type MainBotHost, type MainBotStart, type MainBotTask } from './service';
+import { MainBotService, NOT_SIGNED_IN, claudeForModel, localTaskState, type MainBotAgent, type MainBotChatLine, type MainBotDevice, type MainBotHost, type MainBotStart, type MainBotTask } from './service';
 import { MainBotStore, type MainBotDb } from './store';
 import { setMainBotTools } from './tools';
 
@@ -144,18 +144,20 @@ export function noteMainBotRemoteChange(): void {
   void service.checkRemote().catch((failure) => console.error('[main-bot] could not check tasks on another Mac:', failure));
 }
 
-function stateOf(row: SessionRow, waitsForApproval: boolean): { state: MainBotTaskState; waitingOn?: string } {
-  if (waitsForApproval) return { state: 'needs approval' };
-  if (row.status === 'running') return { state: 'working' };
+function stateOf(row: SessionRow, waitsForApproval: boolean, runsWorkflow: boolean): { state: MainBotTaskState; waitingOn?: string } {
   let report = null;
   try {
     report = parseTurnReport(row.turn_report ? JSON.parse(row.turn_report) : null);
   } catch {
     // An unreadable report says nothing.
   }
-  if (report && (report.outcome === 'question' || report.outcome === 'blocked')) return { state: 'asks', waitingOn: turnReportTitle(report) };
-  if (row.status === 'error') return { state: 'failed' };
-  return { state: 'idle' };
+  return localTaskState({
+    waitsForApproval,
+    running: row.status === 'running',
+    runsWorkflow,
+    asks: report && (report.outcome === 'question' || report.outcome === 'blocked') ? turnReportTitle(report) : null,
+    failed: row.status === 'error',
+  });
 }
 
 function remoteState(status: string, waitingOn: string | undefined): MainBotTaskState {
@@ -194,7 +196,8 @@ function localTasks(needs: MainBotDeps): MainBotTask[] {
         project: project ? basename(project) : null,
         agent: PROVIDER_LABELS[row.provider || 'claude'] ?? row.provider ?? 'Claude',
         model: row.model ?? null,
-        ...stateOf(row, waitsForApproval(row.id)),
+        ...stateOf(row, waitsForApproval(row.id), workflows.has(row.id)),
+        ...(workflows.has(row.id) ? { runsWorkflow: true as const } : {}),
         branch: row.env_mode === 'worktree' ? (row.associated_worktree_branch ?? null) : null,
         ...(() => {
           const closed = closedToMessages(row.id, needs, workflows);
