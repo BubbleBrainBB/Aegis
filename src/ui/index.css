@@ -1363,6 +1363,86 @@ button.md-inline-file-code:hover .md-inline-file-code-label {
   background: transparent;
 }
 
+/* A ```mermaid fence drawn as its diagram, on the same slab as code. It fits
+   the message width down to a floor, then scrolls sideways. */
+.markdown-content .md-mermaid-viewport {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  padding: 6px 18px 18px;
+}
+
+/* Mermaid measures its labels in a copy of this box kept off screen, so what
+   text inherits is pinned here: the same in both places. */
+.markdown-content .md-mermaid-canvas {
+  margin: 0 auto;
+  font-family: var(--font-sans, inherit);
+  font-size: 14px;
+  font-style: normal;
+  font-weight: 400;
+  line-height: 1.5;
+  letter-spacing: normal;
+  word-spacing: normal;
+  text-align: start;
+  text-indent: 0;
+  text-transform: none;
+  white-space: normal;
+  color: var(--text-primary);
+}
+
+.markdown-content .md-mermaid-viewport[data-actual-size] .md-mermaid-canvas {
+  margin: 0;
+}
+
+.markdown-content .md-mermaid-canvas > svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  /* Mermaid caps the SVG at its own width inline; the box above sizes it. */
+  max-width: none !important;
+}
+
+/* Prose rules of the message must not reach into the labels. */
+.markdown-content .md-mermaid-canvas p,
+.markdown-content .md-mermaid-canvas li,
+.markdown-content .md-mermaid-canvas ul,
+.markdown-content .md-mermaid-canvas ol {
+  margin: 0;
+  padding: 0;
+  font: inherit;
+  line-height: inherit;
+  color: inherit;
+}
+
+/* Boxes and groups take the soft corners of the app; other shapes keep theirs. */
+.markdown-content .md-mermaid-canvas .node rect.basic,
+.markdown-content .md-mermaid-canvas .cluster rect {
+  rx: 6px;
+  ry: 6px;
+}
+
+/* Labels on lines sit on the slab, whichever surface the slab is mixed for. */
+.markdown-content .md-mermaid-canvas .edgeLabel,
+.markdown-content .md-mermaid-canvas .labelBkg {
+  background-color: var(--md-code-surface) !important;
+}
+
+.md-mermaid-sandbox {
+  position: fixed;
+  left: -100000px;
+  top: 0;
+  width: 2000px;
+  visibility: hidden;
+  pointer-events: none;
+  contain: layout style;
+}
+
+.markdown-content .md-mermaid-error {
+  padding: 0 18px 12px;
+  font-size: calc(12px * var(--ui-font-scale, 1));
+  color: var(--text-muted);
+}
+
 .highlighted-code-block.project-markdown-code-preview {
   background: var(--preview-surface);
 }
