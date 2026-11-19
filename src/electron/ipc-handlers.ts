@@ -11190,6 +11190,12 @@ async function handleSessionContinueImpl(
   // DeepSeek steers mid-turn through the runtime's inbox (client.prompt);
   // config drift while streaming must not abort the live runtime either.
   const deepseekMidTurn = nextProvider === 'deepseek' && session.status === 'running';
+  // Bubble steers too (sdk.steer): the message reaches the running turn at
+  // its next model call. A model picked meanwhile must not abort that turn;
+  // it runs on with what it started with, and the next turn takes the new
+  // model from its own send. (Mode and thinking level never abort a Bubble
+  // runner: each turn is started with the ones its send carries.)
+  const bubbleMidTurn = nextProvider === 'bubble' && session.status === 'running';
   // A kimi runner whose adapter session was released while idle (daemon
   // exit, session_gone) is a zombie: reusing its handle throws "No Kimi
   // session found" at send time with a toast and a dropped message. Respawn
@@ -11208,7 +11214,7 @@ async function handleSessionContinueImpl(
     if (
       runnerCwdChanged ||
       kimiSessionReleased ||
-      (((nextProvider === 'codex' && !codexMidTurn) || nextProvider === 'opencode' || (nextProvider === 'kimi' && !kimiMidTurn) || nextProvider === 'grok' || nextProvider === 'pi' || nextProvider === 'bubble' || (nextProvider === 'deepseek' && !deepseekMidTurn)) && modelChanged) ||
+      (((nextProvider === 'codex' && !codexMidTurn) || nextProvider === 'opencode' || (nextProvider === 'kimi' && !kimiMidTurn) || nextProvider === 'grok' || nextProvider === 'pi' || (nextProvider === 'bubble' && !bubbleMidTurn) || (nextProvider === 'deepseek' && !deepseekMidTurn)) && modelChanged) ||
       (nextProvider === 'codex' && !codexMidTurn && codexPermissionModeChanged) ||
       (nextProvider === 'codex' && !codexMidTurn && codexReasoningEffortChanged) ||
       (nextProvider === 'codex' && !codexMidTurn && codexFastModeChanged) ||

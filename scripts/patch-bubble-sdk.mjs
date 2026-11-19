@@ -7,8 +7,9 @@
 // 0.0.70 changed it again, outside the patched seams: runTurn fits the thinking
 // level it is given to the model's own levels (resolveTurnThinkingLevel).
 // Patched here: repeatable, serialized project trust; explicit deny rules for
-// read-only host tools; and a host tool shadowing a same-named MCP tool
-// instead of failing the turn.
+// read-only host tools; a host tool shadowing a same-named MCP tool instead of
+// failing the turn; and no turn started for an unread steer once the turn it
+// was sent to has been stopped.
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -102,6 +103,24 @@ export async function patchBubbleSdk(root) {
                     },
                 };
                 tools.push(...(tool.readOnly ? [ruleChecked] : gateMcpTools([guarded], approvalController)));`);
+  // A turn that ends with a steer unread hands it a turn of its own. The agent
+  // reports the unread steer after its QueuedInputRejected hook, however long
+  // that takes, and without looking at cancellation again: a Stop during the
+  // hook has by then cancelled the turn and cleared the queue, and the turn
+  // started afterwards would run with no signal to stop it and nobody reading.
+  js = replace(js,
+    `    queuePendingSteer(runtime, pending, resolved, rejected) {
+        try {`,
+    `    queuePendingSteer(runtime, pending, resolved, rejected) {
+        // Aegis: a stopped turn (or a deleted session) starts nothing for the
+        // steers it never read; they end as cancelled, like the turn.
+        if (runtime.reservation.signal.aborted || this.turnCoordinator.isDeleted(runtime.sessionId)) {
+            const cancelled = { ...rejected, reason: "turn_cancelled" };
+            runtime.outcomes.delete(pending.input.id);
+            pending.resolve(cancelled);
+            return cancelled;
+        }
+        try {`);
   types = replace(types, '    private readonly projectTrustAsked;', '    private readonly projectTrustPending;');
   await writeFile(jsPath, js);
   await writeFile(typesPath, types);
@@ -109,5 +128,5 @@ export async function patchBubbleSdk(root) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   await patchBubbleSdk(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../node_modules/@bubblebrain-ai/bubble'));
-  console.log('Bubble SDK host patch applied (project trust, host tool deny rules and MCP shadowing)');
+  console.log('Bubble SDK host patch applied (project trust, host tool deny rules, MCP shadowing and no turn for a steer after Stop)');
 }

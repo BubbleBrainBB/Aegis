@@ -88,9 +88,66 @@ assert.ok(
   'Bubble adapter must sum per-step USD turn costs into the unified result cost (non-USD dropped, not mislabelled)'
 );
 assert.ok(
-  adapter.includes('sdk.stop(session.providerSessionId)') &&
+  adapter.includes('sdk.stop(session.providerSessionId, { cancelQueued: true })') &&
+    !adapter.includes('sdk.stop(session.providerSessionId)') &&
     adapter.includes('abortController?.abort()'),
-  'Bubble adapter must stop turns through sdk.stop + abort signal'
+  'Bubble adapter must stop turns through sdk.stop + abort signal, and never leave queued turns to run after a stop'
+);
+// Steer: a message sent while a turn runs joins it. Text goes through
+// sdk.steer; what a steer cannot carry queues behind the turn in the SDK; a
+// turn the SDK starts itself for an unread steer is read from the session log.
+assert.ok(
+  loader.includes('steer(sessionId: string, content: string): BubbleSteerResult') &&
+    loader.includes('getSessionRunState(sessionId: string): BubbleSessionRunState') &&
+    loader.includes('openSession(sessionId: string): BubbleSessionHandle') &&
+    loader.includes('stop(sessionId: string, options?: BubbleStopOptions): number') &&
+    loader.includes("type: 'input_applied'") &&
+    loader.includes("type: 'input_queued'") &&
+    loader.includes("type: 'input_rejected'"),
+  'Bubble SDK loader must declare the steer, run-state and session-log surface'
+);
+assert.ok(
+  adapter.includes('sdk.steer(session.providerSessionId, text)') &&
+    adapter.includes("outcome.type === 'input_queued'") &&
+    adapter.includes('handle.eventsFrom(from)') &&
+    adapter.includes('getSessionRunState(session.providerSessionId)') &&
+    !adapter.includes('is already running a turn'),
+  'Bubble adapter must steer a message sent mid-turn and follow the turn the SDK starts for an unread steer'
+);
+// Stop must end everything: the SDK patch keeps a stopped turn from starting a
+// turn for a steer it never read, and a stopped session sends the thread no
+// more events (its replacement would take them for its own).
+const sdkPatch = read('scripts/patch-bubble-sdk.mjs');
+assert.ok(
+  sdkPatch.includes('queuePendingSteer(runtime, pending, resolved, rejected) {') &&
+    sdkPatch.includes('runtime.reservation.signal.aborted') &&
+    sdkPatch.includes('reason: "turn_cancelled"'),
+  'Bubble SDK patch must stop a cancelled turn from starting a turn for its unread steers'
+);
+assert.ok(
+  adapter.includes('private owns(session: ActiveBubbleSession, batch: BubbleBatch): boolean') &&
+    adapter.split('!this.owns(session, batch)').length >= 7 &&
+    adapter.includes('batch.handedOver.then(() => this.handOver(session, batch, input))') &&
+    adapter.includes('await Promise.all([...batch.placing])'),
+  'Bubble adapter must recheck the session after every wait and hand mid-turn messages to the SDK in the order they were sent'
+);
+// A Stop during the very first start (SDK still loading, no session yet)
+// cancels the start, and a `/compact` sent mid-turn keeps its place in line.
+assert.ok(
+  adapter.includes('private starting = new Map<string, symbol>()') &&
+    adapter.split('this.starting.delete(threadId)').length >= 3 &&
+    adapter.includes("throw new Error('Bubble session start was cancelled.')") &&
+    adapter.includes('if (this.sessions.get(threadId) !== session) {') &&
+    adapter.includes('while (session.compactBarrier)'),
+  'Bubble adapter must cancel a start stopped while the SDK loads, and hold later messages behind a waiting compaction'
+);
+const feishuBridge = read('src/electron/feishu/bridge.ts');
+assert.ok(
+  /const canSteerWhileRunning =[\s\S]{0,1400}runtimeProvider === 'bubble'/.test(read('src/ui/components/PromptInput.tsx')) &&
+    /const STEERABLE = new Set\(\[[^\]]*"bubble"/.test(feishuBridge) &&
+    /const bubbleMidTurn = nextProvider === 'bubble' && session\.status === 'running'/.test(read('src/electron/ipc-handlers.ts')) &&
+    read('src/electron/ipc-handlers.ts').includes("(nextProvider === 'bubble' && !bubbleMidTurn)"),
+  'Bubble must be steerable from the composer and Feishu, and a model picked mid-turn must not abort the running turn'
 );
 assert.ok(
   adapter.includes('async runOneShot(') &&
@@ -101,7 +158,8 @@ assert.ok(
 
 assert.ok(
   adapter.includes('bubblePermissionMode') &&
-    adapter.includes('session.permissionMode ? { mode: session.permissionMode }') &&
+    adapter.includes('config.permissionMode ? { mode: config.permissionMode }') &&
+    adapter.includes('permissionMode: session.permissionMode,') &&
     adapter.includes("selectedAnswer === 'Approve and execute'"),
   'Bubble adapter must pass the permission mode into runTurn and gate plan exit on the approve answer'
 );
