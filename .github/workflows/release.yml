@@ -85,6 +85,9 @@ jobs:
 
       - name: Build (Vite + TS)
         run: npm run build
+        env:
+          # The macOS runner's default heap (about 2 GB) is too small for the Vite build.
+          NODE_OPTIONS: --max-old-space-size=4096
 
       - name: Write App Store Connect API key
         if: runner.os == 'macOS'
