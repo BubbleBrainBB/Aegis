@@ -38,6 +38,12 @@ export interface MainBotTask {
   closedToMessages?: string;
   /** It runs a workflow that is still going: at work through its members, whether or not a turn of its own runs. */
   runsWorkflow?: true;
+  /**
+   * A workflow of its stands still until the person acts: one it prepared
+   * that waits to be started (`start`), or one that asks them something
+   * (`answer`). `detail`: who would do what, or what it asks.
+   */
+  workflowWaits?: { runId: string; kind: 'start' | 'answer'; title: string; detail: string };
   updatedAt: number;
 }
 
@@ -111,6 +117,9 @@ export interface MainBotHost {
   start(input: MainBotStart): Promise<{ id: string } | { error: string }>;
   send(taskId: string, prompt: string): Promise<Done>;
   stop(taskId: string): Promise<Done>;
+  /** Start, or call off, the workflow a task prepared that waits to be started: what the person does on its card. */
+  /** Starts or calls off that run of the task; with a revision, only if the run still stands at it. */
+  decideWorkflow(taskId: string, start: boolean, run: { id: string; revision?: number }): Promise<{ ok: true; title: string } | { error: string }>;
   /** The latest turn of a task: what it was asked and what the agent said. */
   lastTurn(taskId: string): Promise<{ asked: string | null; reply: string } | null>;
   /** Whether a task on this Mac still exists, listed or not: `tasks()` leaves archived ones out. Always true for one on another Mac. */
@@ -267,6 +276,27 @@ function isSessionId(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 }
 
+/** What a task waits for when a workflow of its stands still, in words the bot reads. */
+export function workflowWaitingOn(waits: NonNullable<MainBotTask['workflowWaits']>): string {
+  const detail = clip(waits.detail, MAIN_BOT_LIMITS.workflowDetail);
+  return waits.kind === 'start'
+    ? `the person to start its workflow "${waits.title}"${detail ? ` (${detail})` : ''}; confirm_workflow does it once they said so`
+    : `the person to answer its workflow "${waits.title}" in the task${detail ? `: ${detail}` : ''}`;
+}
+
+/** A report Aegis wrote about a task, not the task's agent. */
+const NOTE = 'note';
+
+/** What the bot is told when a task it waits on goes on through a workflow. */
+function workflowNote(task: MainBotTask): string {
+  const waits = task.workflowWaits;
+  if (!waits) return 'It goes on through a workflow it started. What comes of that is reported to you when it ends; nothing is asked of the person now.';
+  const detail = clip(waits.detail, MAIN_BOT_LIMITS.workflowDetail);
+  return waits.kind === 'start'
+    ? `It prepared the workflow "${waits.title}", which has NOT started: it waits for the person to say so.${detail ? ` ${detail}` : ''} Tell them and ask; confirm_workflow starts it or calls it off once they answered. What comes of it is reported to you.`
+    : `Its workflow "${waits.title}" stands still until the person answers it, in the task itself${detail ? `: ${detail}` : '.'}`;
+}
+
 /**
  * How a task on this Mac stands. A workflow hands the work to its members, so
  * the conversation that runs one is at work while no turn of its own runs.
@@ -275,11 +305,14 @@ export function localTaskState(task: {
   waitsForApproval: boolean;
   running: boolean;
   runsWorkflow: boolean;
+  /** A workflow of its that stands still until the person acts. */
+  workflowWaits?: MainBotTask['workflowWaits'];
   /** What its last turn asked the person, when it ended on a question or was blocked. */
   asks: string | null;
   failed: boolean;
 }): { state: MainBotTaskState; waitingOn?: string } {
   if (task.waitsForApproval) return { state: 'needs approval' };
+  if (task.workflowWaits) return { state: 'needs approval', waitingOn: workflowWaitingOn(task.workflowWaits) };
   if (task.running || task.runsWorkflow) return { state: 'working' };
   if (task.asks !== null) return { state: 'asks', waitingOn: task.asks };
   return { state: task.failed ? 'failed' : 'idle' };
@@ -316,6 +349,10 @@ export class MainBotService {
   private readonly settling = new Set<string>();
   /** Tasks on other Macs seen working since the bot last wrote to them. */
   private readonly seenWorking = new Set<string>();
+  /** The workflow wait the bot was last told of, per task: told once, not at every change. */
+  private readonly noted = new Map<string, string>();
+  /** Tasks whose workflow the bot is calling off itself: no news to it. */
+  private readonly callingOff = new Set<string>();
   private delivering = false;
   /** The bot's turn the counters below belong to. */
   private countedTurn: number | null = null;
@@ -883,6 +920,79 @@ export class MainBotService {
     return json({ ...base, note: 'Sent; the task works on it now, and its reply comes back to you as a [Report from …] message. Do not wait for it.' });
   }
 
+  /** Starts, or calls off, the workflow a task prepared, and sets what the bot waits for to match. Null when done. */
+  private async decideWorkflow(task: MainBotTask, start: boolean, run: { id: string; revision?: number }): Promise<{ error: string } | null> {
+    // News of the workflow ending that arrives while this runs is no news to the bot; after it, the watch is gone.
+    if (!start) this.callingOff.add(task.id);
+    try {
+      const done = await this.host.decideWorkflow(task.id, start, run).catch((failure): { error: string } => ({ error: String(failure) }));
+      if ('error' in done) return done;
+      this.noted.delete(task.id);
+      // Started: what comes of it is reported back. Called off: nothing more is waited for.
+      if (start) this.store.arm({ taskId: task.id, title: task.title, device: task.device, at: this.host.now() });
+      else this.store.disarm(task.id);
+      return null;
+    } finally {
+      this.callingOff.delete(task.id);
+    }
+  }
+
+  /**
+   * The tasks whose prepared workflow the bot's conversation offers to start:
+   * the ones it handed work to, or waits on. A workflow of a task the person
+   * runs themselves is answered in that task.
+   */
+  workflowCards(): string[] {
+    return this.host
+      .tasks()
+      .filter((task) => task.workflowWaits?.kind === 'start' && isSessionId(task.id) && Boolean(this.store.dispatch(task.id) ?? this.store.get(task.id)))
+      .map((task) => task.id);
+  }
+
+  /**
+   * Start or Cancel pressed on such a card: the person's own answer, so it
+   * needs no turn of theirs. It is for the run the card shows, as it shows it:
+   * a task can have more than one waiting, and starting approves its commands.
+   */
+  async decideWorkflowCard(taskId: string, run: { id: string; revision: number }, start: boolean): Promise<{ ok: true } | { ok: false; error: string }> {
+    const task = this.host.tasks().find((entry) => entry.id === taskId);
+    if (!task || !isSessionId(task.id) || !(this.store.dispatch(task.id) ?? this.store.get(task.id))) {
+      return { ok: false, error: 'No workflow of this task waits to be started here.' };
+    }
+    const failed = await this.decideWorkflow(task, start, run);
+    return failed ? { ok: false, error: failed.error } : { ok: true };
+  }
+
+  /** The person's answer to a workflow a task prepared: start it, or call it off. */
+  async confirmWorkflow(args: { task: string; decision: string }): Promise<ToolOutcome> {
+    const found = this.findTask(args.task);
+    if ('error' in found) return fail(found.error);
+    const decision = args.decision?.trim().toLowerCase();
+    if (decision !== 'start' && decision !== 'cancel') return fail('"decision" is "start" or "cancel".');
+    const waits = found.workflowWaits;
+    if (!waits) return fail(`No workflow of "${found.title}" waits for the person.`);
+    if (waits.kind !== 'start') return fail(`The workflow "${waits.title}" asks the person something only they can answer, in the task itself.`);
+    // Whether a workflow runs is the person's call: in a turn they wrote, never on a report.
+    if (this.host.main()?.turn?.typed !== true) {
+      return fail(`Only the person decides whether the workflow "${waits.title}" starts. Tell them who would do what and ask; call this once they answered.`);
+    }
+    const start = decision === 'start';
+    // The run the bot was told about, which is the one the person answered for.
+    const done = await this.decideWorkflow(found, start, { id: waits.runId });
+    if (done) return fail(done.error);
+    this.store.record({ taskId: found.id, title: found.title, device: found.device, project: found.project, agent: found.agent, goal: found.title, origin: 'adopted', at: this.host.now() });
+    return json({
+      sessionId: found.id,
+      title: found.title,
+      agent: found.agent,
+      device: found.device,
+      ...(isSessionId(found.id) ? { link: `aegis://sessions/${found.id}` } : {}),
+      note: start
+        ? `The workflow "${waits.title}" runs now. What comes of it is reported back to you; do not wait for it.`
+        : `The workflow "${waits.title}" was called off; it will not run.`,
+    });
+  }
+
   async stopTask(args: { task: string }): Promise<ToolOutcome> {
     const found = this.findTask(args.task);
     if ('error' in found) return fail(found.error);
@@ -941,8 +1051,50 @@ export class MainBotService {
       const at = this.host.now();
       this.store.setReport(taskId, { status, text, at });
       this.store.setDispatchReport(taskId, { status, gist: gistOf(text), at });
+      // A task that goes on through a workflow has not said its last word.
+      const now = status === 'stopped' ? undefined : this.host.tasks().find((task) => task.id === taskId);
+      if (now && (now.runsWorkflow || now.workflowWaits)) this.keepWaiting(watch, now, at);
     } finally {
       this.settling.delete(taskId);
+    }
+    await this.deliver();
+  }
+
+  /**
+   * The bot goes on waiting for a task whose work is with a workflow: what it
+   * has reported so far stays to be delivered, with a word from Aegis on how
+   * the workflow stands.
+   */
+  private keepWaiting(watch: { taskId: string; title: string; device: string }, task: MainBotTask, at: number): void {
+    const arm = () => this.store.arm({ taskId: watch.taskId, title: watch.title, device: watch.device, at });
+    arm();
+    this.store.setReport(watch.taskId, { status: NOTE, text: workflowNote(task), at });
+    arm();
+    this.noted.set(watch.taskId, JSON.stringify(task.workflowWaits ?? null));
+  }
+
+  /**
+   * A workflow a task started changed. When the bot waits on that task: it is
+   * told when the workflow comes to wait for the person, and stops waiting
+   * when the workflow was called off, since no turn follows that.
+   */
+  async onWorkflowChanged(taskId: string, status: string): Promise<void> {
+    const watch = this.store.get(taskId);
+    if (!watch || watch.report) return;
+    const task = this.host.tasks().find((entry) => entry.id === taskId);
+    if (!task) return;
+    const at = this.host.now();
+    if (task.workflowWaits) {
+      if (this.noted.get(taskId) === JSON.stringify(task.workflowWaits)) return;
+      this.keepWaiting(watch, task, at);
+    } else if (status === 'cancelled' && !task.runsWorkflow && task.state !== 'working') {
+      this.noted.delete(taskId);
+      if (this.callingOff.has(taskId)) return;
+      this.store.setReport(taskId, { status: NOTE, text: 'Its workflow was called off before it ended. Nothing more comes from the task unless it is written to again.', at });
+    } else {
+      // It no longer waits: should it come to wait again, also for the same thing, that is news again.
+      this.noted.delete(taskId);
+      return;
     }
     await this.deliver();
   }
@@ -996,8 +1148,12 @@ export class MainBotService {
   }
 
   private reportText(ready: MainBotWatch[]): string {
+    const reportsOf = (watch: MainBotWatch): MainBotReport[] => [...watch.earlier, ...(watch.report ? [watch.report] : [])];
+    const news = ready.every((watch) => reportsOf(watch).every((report) => report.status === NOTE));
     const parts = [
-      `${ready.length === 1 ? 'A task you handed work to has finished a turn' : `${ready.length} tasks you handed work to have finished a turn`} and reported back. This message comes from Aegis, not from the person.`,
+      news
+        ? `Something changed for ${ready.length === 1 ? 'a task' : `${ready.length} tasks`} you handed work to. This message comes from Aegis, not from the person.`
+        : `${ready.length === 1 ? 'A task you handed work to has finished a turn' : `${ready.length} tasks you handed work to have finished a turn`} and reported back. This message comes from Aegis, not from the person.`,
     ];
     const thisMac = this.host.devices().find((device) => device.id === null)?.name;
     for (const watch of ready) {
@@ -1006,10 +1162,17 @@ export class MainBotService {
       const goal = this.store.dispatch(watch.taskId)?.goal ?? '';
       const part = goal && !same(goal, watch.title) ? ` Part of "${goal}".` : '';
       // A task written to again before its report was taken: that turn's reply first, then the latest.
-      const reports: MainBotReport[] = [...watch.earlier, ...(watch.report ? [watch.report] : [])];
+      const reports = reportsOf(watch);
       reports.forEach((report, index) => {
+        if (report.status === NOTE) {
+          parts.push(`[About "${watch.title}"${where}]${link}${part} From Aegis, not from the agent that runs it: ${report.text}`);
+          return;
+        }
         const how = report.status === 'error' ? ' It stopped with an error.' : report.status === 'stopped' ? ' It was stopped.' : '';
-        const which = index < reports.length - 1 || !watch.report ? ' Its reply to an earlier turn' : ' Its reply';
+        // The reply of the turn that just ended: the last one, taken as it came or followed only by what Aegis adds to it.
+        const after = reports.slice(index + 1);
+        const latest = after.length ? after.every((later) => later.status === NOTE) : Boolean(watch.report);
+        const which = latest ? ' Its reply' : ' Its reply to an earlier turn';
         parts.push(`[Report from "${watch.title}"${where}]${link}${part}${how}${which}, written by the agent that ran it:`, fenced(report.text));
       });
     }

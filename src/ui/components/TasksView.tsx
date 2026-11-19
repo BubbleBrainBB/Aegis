@@ -27,7 +27,7 @@ import { sendEvent } from '../hooks/useIPC';
 import type { GitPullRequestSummary } from '../../shared/types';
 import { useSidebarViewOptions, useSidebarViewStore } from '../store/useSidebarViewStore';
 import { primaryPullRequest, useSidebarPullRequests, useSidebarPullRequestStore } from '../store/useSidebarPullRequests';
-import { useWorkflowRunningSessions } from '../store/useWorkflowStore';
+import { useWorkflowRunningSessions, useWorkflowWaitingSessions } from '../store/useWorkflowStore';
 import { PULL_REQUEST_STATUS, pullRequestStatus } from './pull-request-status';
 import { getSessionProjectPath, SessionHoverCard, SessionWorktreeMarks } from './SessionHoverCard';
 import {
@@ -142,9 +142,10 @@ export function TasksView() {
   const settledWorktrees = useSidebarPullRequestStore((state) => state.settledWorktrees);
   const settledCheckedAt = useSidebarPullRequestStore((state) => state.settledCheckedAt);
   const workflowSessions = useWorkflowRunningSessions();
+  const workflowWaiting = useWorkflowWaitingSessions();
   const sources = useMemo<TaskStateSources>(
-    () => ({ organization, prsBySession, worktrees: { settledWorktrees, settledCheckedAt }, workflowSessions }),
-    [organization, prsBySession, settledWorktrees, settledCheckedAt, workflowSessions]
+    () => ({ organization, prsBySession, worktrees: { settledWorktrees, settledCheckedAt }, workflowSessions, workflowWaiting }),
+    [organization, prsBySession, settledWorktrees, settledCheckedAt, workflowSessions, workflowWaiting]
   );
   const collapsedGroups = useSidebarViewStore((state) => state.collapsedGroups);
   const toggleGroupExpanded = useSidebarViewStore((state) => state.toggleGroupCollapsed);

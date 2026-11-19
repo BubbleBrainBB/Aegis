@@ -14,13 +14,14 @@ export const LIST_PROJECTS_TOOL = 'list_projects';
 export const START_TASK_TOOL = 'start_task';
 export const MESSAGE_TASK_TOOL = 'message_task';
 export const STOP_TASK_TOOL = 'stop_task';
+export const CONFIRM_WORKFLOW_TOOL = 'confirm_workflow';
 export const LIST_HANDED_OUT_TOOL = 'list_handed_out';
 export const READ_MEMORY_TOOL = 'read_memory';
 export const WRITE_MEMORY_TOOL = 'write_memory';
 export const READ_CONVERSATION_TOOL = 'read_conversation';
 
 /** The calls that act on one task: the chat draws each as a line that opens it. */
-const TASK_ACTION_TOOLS = [START_TASK_TOOL, MESSAGE_TASK_TOOL, STOP_TASK_TOOL];
+const TASK_ACTION_TOOLS = [START_TASK_TOOL, MESSAGE_TASK_TOOL, STOP_TASK_TOOL, CONFIRM_WORKFLOW_TOOL];
 const LOOKUP_TOOLS = [LIST_TASKS_TOOL, GET_TASK_TOOL, LIST_PROJECTS_TOOL, LIST_HANDED_OUT_TOOL, READ_MEMORY_TOOL, READ_CONVERSATION_TOOL];
 
 /** Tool names arrive bare from Bubble, or prefixed by an MCP server elsewhere. */
@@ -41,9 +42,22 @@ export function isMainBotNoteWriteToolName(name: unknown): boolean {
   return bareToolName(name) === WRITE_MEMORY_TOOL;
 }
 
-export function mainBotToolKind(name: unknown): 'start' | 'message' | 'stop' | null {
+export function mainBotToolKind(name: unknown): 'start' | 'message' | 'stop' | 'workflow' | null {
   const bare = bareToolName(name);
-  return bare === START_TASK_TOOL ? 'start' : bare === MESSAGE_TASK_TOOL ? 'message' : bare === STOP_TASK_TOOL ? 'stop' : null;
+  return bare === START_TASK_TOOL
+    ? 'start'
+    : bare === MESSAGE_TASK_TOOL
+      ? 'message'
+      : bare === STOP_TASK_TOOL
+        ? 'stop'
+        : bare === CONFIRM_WORKFLOW_TOOL
+          ? 'workflow'
+          : null;
+}
+
+/** Whether a confirm_workflow call called the workflow off instead of starting it. */
+export function mainBotWorkflowCalledOff(input: unknown): boolean {
+  return Boolean(input && typeof input === 'object' && (input as Record<string, unknown>).decision === 'cancel');
 }
 
 export const MAIN_BOT_LIMITS = {
@@ -59,6 +73,8 @@ export const MAIN_BOT_LIMITS = {
   listed: 40,
   /** Characters of the goal a task serves. */
   goal: 80,
+  /** Characters of what a workflow that waits for the person would do. */
+  workflowDetail: 300,
   /** Characters of a report kept with the record of a task; a longer one keeps its start and its end. */
   gist: 1_000,
   /** Characters of that shown in a list of many tasks. */
@@ -173,6 +189,7 @@ export const MAIN_BOT_INSTRUCTIONS = [
   '- A task\'s answer comes back to you as a message from Aegis that begins with [Report from …]. Tell the person only what they can use or must decide: the result, the question the task needs answered, or that it could not be done and why. One or two sentences; the full reply is in the task. A report needs no message back to the task unless what the person asked for is not yet done.',
   '- Report honestly: a draft is a draft, a failure is a failure. A report is that agent\'s claims, not checked facts.',
   '- A task may wait for the person to approve a command. You cannot approve for them: say which task waits, and they answer in the task.',
+  '- A task may prepare a workflow that does not start until the person says so. Tell them which task, and in a sentence who would do what; ask whether to start it. Aegis puts a card with Start and Cancel under your reply, so do not send them to the task for it. When they answer in words in this conversation instead, call confirm_workflow with their decision. Until then nothing runs: do not say the work is under way, whatever the task\'s own reply says. Never start one they did not say yes to.',
   '- Name a task by its title. For a task on this Mac, write the title as the link its result gives you, so the person can open it.',
   '',
   'What you keep:',

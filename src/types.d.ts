@@ -163,6 +163,10 @@ declare global {
     getMainBotSessionId: () => Promise<string | null>;
     /** Put the main bot's agent on an empty thread: done now, or with its next turn while one runs. */
     refreshMainBotContext: () => Promise<'done' | 'pending' | 'unavailable'>;
+    /** The tasks whose workflow, waiting to be started, Ask Aegis offers to start from its conversation. */
+    mainBotWorkflowCards: () => Promise<string[]>;
+    /** Start or Cancel on such a card: for the run it shows, at the revision it shows. */
+    decideMainBotWorkflow: (taskId: string, run: { id: string; revision: number }, start: boolean) => Promise<{ ok: true } | { ok: false; error: string }>;
     sessionHandoff: (payload: {
       sessionId: string;
       targetProvider: import('./shared/types').AgentProvider;

@@ -3,7 +3,7 @@ import { create } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
 import type { WorkflowAction, WorkflowActionResult, WorkflowRunView } from '../../shared/workflow';
 import { CURRENT_SESSION_AGENT } from '../../shared/workflow';
-import { sessionsWithActiveWorkflow } from '../utils/workflow-board';
+import { sessionsWithActiveWorkflow, sessionsWithWaitingWorkflow } from '../utils/workflow-board';
 
 type WorkflowState = {
   runs: Record<string, WorkflowRunView>;
@@ -80,6 +80,16 @@ export function useWorkflowRunningSessions(): ReadonlySet<string> {
     if (!loaded) void useWorkflowStore.getState().load();
   }, [loaded]);
   const ids = useWorkflowStore(useShallow((s) => sessionsWithActiveWorkflow(s.runs)));
+  return useMemo(() => new Set(ids), [ids]);
+}
+
+/** The chat sessions with a workflow of theirs that waits to be started: the task waits on the user for it. */
+export function useWorkflowWaitingSessions(): ReadonlySet<string> {
+  const loaded = useWorkflowStore((s) => s.loaded);
+  useEffect(() => {
+    if (!loaded) void useWorkflowStore.getState().load();
+  }, [loaded]);
+  const ids = useWorkflowStore(useShallow((s) => sessionsWithWaitingWorkflow(s.runs)));
   return useMemo(() => new Set(ids), [ids]);
 }
 

@@ -7,6 +7,7 @@ import { parseMainBotTaskResult } from '../../../shared/main-bot';
 import { useTaskStanding } from '../../hooks/useTaskStanding';
 import { useAppStore } from '../../store/useAppStore';
 import { cn } from '../../utils/cn';
+import { NEEDS_YOU_LABEL } from '../../utils/sidebar-view';
 import { taskTab } from '../../utils/right-utility-tabs';
 import { openTaskBeside } from '../../utils/task-state';
 import { Loader2 } from '../icons';
@@ -29,7 +30,9 @@ export function MainBotTaskStateIcon({ sessionId }: { sessionId: string }) {
 export function MainBotTaskChip({ input, resultText }: { input: unknown; resultText: string | null }) {
   const result = parseMainBotTaskResult(resultText);
   const sessionId = result.sessionId ?? '';
-  const { session, label } = useTaskStanding(sessionId);
+  const { session, state, failed, label } = useTaskStanding(sessionId);
+  // Waiting on the person: said in words on the chip, where the agent's name would be.
+  const needsYou = state === 'needs-input' && !failed;
   const showing = useAppStore(
     (state) => Boolean(sessionId) && !state.rightUtilityPanelHidden && state.activeRightUtilityTab === taskTab(sessionId)
   );
@@ -57,7 +60,11 @@ export function MainBotTaskChip({ input, resultText }: { input: unknown; resultT
         <MainBotTaskStateIcon sessionId={sessionId} />
       )}
       <span className="min-w-0 truncate text-[var(--text-primary)]">{title}</span>
-      {result.agent ? <span className="flex-shrink-0 text-[var(--text-muted)]" data-main-bot-task-agent>{result.agent}</span> : null}
+      {needsYou ? (
+        <span className="flex-shrink-0 text-[12px] font-medium text-[var(--warning)]" data-main-bot-task-needs-you>{NEEDS_YOU_LABEL}</span>
+      ) : result.agent ? (
+        <span className="flex-shrink-0 text-[var(--text-muted)]" data-main-bot-task-agent>{result.agent}</span>
+      ) : null}
     </button>
   );
 }

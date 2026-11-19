@@ -5,12 +5,14 @@
 // show the task's state as it is now, so nothing more is drawn when its
 // result comes back.
 
-import { mainBotToolKind, parseMainBotTaskResult } from '../../../shared/main-bot';
+import { mainBotToolKind, mainBotWorkflowCalledOff, parseMainBotTaskResult } from '../../../shared/main-bot';
 import { turnReportNeedsUser } from '../../../shared/turn-report';
 import { useAppStore } from '../../store/useAppStore';
+import { useWorkflowRunningSessions, useWorkflowWaitingSessions } from '../../store/useWorkflowStore';
 import { cn } from '../../utils/cn';
+import { NEEDS_YOU_LABEL } from '../../utils/sidebar-view';
 import { openTaskBeside } from '../../utils/task-state';
-import { AlertTriangle, CornerDownRight, LoaderCircle, Square } from '../icons';
+import { AlertTriangle, CornerDownRight, LoaderCircle, Play, Square } from '../icons';
 import { TraceLine } from '../TraceLine';
 
 type Tone = 'none' | 'working' | 'warning' | 'danger';
@@ -38,15 +40,18 @@ export function MainBotTaskLine({ toolName, input, resultText, failed, pending }
   const sessionId = result.sessionId ?? '';
   const session = useAppStore((state) => (sessionId ? state.sessions[sessionId] : undefined));
   const title = session?.title || result.title || field(input, 'title') || field(input, 'task') || 'a task';
+  const workflowWaits = useWorkflowWaitingSessions().has(sessionId);
+  // A workflow it started works on after its own turn has ended.
+  const workflowRuns = useWorkflowRunningSessions().has(sessionId);
 
   const state: { tone: Tone; label: string } = !session
     ? { tone: 'none', label: 'Started' }
     : session.permissionRequests?.length
-      ? { tone: 'warning', label: 'Needs you' }
-      : session.status === 'running'
+      ? { tone: 'warning', label: NEEDS_YOU_LABEL }
+      : session.status === 'running' || workflowRuns
         ? { tone: 'working', label: 'Running' }
-        : turnReportNeedsUser(session.turnReport)
-          ? { tone: 'warning', label: 'Needs you' }
+        : turnReportNeedsUser(session.turnReport) || workflowWaits
+          ? { tone: 'warning', label: NEEDS_YOU_LABEL }
           : session.status === 'error'
             ? { tone: 'danger', label: 'Failed' }
             : { tone: 'none', label: 'Done' };
@@ -66,14 +71,23 @@ export function MainBotTaskLine({ toolName, input, resultText, failed, pending }
     return null;
   }
 
-  const stop = kind === 'stop';
-  const verb = stop ? (pending ? 'Stopping' : failed ? 'Could not stop' : 'Stopped') : pending ? 'Sending to' : failed ? 'Could not send to' : 'Sent to';
+  // The person's answer to a workflow the task prepared: started, or called off.
+  const workflow = kind === 'workflow';
+  const calledOff = workflow && mainBotWorkflowCalledOff(input);
+  const stop = kind === 'stop' || calledOff;
+  const verb = workflow
+    ? calledOff
+      ? pending ? 'Calling off the workflow of' : failed ? 'Could not call off the workflow of' : 'Called off the workflow of'
+      : pending ? 'Starting the workflow of' : failed ? 'Could not start the workflow of' : 'Started the workflow of'
+    : stop
+      ? pending ? 'Stopping' : failed ? 'Could not stop' : 'Stopped'
+      : pending ? 'Sending to' : failed ? 'Could not send to' : 'Sent to';
   const canOpen = !failed && Boolean(session);
   return (
-    <div className="my-1" data-main-bot-task-line={stop ? 'stop' : 'message'}>
+    <div className="my-1" data-main-bot-task-line={workflow ? 'workflow' : stop ? 'stop' : 'message'}>
       <TraceLine
         as={canOpen ? 'button' : 'div'}
-        icon={pending ? <LoaderCircle className="animate-spin" /> : stop ? <Square /> : <CornerDownRight />}
+        icon={pending ? <LoaderCircle className="animate-spin" /> : stop ? <Square /> : workflow ? <Play /> : <CornerDownRight />}
         title={
           <>
             {verb} <span className="text-[var(--text-secondary)]">{title}</span>

@@ -40,7 +40,7 @@ import { SettingsNavPanel } from './settings/Settings';
 import { SidebarUpdateButton } from './sidebar/SidebarUpdateButton';
 import { useSessionOrganization } from '../store/useSessionOrganizationStore';
 import { useSidebarViewStore } from '../store/useSidebarViewStore';
-import { useWorkflowRunningSessions } from '../store/useWorkflowStore';
+import { useWorkflowRunningSessions, useWorkflowWaitingSessions } from '../store/useWorkflowStore';
 import { deriveSidebarSessionState } from '../utils/sidebar-view';
 
 const SIDEBAR_TRIGGER_CLASS =
@@ -292,6 +292,7 @@ export function Sidebar() {
   );
 
   const workflowSessions = useWorkflowRunningSessions();
+  const workflowWaiting = useWorkflowWaitingSessions();
   // My Tasks stands in for the list that used to sit here: the sidebar still says when one waits on you.
   const needsInputCount = useMemo(
     () =>
@@ -302,9 +303,10 @@ export function Sidebar() {
             unread: organization.sessions[session.id]?.unread,
             manualStatus: organization.sessions[session.id]?.manualStatus,
             workflowRunning: workflowSessions.has(session.id),
+            workflowWaiting: workflowWaiting.has(session.id),
           }) === 'needs-input'
       ).length,
-    [visibleSessions, organization, workflowSessions]
+    [visibleSessions, organization, workflowSessions, workflowWaiting]
   );
 
   const hasRunningSession = useMemo(

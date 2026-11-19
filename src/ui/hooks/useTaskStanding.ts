@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { useAppStore } from '../store/useAppStore';
 import { useSessionOrganization } from '../store/useSessionOrganizationStore';
 import { useSidebarPullRequests, useSidebarPullRequestStore } from '../store/useSidebarPullRequests';
-import { useWorkflowRunningSessions } from '../store/useWorkflowStore';
+import { useWorkflowRunningSessions, useWorkflowWaitingSessions } from '../store/useWorkflowStore';
 import { SIDEBAR_STATE_LABELS, taskAttention, type SidebarSessionState } from '../utils/sidebar-view';
 import { taskStateOf, type TaskStateSources } from '../utils/task-state';
 import type { SessionView } from '../types';
@@ -14,9 +14,10 @@ export function useTaskStateSources(): TaskStateSources {
   const settledWorktrees = useSidebarPullRequestStore((s) => s.settledWorktrees);
   const settledCheckedAt = useSidebarPullRequestStore((s) => s.settledCheckedAt);
   const workflowSessions = useWorkflowRunningSessions();
+  const workflowWaiting = useWorkflowWaitingSessions();
   return useMemo<TaskStateSources>(
-    () => ({ organization, prsBySession, worktrees: { settledWorktrees, settledCheckedAt }, workflowSessions }),
-    [organization, prsBySession, settledWorktrees, settledCheckedAt, workflowSessions]
+    () => ({ organization, prsBySession, worktrees: { settledWorktrees, settledCheckedAt }, workflowSessions, workflowWaiting }),
+    [organization, prsBySession, settledWorktrees, settledCheckedAt, workflowSessions, workflowWaiting]
   );
 }
 

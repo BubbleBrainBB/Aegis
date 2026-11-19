@@ -15,7 +15,7 @@ import {
   sessionSortTime,
 } from '../../src/ui/utils/sidebar-view';
 import { groupTasks } from '../../src/ui/utils/task-groups';
-import { sessionsWithActiveWorkflow } from '../../src/ui/utils/workflow-board';
+import { sessionsWithActiveWorkflow, sessionsWithWaitingWorkflow } from '../../src/ui/utils/workflow-board';
 import type { GitPullRequestSummary } from '../../src/shared/types';
 
 // Isolated persistence: exercise the real store without the renderer bridge.
@@ -157,6 +157,28 @@ assert.deepEqual(
   }),
   ['s1', 's2'],
   'only runs still going count, once per task; one waiting on you or finished does not',
+);
+// --- a workflow the task prepared, waiting to be started -------------------------
+assert.equal(deriveSidebarSessionState({ ...idle, runtimeNotice: 'completed' }, { workflowWaiting: true }), 'needs-input',
+  'the turn ended, and the next thing to do is yours: start the workflow or call it off');
+assert.equal(deriveSidebarSessionState(idle, { workflowWaiting: true, keptOpen: true }), 'needs-input',
+  'also once you have looked at it, for as long as the task is open');
+assert.equal(deriveSidebarSessionState(idle, { workflowWaiting: true }), 'completed',
+  'a workflow left unanswered on a task you closed does not bring the task back');
+assert.equal(deriveSidebarSessionState(idle, { workflowWaiting: true, keptOpen: true, manualStatus: 'completed' }), 'completed',
+  'a status set by hand still wins');
+assert.equal(deriveSidebarSessionState({ ...idle, status: 'running' }, { workflowWaiting: true }), 'running',
+  'while the task works on, it is running');
+assert.deepEqual(
+  sessionsWithWaitingWorkflow({
+    a: { status: 'awaiting_confirmation', parent: { sessionId: 's2', toolUseId: null, provider: 'claude' } },
+    b: { status: 'awaiting_confirmation', parent: { sessionId: 's1', toolUseId: null, provider: 'claude' } },
+    c: { status: 'needs_input', parent: { sessionId: 's3', toolUseId: null, provider: 'claude' } },
+    d: { status: 'running', parent: { sessionId: 's4', toolUseId: null, provider: 'claude' } },
+    e: { status: 'awaiting_confirmation', parent: null },
+  }),
+  ['s1', 's2'],
+  'only runs that wait to be started, and only those a task started',
 );
 assert.equal(deriveSidebarSessionState({ ...idle, runtimeNotice: 'completed', turnReport: report('nothing_to_do') }, {}), 'completed',
   'a turn with nothing to change has no result to review');
