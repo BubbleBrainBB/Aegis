@@ -109,7 +109,7 @@ app.whenReady().then(async()=>{
  ipcMain.handle('get-app-preferences',()=>({}));
  const decided=[];
  ipcMain.handle('main-bot-workflow-cards',()=>['t4']);
- ipcMain.handle('main-bot-decide-workflow',(_e,taskId,start)=>{decided.push([taskId,start]);return taskId==='t4'?{ok:true}:{ok:false,error:'No workflow of this task waits to be started.'}});
+ ipcMain.handle('main-bot-decide-workflow',(_e,taskId,run,start)=>{decided.push([taskId,run,start]);return taskId==='t4'?{ok:true}:{ok:false,error:'No workflow of this task waits to be started.'}});
  const win=new BrowserWindow({width:1100,height:760,show:true,webPreferences:{backgroundThrottling:false,preload:path.join(root,'dist-electron/electron/preload.cjs')}});
  const errors=[];win.webContents.on('console-message',e=>{if(e.level==='error')errors.push(e.message)});
  const js=code=>win.webContents.executeJavaScript(code,true);
@@ -202,7 +202,7 @@ app.whenReady().then(async()=>{
   await js('[...document.querySelectorAll("[data-main-bot-workflow-card] button")].find(b=>b.textContent==="Details").click()');await delay(100);
   // Start: the person's answer goes to Aegis; once the workflow runs, the card gives way to one line.
   await js('[...document.querySelectorAll("[data-main-bot-workflow-card] button")].find(b=>b.textContent.trim()==="Start").click()');await delay(200);
-  assert.deepEqual(decided,[['t4',true]]);
+  assert.deepEqual(decided,[['t4',{id:'w1',revision:2},true]]);
   await js('window.qa.workflows.getState().upsert({...window.qa.workflows.getState().runs.w1,status:"running",revision:3});0');await delay(200);
   assert.deepEqual(await card(),[]);
   assert.deepEqual(await js('[...document.querySelectorAll("[data-qa=cards] [data-main-bot-task-line]")].map(e=>[e.dataset.mainBotTaskLine,e.textContent])'),[['workflow','Started the workflow of Bump the Bubble SDK']]);

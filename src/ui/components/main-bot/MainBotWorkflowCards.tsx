@@ -109,7 +109,8 @@ function WorkflowCard({ run, messageCount }: { run: WorkflowRunView; messageCoun
   const decide = async (start: boolean) => {
     setBusy(true);
     try {
-      const done = await window.electron.decideMainBotWorkflow(sessionId, start);
+      // For this run as it is shown here: another one of the task, or a plan changed since, is not answered by it.
+      const done = await window.electron.decideMainBotWorkflow(sessionId, { id: run.id, revision: run.revision }, start);
       if (!done.ok) {
         toast.error(done.error);
         return;

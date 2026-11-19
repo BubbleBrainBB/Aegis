@@ -43,7 +43,7 @@ export interface MainBotTask {
    * that waits to be started (`start`), or one that asks them something
    * (`answer`). `detail`: who would do what, or what it asks.
    */
-  workflowWaits?: { kind: 'start' | 'answer'; title: string; detail: string };
+  workflowWaits?: { runId: string; kind: 'start' | 'answer'; title: string; detail: string };
   updatedAt: number;
 }
 
@@ -118,7 +118,8 @@ export interface MainBotHost {
   send(taskId: string, prompt: string): Promise<Done>;
   stop(taskId: string): Promise<Done>;
   /** Start, or call off, the workflow a task prepared that waits to be started: what the person does on its card. */
-  decideWorkflow(taskId: string, start: boolean): Promise<{ ok: true; title: string } | { error: string }>;
+  /** Starts or calls off that run of the task; with a revision, only if the run still stands at it. */
+  decideWorkflow(taskId: string, start: boolean, run: { id: string; revision?: number }): Promise<{ ok: true; title: string } | { error: string }>;
   /** The latest turn of a task: what it was asked and what the agent said. */
   lastTurn(taskId: string): Promise<{ asked: string | null; reply: string } | null>;
   /** Whether a task on this Mac still exists, listed or not: `tasks()` leaves archived ones out. Always true for one on another Mac. */
@@ -920,11 +921,11 @@ export class MainBotService {
   }
 
   /** Starts, or calls off, the workflow a task prepared, and sets what the bot waits for to match. Null when done. */
-  private async decideWorkflow(task: MainBotTask, start: boolean): Promise<{ error: string } | null> {
+  private async decideWorkflow(task: MainBotTask, start: boolean, run: { id: string; revision?: number }): Promise<{ error: string } | null> {
     // News of the workflow ending that arrives while this runs is no news to the bot; after it, the watch is gone.
     if (!start) this.callingOff.add(task.id);
     try {
-      const done = await this.host.decideWorkflow(task.id, start).catch((failure): { error: string } => ({ error: String(failure) }));
+      const done = await this.host.decideWorkflow(task.id, start, run).catch((failure): { error: string } => ({ error: String(failure) }));
       if ('error' in done) return done;
       this.noted.delete(task.id);
       // Started: what comes of it is reported back. Called off: nothing more is waited for.
@@ -948,11 +949,17 @@ export class MainBotService {
       .map((task) => task.id);
   }
 
-  /** Start or Cancel pressed on such a card: the person's own answer, so it needs no turn of theirs. */
-  async decideWorkflowCard(taskId: string, start: boolean): Promise<{ ok: true } | { ok: false; error: string }> {
+  /**
+   * Start or Cancel pressed on such a card: the person's own answer, so it
+   * needs no turn of theirs. It is for the run the card shows, as it shows it:
+   * a task can have more than one waiting, and starting approves its commands.
+   */
+  async decideWorkflowCard(taskId: string, run: { id: string; revision: number }, start: boolean): Promise<{ ok: true } | { ok: false; error: string }> {
     const task = this.host.tasks().find((entry) => entry.id === taskId);
-    if (!task || task.workflowWaits?.kind !== 'start') return { ok: false, error: 'No workflow of this task waits to be started.' };
-    const failed = await this.decideWorkflow(task, start);
+    if (!task || !isSessionId(task.id) || !(this.store.dispatch(task.id) ?? this.store.get(task.id))) {
+      return { ok: false, error: 'No workflow of this task waits to be started here.' };
+    }
+    const failed = await this.decideWorkflow(task, start, run);
     return failed ? { ok: false, error: failed.error } : { ok: true };
   }
 
@@ -970,7 +977,8 @@ export class MainBotService {
       return fail(`Only the person decides whether the workflow "${waits.title}" starts. Tell them who would do what and ask; call this once they answered.`);
     }
     const start = decision === 'start';
-    const done = await this.decideWorkflow(found, start);
+    // The run the bot was told about, which is the one the person answered for.
+    const done = await this.decideWorkflow(found, start, { id: waits.runId });
     if (done) return fail(done.error);
     this.store.record({ taskId: found.id, title: found.title, device: found.device, project: found.project, agent: found.agent, goal: found.title, origin: 'adopted', at: this.host.now() });
     return json({
@@ -1084,7 +1092,8 @@ export class MainBotService {
       if (this.callingOff.has(taskId)) return;
       this.store.setReport(taskId, { status: NOTE, text: 'Its workflow was called off before it ended. Nothing more comes from the task unless it is written to again.', at });
     } else {
-      if (!task.runsWorkflow) this.noted.delete(taskId);
+      // It no longer waits: should it come to wait again, also for the same thing, that is news again.
+      this.noted.delete(taskId);
       return;
     }
     await this.deliver();

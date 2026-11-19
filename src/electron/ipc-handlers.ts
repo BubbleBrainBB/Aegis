@@ -5258,7 +5258,7 @@ function setupMainBotEntry(mainWindow: BrowserWindow): void {
     reportsTo: (sessionId) => followUps?.reportsTo(sessionId) ?? null,
     sessionsRunningWorkflow: () => workflowRuns?.sessionsWithActiveRun() ?? [],
     workflowsWaiting: () => workflowRuns?.waitingOnUser() ?? [],
-    decideWorkflow: async (sessionId, start) => workflowRuns?.decideWaiting(sessionId, start) ?? { ok: false, error: 'Workflows are not available.' },
+    decideWorkflow: async (sessionId, start, run) => workflowRuns?.decideWaiting(sessionId, start, run) ?? { ok: false, error: 'Workflows are not available.' },
     isGitRepo: (cwd) => assertGitRepo(cwd).then(() => true, () => false),
     startExtras: async (provider, prompt, cwd) => (provider === 'codex' ? codexReferences(prompt, cwd) : {}),
     freshThread: (sessionId, entering, automatic) => startMainBotFreshThread(mainWindow, sessionId, entering, automatic),
@@ -5267,8 +5267,10 @@ function setupMainBotEntry(mainWindow: BrowserWindow): void {
   ipcMainHandle('main-bot-open', async (): Promise<SessionInfo> => buildSessionInfoFromRow(ensureMainBotSession()));
   ipcMainHandle('main-bot-session-id', async (): Promise<string | null> => mainBotSession()?.id ?? null);
   ipcMainHandle('main-bot-workflow-cards', async (): Promise<string[]> => mainBotWorkflowCards());
-  ipcMainHandle('main-bot-decide-workflow', async (_event, taskId: string, start: boolean) =>
-    typeof taskId === 'string' && typeof start === 'boolean' ? decideMainBotWorkflowCard(taskId, start) : { ok: false as const, error: 'Bad request.' });
+  ipcMainHandle('main-bot-decide-workflow', async (_event, taskId: string, run: { id: string; revision: number }, start: boolean) =>
+    typeof taskId === 'string' && typeof run?.id === 'string' && Number.isInteger(run.revision) && typeof start === 'boolean'
+      ? decideMainBotWorkflowCard(taskId, { id: run.id, revision: run.revision }, start)
+      : { ok: false as const, error: 'Bad request.' });
 }
 
 /**

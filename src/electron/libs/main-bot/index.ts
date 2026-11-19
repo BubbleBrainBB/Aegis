@@ -46,9 +46,9 @@ export interface MainBotDeps {
   /** The conversations whose workflow is still going. */
   sessionsRunningWorkflow(): string[];
   /** Workflows of conversations that stand still until the person acts, latest first. */
-  workflowsWaiting(): Array<{ sessionId: string; kind: 'start' | 'answer'; title: string; detail: string }>;
+  workflowsWaiting(): Array<{ sessionId: string; runId: string; kind: 'start' | 'answer'; title: string; detail: string }>;
   /** Start, or call off, the workflow a conversation prepared that waits to be started. */
-  decideWorkflow(sessionId: string, start: boolean): Promise<{ ok: true; title: string } | { ok: false; error: string }>;
+  decideWorkflow(sessionId: string, start: boolean, run: { id: string; revision?: number }): Promise<{ ok: true; title: string } | { ok: false; error: string }>;
   isGitRepo(path: string): Promise<boolean>;
   /** Start fields an agent needs beyond the prompt (Codex's file references). */
   startExtras(provider: AgentProvider, prompt: string, cwd: string): Promise<Partial<SessionStartPayload>>;
@@ -163,9 +163,9 @@ export function mainBotWorkflowCards(): string[] {
 }
 
 /** Start or Cancel on such a card. */
-export async function decideMainBotWorkflowCard(taskId: string, start: boolean): Promise<{ ok: true } | { ok: false; error: string }> {
+export async function decideMainBotWorkflowCard(taskId: string, run: { id: string; revision: number }, start: boolean): Promise<{ ok: true } | { ok: false; error: string }> {
   if (!service) return { ok: false, error: 'Ask Aegis is not available.' };
-  return service.decideWorkflowCard(taskId, start).catch((failure) => ({ ok: false as const, error: String(failure) }));
+  return service.decideWorkflowCard(taskId, run, start).catch((failure) => ({ ok: false as const, error: String(failure) }));
 }
 
 /** Something changed on a Mac this one controls. */
@@ -217,8 +217,8 @@ function localTasks(needs: MainBotDeps): MainBotTask[] {
   const workflows = new Set(needs.sessionsRunningWorkflow());
   // The latest one of a conversation is the one its card shows.
   const waiting = new Map<string, NonNullable<MainBotTask['workflowWaits']>>();
-  for (const { sessionId, kind, title, detail } of needs.workflowsWaiting()) {
-    if (!waiting.has(sessionId)) waiting.set(sessionId, { kind, title, detail });
+  for (const { sessionId, runId, kind, title, detail } of needs.workflowsWaiting()) {
+    if (!waiting.has(sessionId)) waiting.set(sessionId, { runId, kind, title, detail });
   }
   const main = mainBotSession()?.id;
   const organization = sessions.getSessionOrganization().sessions;
@@ -446,9 +446,9 @@ export function setupMainBot(needs: MainBotDeps): MainBotService {
       needs.stop(taskId);
       return { ok: true };
     },
-    decideWorkflow: async (taskId, start) => {
+    decideWorkflow: async (taskId, start, run) => {
       if (isRemoteSessionId(taskId)) return { error: 'A workflow on another Mac is started on that Mac.' };
-      const done = await needs.decideWorkflow(taskId, start);
+      const done = await needs.decideWorkflow(taskId, start, run);
       return done.ok ? done : { error: done.error };
     },
     lastTurn,

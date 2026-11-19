@@ -141,11 +141,22 @@ export class WorkflowService {
     });
   }
 
-  /** Start, or call off, the run a chat prepared that waits to be started: what Start and Cancel on its card do. */
-  async decideWaiting(sessionId: string, start: boolean): Promise<{ ok: true; title: string } | { ok: false; error: string }> {
-    const run = store.listRunsWaitingOnUser().find((entry) => entry.status === 'awaiting_confirmation' && entry.options.parent?.sessionId === sessionId);
-    if (!run) return { ok: false, error: 'No workflow of this task waits to be started.' };
-    const result = await this.act({ type: start ? 'confirm' : 'cancel', runId: run.id, expectedRevision: run.revision });
+  /**
+   * Start, or call off, a run a chat prepared that waits to be started: what
+   * Start and Cancel on its card do. The run is named, since a chat can have
+   * more than one waiting, and starting approves that run's commands; with
+   * the revision the user was shown, a plan that changed since is not started.
+   */
+  async decideWaiting(
+    sessionId: string,
+    start: boolean,
+    target: { id: string; revision?: number },
+  ): Promise<{ ok: true; title: string } | { ok: false; error: string }> {
+    const run = store
+      .listRunsWaitingOnUser()
+      .find((entry) => entry.id === target.id && entry.status === 'awaiting_confirmation' && entry.options.parent?.sessionId === sessionId);
+    if (!run) return { ok: false, error: 'That workflow no longer waits to be started.' };
+    const result = await this.act({ type: start ? 'confirm' : 'cancel', runId: run.id, expectedRevision: target.revision ?? run.revision });
     return result.ok ? { ok: true, title: result.run.title } : { ok: false, error: result.error };
   }
 
