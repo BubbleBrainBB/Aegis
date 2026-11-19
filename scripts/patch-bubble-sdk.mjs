@@ -4,6 +4,8 @@
 // 0.0.67 changed dist/sdk/index.js (same file in 0.0.68 and 0.0.69): MCP tools
 // pass a turn's `allowedTools`, and the MCP status, reconnect and shutdown
 // methods follow resolveProjectTrust, so the trust seam ends where they begin.
+// 0.0.70 changed it again, outside the patched seams: runTurn fits the thinking
+// level it is given to the model's own levels (resolveTurnThinkingLevel).
 // Patched here: repeatable, serialized project trust; explicit deny rules for
 // read-only host tools; and a host tool shadowing a same-named MCP tool
 // instead of failing the turn.
@@ -13,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 
 export async function patchBubbleSdk(root) {
   const pkg = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
-  if (pkg.version !== '0.0.69') throw new Error(`Review Bubble host patch for SDK ${pkg.version}`);
+  if (pkg.version !== '0.0.70') throw new Error(`Review Bubble host patch for SDK ${pkg.version}`);
   const jsPath = path.join(root, 'dist/sdk/index.js');
   const typesPath = path.join(root, 'dist/sdk/index.d.ts');
   let js = await readFile(jsPath, 'utf8');
