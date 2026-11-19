@@ -4,7 +4,7 @@ import { findClaudeRewindAnchor } from '../../shared/claude-rewind-anchor';
 import { EnvironmentChatSurface } from './environment/EnvironmentPanelLayout';
 import { WorkstreamDisclosureRegistry } from './WorkstreamDisclosureState';
 import { ImageStudioComposerHome } from './ImageStudioComposerDock';
-import { ImageStudioSessionContext } from '../lib/image-studio';
+import { ImageStudioSessionContext, SessionSourcesHostContext } from '../lib/image-studio';
 import { getAssistantPhase } from '../../shared/assistant-phase';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import * as DropdownMenu from '@/ui/components/ui/dropdown-menu';
@@ -1989,6 +1989,8 @@ export function ChatPane({
   // Side chat panes (right-panel forks) are direct-conversation surfaces, not
   // new-task surfaces — they never use the New Thread landing.
   const isSideChatPane = paneId.startsWith('sidechat:');
+  // Panes the workspace lays out have plain ids; a hosted one names its host.
+  const isHostedPane = /^(sidechat|task|workflow-member|design-dock):/.test(paneId);
   // A freshly created draft thread with no messages shows the centered landing
   // (title + composer + starter suggestions), matching the first-entry screen.
   // The main bot works across projects: its conversation has none to pick or change.
@@ -2043,6 +2045,7 @@ export function ChatPane({
 
   return (
     <DesignLinkSessionContext.Provider value={sessionId}>
+    <SessionSourcesHostContext.Provider value={!isHostedPane}>
     <div
       className={`relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden transition-colors ${
         isActive ? 'bg-[var(--chat-pane-surface)]' : 'bg-[var(--chat-pane-surface-muted)]'
@@ -2618,6 +2621,7 @@ export function ChatPane({
         </>
       )}
     </div>
+    </SessionSourcesHostContext.Provider>
     </DesignLinkSessionContext.Provider>
   );
 }

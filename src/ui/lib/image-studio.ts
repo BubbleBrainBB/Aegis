@@ -11,6 +11,14 @@ import { sessionSourceTab } from '../utils/right-utility-tabs';
 
 export const ImageStudioSessionContext = createContext<string | null>(null);
 
+/**
+ * Whether the messages drawn here can open their session's sources. The
+ * Sources tab follows the session of the main pane, so a conversation hosted
+ * inside the right panel (a handed-out task, a workflow member, a side chat)
+ * or the Design dock has nowhere to open them.
+ */
+export const SessionSourcesHostContext = createContext(true);
+
 /** Image attachments share the main image workspace, for every provider. */
 export function openSessionSource(sessionId: string, source: Attachment | null): void {
   const store = useAppStore.getState();
@@ -28,8 +36,9 @@ export function openSessionSource(sessionId: string, source: Attachment | null):
     store.setRightPanelFullscreen('images');
     return;
   }
-  store.openRightUtilityTab('sources');
+  // A file opens as its own tab; the list is a separate one, opened on request.
   if (source) store.openRightUtilityTab(sessionSourceTab(source.path), { instantReveal: true });
+  else store.openRightUtilityTab('sources');
 }
 
 export function openImageStudio(sessionId: string, path: string, view: 'single' | 'canvas' = 'single'): boolean {

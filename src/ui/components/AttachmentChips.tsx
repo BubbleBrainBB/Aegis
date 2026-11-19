@@ -139,18 +139,29 @@ function ImageAttachmentThumb({
   );
 }
 
-function FileAttachment({ attachment, onRemove, variant }: {
+function FileAttachment({ attachment, onRemove, onOpen, variant }: {
   attachment: Attachment;
   onRemove?: (id: string) => void;
+  onOpen?: (attachment: Attachment) => void;
   variant: 'composer' | 'message';
 }) {
   const format = attachment.name.split('.').pop()?.toUpperCase() || 'FILE';
-  if (variant === 'message') return (
-    <div data-file-attachment="message" className="inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-full border border-[var(--border)] bg-transparent px-3 text-[13px] text-[var(--text-primary)]" title={attachment.name}>
-      <File aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]" strokeWidth={1.5} />
-      <span className="min-w-0 truncate">{attachment.name}</span>
-    </div>
-  );
+  if (variant === 'message') {
+    const className = 'inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-full border border-[var(--border)] bg-transparent px-3 text-[13px] text-[var(--text-primary)]';
+    const content = (
+      <>
+        <File aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]" strokeWidth={1.5} />
+        <span className="min-w-0 truncate">{attachment.name}</span>
+      </>
+    );
+    // Opens where the task's other sources preview: the right panel.
+    if (onOpen) return (
+      <button type="button" data-file-attachment="message" onClick={() => onOpen(attachment)} aria-label={`Open attachment: ${attachment.name}`} title={attachment.name} className={`${className} transition-colors hover:bg-[var(--sidebar-item-hover)]`}>
+        {content}
+      </button>
+    );
+    return <div data-file-attachment="message" className={className} title={attachment.name}>{content}</div>;
+  }
   return (
     <div data-file-attachment="composer" className="relative flex h-14 w-[220px] max-w-full shrink-0 items-center gap-2.5 rounded-2xl border border-[var(--border)] bg-[var(--bg-primary)] p-1.5 pr-7" title={attachment.name}>
       <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--bg-tertiary)]">
@@ -170,10 +181,13 @@ function FileAttachment({ attachment, onRemove, variant }: {
 export function AttachmentChips({
   attachments,
   onRemove,
+  onOpen,
   variant = 'composer',
 }: {
   attachments: Attachment[];
   onRemove?: (attachmentId: string) => void;
+  /** Sent messages only: makes a file pill open its preview. */
+  onOpen?: (attachment: Attachment) => void;
   variant?: 'composer' | 'message';
 }) {
   const [previews, setPreviews] = useState<Record<string, string | null>>({});
@@ -233,7 +247,7 @@ export function AttachmentChips({
           );
         }
 
-        if (a.kind === 'file') return <FileAttachment key={a.id} attachment={a} onRemove={onRemove} variant={variant} />;
+        if (a.kind === 'file') return <FileAttachment key={a.id} attachment={a} onRemove={onRemove} onOpen={onOpen} variant={variant} />;
 
         const preview = a.kind === 'image' ? previews[a.id] || undefined : undefined;
 
