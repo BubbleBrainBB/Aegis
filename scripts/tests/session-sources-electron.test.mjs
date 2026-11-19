@@ -16,7 +16,7 @@ import {useSessionSources} from '/src/ui/hooks/useSessionSources';
 import {EnvironmentHub} from '/src/ui/components/environment/EnvironmentHub';
 import {SessionSourcesPanel} from '/src/ui/components/SessionSourcesPanel';
 import {sessionSourceTabPath,getRightUtilityTabKind} from '/src/ui/utils/right-utility-tabs';
-import {openSessionSource} from '/src/ui/lib/image-studio';
+import {openSessionSource,SessionSourcesHostContext} from '/src/ui/lib/image-studio';
 import {ImageStudioPanel} from '/src/ui/components/ImageStudioPanel';
 import {ImageStudioComposerHome} from '/src/ui/components/ImageStudioComposerDock';
 import {RightUtilityWorkspace} from '/src/ui/App';
@@ -44,6 +44,7 @@ function Harness(){
  const [id,setId]=useState('one');qa.session=id=>{setId(id);useAppStore.setState({rightUtilityTabs:['sources'],activeRightUtilityTab:'sources',rightPanelFullscreen:null})};
  const [extra,setExtra]=useState([]);qa.add=()=>setExtra([file('missing.pdf')]);
  const [chat,setChat]=useState(false);qa.chat=setChat;
+ const [hosted,setHosted]=useState(false);qa.hosted=setHosted;
  const messages=React.useMemo(()=>id==='one'?[{type:'user_prompt',prompt:'References',attachments:[movie,note,doc,...extra]}]:[],[id,extra]);
  const session={...base,id,isDraft:false,messages};
  const state=useSessionSources(session);
@@ -58,7 +59,7 @@ function Harness(){
   <main data-workspace style={{display:'flex',flex:1,minWidth:0}}>
    <div data-chat style={{display:full?'none':'flex',flex:1,flexDirection:'column'}}>
     <div style={{display:'flex',justifyContent:'flex-end'}}><EnvironmentHub context={context} git={git} sources={state.sources} sourcesError={state.error} onOpenProjectPanel={()=>{}} onOpenSources={select}/></div>
-    <div style={{flex:1}}>Original chat{chat&&messages.map((message,i)=><MessageCard key={i} message={message} sessionId={id} toolStatusMap={new Map()} toolResultsMap={new Map()}/>)}</div>
+    <div style={{flex:1}}>Original chat<SessionSourcesHostContext.Provider value={!hosted}>{chat&&messages.map((message,i)=><MessageCard key={i} message={message} sessionId={id} toolStatusMap={new Map()} toolResultsMap={new Map()}/>)}</SessionSourcesHostContext.Provider></div>
     <ImageStudioComposerHome sessionId={id}><input aria-label="Chat draft" defaultValue="Keep my draft"/></ImageStudioComposerHome>
    </div>
    {active&&<RightUtilityWorkspace hidden={false} instantReveal activePanel={getRightUtilityTabKind(active)} tabs={tabs.map(tab=>({id:tab,kind:getRightUtilityTabKind(tab),label:tab.startsWith('images:')?'Image canvas':sessionSourceTabPath(tab)?.split('/').pop()||'Sources'}))} activeTab={active} browserAvailable={false} width={full?760:560} resizable={false} fullscreen={!!full} onWidthChange={()=>{}} onSelectTab={useAppStore.getState().setActiveRightUtilityTab} onCloseTab={useAppStore.getState().closeRightUtilityTab} onOpenTab={useAppStore.getState().openRightUtilityTab} onTogglePanel={useAppStore.getState().closeRightUtilityPanels} onToggleFullscreen={null}>
@@ -135,7 +136,14 @@ app.whenReady().then(async()=>{
   await click('All sources');assert.equal(await run('!!document.querySelector("video")'),false,'leaving preview removes playback');
   await click('notes.txt');await wait('document.body.innerText.includes("Attachment text content")');
   await click('All sources');await click('document.docx');await wait('document.body.innerText.includes("Preview is unavailable")');
-  await click('Open attachment in default app');assert.equal((await run('qa.opened')).length,1);
+  // No app is listed for this file (as on Windows and Linux): Open hands it to the
+  // system, and the menu keeps the actions that need no app list.
+  await click('Open in default app');assert.deepEqual(await run('qa.opened'),['/Library/Application Support/Uploads/document.docx']);
+  await click('Open with…');await wait('!!document.querySelector("[role=menu] [role=menuitem]")');
+  assert.deepEqual(await run('[...document.querySelectorAll("[role=menu] [role=menuitem]")].map(e=>e.textContent.trim())'),[process.platform==='darwin'?'Show in Finder':'Show in folder','Save as…']);
+  assert.equal(await run('!!document.querySelector("[role=menu] [role=separator]")'),false,'no divider above when there are no apps');
+  await pick('menuitem','Save as…');
+  assert.deepEqual((await run('qa.saved')).at(-1),{cwd:'/Library/Application Support/Uploads',path:'/Library/Application Support/Uploads/document.docx'},'Save as works without an app list');
   await click('All sources');await run('qa.add()');await delay(200);await click('missing.pdf');await wait('document.body.innerText.includes("Attachment is missing")');
   await click('All sources');await run('qa.select("/Library/Application Support/Uploads/reference.png")');await delay(10);await run('qa.select("/Library/Application Support/Uploads/notes.txt")');await delay(250);
   assert(await run('document.body.innerText.includes("Attachment text content")'));assert.equal(await run('!!document.querySelector("img[alt]")'),false,'stale preview cannot replace the selected file');
@@ -159,6 +167,12 @@ app.whenReady().then(async()=>{
   assert.equal(await run('document.querySelectorAll("button[data-file-attachment=message]").length'),0,'no right panel outside chat, so pills are plain');
   assert.equal(await run('document.querySelectorAll("[data-file-attachment=message]").length'),4);
   await run('window.__store.setState({activeWorkspace:"chat"})');await delay(100);
+  // A conversation hosted in the right panel (a handed-out task, a workflow member)
+  // is not the session the Sources tab follows.
+  await run('qa.hosted(true)');await delay(100);
+  assert.equal(await run('document.querySelectorAll("button[data-file-attachment=message]").length'),0,'hosted conversations keep plain pills');
+  await run('qa.hosted(false)');await delay(100);
+  assert.equal(await run('document.querySelectorAll("button[data-file-attachment=message]").length'),4);
   fs.mkdirSync(process.env.QA_CAPTURE,{recursive:true});fs.writeFileSync(path.join(process.env.QA_CAPTURE,'sources.png'),(await win.webContents.capturePage()).toPNG());
   assert.deepEqual(errors,[]);console.log('PASS Sources UI: message pills open previews, full-workspace image canvas, preserved composer, zoom, close, provider-independent viewing, non-Git card, historical/live dedupe, View all, image, MP4, text, fallback, missing file, stale replies, task switching');app.exit(0);
  }catch(error){console.error(error,errors);app.exit(1)}

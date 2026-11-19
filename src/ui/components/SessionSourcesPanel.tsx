@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react';
-import { toast } from 'sonner';
 import type { Attachment } from '../types';
 import type { SessionSourcePreview } from '../../shared/session-sources';
 import { FileTypeIcon } from './FileTypeIcon';
-import { ChevronRight, ExternalLink } from './icons';
+import { ChevronRight } from './icons';
 import { CopyPathButton } from './FilePathActions';
 import { OpenWithButton } from './OpenWithButton';
 import { ProjectVideoPreview } from './ProjectVideoPreview';
@@ -54,11 +53,7 @@ export function SessionSourcesPanel({ sessionId, sources, loading, error, onRetr
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <CopyPathButton filePath={selected.path} />
-          <OpenWithButton cwd={selectedFolder} filePath={selected.path} fallback={
-            <button type="button" aria-label="Open attachment in default app" title="Open in default app" className="rounded p-1 hover:bg-[var(--sidebar-item-hover)]" onClick={() => {
-              void window.electron.openPath(selected.path).then(result => { if (!result.ok) toast.error(result.message || 'Unable to open attachment.'); }).catch(() => toast.error('Unable to open attachment.'));
-            }}><ExternalLink className="h-4 w-4" /></button>
-          } />
+          <OpenWithButton cwd={selectedFolder} filePath={selected.path} />
         </div>
       </div>
       <div className={`min-h-0 flex-1 px-4 ${preview?.kind === 'video' ? 'pb-2' : 'overflow-auto pb-4'}`}>

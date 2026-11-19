@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { stripContentReferences } from '../utils/content-references';
 import { stripLeakedContextTags } from '../utils/leaked-context-tags';
 import { DesignCommentPromptRow } from './design/DesignCommentPromptRow';
@@ -15,7 +15,7 @@ import { cn } from '@/ui/lib/utils';
 import { useAppStore } from '../store/useAppStore';
 import { AttachmentChips } from './AttachmentChips';
 import { AttachmentPreviewGrid } from './AttachmentPreviewGrid';
-import { openSessionSource } from '../lib/image-studio';
+import { openSessionSource, SessionSourcesHostContext } from '../lib/image-studio';
 import { StructuredResponse } from './StructuredResponse';
 import { splitWorkflowResult } from '../utils/workflow-result';
 import { SelectedClaudeCommandChip } from './SelectedClaudeCommandChip';
@@ -241,6 +241,7 @@ function UserPromptCard({
   const [isEditing, setIsEditing] = useState(false);
   const [draft, setDraft] = useState(prompt);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const sourcesHost = useContext(SessionSourcesHostContext);
   const {
     activeSessionId,
     activeWorkspace,
@@ -409,8 +410,9 @@ function UserPromptCard({
 
   const imageAttachments = (attachments || []).filter((a) => a.kind === 'image');
   const fileAttachments = (attachments || []).filter((a) => a.kind !== 'image');
-  // The preview lives in the chat workspace's right panel; the Design dock has none.
-  const openAttachment = currentSessionId && activeWorkspace === 'chat'
+  // The preview lives in the chat workspace's right panel, for the session of
+  // the main pane: a conversation hosted elsewhere keeps plain pills.
+  const openAttachment = currentSessionId && sourcesHost && activeWorkspace === 'chat'
     ? (attachment: Attachment) => openSessionSource(currentSessionId, attachment)
     : undefined;
 

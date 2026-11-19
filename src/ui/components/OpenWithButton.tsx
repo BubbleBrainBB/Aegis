@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { BrandGithub, ChevronDown, Download, FolderClosed, FolderOpen } from './icons';
 import {
@@ -40,19 +40,18 @@ const openWithAppsCache = new Map<string, OpenWithApp[]>();
 // that can open the file (Launch Services order, capped) plus
 // "Show in Finder". The app list (and thus the default-app icon) is fetched
 // eagerly when the file is selected. On non-macOS, or when Launch Services
-// fails or knows no app, the list settles empty and the control hides.
+// fails or knows no app, the list settles empty: the primary side then hands
+// the file to the system's default app, and the menu keeps the actions that
+// need no app list (show in folder, GitHub, Save as…).
 export function OpenWithButton({
   cwd,
   filePath,
-  fallback = null,
   onOpenInGitHub,
 }: {
   cwd: string | null;
   filePath: string;
   /** Adds "Open in GitHub" when the file has a page there. */
   onOpenInGitHub?: () => void;
-  /** Shown once the app list settles empty (other platforms, no known app). */
-  fallback?: ReactNode;
 }) {
   const [apps, setApps] = useState<OpenWithApp[] | null>(null);
   const requestKeyRef = useRef<string>('');
@@ -106,23 +105,33 @@ export function OpenWithButton({
     void window.electron.revealPath?.(filePath);
   }, [filePath]);
 
-  // Hidden until the list resolves; the fallback takes over when it settles empty.
-  if (!cwd || !apps) return null;
-  if (apps.length === 0) return <>{fallback}</>;
+  const openInDefaultApp = useCallback(async () => {
+    try {
+      const res = await window.electron.openPath(filePath);
+      if (res && !res.ok) toast.error(res.message || 'Failed to open the file.');
+    } catch {
+      toast.error('Failed to open the file.');
+    }
+  }, [filePath]);
 
-  const defaultApp = apps[0];
+  // Hidden until the list resolves, so the default app's icon does not pop in.
+  if (!cwd || !apps) return null;
+
+  const defaultApp = apps[0] ?? null;
   const menuApps = apps.slice(0, OPEN_WITH_MAX_APPS);
+  const openLabel = defaultApp ? `Open with ${defaultApp.name}` : 'Open in default app';
+  const folderLabel = /mac/i.test(navigator.platform) ? 'Show in Finder' : 'Show in folder';
 
   return (
     <div className="inline-flex h-7 items-stretch overflow-hidden rounded-full border border-[var(--border)] bg-[var(--bg-primary)]">
       <button
         type="button"
-        onClick={() => void openWith(defaultApp.appPath)}
+        onClick={() => void (defaultApp ? openWith(defaultApp.appPath) : openInDefaultApp())}
         className="inline-flex items-center gap-1.5 pl-2 pr-1 text-xs font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--bg-tertiary)]"
-        title={`Open with ${defaultApp.name}`}
-        aria-label={`Open with ${defaultApp.name}`}
+        title={openLabel}
+        aria-label={openLabel}
       >
-        {defaultApp.iconDataUrl ? (
+        {defaultApp?.iconDataUrl ? (
           <img
             src={defaultApp.iconDataUrl}
             alt=""
@@ -165,10 +174,10 @@ export function OpenWithButton({
               <span className="truncate">{appItem.name}</span>
             </DropdownMenuItem>
           ))}
-          <DropdownMenuSeparator />
+          {menuApps.length > 0 ? <DropdownMenuSeparator /> : null}
           <DropdownMenuItem onSelect={revealFolder} className="rounded-md px-2 py-1.5 text-[13px]">
             <FolderClosed className="mr-2.5 h-4 w-4 flex-shrink-0 text-[var(--text-secondary)]" aria-hidden="true" />
-            <span>Show in Finder</span>
+            <span>{folderLabel}</span>
           </DropdownMenuItem>
           {onOpenInGitHub ? (
             <DropdownMenuItem onSelect={onOpenInGitHub} className="rounded-md px-2 py-1.5 text-[13px]">
