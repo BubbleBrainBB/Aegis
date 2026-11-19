@@ -285,6 +285,16 @@ export function listUnfinishedRuns(): RunRow[] {
   return rows.map((row) => toRun(row as Record<string, unknown>));
 }
 
+/** Runs that stand still until the user acts on them, latest first. */
+export function listRunsWaitingOnUser(): RunRow[] {
+  const rows = db()
+    .prepare(
+      `SELECT * FROM workflow_runs WHERE status IN ('awaiting_confirmation', 'needs_input', 'interrupted') AND archived = 0 ORDER BY updated_at DESC`,
+    )
+    .all();
+  return rows.map((row) => toRun(row as Record<string, unknown>));
+}
+
 type RunPatch = Partial<{
   title: string;
   cwd: string;

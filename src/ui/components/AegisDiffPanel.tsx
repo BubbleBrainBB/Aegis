@@ -319,9 +319,13 @@ export function AegisDiffPanel({
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
+                title={data.baseRef ? `Compared with ${data.baseRef}` : undefined}
                 className="inline-flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[13px] text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
               >
-                <span className="min-w-0 truncate">{sourceLabel(data.selection, activeTurn)}</span>
+                <span className="min-w-0 truncate">
+                  {sourceLabel(data.selection, activeTurn)}
+                  {data.baseRef ? <span className="text-[var(--text-muted)]"> vs {data.baseRef}</span> : null}
+                </span>
                 <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]" />
               </button>
             </DropdownMenuTrigger>
@@ -828,12 +832,11 @@ function CommitOrPushButton({ cwd, onRefresh }: { cwd: string; onRefresh: () => 
         toast.error('No changes to commit.');
         return;
       }
-      for (const entry of changes.entries.filter((item) => !item.staged)) {
-        const staged = await window.electron.gitStagePath(cwd, entry.filePath);
-        if (!staged.ok) {
-          toast.error(staged.message || `Failed to stage ${entry.filePath}.`);
-          return;
-        }
+      // One `git add -A`, not one process per file: a large tree stages in one go.
+      const staged = await window.electron.gitStageAll(cwd);
+      if (!staged.ok) {
+        toast.error(staged.message || 'Failed to stage changes.');
+        return;
       }
       const commitResult = await window.electron.gitCommit(cwd, trimmed);
       if (!commitResult.ok) {

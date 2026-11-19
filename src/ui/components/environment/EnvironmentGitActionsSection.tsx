@@ -13,7 +13,7 @@ import {
 } from '../icons';
 import type { GitOverviewResult } from '../../../shared/types';
 import type { ActiveEnvironmentContext } from './useActiveEnvironmentContext';
-import type { GitEnvironmentSnapshot, GitEnvironmentState } from './useGitEnvironment';
+import { gitSignature, gitSignaturesMatch, type GitEnvironmentSnapshot, type GitEnvironmentState } from './useGitEnvironment';
 
 const COMMIT_GENERATION_MIN_VISIBLE_MS = 450;
 const ACTIVE_TASK_RUNNING_REASON = 'The active task is running.';
@@ -22,21 +22,6 @@ function wait(ms: number) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
-}
-
-function gitSignature(overview: GitOverviewResult): string {
-  return [
-    overview.repoRoot || '',
-    overview.branch || '',
-    overview.upstream || '',
-    overview.aheadCount,
-    overview.behindCount,
-    overview.totalChanges,
-    overview.insertions,
-    overview.deletions,
-    overview.prStatus,
-    overview.pr?.number || '',
-  ].join(':');
 }
 
 function createFallbackCommitMessage(files: string[]): string {
@@ -107,7 +92,7 @@ export function useEnvironmentGitActions({
     if (latest.repoRoot !== snapshot.repoRoot || latest.branch !== snapshot.branch) {
       throw new Error('Repository or branch changed. Refresh before running this action.');
     }
-    if (gitSignature(latest) !== snapshot.signature) {
+    if (!gitSignaturesMatch(gitSignature(latest), snapshot.signature)) {
       throw new Error('Git state changed. Refresh before running this action.');
     }
     return latest;
@@ -290,18 +275,11 @@ export function useEnvironmentGitActions({
     setCommitLoading(true);
     try {
       await validateSnapshot(snapshot);
-      const changes = await window.electron.getGitChanges(snapshot.cwd);
-      if (!changes.ok) {
-        toast.error('Failed to read git status.');
+      // One `git add -A`, not one process per file: a large tree stages in one go.
+      const stageResult = await window.electron.gitStageAll(snapshot.cwd);
+      if (!stageResult.ok) {
+        toast.error(stageResult.message || 'Failed to stage changes.');
         return;
-      }
-
-      for (const entry of changes.entries.filter((item) => !item.staged)) {
-        const stageResult = await window.electron.gitStagePath(snapshot.cwd, entry.filePath);
-        if (!stageResult.ok) {
-          toast.error(stageResult.message || `Failed to stage ${entry.filePath}.`);
-          return;
-        }
       }
 
       const commitResult = await window.electron.gitCommit(snapshot.cwd, message);
@@ -401,7 +379,7 @@ export function useEnvironmentGitActions({
               <div className="flex items-center justify-between text-[12px]">
                 <span className="text-[var(--text-secondary)]">Changes</span>
                 <span className="flex items-center gap-2">
-                  <span className="text-[var(--text-muted)]">{overview.totalChanges} files</span>
+                  <span className="text-[var(--text-muted)]">{overview.totalChangesAtLeast ? 'at least ' : ''}{overview.totalChanges} files</span>
                   <span className="font-mono text-emerald-600">+{overview.insertions}</span>
                   <span className="font-mono text-[var(--error)]">-{overview.deletions}</span>
                 </span>

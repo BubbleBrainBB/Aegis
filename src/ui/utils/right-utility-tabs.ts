@@ -114,6 +114,14 @@ export function getWorkflowMemberSessionId(target: ProjectUtilityPanelTarget | n
   return target?.startsWith('workflow-member:') ? target.slice('workflow-member:'.length) : null;
 }
 
+export function taskTab(sessionId: string): ProjectUtilityPanelTarget {
+  return `task:${sessionId}`;
+}
+
+export function getTaskTabSessionId(target: ProjectUtilityPanelTarget | null | undefined): string | null {
+  return target?.startsWith('task:') ? target.slice('task:'.length) : null;
+}
+
 export function getSideChatSessionId(target: ProjectUtilityPanelTarget): string {
   return target.slice('side-chat:'.length);
 }
@@ -125,6 +133,7 @@ export function getRightUtilityTabKind(
   if (target.startsWith('images:')) return 'images';
   if (target.startsWith('goal:')) return 'goal';
   if (target.startsWith('workflow-member:')) return 'workflow-member';
+  if (target.startsWith('task:')) return 'task';
   if (target.startsWith('design:')) return 'design';
   if (isRightUtilityLauncherTab(target)) return 'launcher';
   if (isRightUtilitySimulatorTab(target)) return 'simulator';

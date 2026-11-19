@@ -72,11 +72,13 @@ import { ProviderIcon } from './AgentModelPicker';
 import { WorkflowBoard } from './workflow/WorkflowBoard';
 import { isStartSessionToolName } from '../../shared/follow-up';
 import { SubSessionCard } from './follow-up/SubSessionCard';
+import { isMainBotTaskActionToolName } from '../../shared/main-bot';
+import { MainBotTaskLine } from './main-bot/MainBotTaskLine';
 import { isShowWidgetToolName, widgetFromToolInput } from '../../shared/widget';
 import { InlineWidget } from './widget/InlineWidget';
 import { ImageStudioSessionContext } from '../lib/image-studio';
 import { useWidgetDraftStore, type WidgetDraft } from '../store/useWidgetDraftStore';
-import { isRejectedWidget, isWidgetEntry, isWorkflowEntry, pinnedTurnEntries, type WidgetEntry } from '../utils/turn-pins';
+import { isRejectedWidget, isTaskCardEntry, isWidgetEntry, isWorkflowEntry, pinnedTurnEntries, type WidgetEntry } from '../utils/turn-pins';
 import { stripLeakedContextTags } from '../utils/leaked-context-tags';
 import type { AgentProvider } from '../../shared/types';
 import { GeneratedMediaGallery } from './GeneratedMediaGallery';
@@ -799,9 +801,20 @@ const WorkflowBoardsOutside = createContext(false);
 export const WorkflowBoardsOutsideProvider = WorkflowBoardsOutside.Provider;
 const PinnedNoteIds = createContext<ReadonlySet<string>>(new Set());
 export const PinnedNoteIdsProvider = PinnedNoteIds.Provider;
+/**
+ * True for a finished turn in the chat: the rows for work it handed to
+ * sessions (isTaskCardEntry) are drawn after its answer by the chat, so the
+ * trace and the boards above the answer leave them out.
+ */
+const TaskCardsAfterAnswer = createContext(false);
+export const TaskCardsAfterAnswerProvider = TaskCardsAfterAnswer.Provider;
 
 export function TurnWorkflowBoards({ entries }: { entries: WorkstreamEntry[] }) {
-  const pinned = useMemo(() => pinnedTurnEntries(entries), [entries]);
+  const cardsAfterAnswer = useContext(TaskCardsAfterAnswer);
+  const pinned = useMemo(
+    () => pinnedTurnEntries(entries).filter((entry) => !(cardsAfterAnswer && isTaskCardEntry(entry))),
+    [entries, cardsAfterAnswer],
+  );
   if (pinned.length === 0) return null;
   return (
     <>
@@ -848,9 +861,20 @@ function TraceWidget({ entry, draft }: { entry?: WidgetEntry; draft?: WidgetDraf
   return outside || !props ? null : <InlineWidget {...props} />;
 }
 
-/** A start_workflow call: the workflow it started, live, in place of a subagent lane. A start_session call: the session's row. */
+/** A start_workflow call: the workflow it started, live, in place of a subagent lane. A start_session call: the session's row. The main bot's task calls: the task's row or line. */
 function WorkflowEntryBoard({ entry }: { entry: TaskEntry }) {
   const resultText = entry.result ? getToolResultOutputContent(entry.result) : null;
+  if (isMainBotTaskActionToolName(entry.toolName)) {
+    return (
+      <MainBotTaskLine
+        toolName={entry.toolName}
+        input={entry.block.input}
+        resultText={resultText}
+        failed={entry.status === 'error' || entry.result?.is_error === true}
+        pending={!entry.result && entry.status !== 'error'}
+      />
+    );
+  }
   if (isStartSessionToolName(entry.toolName)) {
     return (
       <SubSessionCard
@@ -872,6 +896,7 @@ function WorkflowEntryBoard({ entry }: { entry: TaskEntry }) {
 
 function SubagentStage({ stage }: { stage: WorkstreamStage }) {
   const outside = useContext(WorkflowBoardsOutside);
+  const cardsAfterAnswer = useContext(TaskCardsAfterAnswer);
   const workflows = stage.entries.filter(isWorkflowEntry);
   if (workflows.length > 0) {
     const rest = stage.entries.filter((entry) => !isWorkflowEntry(entry));
@@ -879,7 +904,7 @@ function SubagentStage({ stage }: { stage: WorkstreamStage }) {
       <>
         {outside
           ? null
-          : workflows.map((entry) => (
+          : workflows.filter((entry) => !(cardsAfterAnswer && isTaskCardEntry(entry))).map((entry) => (
               <WorkflowEntryBoard key={entry.id} entry={entry} />
             ))}
         {rest.length > 0 ? <SubagentStage stage={{ ...stage, entries: rest }} /> : null}
@@ -1012,10 +1037,11 @@ function getTaskDescription(entry: TaskEntry): string | null {
 
 function EntryRow({ entry, showChangeHint = true }: { entry: WorkstreamEntry; showChangeHint?: boolean }) {
   const workflowsOutside = useContext(WorkflowBoardsOutside);
+  const cardsAfterAnswer = useContext(TaskCardsAfterAnswer);
   if (entry.type === 'compaction') return <CompactionActivity entry={entry} />;
   if (entry.type === 'backgroundTaskEnded') return <BackgroundTaskEndedEntryRow entry={entry} />;
   if (entry.type === 'task') {
-    if (isWorkflowEntry(entry)) return workflowsOutside ? null : <WorkflowEntryBoard entry={entry} />;
+    if (isWorkflowEntry(entry)) return workflowsOutside || (cardsAfterAnswer && isTaskCardEntry(entry)) ? null : <WorkflowEntryBoard entry={entry} />;
     // Task entries render as a subagent chip row rather than a generic tool
     // row — clicking the chip opens the subagent's tab in the detail panel,
     // where its full working trace lives.

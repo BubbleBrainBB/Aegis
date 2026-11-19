@@ -27,6 +27,17 @@ export function sessionsWithActiveWorkflow(
   return [...ids].sort();
 }
 
+/** The chat sessions with a workflow of theirs that waits for the user to start it, in a fixed order. */
+export function sessionsWithWaitingWorkflow(
+  runs: Record<string, Pick<WorkflowRunView, 'status' | 'parent'>>,
+): string[] {
+  const ids = new Set<string>();
+  for (const run of Object.values(runs)) {
+    if (run.parent && run.status === 'awaiting_confirmation') ids.add(run.parent.sessionId);
+  }
+  return [...ids].sort();
+}
+
 export type WorkflowTone = 'success' | 'warning' | 'error' | 'muted';
 
 export const WORKFLOW_PROVIDER_LABEL: Record<string, string> = {

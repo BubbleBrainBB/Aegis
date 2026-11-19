@@ -3,10 +3,10 @@ import { useAppStore } from '../../store/useAppStore';
 import { useSessionOrganization } from '../../store/useSessionOrganizationStore';
 import { useSidebarPullRequests, useSidebarPullRequestStore } from '../../store/useSidebarPullRequests';
 import { rootSessionOf, subSessionParents, useFollowUpStore } from '../../store/useFollowUpStore';
-import { useWorkflowRunningSessions } from '../../store/useWorkflowStore';
+import { useWorkflowRunningSessions, useWorkflowWaitingSessions } from '../../store/useWorkflowStore';
 import { useSessionActionsMenu } from '../../hooks/useSessionActionsMenu';
 import { useMinuteClock } from '../../hooks/useMinuteClock';
-import { formatAge, listActiveTaskFamilies, taskAttention, type SidebarSessionState } from '../../utils/sidebar-view';
+import { formatAge, listActiveTaskFamilies, NEEDS_YOU_LABEL, taskAttention, type SidebarSessionState } from '../../utils/sidebar-view';
 import { naturalTaskStateOf, openTask, taskStateOf, type TaskStateSources } from '../../utils/task-state';
 import { TaskStatusMenu } from '../TaskStatusMenu';
 import { TaskTitleLoading, useTaskTitleReveal } from '../TaskTitleLoading';
@@ -30,26 +30,29 @@ export function SidebarActiveTasks() {
   const proposals = useFollowUpStore((s) => s.proposals);
   const parents = useMemo(() => subSessionParents(proposals), [proposals]);
   const sessions = useAppStore((s) => s.sessions);
+  const mainBotSessionId = useAppStore((s) => s.mainBotSessionId);
   const organization = useSessionOrganization();
   const prsBySession = useSidebarPullRequests(true);
   const settledWorktrees = useSidebarPullRequestStore((s) => s.settledWorktrees);
   const settledCheckedAt = useSidebarPullRequestStore((s) => s.settledCheckedAt);
   const workflowSessions = useWorkflowRunningSessions();
+  const workflowWaiting = useWorkflowWaitingSessions();
   const sources = useMemo<TaskStateSources>(
-    () => ({ organization, prsBySession, worktrees: { settledWorktrees, settledCheckedAt }, workflowSessions }),
-    [organization, prsBySession, settledWorktrees, settledCheckedAt, workflowSessions]
+    () => ({ organization, prsBySession, worktrees: { settledWorktrees, settledCheckedAt }, workflowSessions, workflowWaiting }),
+    [organization, prsBySession, settledWorktrees, settledCheckedAt, workflowSessions, workflowWaiting]
   );
 
   const families = useMemo(() => {
     const tasks = Object.values(sessions).filter(
       (session) =>
         !session.hiddenFromThreads &&
+        session.id !== mainBotSessionId &&
         session.scope !== 'dm' &&
         !session.isDraft &&
         !organization.sessions[session.id]?.archived
     );
     return listActiveTaskFamilies(tasks, (id) => rootSessionOf(parents, id), (task) => taskStateOf(task, sources));
-  }, [sessions, organization, parents, sources]);
+  }, [sessions, organization, parents, sources, mainBotSessionId]);
 
   if (families.length === 0) {
     return <div className="px-2 py-1 text-[13px] text-[var(--text-muted)]" data-active-tasks-empty>No active tasks</div>;
@@ -159,9 +162,16 @@ const ActiveTaskRow = memo(function ActiveTaskRow({
             pullRequests={pullRequests}
             onPullRequestsOpenChange={setPullRequestsOpen}
           />
-          <span className="flex-shrink-0 text-[12px] tabular-nums text-[var(--text-muted)]" data-task-age>
-            {formatAge(session.updatedAt, Math.max(now, session.updatedAt))}
-          </span>
+          {state === 'needs-input' && !failed ? (
+            // What it waits for is yours to do: said in words, where the age would be.
+            <span className="flex-shrink-0 text-[12px] font-medium text-[var(--warning)]" data-task-needs-you>
+              {NEEDS_YOU_LABEL}
+            </span>
+          ) : (
+            <span className="flex-shrink-0 text-[12px] tabular-nums text-[var(--text-muted)]" data-task-age>
+              {formatAge(session.updatedAt, Math.max(now, session.updatedAt))}
+            </span>
+          )}
         </div>
       }
     />

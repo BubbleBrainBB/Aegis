@@ -1,5 +1,5 @@
 import { ImageStudioSessionContext, openImageStudio } from '../lib/image-studio';
-import { isValidElement, memo, useContext, useEffect, useMemo, useState, type MouseEvent, type ReactNode } from 'react';
+import { isValidElement, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import { parseSessionLink } from '../../shared/session-links';
 import { parseDesignLink } from '../../shared/design-links';
@@ -11,6 +11,9 @@ import {
   Check,
   Code2,
   Copy,
+  Maximize2,
+  Minimize2,
+  Workflow,
   TextWrap,
   TextWrapDisabled,
 } from '../components/icons';
@@ -18,8 +21,11 @@ import { toast } from 'sonner';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { FileTypeIcon } from '../components/FileTypeIcon';
 import { HighlightedCode } from '../components/HighlightedCode';
+import { MermaidDiagramView, chatScrollerAtEnd, useMermaidDiagram } from '../components/MermaidDiagram';
 import { useAppStore } from '../store/useAppStore';
 import { openDesignLink } from '../store/useDesignStore';
+import { MainBotTaskStateIcon } from '../components/main-bot/MainBotTaskChip';
+import { openTaskBeside } from '../utils/task-state';
 import { isHtmlFilePath, openHtmlFileInBrowserTab } from '../utils/html-preview';
 import { Globe, Palette } from '../components/icons';
 import { faviconUrlForHostname, isFaviconPlaceholder } from '../utils/link-favicons';
@@ -43,6 +49,12 @@ import {
 } from '../utils/markdown-file-links';
 import { renderDeliverAssets } from '../utils/deliver-assets';
 import { DesignBoardLinksContext, DesignLinkSessionContext, remarkDesignBoardLinks } from '../utils/design-board-links';
+import {
+  MERMAID_FENCE_ATTRIBUTE,
+  isMermaidLanguage,
+  mermaidSanitizeSchema,
+  remarkMermaidFences,
+} from '../utils/mermaid-fence';
 
 async function statProjectFile(cwd: string, relativePath: string): Promise<string | null> {
   try {
@@ -104,6 +116,7 @@ function formatLanguageLabel(language: string): string {
   if (language.toLowerCase() === 'shell') return 'Shell';
   if (language.toLowerCase() === 'json') return 'JSON';
   if (language.toLowerCase() === 'diff') return 'Diff';
+  if (language.toLowerCase() === 'mermaid') return 'Mermaid';
   return language.replace(/[-_]/g, ' ');
 }
 
@@ -119,6 +132,8 @@ function shouldDisplayLanguageLabel(language?: string): boolean {
 function extractCodeChild(children: ReactNode): {
   className?: string;
   codeChildren: ReactNode;
+  /** A ```mermaid fence that has its closing fence. */
+  closedMermaidFence?: boolean;
 } {
   const codeElement =
     isValidElement(children)
@@ -131,10 +146,15 @@ function extractCodeChild(children: ReactNode): {
     return { codeChildren: children };
   }
 
-  const props = codeElement.props as { className?: string; children?: ReactNode };
+  const props = codeElement.props as {
+    className?: string;
+    children?: ReactNode;
+    [MERMAID_FENCE_ATTRIBUTE]?: string;
+  };
   return {
     className: props.className,
     codeChildren: props.children,
+    closedMermaidFence: props[MERMAID_FENCE_ATTRIBUTE] === 'closed',
   };
 }
 
@@ -477,7 +497,20 @@ function MarkdownAnchor({
     openProjectFile(projectFile);
   };
 
-  if (href && parseSessionLink(href)) {
+  const linkedSessionId = href ? parseSessionLink(href) : null;
+  // In the main bot's conversation a link to a session names a task: it
+  // carries the task's state icon and opens the task beside the conversation.
+  const namesTask = useAppStore(state => Boolean(
+    linkedSessionId && chatSessionId && state.mainBotSessionId === chatSessionId && state.sessions[linkedSessionId]
+  ));
+  if (href && linkedSessionId && namesTask) {
+    return <a href={href} className="md-app-link md-task-link" data-main-bot-task-link={linkedSessionId} onClick={event => {
+      event.preventDefault();
+      openTaskBeside(linkedSessionId, event);
+    }}><span className="md-task-link-icon"><MainBotTaskStateIcon sessionId={linkedSessionId} /></span><span className="md-link-label">{children}</span></a>;
+  }
+
+  if (href && linkedSessionId) {
     return <a href={href} className="md-app-link" onClick={event => {
       event.preventDefault();
       void window.electron.openExternalUrl(href).then(result => {
@@ -638,9 +671,18 @@ function InlinePathCode({ text }: { text: string }) {
 function CodeBlock({
   language,
   children,
+  actions,
+  body,
+  note,
 }: {
   language?: string;
   children: ReactNode;
+  /** Buttons ahead of Copy. */
+  actions?: ReactNode;
+  /** Shown in place of the code, which Copy still copies. */
+  body?: ReactNode;
+  /** A line under the code. */
+  note?: ReactNode;
 }) {
   const [copied, setCopied] = useState(false);
   const [wrapLines, setWrapLines] = useState(false);
@@ -663,20 +705,23 @@ function CodeBlock({
       <div className="md-code-header">
         <span className="md-code-language">{languageLabel}</span>
         <div className="md-code-actions">
-          <button
-            type="button"
-            onClick={() => setWrapLines((current) => !current)}
-            className="md-code-action"
-            title={wrapLines ? 'Disable word wrap' : 'Enable word wrap'}
-            aria-label={wrapLines ? 'Disable word wrap' : 'Enable word wrap'}
-            aria-pressed={wrapLines}
-          >
-            {wrapLines ? (
-              <TextWrapDisabled className="h-4 w-4" />
-            ) : (
-              <TextWrap className="h-4 w-4" />
-            )}
-          </button>
+          {actions}
+          {body ? null : (
+            <button
+              type="button"
+              onClick={() => setWrapLines((current) => !current)}
+              className="md-code-action"
+              title={wrapLines ? 'Disable word wrap' : 'Enable word wrap'}
+              aria-label={wrapLines ? 'Disable word wrap' : 'Enable word wrap'}
+              aria-pressed={wrapLines}
+            >
+              {wrapLines ? (
+                <TextWrapDisabled className="h-4 w-4" />
+              ) : (
+                <TextWrap className="h-4 w-4" />
+              )}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => void handleCopy()}
@@ -689,12 +734,87 @@ function CodeBlock({
         </div>
       </div>
 
-      <HighlightedCode
-        code={rawCode}
-        language={language}
-        showLineNumbers={false}
-        wrapLongLines={wrapLines}
-      />
+      {body ?? (
+        <HighlightedCode
+          code={rawCode}
+          language={language}
+          showLineNumbers={false}
+          wrapLongLines={wrapLines}
+        />
+      )}
+      {note}
+    </div>
+  );
+}
+
+/**
+ * A ```mermaid fence. It is the diagram once the fence is closed and Mermaid
+ * can draw it; until then, and whenever it cannot, it is the source like any
+ * other code block.
+ */
+function MermaidCodeBlock({ code, closed }: { code: string; closed: boolean }) {
+  const blockRef = useRef<HTMLDivElement>(null);
+  const followRef = useRef<HTMLElement | null>(null);
+  const noteReaderAtEnd = useCallback(() => {
+    followRef.current = chatScrollerAtEnd(blockRef.current);
+  }, []);
+  const { diagram, error } = useMermaidDiagram(code, closed, noteReaderAtEnd);
+  // The drawing arrives after the answer, and is rarely as tall as its source.
+  // A reader at the end of the chat stays there.
+  useLayoutEffect(() => {
+    const scroller = followRef.current;
+    followRef.current = null;
+    if (scroller) scroller.scrollTop = scroller.scrollHeight;
+  }, [diagram, error]);
+  const [showSource, setShowSource] = useState(false);
+  const [actualSize, setActualSize] = useState(false);
+  const [shrunk, setShrunk] = useState(false);
+  const onFitChange = useCallback((next: boolean) => setShrunk(next), []);
+  const showDiagram = Boolean(diagram) && !showSource;
+
+  const actions = diagram ? (
+    <>
+      {showDiagram && (shrunk || actualSize) ? (
+        <button
+          type="button"
+          onClick={() => setActualSize((current) => !current)}
+          className="md-code-action"
+          title={actualSize ? 'Fit to width' : 'Show at full size'}
+          aria-label={actualSize ? 'Fit to width' : 'Show at full size'}
+          aria-pressed={actualSize}
+        >
+          {actualSize ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+        </button>
+      ) : null}
+      <button
+        type="button"
+        onClick={() => setShowSource((current) => !current)}
+        className="md-code-action"
+        title={showSource ? 'Show diagram' : 'Show source'}
+        aria-label={showSource ? 'Show diagram' : 'Show source'}
+        aria-pressed={showSource}
+      >
+        {showSource ? <Workflow className="h-4 w-4" /> : <Code2 className="h-4 w-4" />}
+      </button>
+    </>
+  ) : null;
+
+  return (
+    <div ref={blockRef} className="md-mermaid" data-mermaid-state={showDiagram ? 'diagram' : error ? 'error' : 'source'}>
+      <CodeBlock
+        language="mermaid"
+        actions={actions}
+        body={showDiagram && diagram ? (
+          <MermaidDiagramView diagram={diagram} actualSize={actualSize} onFitChange={onFitChange} />
+        ) : undefined}
+        note={error && !diagram ? (
+          <div className="md-mermaid-error" title={error}>
+            Couldn’t draw this diagram
+          </div>
+        ) : undefined}
+      >
+        {code}
+      </CodeBlock>
     </div>
   );
 }
@@ -743,8 +863,17 @@ const components: Components = {
     );
   },
   pre: ({ children }) => {
-    const { className, codeChildren } = extractCodeChild(children);
+    const { className, codeChildren, closedMermaidFence } = extractCodeChild(children);
     const match = /language-([\w-]+)/.exec(className || '');
+
+    if (isMermaidLanguage(match?.[1])) {
+      return (
+        <MermaidCodeBlock
+          code={extractTextContent(codeChildren).replace(/\n$/, '')}
+          closed={Boolean(closedMermaidFence)}
+        />
+      );
+    }
 
     return (
       <CodeBlock language={match?.[1]}>
@@ -767,6 +896,8 @@ const components: Components = {
   ),
 };
 
+const chatRemarkPlugins = [...markdownRemarkPlugins, remarkMermaidFences];
+
 function MDContentImpl({ content, className = '', allowHtml = false }: MDContentProps) {
   const sessionMessages = useAppStore((state) => {
     const session = state.activeSessionId ? state.sessions[state.activeSessionId] : null;
@@ -787,14 +918,14 @@ function MDContentImpl({ content, className = '', allowHtml = false }: MDContent
   const designBoardLinks = useContext(DesignBoardLinksContext);
   const remarkPlugins = useMemo(
     () => designBoardLinks
-      ? [...markdownRemarkPlugins, [remarkDesignBoardLinks, JSON.parse(designBoardLinks)] as never]
-      : markdownRemarkPlugins,
+      ? [...chatRemarkPlugins, [remarkDesignBoardLinks, JSON.parse(designBoardLinks)] as never]
+      : chatRemarkPlugins,
     [designBoardLinks]
   );
 
   const rehypePlugins = useMemo(() => {
     const plugins: Parameters<typeof ReactMarkdown>[0]['rehypePlugins'] = allowHtml
-      ? [rehypeRaw, rehypeSanitize, rehypeKatex]
+      ? [rehypeRaw, [rehypeSanitize, mermaidSanitizeSchema], rehypeKatex]
       : [rehypeKatex];
     return plugins;
   }, [allowHtml]);

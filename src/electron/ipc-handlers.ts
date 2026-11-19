@@ -44,6 +44,8 @@ import { sanitizeDesignPromptRef } from '../shared/design-comment';
 import { sanitizeDesignSelectionRef } from '../shared/design-selection';
 import { designContextText } from './design/focus';
 import { chatFolderInstructions, chatsFolderInfo, createChatFolder, noteChatFolderInstructionsDelivered, takeChatFolderInstructions } from './libs/chat-folders';
+import { startTaskSession } from './libs/main-bot/start';
+import { decideMainBotWorkflowCard, ensureMainBotSession, mainBotSession, mainBotTurnContext, mainBotWorkflowCards, noteMainBotContextUsage, noteMainBotRemoteChange, noteMainBotTurnEnded, noteMainBotWorkflowChange, prepareMainBotTurn, refreshMainBotContext, setupMainBot } from './libs/main-bot';
 import { setDesignProjectRoot } from './design/styles';
 import { setDesignAgentNamer, setDesignPromptSource } from './design/tools';
 import { setDesignFollowUp } from './design/project/tools';
@@ -368,13 +370,22 @@ import {
   createBranch,
   createWorktree,
   dropStash,
+  getChangeStatsSince,
   getCurrentBranch,
   getGitTopLevel,
+  getUncommittedChangeStats,
+  getUntrackedPatch,
+  getWorkingTreeStatus,
   assertGitRepo,
+  commitStagedChanges,
   getShortStatus,
   listBranches as listGitBranches,
   removeWorktree,
+  resolveBranchBase,
+  scanWorkingTree,
+  stageAllChanges,
   stashWorkingTree,
+  type GitStatusRecord,
 } from './libs/git-service';
 
 const MAX_FILE_PREVIEW_BYTES = 5 * 1024 * 1024; // 5MB
@@ -4316,28 +4327,24 @@ function mapGitChangeStatus(indexStatus: string, workStatus: string): {
   return { status: 'M', staged: false };
 }
 
-function parseGitStatusEntries(stdout: string): Array<{ filePath: string; status: string; staged: boolean }> {
-  const entries: Array<{ filePath: string; status: string; staged: boolean }> = [];
-  const records = stdout.split('\0');
+function toGitChangeEntries(
+  records: GitStatusRecord[]
+): Array<{ filePath: string; status: 'M' | 'A' | 'D' | 'R' | '?'; staged: boolean }> {
+  return records.map((record) => ({
+    filePath: record.filePath,
+    ...mapGitChangeStatus(record.index, record.worktree),
+  }));
+}
 
-  for (let index = 0; index < records.length; index += 1) {
-    const record = records[index];
-    if (!record) continue;
-
-    const indexStatus = record[0];
-    const workStatus = record[1];
-    const filePath = record.slice(3);
-    if (!filePath) continue;
-
-    const { status, staged } = mapGitChangeStatus(indexStatus, workStatus);
-    entries.push({ filePath, status, staged });
-
-    if (indexStatus === 'R' || indexStatus === 'C' || workStatus === 'R' || workStatus === 'C') {
-      index += 1;
-    }
+/** A diff for reading, not for applying: past the size bound, its start is enough. */
+async function readGitDiffStart(cwd: string, args: string[], maxBuffer: number): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync('git', args, { cwd, timeout: 10000, maxBuffer });
+    return stdout;
+  } catch (error) {
+    if ((error as { code?: unknown }).code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') throw error;
+    return String((error as { stdout?: unknown }).stdout ?? '');
   }
-
-  return entries;
 }
 
 const execFileAsync = promisify(execFile);
@@ -4545,20 +4552,14 @@ function normalizeGitPatchScope(value: unknown): GitPatchScope {
   return 'working-tree';
 }
 
-function getExecStdout(error: unknown): string {
-  if (error && typeof error === 'object' && 'stdout' in error) {
-    return String((error as { stdout?: unknown }).stdout ?? '');
-  }
-  return '';
-}
-
 function normalizePatchResult(
   scope: GitPatchScope,
   patch: string,
   repoRoot: string | null,
-  baseRef?: string | null
+  baseRef?: string | null,
+  incomplete = false
 ): GitPatchResult {
-  const truncated = patch.length > GIT_PATCH_MAX_CHARS;
+  const truncated = incomplete || patch.length > GIT_PATCH_MAX_CHARS;
   return {
     ok: true,
     error: null,
@@ -4583,50 +4584,6 @@ async function runGitDiff(cwd: string, args: string[]): Promise<string> {
     }
   );
   return stdout;
-}
-
-async function getUntrackedPatch(cwd: string): Promise<string> {
-  const { stdout } = await execFileAsync(
-    'git',
-    ['-c', 'core.quotepath=false', 'ls-files', '--others', '--exclude-standard', '-z'],
-    {
-      cwd,
-      timeout: 10000,
-      maxBuffer: GIT_PATCH_MAX_BUFFER_BYTES,
-    }
-  );
-  const untrackedPaths = stdout.split('\0').map((item) => item.trim()).filter(Boolean);
-  const patches: string[] = [];
-
-  for (const filePath of untrackedPaths) {
-    try {
-      const { stdout: patch } = await execFileAsync(
-        'git',
-        [
-          '-c',
-          'core.quotepath=false',
-          'diff',
-          '--no-index',
-          '--no-color',
-          '--unified=3',
-          '--',
-          '/dev/null',
-          filePath,
-        ],
-        {
-          cwd,
-          timeout: 10000,
-          maxBuffer: GIT_PATCH_MAX_BUFFER_BYTES,
-        }
-      );
-      if (patch.trim()) patches.push(patch);
-    } catch (error) {
-      const patch = getExecStdout(error);
-      if (patch.trim()) patches.push(patch);
-    }
-  }
-
-  return patches.join('\n');
 }
 
 function humanizeCommitTarget(value: string): string {
@@ -5065,7 +5022,7 @@ async function openInEnvironmentEditor(input: OpenInEditorInput): Promise<{ ok: 
 // 初始化 IPC 处理器
 /** App-level agent workflows (docs/collaboration/README.md): member sessions run through the normal session path. */
 function setupWorkflows(mainWindow: BrowserWindow): void {
-  const service = new WorkflowService({
+  const service = (workflowRuns = new WorkflowService({
     bridge: {
       start: (payload, onCreated) => handleSessionStart(mainWindow, payload, onCreated),
       continue: (payload) => handleSessionContinue(mainWindow, payload),
@@ -5091,7 +5048,11 @@ function setupWorkflows(mainWindow: BrowserWindow): void {
         provider: (session.provider || 'claude') as AgentProvider,
       });
     },
-    broadcast: (view) => broadcast(mainWindow, { type: 'workflow.updated', payload: view }),
+    broadcast: (view) => {
+      broadcast(mainWindow, { type: 'workflow.updated', payload: view });
+      // The main bot may be waiting on the chat that started it.
+      noteMainBotWorkflowChange(view.parent?.sessionId, view.status);
+    },
     userDataDir: app.getPath('userData'),
     appGeneration: `${process.pid}-${Date.now()}`,
     provisionIsolated: (projectCwd, label) => provisionIsolatedWorkspace(projectCwd, label),
@@ -5099,7 +5060,7 @@ function setupWorkflows(mainWindow: BrowserWindow): void {
     discardIsolated: (sessionId) => discardIsolatedWorkspace(sessionId),
     modelCatalog: workflowModelCatalog,
     effortLevels: workflowEffortLevels,
-  });
+  }));
   setupWorkflowIPC(service);
   // Phones see the workflows their chats started, and open their members' sessions.
   setRemoteWorkflows(service);
@@ -5183,6 +5144,7 @@ function setupWorkflows(mainWindow: BrowserWindow): void {
 }
 
 let followUps: FollowUpService | null = null;
+let workflowRuns: WorkflowService | null = null;
 
 type RunnerSettings = Pick<
   NonNullable<ReturnType<typeof runnerHandles.get>>,
@@ -5260,6 +5222,8 @@ function sharedWorktreeRefusal(sessionId: string): { ok: false; message: string 
 /** Turn-end observers: workflow members, and follow-up sessions reporting back to their parent. */
 function settleWorkflowTurn(sessionId: string, status: 'completed' | 'error' | 'stopped', error?: string): void {
   settleWorkflowMemberTurn(sessionId, status, error);
+  // The main bot hears of its own turn ending, and of a task's it waits on.
+  noteMainBotTurnEnded(sessionId, status, error);
   const service = followUps;
   if (!service) return;
   try {
@@ -5273,6 +5237,63 @@ function settleWorkflowTurn(sessionId: string, status: 'completed' | 'error' | '
       console.error('[follow-up] could not deliver a result:', failure);
     });
   }, 0);
+}
+
+/**
+ * The main bot (libs/main-bot): one Bubble conversation that starts, messages
+ * and stops tasks through the same entry points the composer and the phone use.
+ */
+function setupMainBotEntry(mainWindow: BrowserWindow): void {
+  setupMainBot({
+    userDataDir: app.getPath('userData'),
+    // Answered once the session exists; the agent's startup follows. One that fails then reaches the bot as that task's turn ending in an error.
+    start: (payload) =>
+      startTaskSession(
+        (onCreated) => handleSessionStart(mainWindow, payload, onCreated),
+        (sessionId, error) => noteMainBotTurnEnded(sessionId, 'error', error),
+      ),
+    continue: (payload) => handleSessionContinue(mainWindow, payload),
+    stop: (sessionId) => handleSessionStop(mainWindow, sessionId),
+    waitsForApproval: (sessionId) => (sessionStates.get(sessionId)?.pendingPermissions.size ?? 0) > 0,
+    reportsTo: (sessionId) => followUps?.reportsTo(sessionId) ?? null,
+    sessionsRunningWorkflow: () => workflowRuns?.sessionsWithActiveRun() ?? [],
+    workflowsWaiting: () => workflowRuns?.waitingOnUser() ?? [],
+    decideWorkflow: async (sessionId, start, run) => workflowRuns?.decideWaiting(sessionId, start, run) ?? { ok: false, error: 'Workflows are not available.' },
+    isGitRepo: (cwd) => assertGitRepo(cwd).then(() => true, () => false),
+    startExtras: async (provider, prompt, cwd) => (provider === 'codex' ? codexReferences(prompt, cwd) : {}),
+    freshThread: (sessionId, entering, automatic) => startMainBotFreshThread(mainWindow, sessionId, entering, automatic),
+  });
+  ipcMainHandle('main-bot-refresh-context', async (): Promise<'done' | 'pending' | 'unavailable'> => refreshMainBotContext());
+  ipcMainHandle('main-bot-open', async (): Promise<SessionInfo> => buildSessionInfoFromRow(ensureMainBotSession()));
+  ipcMainHandle('main-bot-session-id', async (): Promise<string | null> => mainBotSession()?.id ?? null);
+  ipcMainHandle('main-bot-workflow-cards', async (): Promise<string[]> => mainBotWorkflowCards());
+  ipcMainHandle('main-bot-decide-workflow', async (_event, taskId: string, run: { id: string; revision: number }, start: boolean) =>
+    typeof taskId === 'string' && typeof run?.id === 'string' && Number.isInteger(run.revision) && typeof start === 'boolean'
+      ? decideMainBotWorkflowCard(taskId, { id: run.id, revision: run.revision }, start)
+      : { ok: false as const, error: 'Bad request.' });
+}
+
+/**
+ * Put the main bot's agent on an empty Bubble thread. The conversation stays
+ * as the person sees it, with a line where the agent's memory of it ends; what
+ * the bot keeps outside it (libs/main-bot: notes, what it handed out) carries
+ * it over. Only between turns: a turn being started would run on the old
+ * thread and write its id back. `entering`: the caller is the send of the
+ * bot's next turn and holds its lease.
+ */
+function startMainBotFreshThread(mainWindow: BrowserWindow, sessionId: string, entering: boolean, automatic: boolean): boolean {
+  const session = sessions.getSession(sessionId);
+  if (!session || session.status === 'running') return false;
+  if (!entering && sessionDispatchLeases.has(sessionId)) return false;
+  // No thread yet: nothing to leave behind.
+  if (!session.bubble_session_id && !runnerHandles.has(sessionId)) return true;
+  // A kept-alive runner goes on with the thread it has, whatever the session row says.
+  retireSessionRunner(sessionId);
+  sessions.setBubbleSessionId(sessionId, null);
+  const divider: StreamMessage = { type: 'system', subtype: 'context_refreshed', uuid: uuidv4(), session_id: sessionId, trigger: automatic ? 'auto' : 'manual', createdAt: Date.now() };
+  sessions.addMessage(sessionId, divider);
+  broadcast(mainWindow, { type: 'stream.message', payload: { sessionId, message: divider } });
+  return true;
 }
 
 /** Follow-up proposals (docs/collaboration/follow-up-sessions.md): Claude sessions propose, the user starts. */
@@ -5397,8 +5418,15 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
   sessions.initialize();
   setupTurnReports(mainWindow);
   setupRemoteHosts(
-    (event) => broadcastSessionEvent(mainWindow, event),
-    () => handleSessionList(mainWindow),
+    (event) => {
+      broadcastSessionEvent(mainWindow, event);
+      // A task on another Mac the main bot waits on may have finished its turn.
+      if (event.type === 'session.status') noteMainBotRemoteChange();
+    },
+    () => {
+      handleSessionList(mainWindow);
+      noteMainBotRemoteChange();
+    },
   );
   setupRemoteIPC(mainWindow, {
     hasBackgroundWork: hasSessionBackgroundWork,
@@ -5882,6 +5910,7 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
   registerDesignIpc();
   setupWorkflows(mainWindow);
   setupFollowUps(mainWindow);
+  setupMainBotEntry(mainWindow);
   setupSessionGoalIPC({
     changeClaudeGoal: async (sessionId, action, settings) => {
       const session = sessions.getSession(sessionId);
@@ -6414,6 +6443,12 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
     }
     if (session.provider !== 'bubble') {
       return { ok: false, message: 'Rewind is only available for Bubble sessions.', filesAvailable: false };
+    }
+    // Its agent's thread can start afresh mid-conversation, so the prompts on
+    // screen no longer line up with the thread's; and what it handed out would
+    // not be taken back.
+    if (session.session_role === 'main') {
+      return { ok: false, message: "Rewind is not available in Aegis's own conversation.", filesAvailable: false };
     }
 
     ensureProviderService();
@@ -8462,13 +8497,14 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
     }
 
     try {
-      const { stdout } = await execFileAsync('git', ['-c', 'core.quotepath=false', 'status', '--porcelain', '-uall', '-z'], {
-        cwd,
-        maxBuffer: 1024 * 1024,
-        timeout: 10000,
-      });
-      const entries = parseGitStatusEntries(stdout);
-      return { ok: true, error: null, entries };
+      const status = await getWorkingTreeStatus(cwd);
+      return {
+        ok: true,
+        error: null,
+        entries: toGitChangeEntries(status.entries),
+        folded: status.folded,
+        truncated: status.truncated,
+      };
     } catch {
       return { ok: false, error: 'git-error', entries: [] };
     }
@@ -8484,29 +8520,16 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
     }
 
     try {
-      const statusResult = await execFileAsync('git', ['-c', 'core.quotepath=false', 'status', '--porcelain', '-uall', '-z'], {
-        cwd,
-        maxBuffer: 1024 * 1024,
-        timeout: 10000,
-      });
-      const entries = parseGitStatusEntries(statusResult.stdout);
+      const entries = toGitChangeEntries((await getWorkingTreeStatus(cwd)).entries);
       if (entries.length === 0) {
         return { ok: false, message: 'No local changes to summarize.' };
       }
 
       const [stagedDiff, unstagedDiff] = await Promise.all([
-        execFileAsync('git', ['diff', '--cached', '--unified=0', '--'], {
-          cwd,
-          timeout: 10000,
-          maxBuffer: 2 * 1024 * 1024,
-        }),
-        execFileAsync('git', ['diff', '--unified=0', '--'], {
-          cwd,
-          timeout: 10000,
-          maxBuffer: 2 * 1024 * 1024,
-        }),
+        readGitDiffStart(cwd, ['diff', '--cached', '--unified=0', '--'], 2 * 1024 * 1024),
+        readGitDiffStart(cwd, ['diff', '--unified=0', '--'], 2 * 1024 * 1024),
       ]);
-      const diffText = `${stagedDiff.stdout}\n${unstagedDiff.stdout}`;
+      const diffText = `${stagedDiff}\n${unstagedDiff}`;
 
       return {
         ok: true,
@@ -8591,6 +8614,7 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
         totalChanges: 0,
         insertions: 0,
         deletions: 0,
+        branchChanges: null,
         prStatus: 'not_found',
         pr: null,
       };
@@ -8616,58 +8640,23 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
         totalChanges: 0,
         insertions: 0,
         deletions: 0,
+        branchChanges: null,
         prStatus: 'not_found',
         pr: null,
       };
     }
 
     try {
-      const [summary, branchResult, changesResult, originRemote, upstreamRef, defaultBranch, repoRoot] =
+      // Untracked files are part of the change count and of both the uncommitted
+      // and the branch totals, so one walk serves all three. Its failure
+      // surfaces through the awaits below.
+      const { changeCount, untracked: untrackedStats } = scanWorkingTree(cwd);
+      const [summary, untracked, branchResult, changes, originRemote, upstreamRef, defaultBranch, repoRoot] =
         await Promise.all([
-          (async () => {
-            const [trackedDiff, untrackedFiles] = await Promise.all([
-              execFileAsync('git', ['diff', '--numstat', 'HEAD', '--'], {
-                cwd,
-                timeout: 10000,
-                maxBuffer: 2 * 1024 * 1024,
-              }),
-              execFileAsync('git', ['ls-files', '--others', '--exclude-standard', '-z'], {
-                cwd,
-                timeout: 10000,
-                maxBuffer: 2 * 1024 * 1024,
-              }),
-            ]);
-
-            let totals = parseGitNumstat(trackedDiff.stdout);
-            const untrackedPaths = untrackedFiles.stdout.split('\0').map((item) => item.trim()).filter(Boolean);
-            for (const filePath of untrackedPaths) {
-              try {
-                await execFileAsync('git', ['diff', '--no-index', '--numstat', '/dev/null', filePath], {
-                  cwd,
-                  timeout: 10000,
-                  maxBuffer: 2 * 1024 * 1024,
-                });
-              } catch (error: unknown) {
-                const stdout =
-                  error && typeof error === 'object' && 'stdout' in error
-                    ? String((error as { stdout?: unknown }).stdout ?? '')
-                    : '';
-                const stats = parseGitNumstat(stdout);
-                totals = {
-                  insertions: totals.insertions + stats.insertions,
-                  deletions: totals.deletions + stats.deletions,
-                };
-              }
-            }
-
-            return totals;
-          })(),
+          getUncommittedChangeStats(cwd, untrackedStats),
+          untrackedStats,
           execFileAsync('git', ['branch', '--show-current'], { cwd, timeout: 5000 }),
-          execFileAsync('git', ['-c', 'core.quotepath=false', 'status', '--porcelain', '-uall', '-z'], {
-            cwd,
-            maxBuffer: 1024 * 1024,
-            timeout: 10000,
-          }),
+          changeCount,
           getGitOriginRemote(cwd),
           getGitUpstreamRef(cwd),
           getGitDefaultBranch(cwd),
@@ -8679,8 +8668,21 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
       const originRepo = originRemote ? parseGitHubRepoFromRemote(originRemote) : null;
       const isGitHubRemote = !!originRepo;
       const hasUpstream = !!upstreamRef;
-      const { aheadCount, behindCount } = await getGitAheadBehindCounts(cwd, upstreamRef);
-      const prLookup = await getGitPullRequestInfo({ cwd, branch, originRepo });
+      const [{ aheadCount, behindCount }, prLookup, branchChanges] = await Promise.all([
+        getGitAheadBehindCounts(cwd, upstreamRef),
+        getGitPullRequestInfo({ cwd, branch, originRepo }),
+        (async () => {
+          try {
+            const base = await resolveBranchBase(cwd, { defaultBranch, upstreamRef });
+            if (!base) return null;
+            const { files, insertions, deletions } = await getChangeStatsSince(cwd, base.mergeBase, untrackedStats);
+            return { baseRef: base.baseRef, files, insertions, deletions };
+          } catch {
+            // The card falls back to the uncommitted totals.
+            return null;
+          }
+        })(),
+      ]);
       const repository = {
         root: repoRoot || null,
         originUrl: originRemote,
@@ -8705,9 +8707,14 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
         hasOriginRemote,
         isGitHubRemote,
         isDefaultBranch: !!defaultBranch && branch === defaultBranch,
-        totalChanges: parseGitStatusEntries(changesResult.stdout).length,
+        totalChanges: changes.total,
+        totalChangesAtLeast: changes.atLeast,
         insertions: summary.insertions,
         deletions: summary.deletions,
+        branchChanges,
+        changesIncomplete: summary.incomplete === true,
+        untrackedInsertions: untracked.insertions,
+        untrackedInsertionsUnsettled: untracked.unsettled === true,
         prStatus: prLookup.status,
         pr: prLookup.pr,
       };
@@ -8729,6 +8736,7 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
         totalChanges: 0,
         insertions: 0,
         deletions: 0,
+        branchChanges: null,
         prStatus: 'unknown',
         pr: null,
       };
@@ -8770,8 +8778,9 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
       }
 
       if (scope === 'branch') {
-        const baseRef = (await getGitUpstreamRef(cwd)) || (await getGitDefaultBranch(cwd));
-        if (!baseRef) {
+        const [defaultBranch, upstreamRef] = await Promise.all([getGitDefaultBranch(cwd), getGitUpstreamRef(cwd)]);
+        const base = await resolveBranchBase(cwd, { defaultBranch, upstreamRef });
+        if (!base) {
           return {
             ok: false,
             error: 'branch-base-unavailable',
@@ -8782,25 +8791,40 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
             truncated: false,
           };
         }
-        const patch = await runGitDiff(cwd, [`${baseRef}...HEAD`, '--']);
-        return normalizePatchResult(scope, patch, repoRoot, baseRef);
+        // The same span as the Environment card's branch totals: commits since
+        // the merge-base, plus whatever is still uncommitted or untracked.
+        const [trackedPatch, untracked] = await Promise.all([
+          runGitDiff(cwd, [base.mergeBase, '--']),
+          getUntrackedPatch(cwd, { maxBytes: GIT_PATCH_MAX_BUFFER_BYTES }),
+        ]);
+        return normalizePatchResult(
+          scope,
+          [trackedPatch, untracked.patch].filter((patch) => patch.trim()).join('\n'),
+          repoRoot,
+          base.baseRef,
+          untracked.incomplete
+        );
       }
 
       const unstagedPatch = await runGitDiff(cwd, ['--']);
-      const untrackedPatch = await getUntrackedPatch(cwd);
+      const untracked = await getUntrackedPatch(cwd, { maxBytes: GIT_PATCH_MAX_BUFFER_BYTES });
       if (scope === 'unstaged') {
         return normalizePatchResult(
           scope,
-          [unstagedPatch, untrackedPatch].filter((patch) => patch.trim()).join('\n'),
-          repoRoot
+          [unstagedPatch, untracked.patch].filter((patch) => patch.trim()).join('\n'),
+          repoRoot,
+          undefined,
+          untracked.incomplete
         );
       }
 
       const stagedPatch = await runGitDiff(cwd, ['--cached', '--']);
       return normalizePatchResult(
         scope,
-        [stagedPatch, unstagedPatch, untrackedPatch].filter((patch) => patch.trim()).join('\n'),
-        repoRoot
+        [stagedPatch, unstagedPatch, untracked.patch].filter((patch) => patch.trim()).join('\n'),
+        repoRoot,
+        undefined,
+        untracked.incomplete
       );
     } catch (error) {
       return {
@@ -9459,6 +9483,16 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
     }
   });
 
+  ipcMainHandle('git-stage-all', async (_event, cwd: string) => {
+    if (!cwd) return { ok: false, message: 'Missing cwd.' };
+    try {
+      await stageAllChanges(cwd);
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
   ipcMainHandle('git-unstage-path', async (_event, cwd: string, filePath: string) => {
     if (!cwd || !filePath) return { ok: false, message: 'Missing cwd or file path.' };
     try {
@@ -9524,16 +9558,9 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
     const trimmed = message.trim();
     if (!cwd || !trimmed) return { ok: false, message: 'Commit message cannot be empty.' };
     try {
-      const { stdout, stderr } = await execFileAsync('git', ['commit', '-m', trimmed], {
-        cwd,
-        timeout: 120000,
-        maxBuffer: 4 * 1024 * 1024,
-      });
-      return { ok: true, output: `${stdout}${stderr}`.trim() };
+      return { ok: true, output: await commitStagedChanges(cwd, trimmed) };
     } catch (error) {
-      const err = error as { stdout?: string; stderr?: string; message?: string };
-      const combined = [err.stderr, err.stdout, err.message].filter(Boolean).join('\n').trim();
-      return { ok: false, message: combined || 'git commit failed.' };
+      return { ok: false, message: (error instanceof Error && error.message.trim()) || 'git commit failed.' };
     }
   });
 
@@ -10552,7 +10579,13 @@ async function handleSessionContinue(
     return false;
   }
   sessionDispatchLeases.add(payload.sessionId);
-  try { return await handleSessionContinueImpl(mainWindow, payload, internal); }
+  // The main bot's tools exist on Bubble only: its conversation never moves to another agent.
+  if (mainBotSession()?.id === payload.sessionId && payload.provider && payload.provider !== 'bubble') payload = { ...payload, provider: 'bubble', model: undefined };
+  try {
+    // Before the session row is read: a fresh context asked for mid-turn starts with this one.
+    prepareMainBotTurn(payload.sessionId);
+    return await handleSessionContinueImpl(mainWindow, payload, internal);
+  }
   finally { sessionDispatchLeases.delete(payload.sessionId); }
 }
 
@@ -10748,7 +10781,7 @@ async function handleSessionContinueImpl(
   // Goal commands reach the agent verbatim: Claude's, and Kimi's `/goal --`
   // start prompt (context appended would become part of the objective).
   const runnerPrompt = (nextProvider === 'claude' || nextProvider === 'kimi') && parseGoalInput(prompt, false).isGoal ? prompt.trim() : augmentPromptForLiveWidgetProtocol(
-    await buildRunnerPromptWithMemory(nextProvider, effectiveRunnerPrompt + referenceContext + designContextText(sessionId, designSelection) + sessions.buildProjectSourcesContext(session.project_cwd || session.cwd, session.cwd, session.env_mode === 'worktree' && Boolean(session.worktree_path)) + takeChatFolderInstructions(sessionId, session.cwd, session.is_chat === 1), session.cwd || undefined),
+    await buildRunnerPromptWithMemory(nextProvider, effectiveRunnerPrompt + referenceContext + designContextText(sessionId, designSelection) + sessions.buildProjectSourcesContext(session.project_cwd || session.cwd, session.cwd, session.env_mode === 'worktree' && Boolean(session.worktree_path)) + (session.session_role === 'main' ? mainBotTurnContext(sessionId) : takeChatFolderInstructions(sessionId, session.cwd, session.is_chat === 1)), session.cwd || undefined),
     historyBeforeContinue
   );
   const previousOpenCodePermissionMode = normalizeOpenCodePermissionMode(session.opencode_permission_mode);
@@ -11194,6 +11227,12 @@ async function handleSessionContinueImpl(
   // DeepSeek steers mid-turn through the runtime's inbox (client.prompt);
   // config drift while streaming must not abort the live runtime either.
   const deepseekMidTurn = nextProvider === 'deepseek' && session.status === 'running';
+  // Bubble steers too (sdk.steer): the message reaches the running turn at
+  // its next model call. A model picked meanwhile must not abort that turn;
+  // it runs on with what it started with, and the next turn takes the new
+  // model from its own send. (Mode and thinking level never abort a Bubble
+  // runner: each turn is started with the ones its send carries.)
+  const bubbleMidTurn = nextProvider === 'bubble' && session.status === 'running';
   // A kimi runner whose adapter session was released while idle (daemon
   // exit, session_gone) is a zombie: reusing its handle throws "No Kimi
   // session found" at send time with a toast and a dropped message. Respawn
@@ -11212,7 +11251,7 @@ async function handleSessionContinueImpl(
     if (
       runnerCwdChanged ||
       kimiSessionReleased ||
-      (((nextProvider === 'codex' && !codexMidTurn) || nextProvider === 'opencode' || (nextProvider === 'kimi' && !kimiMidTurn) || nextProvider === 'grok' || nextProvider === 'pi' || nextProvider === 'bubble' || (nextProvider === 'deepseek' && !deepseekMidTurn)) && modelChanged) ||
+      (((nextProvider === 'codex' && !codexMidTurn) || nextProvider === 'opencode' || (nextProvider === 'kimi' && !kimiMidTurn) || nextProvider === 'grok' || nextProvider === 'pi' || (nextProvider === 'bubble' && !bubbleMidTurn) || (nextProvider === 'deepseek' && !deepseekMidTurn)) && modelChanged) ||
       (nextProvider === 'codex' && !codexMidTurn && codexPermissionModeChanged) ||
       (nextProvider === 'codex' && !codexMidTurn && codexReasoningEffortChanged) ||
       (nextProvider === 'codex' && !codexMidTurn && codexFastModeChanged) ||
@@ -11973,6 +12012,10 @@ function startRunner(
             localFailureMessage || detectLocalRunnerFailureMessage(extractAssistantText(attributedMessage));
         }
         const shouldPersistMessage = shouldPersistProviderMessage(attributedMessage);
+        // The main bot's context starts afresh by itself once it fills up (libs/main-bot).
+        if (session.session_role === 'main' && attributedMessage.type === 'system' && attributedMessage.subtype === 'token_usage' && !attributedMessage.parentToolUseId) {
+          noteMainBotContextUsage(session.id, attributedMessage.usage.totalTokens, attributedMessage.usage.contextWindow);
+        }
         if (shouldPersistMessage) {
           // 保存消息. Stored Claude messages reload in the order they arrived.
           sessions.addMessage(

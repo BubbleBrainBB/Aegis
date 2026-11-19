@@ -367,6 +367,83 @@ export class RemoteHostBridge {
     }
     return ids;
   }
+  /** For the main bot: each Mac with its projects, its sessions and what they wait for. */
+  overview() {
+    return [...this.hosts.values()].map((host) => {
+      const state = host.client.state;
+      const projects = state?.projects ?? [];
+      return {
+        id: host.key,
+        name: host.name,
+        online: host.client.status === "connected",
+        projects: projects.map((project) => ({ id: project.id, name: project.name, isRepo: project.isRepo })),
+        sessions: (state?.sessions ?? []).map((session) => {
+          const waiting = state!.permissions.find((permission) => permission.sessionId === session.id);
+          return {
+            id: this.localId(host, session.id),
+            title: session.title,
+            provider: session.provider,
+            model: session.settings?.model,
+            status: session.status,
+            updatedAt: session.updatedAt,
+            project: projects.find((project) => project.id === session.projectId)?.name ?? null,
+            waitingOn: waiting ? (waiting.questions ? "a question" : [waiting.toolName, waiting.detail].filter(Boolean).join(": ")) : undefined,
+          };
+        }),
+      };
+    });
+  }
+  private refusal(host: Host, result: { state: string; error?: string }): string {
+    switch (result.error) {
+      case "DESKTOP_REQUIRED": return `This agent only takes messages on ${host.name} itself.`;
+      case "SESSION_BUSY": return `${host.name} is still working on that task.`;
+      case "SCOPE_DENIED": return `That is no longer on ${host.name}.`;
+      case "INVALID_REQUEST": return `${host.name} can’t run this agent for tasks from another Mac, or needs a newer version of Aegis.`;
+      case "START_FAILED": return `${host.name} couldn’t start this task.`;
+      default: return result.error || `${host.name} didn’t confirm it. Check there before trying again.`;
+    }
+  }
+  /** Starts a task on another Mac without a composer; answers with its id here. */
+  async createTask(key: string, input: { projectId: string; provider: string; prompt: string; worktree?: boolean; settings?: RemoteTaskSettings }): Promise<{ id: string } | { error: string }> {
+    const host = this.hosts.get(key);
+    if (!host) return { error: "This device is no longer connected." };
+    if (host.client.status !== "connected") return { error: `Can’t reach ${host.name}.` };
+    const result = await host.client.command("create", {
+      projectId: input.projectId,
+      provider: input.provider,
+      prompt: input.prompt,
+      worktree: input.worktree || undefined,
+      ...(input.settings ? { settings: cleanSettings(input.settings) } : {}),
+    });
+    if (result.state !== "completed" || !result.sessionId) return { error: this.refusal(host, result) };
+    return { id: this.localId(host, result.sessionId) };
+  }
+  /** Sends a message to an idle session on another Mac, with the settings it has. */
+  async sendTo(id: string, prompt: string): Promise<{ ok: true } | { error: string }> {
+    const target = this.resolve(id);
+    if (!target) return { error: "This device is no longer connected." };
+    const { host, sessionId } = target;
+    if (host.client.status !== "connected") return { error: `Can’t reach ${host.name}.` };
+    const session = host.client.state?.sessions.find((s) => s.id === sessionId);
+    const result = await host.client.command("send", { sessionId, prompt, settings: cleanSettings(session?.settings ?? {}) });
+    return result.state === "completed" ? { ok: true } : { error: this.refusal(host, result) };
+  }
+  async stopTask(id: string): Promise<{ ok: true } | { error: string }> {
+    const target = this.resolve(id);
+    if (!target) return { error: "This device is no longer connected." };
+    const { host, sessionId } = target;
+    const runId = host.client.state?.sessions.find((s) => s.id === sessionId)?.runId;
+    if (!runId) return { ok: true };
+    const result = await host.client.command("stop", { sessionId, runId });
+    return result.state === "completed" || result.error === "STALE_RUN" ? { ok: true } : { error: this.refusal(host, result) };
+  }
+  /** The latest messages of a session on another Mac, oldest first. */
+  async read(id: string): Promise<Array<{ role: RemoteMessage["role"]; text: string }>> {
+    const target = this.resolve(id);
+    if (!target) throw new Error("This device is no longer connected.");
+    const messages = await target.host.client.peek(target.sessionId);
+    return messages.filter((message) => !message.streaming).map((message) => ({ role: message.role, text: message.text }));
+  }
   /** A composer start for a project on another Mac. True when it was one. */
   private startTask(payload: SessionStartPayload): boolean {
     const target = parseRemoteProjectPath(payload.cwd);

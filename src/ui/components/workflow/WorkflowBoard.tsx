@@ -60,9 +60,9 @@ const TONE_CLASS = {
   muted: '',
 } as const;
 
-const buttonClass =
+export const workflowButtonClass =
   'inline-flex h-7 items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 text-[12px] font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--sidebar-item-hover)] disabled:opacity-50';
-const primaryButtonClass =
+export const workflowPrimaryButtonClass =
   'inline-flex h-7 items-center gap-1 rounded-md bg-[var(--text-primary)] px-2.5 text-[12px] font-medium text-[var(--bg-primary)] transition-opacity hover:opacity-90 disabled:opacity-50';
 
 export function WorkflowBoard({
@@ -145,15 +145,7 @@ function RunBoard({ run }: { run: WorkflowRunView }) {
 
   return (
     <div className="my-1.5 min-w-0" data-workflow-board={run.id}>
-      <div className="flex min-w-0 cursor-pointer items-center gap-[7px] text-[13px] leading-[22px]" onClick={toggleCollapsed}>
-        <Workflow className="h-3.5 w-3.5 flex-shrink-0 text-[var(--text-muted)]" aria-hidden="true" />
-        <span
-          className="min-w-0 truncate font-medium text-[var(--text-primary)]"
-          title={[run.description, run.goal].filter(Boolean).join('\n\n')}
-        >
-          {runTitle(run)}
-        </span>
-        <RunStatus run={run} lanes={lanes} now={now} />
+      <RunHeader run={run} lanes={lanes} now={now} collapsed={collapsed} onToggle={toggleCollapsed}>
         {canStop ? (
           <button
             type="button"
@@ -168,21 +160,7 @@ function RunBoard({ run }: { run: WorkflowRunView }) {
             Stop
           </button>
         ) : null}
-        <button
-          type="button"
-          className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded text-[var(--text-muted)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
-          title={collapsed ? 'Show steps' : 'Hide steps'}
-          aria-label={collapsed ? 'Show steps' : 'Hide steps'}
-          aria-expanded={!collapsed}
-          data-workflow-toggle
-          onClick={(event) => {
-            event.stopPropagation();
-            toggleCollapsed();
-          }}
-        >
-          <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', collapsed && '-rotate-90')} />
-        </button>
-      </div>
+      </RunHeader>
 
       {collapsed && !action && !error ? null : (
         <TraceNest className="mt-0.5">
@@ -219,6 +197,78 @@ function RunBoard({ run }: { run: WorkflowRunView }) {
           {error}
         </TraceNest>
       )}
+    </div>
+  );
+}
+
+/** A run's header line: its title, what it is doing, and the chevron that folds what is under it. */
+function RunHeader({
+  run,
+  lanes,
+  now,
+  collapsed,
+  onToggle,
+  children,
+}: {
+  run: WorkflowRunView;
+  lanes: WorkflowStepView[];
+  now: number;
+  collapsed: boolean;
+  onToggle: () => void;
+  /** Between the status and the chevron: the Stop button of a run that is going. */
+  children?: ReactNode;
+}) {
+  return (
+    <div className="flex min-w-0 cursor-pointer items-center gap-[7px] text-[13px] leading-[22px]" onClick={onToggle}>
+      <Workflow className="h-3.5 w-3.5 flex-shrink-0 text-[var(--text-muted)]" aria-hidden="true" />
+      <span
+        className="min-w-0 truncate font-medium text-[var(--text-primary)]"
+        title={[run.description, run.goal].filter(Boolean).join('\n\n')}
+      >
+        {runTitle(run)}
+      </span>
+      <RunStatus run={run} lanes={lanes} now={now} />
+      {children}
+      <button
+        type="button"
+        className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded text-[var(--text-muted)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
+        title={collapsed ? 'Show steps' : 'Hide steps'}
+        aria-label={collapsed ? 'Show steps' : 'Hide steps'}
+        aria-expanded={!collapsed}
+        data-workflow-toggle
+        onClick={(event) => {
+          event.stopPropagation();
+          onToggle();
+        }}
+      >
+        <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', collapsed && '-rotate-90')} />
+      </button>
+    </div>
+  );
+}
+
+/**
+ * The plan card of a run that waits to be started, as its chat draws it: the
+ * header line and the box under it. For a place outside that chat that asks
+ * the same question (Ask Aegis); the answer goes where that place sends it.
+ */
+export function WorkflowPlanBoard({
+  run,
+  busy,
+  perform,
+  onFold,
+}: {
+  run: WorkflowRunView;
+  busy: boolean;
+  perform: (action: WorkflowAction) => Promise<void>;
+  onFold: () => void;
+}) {
+  return (
+    <div className="my-1.5 min-w-0" data-workflow-board={run.id}>
+      <RunHeader run={run} lanes={[]} now={0} collapsed={false} onToggle={onFold} />
+      <TraceNest className="mt-0.5">
+        <PlanBox run={run} busy={busy} perform={perform} />
+      </TraceNest>
     </div>
   );
 }
@@ -406,7 +456,7 @@ function PlanBox({ run, busy, perform }: { run: WorkflowRunView; busy: boolean; 
       <div className="flex items-center gap-2">
         <button
           type="button"
-          className={primaryButtonClass}
+          className={workflowPrimaryButtonClass}
           disabled={busy}
           onClick={() => void perform({ type: 'confirm', runId: run.id, expectedRevision: run.revision })}
         >
@@ -414,7 +464,7 @@ function PlanBox({ run, busy, perform }: { run: WorkflowRunView; busy: boolean; 
         </button>
         <button
           type="button"
-          className={buttonClass}
+          className={workflowButtonClass}
           disabled={busy}
           onClick={() => void perform({ type: 'cancel', runId: run.id, expectedRevision: run.revision })}
         >
@@ -466,7 +516,7 @@ function NeedsInputBox({ run, busy, perform }: { run: WorkflowRunView; busy: boo
           />
           <button
             type="button"
-            className={primaryButtonClass}
+            className={workflowPrimaryButtonClass}
             disabled={busy || !text.trim()}
             onClick={() => void perform({ type: 'answer', runId: run.id, expectedRevision: run.revision, text })}
           >
@@ -479,7 +529,7 @@ function NeedsInputBox({ run, busy, perform }: { run: WorkflowRunView; busy: boo
             <button
               key={o.id}
               type="button"
-              className={index === 0 ? primaryButtonClass : buttonClass}
+              className={index === 0 ? workflowPrimaryButtonClass : workflowButtonClass}
               disabled={busy}
               onClick={() =>
                 void perform(

@@ -1,18 +1,22 @@
 // Aegis host compatibility for the pinned Bubble SDK. Re-run on install/build;
 // fail on upstream drift rather than silently shipping an unpatched runtime.
-// Host tools are upstream since 0.0.60 (turn-scoped `hostTools` on runTurn);
-// 0.0.61, 0.0.62 and 0.0.66 left dist/sdk/index.js unchanged, so the seams
-// below are the same.
+// Host tools are upstream since 0.0.60 (turn-scoped `hostTools` on runTurn).
+// 0.0.67 changed dist/sdk/index.js (same file in 0.0.68 and 0.0.69): MCP tools
+// pass a turn's `allowedTools`, and the MCP status, reconnect and shutdown
+// methods follow resolveProjectTrust, so the trust seam ends where they begin.
+// 0.0.70 changed it again, outside the patched seams: runTurn fits the thinking
+// level it is given to the model's own levels (resolveTurnThinkingLevel).
 // Patched here: repeatable, serialized project trust; explicit deny rules for
-// read-only host tools; and a host tool shadowing a same-named MCP tool
-// instead of failing the turn.
+// read-only host tools; a host tool shadowing a same-named MCP tool instead of
+// failing the turn; and no turn started for an unread steer once the turn it
+// was sent to has been stopped.
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export async function patchBubbleSdk(root) {
   const pkg = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
-  if (pkg.version !== '0.0.66') throw new Error(`Review Bubble host patch for SDK ${pkg.version}`);
+  if (pkg.version !== '0.0.70') throw new Error(`Review Bubble host patch for SDK ${pkg.version}`);
   const jsPath = path.join(root, 'dist/sdk/index.js');
   const typesPath = path.join(root, 'dist/sdk/index.d.ts');
   let js = await readFile(jsPath, 'utf8');
@@ -28,10 +32,12 @@ export async function patchBubbleSdk(root) {
     'import { isRepoConfigTrusted, mergedRepoCapabilities, readRepoSettings, trustRepoConfig, }',
     'import { isRepoConfigTrusted, mergedRepoCapabilities, readRepoSettings, trustRepoConfig, repoConfigFingerprint, }');
   const begin = '    async resolveProjectTrust(cwd, options, signal) {';
-  const end = '    /** Configured providers + default model, for a host\'s model picker. */';
+  const end = '    /**\n     * The MCP servers of a folder and how each connection stands.';
   const start = js.indexOf(begin), finish = js.indexOf(end, start);
   if (start < 0 || finish < 0) throw new Error('Bubble trust seam missing');
   const original = js.slice(start, finish);
+  // The slice is replaced whole: it must hold resolveProjectTrust and nothing else.
+  if ((original.match(/^    (?:async )?[\w$]+\(.*\) \{$/gm) ?? []).length !== 1) throw new Error('Bubble trust seam spans more than one method');
   if (!original.includes('projectTrustAsked') && !original.includes('projectTrustPending')) throw new Error('Bubble trust seam changed');
   js = js.slice(0, start) + `    async resolveProjectTrust(cwd, options, signal) {
         const previous = this.projectTrustPending.get(cwd) ?? Promise.resolve();
@@ -74,12 +80,16 @@ export async function patchBubbleSdk(root) {
     }
 ` + js.slice(finish);
   js = replace(js,
-    `            tools.push(...gateMcpTools(await awaitWithAbort(this.mcpToolsFor(cwd), abortSignal), approvalController));
+    `            if (!allowedTools || [...allowedTools].some((name) => name.startsWith("mcp__"))) {
+                tools.push(...gateMcpTools(await awaitWithAbort(this.mcpToolsFor(cwd), abortSignal), approvalController).filter(offered));
+            }
             const hostTools = options.hostTools ?? [];`,
     `            const hostTools = options.hostTools ?? [];
             // Aegis: a host tool shadows a same-named MCP tool instead of failing the turn.
             const hostToolNames = new Set(hostTools.map(tool => tool.name));
-            tools.push(...gateMcpTools((await awaitWithAbort(this.mcpToolsFor(cwd), abortSignal)).filter(tool => !hostToolNames.has(tool.name)), approvalController));`);
+            if (!allowedTools || [...allowedTools].some((name) => name.startsWith("mcp__"))) {
+                tools.push(...gateMcpTools((await awaitWithAbort(this.mcpToolsFor(cwd), abortSignal)).filter(tool => !hostToolNames.has(tool.name)), approvalController).filter(offered));
+            }`);
   js = replace(js,
     '                tools.push(...(tool.readOnly ? [guarded] : gateMcpTools([guarded], approvalController)));',
     `                // Aegis: read-only host tools skip the approval prompt, like builtin
@@ -93,6 +103,24 @@ export async function patchBubbleSdk(root) {
                     },
                 };
                 tools.push(...(tool.readOnly ? [ruleChecked] : gateMcpTools([guarded], approvalController)));`);
+  // A turn that ends with a steer unread hands it a turn of its own. The agent
+  // reports the unread steer after its QueuedInputRejected hook, however long
+  // that takes, and without looking at cancellation again: a Stop during the
+  // hook has by then cancelled the turn and cleared the queue, and the turn
+  // started afterwards would run with no signal to stop it and nobody reading.
+  js = replace(js,
+    `    queuePendingSteer(runtime, pending, resolved, rejected) {
+        try {`,
+    `    queuePendingSteer(runtime, pending, resolved, rejected) {
+        // Aegis: a stopped turn (or a deleted session) starts nothing for the
+        // steers it never read; they end as cancelled, like the turn.
+        if (runtime.reservation.signal.aborted || this.turnCoordinator.isDeleted(runtime.sessionId)) {
+            const cancelled = { ...rejected, reason: "turn_cancelled" };
+            runtime.outcomes.delete(pending.input.id);
+            pending.resolve(cancelled);
+            return cancelled;
+        }
+        try {`);
   types = replace(types, '    private readonly projectTrustAsked;', '    private readonly projectTrustPending;');
   await writeFile(jsPath, js);
   await writeFile(typesPath, types);
@@ -100,5 +128,5 @@ export async function patchBubbleSdk(root) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   await patchBubbleSdk(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../node_modules/@bubblebrain-ai/bubble'));
-  console.log('Bubble SDK host patch applied (project trust, host tool deny rules and MCP shadowing)');
+  console.log('Bubble SDK host patch applied (project trust, host tool deny rules, MCP shadowing and no turn for a steer after Stop)');
 }

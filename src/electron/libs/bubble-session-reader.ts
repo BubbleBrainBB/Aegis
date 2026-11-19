@@ -6,6 +6,7 @@ import { isBrowserUseEnabled } from './browser-use-permissions';
 import { createNativeDesignTools } from '../design/tools';
 import { createNativeReportStatus } from './turn-report-tool';
 import { createNativeStartSession } from './follow-up/tool';
+import { createMainBotTools, isMainBotSession } from './main-bot/tools';
 import type { BubbleContentPart } from './provider/bubble-sdk-loader';
 
 export const BUBBLE_SESSION_TOOL = 'read_session';
@@ -16,6 +17,11 @@ export const BUBBLE_SESSION_TOOL = 'read_session';
  * MCP tools. Host tools are turn-scoped, so a session's turns carry tools
  * bound to it. Bubble withholds host tools from subagents. */
 export function bubbleHostTools(sessionId?: string): object[] {
+  // The main bot hands work out instead of doing it: it reads conversations
+  // and runs tasks, and has none of the tools that work inside one session.
+  if (isMainBotSession(sessionId)) {
+    return [createNativeSessionReader(), createNativeShowWidget(), createNativeWidgetGuide(), createNativeReportStatus(sessionId!), ...createMainBotTools()];
+  }
   // The workflow entry (start_workflow); member sessions are refused at call time.
   const tools: object[] = [createNativeSessionReader(), createNativeStartWorkflow(), createNativeShowWidget(), createNativeWidgetGuide()];
   if (sessionId && isBrowserUseEnabled()) tools.push(createBubbleBrowserUseTool(sessionId));

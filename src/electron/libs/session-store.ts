@@ -593,6 +593,8 @@ export function initialize(): void {
   ensureColumn('sessions', 'team_id', 'TEXT');
   ensureColumn('sessions', 'project_cwd', 'TEXT');
   ensureColumn('sessions', 'is_chat', 'INTEGER DEFAULT 0');
+  // 'main' marks the main bot's one conversation (libs/main-bot).
+  ensureColumn('sessions', 'session_role', 'TEXT');
   ensureColumn('sessions', 'env_mode', "TEXT DEFAULT 'local'");
   ensureColumn('sessions', 'worktree_path', 'TEXT');
   ensureColumn('sessions', 'associated_worktree_path', 'TEXT');
@@ -2814,6 +2816,22 @@ export function getSessionUsageRecords(sessionId: string): Array<Extract<StreamM
     try {
       const message = readStoredMessagePayload(row.data, row.created_at);
       return message.type === 'usage_record' ? [message] : [];
+    } catch {
+      return [];
+    }
+  });
+}
+
+/** The last prompts of a conversation, latest first: enough to tell how its last turn began without reading its history. */
+export function getLatestUserPrompts(sessionId: string, limit = 20): Array<Extract<StreamMessage, { type: 'user_prompt' }>> {
+  const rows = getDb().prepare(`
+    SELECT data, created_at FROM messages WHERE session_id = ? AND message_type = 'user_prompt'
+    ORDER BY COALESCE(sort_key, created_at) DESC, created_at DESC LIMIT ?
+  `).all(sessionId, Math.max(1, Math.min(100, Math.floor(limit)))) as { data: string; created_at: number }[];
+  return rows.flatMap((row) => {
+    try {
+      const message = readStoredMessagePayload(row.data, row.created_at);
+      return message.type === 'user_prompt' ? [message] : [];
     } catch {
       return [];
     }
@@ -5214,6 +5232,15 @@ export function listProjects(): string[] {
     ORDER BY latest DESC
   `).all() as { folder: string }[];
   return rows.map((row) => row.folder).filter((folder) => !folder.includes('/.worktrees/'));
+}
+
+/** The session holding a role ('main': the main bot's conversation), if one was made. */
+export function findSessionByRole(role: 'main'): SessionRow | undefined {
+  return getDb().prepare('SELECT * FROM sessions WHERE session_role = ? ORDER BY created_at ASC LIMIT 1').get(role) as SessionRow | undefined;
+}
+
+export function setSessionRole(sessionId: string, role: 'main' | null): void {
+  getDb().prepare('UPDATE sessions SET session_role = ? WHERE id = ?').run(role, sessionId);
 }
 
 // 关闭数据库

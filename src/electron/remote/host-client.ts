@@ -333,6 +333,18 @@ export class RemoteHostClient {
     this.subscribed = sessionId;
     return this.refresh();
   }
+  /**
+   * One session's latest messages without showing it. Asking makes the host
+   * send that session's changes, so the one on screen is asked for again after.
+   */
+  async peek(sessionId: string): Promise<RemoteMessage[]> {
+    const snapshot = (await this.request({ method: "snapshot", sessionId })) as RemoteSnapshot;
+    void (async () => {
+      while (this.held) await new Promise((resolve) => setTimeout(resolve, 50));
+      await this.refresh();
+    })();
+    return snapshot.messages ?? [];
+  }
   async older(sessionId: string, before: number) {
     const snapshot = (await this.request({
       method: "snapshot",

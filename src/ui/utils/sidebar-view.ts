@@ -125,6 +125,9 @@ export const SIDEBAR_STATE_LABELS: Record<SidebarSessionState, string> = {
   completed: 'Completed',
 };
 
+/** The short word on a task that waits on the user, where there is room for one beside its icon. */
+export const NEEDS_YOU_LABEL = 'Needs you';
+
 export type TaskFilter = 'all' | SidebarSessionState;
 
 export const TASK_FILTERS: ReadonlyArray<{ id: TaskFilter; label: string }> = [
@@ -199,6 +202,8 @@ export function deriveSidebarSessionState(
     keptOpen?: boolean;
     /** A workflow it started is still going: its agents work on after the turn that started it. */
     workflowRunning?: boolean;
+    /** A workflow it prepared waits for the user to start it. */
+    workflowWaiting?: boolean;
   }
 ): SidebarSessionState | null {
   if (session.isDraft) return null;
@@ -223,13 +228,20 @@ export function deriveSidebarSessionState(
   // So does a workflow: starting one ends the turn, and its result comes back as a new turn.
   if (context.workflowRunning) return 'running';
   const finished = session.runtimeNotice === 'completed' && outcome !== 'nothing_to_do';
-  if (finished || context.unread || context.keptOpen) return 'review';
   const pr = context.pullRequest;
-  if (pr?.state === 'open') return 'review';
-  // A live worktree holds work that has not been applied back yet, unless its
-  // PR already landed (or was closed) upstream, or git shows nothing is left.
-  if (session.envMode === 'worktree' && session.worktreePath && !pr && !context.worktreeSettled) return 'review';
-  return 'completed';
+  const review =
+    finished ||
+    context.unread ||
+    context.keptOpen ||
+    pr?.state === 'open' ||
+    // A live worktree holds work that has not been applied back yet, unless its
+    // PR already landed (or was closed) upstream, or git shows nothing is left.
+    Boolean(session.envMode === 'worktree' && session.worktreePath && !pr && !context.worktreeSettled);
+  if (!review) return 'completed';
+  // A workflow it prepared and that waits to be started is the next thing to
+  // do here. Only while the task is still open: one left behind on a task you
+  // closed does not bring that task back.
+  return context.workflowWaiting ? 'needs-input' : 'review';
 }
 
 function firstLine(text: string): string {

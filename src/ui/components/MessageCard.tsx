@@ -2,10 +2,11 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { stripContentReferences } from '../utils/content-references';
 import { stripLeakedContextTags } from '../utils/leaked-context-tags';
 import { DesignCommentPromptRow } from './design/DesignCommentPromptRow';
-import { isSubSessionsFinishedPrompt, SubSessionBriefCard, SubSessionsFinishedRow } from './follow-up/SubSessionPromptRows';
+import { SubSessionBriefCard } from './follow-up/SubSessionPromptRows';
+import { isDeliveredResultLabel } from '../../shared/follow-up';
 import { DesignSelectionTag } from './design/DesignSelectionChip';
 import { useDesignStore } from '../store/useDesignStore';
-import { ChevronRight, Copy, Check, History, Lightbulb, Pencil, RotateCcw, TargetArrow, Undo2, Workflow } from './icons';
+import { ChevronRight, Copy, Check, History, Lightbulb, Pencil, RotateCcw, TargetArrow, Workflow } from './icons';
 import { parseGoalInput, supportsGoalUI, isClaudeGoalClearObjective } from '../../shared/session-goal';
 import type { ThreadGoal } from '../../shared/session-goal';
 import { WORKFLOW_REPORT_SUFFIX } from '../../shared/workflow';
@@ -62,6 +63,8 @@ interface MessageCardProps {
     onResend: (prompt: string, attachments?: Attachment[]) => void;
     onRewind?: () => void;
   };
+  /** Drawn under the user's own message, before its hover actions: the tasks the main bot started for it. */
+  userPromptFooter?: ReactNode;
 }
 
 export function MessageCard({
@@ -74,6 +77,7 @@ export function MessageCard({
   hideAssistantCopyBar = false,
   completedGoals,
   userPromptActions,
+  userPromptFooter,
 }: MessageCardProps) {
   switch (message.type) {
     case 'user_prompt':
@@ -83,9 +87,9 @@ export function MessageCard({
       }
       if (message.workflowPrompt === 'task') return <WorkflowTaskRow text={message.prompt} />;
       if (message.workflowPrompt === 'follow-up') {
-        return isSubSessionsFinishedPrompt(message.prompt)
-          ? <SubSessionsFinishedRow text={message.prompt} />
-          : <FollowUpPromptChip text={message.prompt} />;
+        // A result coming back adds no row: the card that sent the work out
+        // already shows how it stands, and the answer says what came back.
+        return isDeliveredResultLabel(message.prompt) ? null : <FollowUpPromptChip text={message.prompt} />;
       }
       if (message.workflowPrompt === 'sub-session') return <SubSessionBriefCard text={message.prompt} sessionId={sessionId ?? undefined} createdAt={message.createdAt} />;
       // A comment sent from a design thread links back to it on the canvas.
@@ -107,6 +111,7 @@ export function MessageCard({
           createdAt={message.createdAt}
           actions={userPromptActions}
           sessionId={sessionId}
+          footer={userPromptFooter}
         />
       );
 
@@ -114,6 +119,7 @@ export function MessageCard({
       if (message.subtype === 'background_task_ended') {
         return <BackgroundTaskEndedRow sessionId={sessionId} outcome={message.outcome} />;
       }
+      if (message.subtype === 'context_refreshed') return <ContextRefreshedRow automatic={message.trigger === 'auto'} />;
       return null;
 
     case 'assistant':
@@ -149,6 +155,46 @@ export function MessageCard({
   }
 }
 
+/** One period of the wavy rule, as a mask: the rule takes its colour from the theme. */
+const WAVE_MASK = `url("data:image/svg+xml,${encodeURIComponent(
+  "<svg xmlns='http://www.w3.org/2000/svg' width='14' height='6'><path d='M0 3 Q3.5 -0.4 7 3 T14 3' fill='none' stroke='black' stroke-width='1.1' stroke-linecap='round'/></svg>",
+)}")`;
+
+function WavyRule({ from }: { from: 'left' | 'right' }) {
+  return (
+    <span
+      aria-hidden="true"
+      className="h-[6px] min-w-0 flex-1"
+      style={{
+        backgroundColor: 'color-mix(in srgb, var(--accent) 38%, transparent)',
+        maskImage: WAVE_MASK,
+        WebkitMaskImage: WAVE_MASK,
+        maskRepeat: 'repeat-x',
+        WebkitMaskRepeat: 'repeat-x',
+        maskSize: '14px 6px',
+        WebkitMaskSize: '14px 6px',
+        maskPosition: `${from} center`,
+        WebkitMaskPosition: `${from} center`,
+      }}
+    />
+  );
+}
+
+/**
+ * Where the main bot's agent started on an empty thread: it has nothing of
+ * what is above. A wavy rule with "New" in it; why is in the tooltip.
+ */
+function ContextRefreshedRow({ automatic }: { automatic: boolean }) {
+  const why = `${automatic ? 'The context was nearly full, so Aegis started from a fresh one here.' : 'Aegis starts from a fresh context here.'} It keeps its notes and what it handed out, not the conversation above.`;
+  return (
+    <div role="separator" aria-label={why} title={why} className="my-5 flex items-center gap-2.5" data-context-refreshed={automatic ? 'auto' : 'manual'}>
+      <WavyRule from="left" />
+      <span className="flex-shrink-0 rounded-full bg-[var(--accent-light)] px-2 py-0.5 text-[10.5px] font-semibold leading-4 tracking-[0.06em] text-[var(--accent)]">New</span>
+      <WavyRule from="right" />
+    </div>
+  );
+}
+
 function ProposedPlanCard({ planMarkdown }: { planMarkdown: string }) {
   return (
     <div className="my-3 flex justify-start">
@@ -175,6 +221,7 @@ function UserPromptCard({
   createdAt,
   actions,
   sessionId,
+  footer,
 }: {
   prompt: string;
   attachments?: Attachment[];
@@ -188,6 +235,7 @@ function UserPromptCard({
     onRewind?: () => void;
   };
   sessionId?: string | null;
+  footer?: ReactNode;
 }) {
   const [copied, setCopied] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
@@ -447,6 +495,8 @@ function UserPromptCard({
             )}
           </div>
         )}
+
+        {footer ? <div className="mt-1 flex max-w-full flex-wrap justify-end gap-x-1 gap-y-0.5">{footer}</div> : null}
 
         {/* The sent mode remains visible alongside the hover-only actions. */}
         <div className="mt-1 min-h-6 max-w-full flex items-center justify-end gap-3 text-xs text-[var(--text-muted)]">
@@ -757,14 +807,13 @@ function WorkflowEventRow({ text }: { text: string }) {
 }
 
 /**
- * A follow-up result (or task) Aegis sent to this conversation: no row of its
- * own, just a small chip above the reply naming what the reply answers.
+ * A follow-up task the user chose to run in this conversation: no row of its
+ * own, just a small chip above the reply naming what the reply works on.
+ * (Results that come back draw nothing: see isDeliveredResultLabel.)
  */
 function FollowUpPromptChip({ text }: { text: string }) {
-  const match = /^(?:Follow-up|Sub-session) (results?|task): ([\s\S]*)$/.exec(text);
-  const isTask = match?.[1] === 'task';
-  const label = match ? match[2] : text;
-  const Icon = isTask ? Lightbulb : Undo2;
+  const label = /^Follow-up task: ([\s\S]*)$/.exec(text)?.[1] ?? text;
+  const Icon = Lightbulb;
   return (
     <div className="mb-1.5 mt-4 flex" data-follow-up-prompt>
       <span

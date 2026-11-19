@@ -255,6 +255,12 @@ contextBridge.exposeInMainWorld('electron', {
     detach: (childSessionId: string) => ipcRenderer.invoke('follow-up-detach', childSessionId),
   },
 
+  openMainBot: () => ipcRenderer.invoke('main-bot-open'),
+  getMainBotSessionId: () => ipcRenderer.invoke('main-bot-session-id'),
+  refreshMainBotContext: () => ipcRenderer.invoke('main-bot-refresh-context'),
+  mainBotWorkflowCards: () => ipcRenderer.invoke('main-bot-workflow-cards'),
+  decideMainBotWorkflow: (taskId: string, run: { id: string; revision: number }, start: boolean) => ipcRenderer.invoke('main-bot-decide-workflow', taskId, run, start),
+
   sessionHandoff: (payload: { sessionId: string; targetProvider: string }) => {
     return ipcRenderer.invoke('session-handoff', payload);
   },
@@ -1240,6 +1246,10 @@ contextBridge.exposeInMainWorld('electron', {
 
   gitStagePath: (cwd: string, filePath: string) => {
     return ipcRenderer.invoke('git-stage-path', cwd, filePath);
+  },
+
+  gitStageAll: (cwd: string) => {
+    return ipcRenderer.invoke('git-stage-all', cwd);
   },
 
   gitUnstagePath: (cwd: string, filePath: string) => {

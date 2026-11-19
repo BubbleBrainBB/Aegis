@@ -54,6 +54,14 @@ import { DesignChatCard } from './design/DesignChatCard';
 import { DesignBoardLinksContext, DesignLinkSessionContext, designBoardLinksOf } from '../utils/design-board-links';
 import { designChangesInMessages, type DesignTurnChange } from '../utils/design-entries';
 import { followUpCallsInMessages, type FollowUpCall } from '../utils/follow-up-entries';
+import { isMainBotQuietWork, taskCardCallsInMessages, type TaskCardCall } from '../utils/follow-up-entries';
+import { isDeliveredResultLabel, isStartSessionToolName } from '../../shared/follow-up';
+import { SubSessionCard } from './follow-up/SubSessionCard';
+import { MainBotTaskLine } from './main-bot/MainBotTaskLine';
+import { MainBotTaskChip } from './main-bot/MainBotTaskChip';
+import { MainBotWorkflowCards } from './main-bot/MainBotWorkflowCards';
+import { mainBotToolKind } from '../../shared/main-bot';
+import { TaskCardsAfterAnswerProvider } from './AssistantWorkstream';
 import { findProposalForChild, useFollowUpStore } from '../store/useFollowUpStore';
 import { workDisclosureScope, type WorkDisclosureScope } from '../utils/work-disclosure-scope';
 import { findTimelineItemWithToolCall, findToolCallMessage, findWorkGroupWithToolCall } from '../utils/tool-call-lookup';
@@ -1234,6 +1242,8 @@ export function ChatPane({
       const promptMessage = session.messages[userPromptIndex];
       // A steered prompt joined a running turn: no checkpoint opens there.
       if (promptMessage?.type !== 'user_prompt' || promptMessage.steer) return null;
+      // The main bot's agent may have started afresh mid-conversation, and what it handed out is not taken back.
+      if (useAppStore.getState().mainBotSessionId === sessionId) return null;
 
       if (session.provider === 'bubble') {
         let ordinal = 0;
@@ -1367,6 +1377,36 @@ export function ChatPane({
     return ranges;
   }, [session?.messages]);
 
+  // The main bot's conversation draws handed-out work its own way: a chip per
+  // started task under the message that opened the turn (while the turn runs
+  // and after), and no trace row for what the bot does on the way to its
+  // answer (isMainBotQuietWork): it reads as a chat, not as an agent's trace.
+  const isMainBotChat = useAppStore((state) => Boolean(sessionId) && state.mainBotSessionId === sessionId);
+  /** Keyed by the index of the message that opens the turn; -1 when that message is not loaded. */
+  const taskChipsByOpener = useMemo(() => {
+    const map = new Map<number, TaskCardCall[]>();
+    if (!session || !isMainBotChat) return map;
+    for (const turn of turnRanges) {
+      const started = taskCardCallsInMessages(
+        session.messages.slice(turn.firstMessageIndex, turn.lastMessageIndex + 1),
+        toolResultsMap
+      ).filter((call) => mainBotToolKind(call.toolName) === 'start' && !call.failed);
+      if (!started.length) continue;
+      const opener = opensTurn(session.messages[turn.firstMessageIndex]) ? turn.firstMessageIndex : -1;
+      map.set(opener, [...(map.get(opener) ?? []), ...started]);
+    }
+    return map;
+  }, [isMainBotChat, session?.messages, toolResultsMap, turnRanges]);
+  const quietWork = useMemo(() => {
+    const ids = new Set<string>();
+    if (!isMainBotChat) return ids;
+    for (const item of timelineItems) {
+      const group = item.type === 'work' ? item.group : item.inlineWorkGroup;
+      if (group && isMainBotQuietWork(group.messages, toolResultsMap)) ids.add(group.id);
+    }
+    return ids;
+  }, [isMainBotChat, timelineItems, toolResultsMap]);
+
   // Where each finished turn ends in the timeline: its result cards (files
   // changed, designs written) go there, after the final reply.
   const turnEndByTimelineIndex = useMemo(() => {
@@ -1467,6 +1507,27 @@ export function ChatPane({
     return map;
   }, [turnEndByTimelineIndex, session?.messages, toolResultsMap]);
 
+  // Work a finished turn handed to sessions: its rows go after the answer too,
+  // so they sit between "handed out" and the result that comes back.
+  const taskCardsByTimelineIndex = useMemo(() => {
+    const map = new Map<number, TaskCardCall[]>();
+    if (!session) return map;
+    for (const [index, turn] of turnEndByTimelineIndex) {
+      const calls = taskCardCallsInMessages(
+        session.messages.slice(turn.firstMessageIndex, turn.lastMessageIndex + 1),
+        toolResultsMap
+      );
+      if (calls.length) map.set(index, calls);
+    }
+    return map;
+  }, [turnEndByTimelineIndex, session?.messages, toolResultsMap]);
+  const finishedTurns = useMemo(() => [...turnEndByTimelineIndex.values()], [turnEndByTimelineIndex]);
+  /** The finished turns that have such rows, by where each ends in the timeline. */
+  const taskCardTurns = useMemo(
+    () => [...turnEndByTimelineIndex].filter(([index]) => taskCardsByTimelineIndex.has(index)),
+    [turnEndByTimelineIndex, taskCardsByTimelineIndex],
+  );
+
   const copyPlacementByTimelineIndex = useMemo(() => {
     const actionTextByCardIndex = new Map<number, string>();
     const hiddenMessageIndices = new Set<number>();
@@ -1506,8 +1567,37 @@ export function ChatPane({
       }
     }
 
+    // A turn that handed work to sessions is not the last word on it: the
+    // result comes back under the rows. No copy button between the two.
+    for (const [cardIndex, turn] of taskCardTurns) {
+      actionTextByCardIndex.delete(cardIndex);
+      for (let index = cardIndex; index >= 0; index -= 1) {
+        const item = timelineItems[index];
+        if (!item) continue;
+        const first = item.type === 'work' ? item.group.originalIndices[0] : item.originalIndex;
+        if (first < turn.firstMessageIndex) break;
+        if (item.type === 'message' && item.message.type === 'assistant') hiddenMessageIndices.add(index);
+      }
+    }
+
+    // The main bot answering one report after another, with nothing typed in
+    // between, reads as one stretch: the copy button comes after its last word.
+    if (isMainBotChat) {
+      let lastAnswer = -1;
+      for (let index = 0; index < timelineItems.length; index += 1) {
+        const item = timelineItems[index];
+        if (item.type !== 'message') continue;
+        if (item.message.type === 'assistant') {
+          if (item.assistantPresentation !== 'progress') lastAnswer = index;
+        } else if (item.message.type === 'user_prompt') {
+          if (lastAnswer >= 0 && item.message.workflowPrompt === 'follow-up' && isDeliveredResultLabel(item.message.prompt)) hiddenMessageIndices.add(lastAnswer);
+          lastAnswer = -1;
+        }
+      }
+    }
+
     return { actionTextByCardIndex, hiddenMessageIndices };
-  }, [timelineItems, turnCardByTimelineIndex]);
+  }, [timelineItems, turnCardByTimelineIndex, taskCardTurns, isMainBotChat]);
 
   const handleOpenDiff = useCallback((
     record: ChangeRecord,
@@ -1901,6 +1991,8 @@ export function ChatPane({
   const isSideChatPane = paneId.startsWith('sidechat:');
   // A freshly created draft thread with no messages shows the centered landing
   // (title + composer + starter suggestions), matching the first-entry screen.
+  // The main bot works across projects: its conversation has none to pick or change.
+  const isMainBotPane = useAppStore((state) => Boolean(sessionId) && state.mainBotSessionId === sessionId);
   const showThreadStarter = Boolean(
     session &&
       !isSideChatPane &&
@@ -2015,7 +2107,7 @@ export function ChatPane({
             </div>
           ) : null}
           {showThreadStarter ? (
-            <NewThreadLanding heading={<NewThreadProjectHeading cwd={threadStarterCwd} sessionId={sessionId} onSelectProject={switchDraftFolder} onSelectNoProject={switchDraftToChat} disabled={pendingStart} />}>
+            <NewThreadLanding heading={isMainBotPane ? <>What needs doing?</> : <NewThreadProjectHeading cwd={threadStarterCwd} sessionId={sessionId} onSelectProject={switchDraftFolder} onSelectNoProject={switchDraftToChat} disabled={pendingStart} />}>
               <div className="mx-auto w-full max-w-3xl">
                 {/* One composer per draft: a draft's unsent or starting message is its own. */}
                 <PromptInput
@@ -2023,7 +2115,7 @@ export function ChatPane({
                   sessionId={sessionId}
                   menuSide="top"
                   composerSurface="landing"
-                  footer={
+                  footer={isMainBotPane ? undefined : (
                     <ComposerContextPills
                       cwd={threadStarterCwd || null}
                       projectName={threadStarterProject}
@@ -2037,7 +2129,7 @@ export function ChatPane({
                         if (sessionId) setDraftStartMode(sessionId, mode);
                       }}
                     />
-                  }
+                  )}
                 />
               </div>
             </NewThreadLanding>
@@ -2145,6 +2237,11 @@ export function ChatPane({
               <WorkstreamDisclosureRegistry key={sessionId}>
               <ImageStudioSessionContext.Provider value={sessionId}>
               <TurnDiffContext.Provider value={turnDiffContextValue}>
+                {taskChipsByOpener.has(-1) ? (
+                  <div className="-ml-2 my-2 flex flex-wrap gap-x-1 gap-y-0.5" data-main-bot-task-chips>
+                    {taskChipsByOpener.get(-1)!.map((call) => <MainBotTaskChip key={call.toolUseId} input={call.input} resultText={call.resultText} />)}
+                  </div>
+                ) : null}
                 {timelineItems.map((item, idx) => {
                   const nextItem = timelineItems[idx + 1];
                   const turnEndIndex = item.type === 'work'
@@ -2187,7 +2284,19 @@ export function ChatPane({
                   const followUpCards = followUpCalls
                     ? followUpCalls.map((call) => <FollowUpCard key={call.toolUseId} {...call} />)
                     : null;
+                  const taskCalls = taskCardsByTimelineIndex.get(idx);
+                  const taskCards = taskCalls
+                    ? taskCalls.map((call) =>
+                        isStartSessionToolName(call.toolName) ? (
+                          <SubSessionCard key={call.toolUseId} toolUseId={call.toolUseId} input={call.input} resultText={call.resultText} failed={call.failed} />
+                        ) : (
+                          <MainBotTaskLine key={call.toolUseId} toolName={call.toolName} input={call.input} resultText={call.resultText} failed={call.failed} pending={call.resultText === null && !call.failed} />
+                        ))
+                    : null;
                   if (item.type === 'work') {
+                    // A finished turn's task rows are drawn at its end (taskCards), not in its trace.
+                    const firstMessage = item.group.originalIndices[0];
+                    const cardsAfterAnswer = finishedTurns.some((turn) => firstMessage >= turn.firstMessageIndex && firstMessage <= turn.lastMessageIndex);
                     const anchor = String(item.group.originalIndices[0]);
                     const disclosure = disclosureScopes.get(item.group.id) ?? workDisclosureScope(sessionId, session.messages, item.group.originalIndices);
                     const highlighted = highlightedHistoryAnchor === anchor;
@@ -2208,6 +2317,8 @@ export function ChatPane({
                               : undefined
                           }
                         >
+                          {cardsAfterAnswer && !item.active && quietWork.has(item.group.id) ? null : (
+                          <TaskCardsAfterAnswerProvider value={cardsAfterAnswer}>
                           <ToolExecutionBatch
                             messages={item.group.messages}
                             toolStatusMap={toolStatusMap}
@@ -2231,8 +2342,11 @@ export function ChatPane({
                             onRevealSettled={settleWorkReveal}
                             foldWhileRunning
                           />
+                          </TaskCardsAfterAnswerProvider>
+                          )}
                         </div>
                         {designCards}
+                        {taskCards}
                         {followUpCards}
                         {copyActionText ? <AssistantCopyAction text={copyActionText} /> : null}
                       </div>
@@ -2241,6 +2355,14 @@ export function ChatPane({
 
                   const anchor = String(item.originalIndex);
                   const highlighted = highlightedHistoryAnchor === anchor;
+                  // The tasks this turn started hang under the message that asked for them;
+                  // a turn nobody typed (a report came back) has them on the left, above its answer.
+                  const chipCalls = item.message.type === 'user_prompt' ? taskChipsByOpener.get(item.originalIndex) : undefined;
+                  const taskChips = chipCalls
+                    ? chipCalls.map((call) => <MainBotTaskChip key={call.toolUseId} input={call.input} resultText={call.resultText} />)
+                    : null;
+                  const chipsUnderPrompt = item.message.type === 'user_prompt' && !item.message.workflowPrompt && !item.message.design;
+                  const inlineTurnFinished = finishedTurns.some((turn) => item.originalIndex >= turn.firstMessageIndex && item.originalIndex <= turn.lastMessageIndex);
                   const copyActionText = turnCard
                     ? copyPlacementByTimelineIndex.actionTextByCardIndex.get(idx) || ''
                     : '';
@@ -2280,6 +2402,7 @@ export function ChatPane({
                           assistantPresentation={item.assistantPresentation}
                           hideAssistantCopyBar={hideAssistantCopyBar}
                           completedGoals={item.completedGoals}
+                          userPromptFooter={chipsUnderPrompt ? taskChips : undefined}
                           userPromptActions={
                             item.message.type === 'user_prompt' &&
                             session.readOnly !== true &&
@@ -2349,8 +2472,12 @@ export function ChatPane({
                           }
                         />
                         </DesignBoardLinksContext.Provider>
-                        {item.inlineWorkGroup ? (
+                        {taskChips && !chipsUnderPrompt ? (
+                          <div className="-ml-2 my-2 flex flex-wrap gap-x-1 gap-y-0.5" data-main-bot-task-chips>{taskChips}</div>
+                        ) : null}
+                        {item.inlineWorkGroup && !(inlineTurnFinished && quietWork.has(item.inlineWorkGroup.id)) ? (
                           <div className="-mt-1 pl-1">
+                            <TaskCardsAfterAnswerProvider value={inlineTurnFinished}>
                             <ToolExecutionBatch
                               messages={item.inlineWorkGroup.messages}
                               toolStatusMap={toolStatusMap}
@@ -2361,11 +2488,13 @@ export function ChatPane({
                               sessionTaskCalls={sessionTaskCalls}
                               defaultExpanded={false}
                             />
+                            </TaskCardsAfterAnswerProvider>
                           </div>
                         ) : null}
                       </div>
                       {answerFollowsDesign ? null : designCards}
                       {showTurnChangesCard && turnCard ? <TurnChangesCard summary={turnCard} /> : null}
+                      {taskCards}
                       {followUpCards}
                       {copyActionText ? <AssistantCopyAction text={copyActionText} /> : null}
                     </div>
@@ -2412,6 +2541,9 @@ export function ChatPane({
               </div>}
 
               {apiRetry ? <StreamRetryStatus retry={apiRetry} /> : null}
+
+              {/* Workflows its tasks prepared that wait to be started: answered here, under its last word. */}
+              {isMainBotChat ? <MainBotWorkflowCards messageCount={session.messages.length} /> : null}
 
               {/* Only show the idle activity label when no trace or final answer owns it. */}
               {(() => {

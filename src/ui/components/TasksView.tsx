@@ -27,7 +27,7 @@ import { sendEvent } from '../hooks/useIPC';
 import type { GitPullRequestSummary } from '../../shared/types';
 import { useSidebarViewOptions, useSidebarViewStore } from '../store/useSidebarViewStore';
 import { primaryPullRequest, useSidebarPullRequests, useSidebarPullRequestStore } from '../store/useSidebarPullRequests';
-import { useWorkflowRunningSessions } from '../store/useWorkflowStore';
+import { useWorkflowRunningSessions, useWorkflowWaitingSessions } from '../store/useWorkflowStore';
 import { PULL_REQUEST_STATUS, pullRequestStatus } from './pull-request-status';
 import { getSessionProjectPath, SessionHoverCard, SessionWorktreeMarks } from './SessionHoverCard';
 import {
@@ -131,6 +131,8 @@ export function TasksView() {
   const followUpProposals = useFollowUpStore(s => s.proposals);
   const subSessionParentMap = useMemo(() => subSessionParents(followUpProposals), [followUpProposals]);
   const sessions = useAppStore((s) => s.sessions);
+  // The main bot is a place of its own, not a task in the list.
+  const mainBotSessionId = useAppStore((s) => s.mainBotSessionId);
   const organization = useSessionOrganization();
   const view = useSidebarViewOptions();
   const setViewOption = useSidebarViewStore((state) => state.setOption);
@@ -140,9 +142,10 @@ export function TasksView() {
   const settledWorktrees = useSidebarPullRequestStore((state) => state.settledWorktrees);
   const settledCheckedAt = useSidebarPullRequestStore((state) => state.settledCheckedAt);
   const workflowSessions = useWorkflowRunningSessions();
+  const workflowWaiting = useWorkflowWaitingSessions();
   const sources = useMemo<TaskStateSources>(
-    () => ({ organization, prsBySession, worktrees: { settledWorktrees, settledCheckedAt }, workflowSessions }),
-    [organization, prsBySession, settledWorktrees, settledCheckedAt, workflowSessions]
+    () => ({ organization, prsBySession, worktrees: { settledWorktrees, settledCheckedAt }, workflowSessions, workflowWaiting }),
+    [organization, prsBySession, settledWorktrees, settledCheckedAt, workflowSessions, workflowWaiting]
   );
   const collapsedGroups = useSidebarViewStore((state) => state.collapsedGroups);
   const toggleGroupExpanded = useSidebarViewStore((state) => state.toggleGroupCollapsed);
@@ -165,7 +168,7 @@ export function TasksView() {
     // A chat nothing has been sent from is not a task yet: it shows on screen,
     // not in any list. New Task goes back to it (openDraftSession).
     const allSessions = Object.values(sessions).filter(
-      (session) => !session.hiddenFromThreads && session.scope !== 'dm' && !session.isDraft
+      (session) => !session.hiddenFromThreads && session.id !== mainBotSessionId && session.scope !== 'dm' && !session.isDraft
     );
     let sessionList = allSessions.filter((session) => {
       const archived = Boolean(organization.sessions[session.id]?.archived);
@@ -261,6 +264,7 @@ export function TasksView() {
     };
   }, [
     subSessionParentMap,
+    mainBotSessionId,
     sessions,
     organization,
     prsBySession,

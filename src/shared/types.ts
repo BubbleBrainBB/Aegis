@@ -1449,11 +1449,41 @@ export interface GitOverviewResult {
   hasOriginRemote: boolean;
   isGitHubRemote: boolean;
   isDefaultBranch: boolean;
+  /** Uncommitted files, and the lines they add and remove against HEAD. */
   totalChanges: number;
   insertions: number;
   deletions: number;
+  /**
+   * What the branch holds on top of its base: commits since the merge-base
+   * plus the uncommitted and untracked work. Null when no base is known.
+   */
+  branchChanges: GitBranchChanges | null;
+  /**
+   * True when the untracked files were more than the scan covers, could not
+   * all be read, or it ran out of time: `insertions`, here and in
+   * `branchChanges`, is then a lower bound.
+   */
+  changesIncomplete?: boolean;
+  /** The part of `insertions` that untracked files add; the rest is measured by git and exact. */
+  untrackedInsertions?: number;
+  /**
+   * True when time cut the untracked count short, so it can differ between
+   * two scans of an unchanged tree. A count cut by the file cap leaves the
+   * same files out every time and stays comparable.
+   */
+  untrackedInsertionsUnsettled?: boolean;
+  /** True when the untracked files could not be listed in time: `totalChanges` is then a lower bound. */
+  totalChangesAtLeast?: boolean;
   prStatus: GitPullRequestLookupStatus;
   pr: GitPullRequestSummary | null;
+}
+
+export interface GitBranchChanges {
+  /** The ref the branch is measured against, e.g. `origin/main`. */
+  baseRef: string;
+  files: number;
+  insertions: number;
+  deletions: number;
 }
 
 export interface GitChangeEntry {
@@ -2012,6 +2042,17 @@ export type StreamMessage =
       session_id: string;
       compactionId?: string;
       compactMetadata: CompactMetadata;
+    })
+  // The main bot's agent was put on an empty thread here (libs/main-bot): the
+  // conversation above stays on screen, the agent no longer has it. A row of
+  // its own in the transcript.
+  | (StreamMessageBase & {
+      type: 'system';
+      subtype: 'context_refreshed';
+      uuid: string;
+      session_id: string;
+      /** 'auto': its context had filled up; absent or 'manual': the person asked. */
+      trigger?: 'manual' | 'auto';
     })
   // Emitted when the runtime starts compacting (PreCompact hook), so the UI
   // can show a live "Compacting…" status. The matching compact_boundary marks
