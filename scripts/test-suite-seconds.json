@@ -52,6 +52,7 @@
   "verify:opencode-sdk-adapter": 5,
   "verify:pi-sdk-adapter": 0,
   "verify:bubble-sdk-adapter": 0,
+  "verify:bubble-steer": 8,
   "verify:bubble-subagent": 2,
   "verify:qoder-sdk-adapter": 1,
   "verify:deepseek-sdk-adapter": 2,

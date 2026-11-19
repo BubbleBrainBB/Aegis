@@ -40,7 +40,10 @@ import {
   type BubbleQuestionPrompt,
   type BubbleQuestionRequest,
   type BubbleProjectTrustRequest,
+  type BubbleRunTurnOptions,
   type BubbleSdkInstance,
+  type BubbleSessionHandle,
+  type BubbleSteerOutcome,
   type BubbleSubagentUpdate,
   type BubbleTokenUsage,
 } from './bubble-sdk-loader';
@@ -76,6 +79,48 @@ type BubbleAssistantAccumulator = {
   createdAt: number;
 };
 
+/** What a turn runs with. A missing field leaves the SDK's own default. */
+type BubbleTurnConfig = {
+  model?: string;
+  permissionMode?: BubblePermissionMode;
+  planExitMode?: 'default' | 'bypassPermissions';
+  thinkingLevel?: string;
+};
+
+/**
+ * One Aegis turn. Its prompt opens a turn in the SDK; a message sent while it
+ * runs joins it instead of starting another — steered into the running SDK
+ * turn, or run as an SDK turn queued behind it — and one result reports all
+ * of it.
+ */
+type BubbleBatch = {
+  /** True once the opening turn holds the session slot, so a message can join; false if none ever can. */
+  ready: Promise<boolean>;
+  markReady: (joinable: boolean) => void;
+  /** Settles once the batch is over, however it ended. */
+  done: Promise<void>;
+  markDone: () => void;
+  /** Work still owed: the opening turn, and each joined message not yet answered. */
+  open: number;
+  /**
+   * Settles when the last joined message has been handed to the SDK. The next
+   * one is handed over after it, so messages reach the SDK in the order they
+   * were sent however long each takes to prepare (reading an image, say).
+   */
+  handedOver: Promise<void>;
+  /**
+   * Steers the SDK has not placed yet: read by the running turn, or given a
+   * turn of their own. A turn queued after them waits for that, or it would
+   * get ahead of the turn the SDK may still start for one of them.
+   */
+  placing: Set<Promise<unknown>>;
+  sdk?: BubbleSdkInstance;
+  /** Cancels the turns this adapter started for the batch. */
+  abortController: AbortController;
+  /** Session logs read for turns the SDK started itself (see followTurn). */
+  handles: Set<BubbleSessionHandle>;
+};
+
 type ActiveBubbleSession = {
   /** show_widget calls drawn while their arguments stream. */
   widgetDrafts?: WidgetDraftTracker;
@@ -93,7 +138,15 @@ type ActiveBubbleSession = {
   thinkingLevel?: string;
   /** Registry fallback until the native context event supplies a window. */
   contextWindow?: number | null;
-  turnActive: boolean;
+  /** The turn now running, with whatever joined it; none between turns. */
+  batch?: BubbleBatch | null;
+  /**
+   * Set from the moment a `/compact` is sent until it has run, whether it
+   * runs at once or first waits for the running turn to end. What is sent
+   * meanwhile waits behind it, in the order it was sent: the compaction keeps
+   * its place, and a stream of messages cannot put it off for ever.
+   */
+  compactBarrier?: Promise<void> | null;
   abortController: AbortController | null;
   pendingRequests: Map<string, PendingBubbleRequest>;
   currentAssistant: BubbleAssistantAccumulator | null;
@@ -352,9 +405,30 @@ export class BubbleSdkAdapter implements ProviderAdapter {
 
   private sessions = new Map<string, ActiveBubbleSession>();
 
+  /**
+   * Starts still waiting for the SDK to load, by thread. The session is not
+   * registered until it has loaded, so a Stop in between finds no session:
+   * it takes the entry away here instead, and the start gives up.
+   */
+  private starting = new Map<string, symbol>();
+
   async startSession(input: ProviderSessionStartInput): Promise<ProviderSession> {
     const cwd = input.cwd || process.cwd();
-    const sdk = await getBubbleSdk(cwd);
+    const attempt = Symbol(input.threadId);
+    this.starting.set(input.threadId, attempt);
+    let sdk: BubbleSdkInstance;
+    try {
+      sdk = await getBubbleSdk(cwd);
+    } catch (error) {
+      if (this.starting.get(input.threadId) === attempt) this.starting.delete(input.threadId);
+      throw error;
+    }
+    // Stopped while the SDK loaded (or another start took the thread): this
+    // start registers no session and runs no turn.
+    if (this.starting.get(input.threadId) !== attempt) {
+      throw new Error('Bubble session start was cancelled.');
+    }
+    this.starting.delete(input.threadId);
     this.assertConfigured(sdk);
     const providerSessionId = this.resolveSessionId(sdk, input.resumeSessionId, cwd);
 
@@ -367,7 +441,7 @@ export class BubbleSdkAdapter implements ProviderAdapter {
       permissionMode: input.bubblePermissionMode,
       planExitMode: input.bubblePlanExitMode ?? (input.bubblePermissionMode === 'bypassPermissions' ? 'bypassPermissions' : 'default'),
       thinkingLevel: input.bubbleThinkingLevel?.trim() || undefined,
-      turnActive: false,
+      batch: null,
       abortController: null,
       pendingRequests: new Map(),
       currentAssistant: null,
@@ -419,47 +493,62 @@ export class BubbleSdkAdapter implements ProviderAdapter {
     if (!session) {
       throw new Error(`No Bubble session found for thread "${input.threadId}"`);
     }
-    if (session.turnActive) {
-      throw new Error(`Bubble is already running a turn for thread "${input.threadId}"`);
-    }
-
-    if (input.model?.trim()) {
-      if (session.model !== input.model.trim()) {
-        session.contextProviderId = undefined;
-        session.nativeContextWindow = undefined;
-        session.contextTokens = undefined;
-        session.contextWindow = undefined;
-      }
-      session.model = input.model.trim();
-    }
-    if (input.bubblePermissionMode) {
-      if (input.bubblePermissionMode !== 'plan') session.planExitMode = input.bubblePermissionMode;
-      session.permissionMode = input.bubblePermissionMode;
-    }
-    if (input.bubblePlanExitMode) session.planExitMode = input.bubblePlanExitMode;
-    // Per-turn thinking level: a string switches it; undefined keeps the
-    // session's current level (the warm envelope omits it for non-bubble
-    // turns and when the composer has no selection — both mean "default").
-    if (typeof input.bubbleThinkingLevel === 'string') {
-      session.thinkingLevel = input.bubbleThinkingLevel.trim() || undefined;
-    }
+    const trimmedPrompt = input.prompt.trim();
     // Manual `/compact` is handled locally (mirrors Claude Code): it compacts
     // the persisted session and emits a compact_boundary instead of a model
     // turn. Keep the native context snapshot separate from billing totals.
-    const trimmedPrompt = input.prompt.trim();
-    if (!input.attachments?.length && trimmedPrompt.toLowerCase() === '/compact') {
-      await this.runCompact(session, session.contextTokens ?? 0);
+    const compact = !input.attachments?.length && trimmedPrompt.toLowerCase() === '/compact';
+
+    // A compaction sent earlier has not finished (it runs, or still waits for
+    // its turn): this message was sent after it, so it goes after it.
+    while (session.compactBarrier) {
+      await session.compactBarrier;
+      if (!this.isLive(session)) return;
+    }
+
+    if (compact) {
+      await this.compactInTurn(session, input);
       return;
     }
 
-    const text = buildPromptText(input.prompt, input.attachments);
-    const prompt = await buildPromptParts(text, input.attachments);
-    if (typeof prompt === 'string' && !prompt.trim()) {
+    const running = session.batch;
+    // A turn is running: the message joins it instead of starting another.
+    if (running) {
+      const joinable = await running.ready;
+      // Stopped meanwhile: there is no turn left to send it to.
+      if (!this.isLive(session)) return;
+      if (joinable && session.batch === running) {
+        this.joinBatch(session, running, input);
+        return;
+      }
+      // The turn takes no messages (it never started): this one goes after it.
+      await running.done;
+      if (!this.isLive(session)) return;
+      return this.sendTurn(input);
+    }
+
+    // Opened before the first await below: a message sent right behind this
+    // one finds the turn and joins it, instead of starting a second one.
+    const batch = this.openBatch(session);
+    this.adoptTurnConfig(session, this.resolveTurnConfig(session, input));
+
+    let prompt: string | BubbleContentPart[];
+    try {
+      prompt = await buildPromptParts(buildPromptText(input.prompt, input.attachments), input.attachments);
+    } catch (error) {
+      this.dropBatch(session, batch);
+      // Stopped while the attachment was read: the failure concerns nobody.
+      if (!this.isLive(session)) return;
+      throw error;
+    }
+    // Stopped (or replaced) while the attachment was read: the thread may
+    // belong to another session by now, so this one says and starts nothing.
+    if (!this.owns(session, batch) || (typeof prompt === 'string' && !prompt.trim())) {
+      this.dropBatch(session, batch);
       return;
     }
 
     session.status = 'running';
-    session.turnActive = true;
     session.durationStartMs = Date.now();
     session.durationEndMs = undefined;
     session.usage = createEmptyUsage();
@@ -472,28 +561,103 @@ export class BubbleSdkAdapter implements ProviderAdapter {
     void this.runTurnLoop(session, prompt, session.model);
   }
 
+  /**
+   * Run `/compact` as a turn of its own. Compaction rewrites the session, so
+   * it cannot join a running turn: it waits for that turn to end first. From
+   * now until it has run it is a barrier (see compactBarrier), also when it
+   * runs at once: a message sent while it runs, and a second `/compact` sent
+   * after that message, then keep the order they were sent in.
+   */
+  private async compactInTurn(session: ActiveBubbleSession, input: ProviderSendTurnInput): Promise<void> {
+    let lift!: () => void;
+    const barrier = new Promise<void>((resolve) => { lift = resolve; });
+    session.compactBarrier = barrier;
+    try {
+      for (let batch = session.batch; batch; batch = session.batch) {
+        await batch.done;
+        if (!this.isLive(session)) return;
+      }
+      this.openBatch(session);
+      this.adoptTurnConfig(session, this.resolveTurnConfig(session, input));
+      await this.runCompact(session, session.contextTokens ?? 0);
+    } finally {
+      if (session.compactBarrier === barrier) session.compactBarrier = null;
+      lift();
+    }
+  }
+
+  /** The values a turn started for this send would run with. */
+  private resolveTurnConfig(session: ActiveBubbleSession, input: ProviderSendTurnInput): BubbleTurnConfig {
+    const permissionMode = input.bubblePermissionMode || session.permissionMode;
+    return {
+      model: input.model?.trim() || session.model,
+      permissionMode,
+      planExitMode: input.bubblePlanExitMode
+        ?? (input.bubblePermissionMode && input.bubblePermissionMode !== 'plan'
+          ? input.bubblePermissionMode
+          : session.planExitMode),
+      // Per-turn thinking level: a string switches it; undefined keeps the
+      // session's current level (the warm envelope omits it for non-bubble
+      // turns and when the composer has no selection — both mean "default").
+      thinkingLevel: typeof input.bubbleThinkingLevel === 'string'
+        ? input.bubbleThinkingLevel.trim() || undefined
+        : session.thinkingLevel,
+    };
+  }
+
+  /** The session now runs with these values. */
+  private adoptTurnConfig(session: ActiveBubbleSession, config: BubbleTurnConfig): void {
+    if (config.model && session.model !== config.model) {
+      session.contextProviderId = undefined;
+      session.nativeContextWindow = undefined;
+      session.contextTokens = undefined;
+      session.contextWindow = undefined;
+      session.model = config.model;
+    }
+    session.permissionMode = config.permissionMode;
+    session.planExitMode = config.planExitMode;
+    session.thinkingLevel = config.thinkingLevel;
+  }
+
   async stopSession(threadId: string): Promise<void> {
+    // A start still loading the SDK has no session yet: cancel the start.
+    this.starting.delete(threadId);
     const session = this.sessions.get(threadId);
     if (!session) {
       return;
     }
     session.status = 'stopped';
+    let sdk: BubbleSdkInstance | null = null;
     try {
-      const sdk = await getBubbleSdk(session.cwd);
+      sdk = await getBubbleSdk(session.cwd);
+    } catch {
+      // The SDK never loaded, so nothing runs in it.
+    }
+    // Replaced while the SDK loaded: the session that took the thread disposed
+    // this one, and the thread, and what runs in the SDK by now, are its own.
+    if (this.sessions.get(threadId) !== session) {
+      return;
+    }
+    try {
       // Aborting is safe: the SDK auto-rejects pending approvals/questions of
       // the aborted turn, so no adapter-side settlement is required beyond
-      // clearing the UI cards below.
-      sdk.stop(session.providerSessionId);
+      // clearing the UI cards below. Turns queued behind the running one go
+      // with it (the SDK would run them next otherwise), and steers it has
+      // not read yet are dropped: Stop ends everything the turn was given.
+      sdk?.stop(session.providerSessionId, { cancelQueued: true });
     } catch {
-      // The SDK may not be loaded yet or the turn already idle.
+      // The turn was already idle.
     }
     session.abortController?.abort();
+    this.closeBatchHandles(session);
     this.dismissAllRequests(session);
     this.sessions.delete(threadId);
     this.emit({ type: 'status_change', threadId, status: 'stopped' });
   }
 
   disposeSession(threadId: string): boolean {
+    // A start still loading the SDK has no session yet: cancel the start.
+    this.starting.delete(threadId);
     const session = this.sessions.get(threadId);
     if (!session) {
       return false;
@@ -502,7 +666,17 @@ export class BubbleSdkAdapter implements ProviderAdapter {
     this.sessions.delete(threadId);
     try {
       session.status = 'stopped';
+      // The abort below ends the turns this adapter started. A turn the SDK
+      // started for a steer answers to no signal of ours, and a steer still
+      // unread could start one later: stop those in the SDK, or they would
+      // run on with nobody watching.
+      try {
+        session.batch?.sdk?.stop(session.providerSessionId, { cancelQueued: true });
+      } catch (error) {
+        console.warn('[BubbleSdkAdapter] failed to stop the turns of a disposed session:', error);
+      }
       session.abortController?.abort();
+      this.closeBatchHandles(session);
       // Emits per-requestId permission_dismissed — the one emission dispose
       // allows (clears stranded cards; cannot be misread by stop gates).
       this.dismissAllRequests(session);
@@ -513,6 +687,7 @@ export class BubbleSdkAdapter implements ProviderAdapter {
   }
 
   async stopAll(): Promise<void> {
+    this.starting.clear();
     const threadIds = Array.from(this.sessions.keys());
     await Promise.all(threadIds.map((threadId) => this.stopSession(threadId)));
   }
@@ -745,8 +920,10 @@ export class BubbleSdkAdapter implements ProviderAdapter {
    * result that finalizes the turn).
    */
   private async runCompact(session: ActiveBubbleSession, preTokens: number): Promise<void> {
+    const batch = session.batch ?? this.openBatch(session);
+    // Nothing joins a compaction: a message sent meanwhile runs after it.
+    batch.markReady(false);
     session.status = 'running';
-    session.turnActive = true;
     session.durationStartMs = Date.now();
     session.durationEndMs = undefined;
     session.usage = createEmptyUsage();
@@ -788,7 +965,7 @@ export class BubbleSdkAdapter implements ProviderAdapter {
     } catch (error) {
       this.finishTurn(session, error instanceof Error ? error : new Error(String(error)));
     } finally {
-      session.turnActive = false;
+      this.dropBatch(session, batch);
     }
   }
 
@@ -808,50 +985,379 @@ export class BubbleSdkAdapter implements ProviderAdapter {
     prompt: string | BubbleContentPart[],
     model: string | undefined
   ): Promise<void> {
-    const abortController = new AbortController();
-    session.abortController = abortController;
+    const batch = session.batch ?? this.openBatch(session);
     try {
       const sdk = await getBubbleSdk(session.cwd);
-      const stream = sdk.runTurn(session.providerSessionId, {
-        prompt,
-        hostTools: bubbleHostTools(session.threadId),
-        ...(model ? { model } : {}),
-        ...(session.permissionMode ? { mode: session.permissionMode } : {}),
-        planExitMode: session.planExitMode ?? 'default',
-        onProjectTrust: (request) => this.requestProjectTrust(session, request),
-        ...(session.thinkingLevel ? { thinkingLevel: session.thinkingLevel } : {}),
-        signal: abortController.signal,
-        onStart: (info) => {
-          assertBubbleSessionReader(prompt, info.tools, session.threadId);
-          session.model = info.model || session.model;
-          session.contextProviderId = info.providerId;
-          // Bubble's TokenUsage has no context window; resolve it from the
-          // registry catalog so the composer context indicator has a ceiling.
-          void this.resolveContextWindow(session, info.providerId, info.model);
-          this.emit({
-            type: 'system_init',
-            threadId: session.threadId,
-            sessionId: session.providerSessionId,
-            model: session.model,
-          });
-        },
-        onApproval: (request) => this.requestApproval(session, request),
-        onQuestion: (request) => this.requestQuestion(session, request),
-        onPlanApproval: (planMarkdown) => this.requestPlanApproval(session, planMarkdown),
-      });
+      // Stopped while the SDK loaded: no turn is started for a dead session.
+      if (!this.owns(session, batch)) {
+        this.dropBatch(session, batch);
+        return;
+      }
+      batch.sdk = sdk;
+      const stream = sdk.runTurn(session.providerSessionId, this.turnOptions(session, batch, prompt, {
+        model,
+        permissionMode: session.permissionMode,
+        planExitMode: session.planExitMode,
+        thinkingLevel: session.thinkingLevel,
+      }));
+      // The turn holds the session slot from here, so a steer reaches it.
+      batch.markReady(true);
       for await (const event of stream) {
+        // What a stopped turn still sends while it winds down is dropped.
+        if (!this.owns(session, batch)) break;
         this.handleBubbleEvent(session, event);
       }
-      this.finishTurn(session, null);
+      this.settleBatchWork(session, batch);
     } catch (error) {
-      this.finishTurn(session, error instanceof Error ? error : new Error(String(error)));
-    } finally {
-      if (session.abortController === abortController) {
-        session.abortController = null;
-      }
-      session.turnActive = false;
-      this.dismissAllRequests(session);
+      this.failBatch(session, batch, error);
     }
+    await batch.done;
+  }
+
+  /**
+   * Options for a turn this adapter starts. The SDK starts turns of its own
+   * with the same options (see steer): their handlers therefore reach this
+   * session too, and onStart runs once more for each.
+   */
+  private turnOptions(
+    session: ActiveBubbleSession,
+    batch: BubbleBatch,
+    prompt: string | BubbleContentPart[],
+    config: BubbleTurnConfig,
+    /** A turn queued behind another: the session takes its config when it starts, not before. */
+    adoptOnStart = false
+  ): BubbleRunTurnOptions {
+    let started = false;
+    return {
+      prompt,
+      hostTools: bubbleHostTools(session.threadId),
+      ...(config.model ? { model: config.model } : {}),
+      ...(config.permissionMode ? { mode: config.permissionMode } : {}),
+      planExitMode: config.planExitMode ?? 'default',
+      onProjectTrust: (request) => this.requestProjectTrust(session, request),
+      ...(config.thinkingLevel ? { thinkingLevel: config.thinkingLevel } : {}),
+      signal: batch.abortController.signal,
+      onStart: (info) => {
+        const own = !started;
+        started = true;
+        // Stopped as the turn was starting: it is being cancelled, and the
+        // thread hears no more of it.
+        if (!this.isLive(session)) return;
+        if (own) {
+          if (adoptOnStart) this.adoptTurnConfig(session, config);
+          assertBubbleSessionReader(prompt, info.tools, session.threadId);
+        } else {
+          // A turn the SDK started with these options. It runs in the mode
+          // they name, even if the turn before it left that mode (an approved
+          // plan), so the session says what the turn really runs in.
+          this.noteMode(session, info.mode);
+        }
+        session.model = info.model || session.model;
+        session.contextProviderId = info.providerId;
+        // Bubble's TokenUsage has no context window; resolve it from the
+        // registry catalog so the composer context indicator has a ceiling.
+        void this.resolveContextWindow(session, info.providerId, info.model);
+        // Announced for a turn this adapter started. One the SDK started is
+        // more of the turn before it, on that turn's model: announcing it
+        // would put that model back over one picked in the composer since.
+        if (!own) return;
+        this.emit({
+          type: 'system_init',
+          threadId: session.threadId,
+          sessionId: session.providerSessionId,
+          model: session.model,
+        });
+      },
+      onApproval: (request) => this.requestApproval(session, request),
+      onQuestion: (request) => this.requestQuestion(session, request),
+      onPlanApproval: (planMarkdown) => this.requestPlanApproval(session, planMarkdown),
+    };
+  }
+
+  // ── Messages sent while a turn runs ────────────────────────────────────
+
+  /** The session is still the thread's own and was not stopped. */
+  private isLive(session: ActiveBubbleSession): boolean {
+    return session.status !== 'stopped' && this.sessions.get(session.threadId) === session;
+  }
+
+  /**
+   * The batch is still the live session's current one. Checked after every
+   * wait: a session stopped or replaced meanwhile must not start anything in
+   * the SDK, nor send the thread another event (the thread may have a new
+   * session by then, which would take them for its own).
+   */
+  private owns(session: ActiveBubbleSession, batch: BubbleBatch): boolean {
+    return session.batch === batch && this.isLive(session);
+  }
+
+  private openBatch(session: ActiveBubbleSession): BubbleBatch {
+    let markReady!: (joinable: boolean) => void;
+    let markDone!: () => void;
+    const ready = new Promise<boolean>((resolve) => { markReady = resolve; });
+    const done = new Promise<void>((resolve) => { markDone = resolve; });
+    const batch: BubbleBatch = {
+      ready, markReady, done, markDone,
+      open: 1,
+      handedOver: Promise.resolve(),
+      placing: new Set(),
+      abortController: new AbortController(),
+      handles: new Set(),
+    };
+    session.batch = batch;
+    session.abortController = batch.abortController;
+    return batch;
+  }
+
+  /** Stop reading the session logs of a batch; the loops reading them end. */
+  private closeBatchHandles(session: ActiveBubbleSession): void {
+    const handles = session.batch?.handles;
+    if (!handles) return;
+    for (const handle of handles) handle.close();
+    handles.clear();
+  }
+
+  /** Take the batch off the session. False when it was taken off already. */
+  private detachBatch(session: ActiveBubbleSession, batch: BubbleBatch): boolean {
+    if (session.batch !== batch) return false;
+    this.closeBatchHandles(session);
+    session.batch = null;
+    if (session.abortController === batch.abortController) session.abortController = null;
+    return true;
+  }
+
+  /** End a batch that reports nothing itself (no turn ran, or its caller reported). */
+  private dropBatch(session: ActiveBubbleSession, batch: BubbleBatch): void {
+    if (!this.detachBatch(session, batch)) return;
+    batch.markReady(false);
+    batch.markDone();
+  }
+
+  /** End the batch and report it: one result for everything it ran. */
+  private endBatch(session: ActiveBubbleSession, batch: BubbleBatch, error: Error | null): void {
+    if (!this.detachBatch(session, batch)) return;
+    try {
+      // A session stopped or replaced reports no result and no error: Stop
+      // already cleared its cards, and whoever listens on the thread now is
+      // not waiting for this turn.
+      if (this.isLive(session)) {
+        this.finishTurn(session, error);
+        this.dismissAllRequests(session);
+      }
+    } finally {
+      // Whatever a listener threw, a message waiting on this batch moves on.
+      batch.markReady(false);
+      batch.markDone();
+    }
+  }
+
+  /**
+   * One failure ends the batch. What is still queued behind the failed turn
+   * is cancelled with it: its events would land after the error was reported.
+   */
+  private failBatch(session: ActiveBubbleSession, batch: BubbleBatch, error: unknown): void {
+    if (session.batch !== batch) return;
+    // Only while the session is the thread's own: once it was stopped or
+    // replaced, Stop already did this, and the SDK session may by now run a
+    // turn of the session that took its place.
+    if (this.isLive(session)) {
+      try {
+        batch.sdk?.stop(session.providerSessionId, { cancelQueued: true });
+      } catch (stopError) {
+        console.warn('[BubbleSdkAdapter] failed to stop the turns of a failed batch:', stopError);
+      }
+    }
+    batch.abortController.abort();
+    this.endBatch(session, batch, error instanceof Error ? error : new Error(String(error)));
+  }
+
+  /** One piece of the batch's work is done; the last one ends the batch. */
+  private settleBatchWork(session: ActiveBubbleSession, batch: BubbleBatch): void {
+    if (session.batch !== batch) return;
+    batch.open -= 1;
+    if (batch.open > 0) return;
+    // Every turn this batch knows of has ended, so the SDK should hold none.
+    // If it does, nothing here reads that turn: stop it rather than report
+    // the session idle while it works on unseen.
+    if (batch.sdk && this.isLive(session)) {
+      try {
+        const state = batch.sdk.getSessionRunState(session.providerSessionId);
+        if (state.active || state.queuedTurns > 0) {
+          console.warn('[BubbleSdkAdapter] stopping Bubble turns left running after their batch ended:', state);
+          batch.sdk.stop(session.providerSessionId, { cancelQueued: true });
+        }
+      } catch (error) {
+        console.warn('[BubbleSdkAdapter] failed to read the Bubble session run state:', error);
+      }
+    }
+    this.endBatch(session, batch, null);
+  }
+
+  /**
+   * A message sent while the batch runs. It is owed an answer until that
+   * settles. Messages are handed to the SDK one after another, in the order
+   * they were sent; each then waits for its answer on its own.
+   */
+  private joinBatch(session: ActiveBubbleSession, batch: BubbleBatch, input: ProviderSendTurnInput): void {
+    batch.open += 1;
+    const handOver = batch.handedOver.then(() => this.handOver(session, batch, input));
+    batch.handedOver = handOver.then(() => undefined, () => undefined);
+    void handOver
+      .then((answered) => answered?.())
+      .then(
+        () => this.settleBatchWork(session, batch),
+        (error) => this.failBatch(session, batch, error)
+      )
+      .catch((error) => console.error('[BubbleSdkAdapter] failed to report the end of a turn:', error));
+  }
+
+  /**
+   * Give a joined message to the SDK: steer it into the running turn, or
+   * queue a turn for it. Returns how to wait for its answer (null: there was
+   * nothing to send, or nobody left to send it to).
+   */
+  private async handOver(
+    session: ActiveBubbleSession,
+    batch: BubbleBatch,
+    input: ProviderSendTurnInput
+  ): Promise<(() => Promise<void>) | null> {
+    const sdk = batch.sdk;
+    if (!sdk || !this.owns(session, batch)) return null;
+    const text = buildPromptText(input.prompt, input.attachments);
+    const hasImages = input.attachments?.some((attachment) => attachment.kind === 'image') === true;
+    // A steer is text, and reaches the model as written. Images need a turn
+    // of their own, and so does "/skill task", which only runTurn rewrites
+    // into the instruction to load that skill. And while a turn waits behind
+    // the running one, a steer would be read before it: text sent after that
+    // turn's message queues behind it instead.
+    const steerable = !hasImages
+      && !this.invokesSkill(sdk, session, text)
+      && sdk.getSessionRunState(session.providerSessionId).queuedTurns === 0;
+    if (steerable) {
+      return text.trim() ? this.steer(session, batch, sdk, text) : null;
+    }
+
+    // An earlier steer the running turn does not read gets a turn of its own
+    // from the SDK, at the end of the queue. Queue this one once the SDK has
+    // placed them all, so it lands behind such a turn, not ahead of it.
+    // (None is added meanwhile: the next message waits for this hand-over.)
+    await Promise.all([...batch.placing]);
+    if (!this.owns(session, batch)) return null;
+    const prompt = await buildPromptParts(text, input.attachments);
+    if (!this.owns(session, batch)) return null;
+    if (typeof prompt === 'string' && !prompt.trim()) return null;
+    // Queued in the SDK behind the running turn. Unlike a steer it runs with
+    // what the composer said when it was sent, as any turn does.
+    const stream = sdk.runTurn(
+      session.providerSessionId,
+      this.turnOptions(session, batch, prompt, this.resolveTurnConfig(session, input), true)
+    );
+    return async () => {
+      for await (const event of stream) {
+        if (!this.owns(session, batch)) return;
+        this.handleBubbleEvent(session, event);
+      }
+    };
+  }
+
+  /**
+   * Whether runTurn would read the text as "/skill task". The same reading as
+   * the SDK's own (skills/invocation.js parseSkillInvocation): the name runs
+   * to the first space, which need not follow the slash at once, and
+   * something must come after it.
+   */
+  private invokesSkill(sdk: BubbleSdkInstance, session: ActiveBubbleSession, text: string): boolean {
+    const trimmed = text.trim();
+    if (!trimmed.startsWith('/')) return false;
+    const invocation = trimmed.slice(1).trim();
+    const space = invocation.indexOf(' ');
+    if (space === -1) return false;
+    const name = invocation.slice(0, space).trim();
+    if (!name || !invocation.slice(space + 1).trim()) return false;
+    try {
+      return sdk.listSkills(session.cwd).some((skill) => skill.name === name);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Steer text into the running turn: the model reads it at its next model
+   * call, on the model, mode and thinking level that turn started with. A
+   * turn with no model call left cannot take it; the SDK then starts a turn
+   * for it, with the running turn's options, which the returned wait follows.
+   * The steer itself is given to the SDK before this returns.
+   */
+  private steer(session: ActiveBubbleSession, batch: BubbleBatch, sdk: BubbleSdkInstance, text: string): () => Promise<void> {
+    const handle = sdk.openSession(session.providerSessionId);
+    batch.handles.add(handle);
+    const release = () => {
+      batch.handles.delete(handle);
+      handle.close();
+    };
+    let from: number;
+    let placed: Promise<BubbleSteerOutcome>;
+    try {
+      // Read before steering: a turn started for this text logs after here.
+      from = handle.latestSequence;
+      const receipt = sdk.steer(session.providerSessionId, text);
+      if (!receipt.accepted) {
+        throw new Error(`Bubble did not take the message sent to the running turn (${receipt.reason}).`);
+      }
+      placed = receipt.outcome;
+    } catch (error) {
+      release();
+      throw error;
+    }
+    batch.placing.add(placed);
+    const unplace = () => { batch.placing.delete(placed); };
+    placed.then(unplace, unplace);
+    return async () => {
+      try {
+        const outcome = await placed;
+        if (outcome.type === 'input_queued') {
+          await this.followTurn(session, batch, handle, from, outcome.turnId);
+        } else if (outcome.type === 'input_rejected' && outcome.reason === 'no_continuation') {
+          // The running turn ended without reading it and no turn could be
+          // started for it. (A turn that failed or was stopped reports itself.)
+          throw new Error('Bubble could not start a turn for the message sent to the running turn.');
+        }
+      } finally {
+        release();
+      }
+    };
+  }
+
+  /**
+   * Read one turn out of the session log: a turn the SDK started, which has
+   * no iterator of its own. Its last record carries how it ended.
+   */
+  private async followTurn(
+    session: ActiveBubbleSession,
+    batch: BubbleBatch,
+    handle: BubbleSessionHandle,
+    from: number,
+    turnId: string
+  ): Promise<void> {
+    for await (const record of handle.eventsFrom(from)) {
+      if (!this.owns(session, batch)) return;
+      if (record.turnId !== turnId) continue;
+      this.handleBubbleEvent(session, record.event);
+      if (!record.terminal) continue;
+      if (record.terminal.kind === 'failed') {
+        throw new Error(record.terminal.message || 'Bubble turn failed.');
+      }
+      return;
+    }
+  }
+
+  /** The mode a turn runs in, when the session was not the one to choose it. */
+  private noteMode(session: ActiveBubbleSession, mode: string): void {
+    if (mode !== 'default' && mode !== 'plan' && mode !== 'bypassPermissions') return;
+    if ((session.permissionMode ?? 'default') === mode) return;
+    session.permissionMode = mode;
+    if (mode !== 'plan') session.planExitMode = mode;
+    this.emit({ type: 'permission_mode_changed', threadId: session.threadId, provider: 'bubble', mode });
   }
 
   private handleBubbleEvent(session: ActiveBubbleSession, event: BubbleAgentEvent): void {
@@ -954,6 +1460,13 @@ export class BubbleSdkAdapter implements ProviderAdapter {
         }
         return;
       }
+      // What became of a steer is read from its receipt (see steer); the
+      // prompt itself is in the transcript since it was sent.
+      case 'input_applied':
+      case 'input_queued':
+      case 'input_rejected':
+      case 'input_pending_changed':
+        return;
       case 'subagent_update': {
         // Flattened payload: the fields live at the event top level
         // (drainToolUpdates yields buildSubagentUpdate's return as-is).

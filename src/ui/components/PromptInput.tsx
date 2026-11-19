@@ -676,7 +676,10 @@ export function PromptInput({
       runtimeProvider === 'minimax' ||
       // Claude folds a streaming-input prompt into the running turn between
       // tool rounds; the turn's result lists it in user_message_uuids.
-      runtimeProvider === 'claude') &&
+      runtimeProvider === 'claude' ||
+      // Bubble takes a text steer (sdk.steer) at the running turn's next model
+      // call; a message with images runs as the next turn of the same run.
+      runtimeProvider === 'bubble') &&
     isRunning &&
     !approvalPending &&
     !delegationPending &&

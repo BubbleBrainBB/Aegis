@@ -66,8 +66,91 @@ export type BubbleAgentEvent =
   | { type: 'turn_end'; usage?: BubbleTokenUsage; cost?: BubbleUsageCost; willContinue?: boolean }
   | { type: 'mode_changed'; mode: string }
   | { type: 'agent_end' }
+  | BubbleSteerOutcome
+  | { type: 'input_pending_changed'; pending: number }
   | { type: 'subagent_update' } & BubbleSubagentUpdate
   | { type: string; [key: string]: unknown };
+
+/**
+ * What became of text steered into a session (`sdk.steer`). Exactly one per
+ * accepted steer: applied to the running turn at its next model call; queued
+ * as a turn of its own (`turnId`), because the running turn had no further
+ * model call to take it; or rejected, because that turn failed or was stopped.
+ */
+export type BubbleSteerOutcome =
+  | { type: 'input_applied'; id: string; content: string; target: 'current_turn' }
+  | { type: 'input_queued'; id: string; content: string; turnId: string; target: 'next_turn' }
+  | {
+      type: 'input_rejected';
+      id: string;
+      content: string;
+      reason: 'no_continuation' | 'turn_failed' | 'turn_cancelled' | string;
+      target: 'next_turn';
+    };
+
+export type BubbleSteerInput = { id: string; content: string; submittedAt?: number };
+
+/**
+ * The receipt of `sdk.steer`. `steered`: the text waits for the running turn's
+ * next model call. `queued`: no turn could take it, so the SDK started one for
+ * it with the options of the session's last turn. Either way `outcome` settles
+ * exactly once, whether or not anyone reads the turn's events.
+ */
+export type BubbleSteerResult =
+  | { accepted: true; disposition: 'steered'; input: BubbleSteerInput; outcome: Promise<BubbleSteerOutcome> }
+  | {
+      accepted: true;
+      disposition: 'queued';
+      input: BubbleSteerInput;
+      turnId: string;
+      outcome: Promise<BubbleSteerOutcome>;
+    }
+  | {
+      accepted: false;
+      disposition: 'rejected';
+      reason: 'unknown_session' | 'session_deleted' | 'ownership_conflict' | string;
+    };
+
+export type BubbleSessionRunState = {
+  /** A turn owns the session slot, including its setup and teardown. */
+  active: boolean;
+  queuedTurns: number;
+  pendingSteers: number;
+  phase: 'idle' | 'reserved' | 'starting' | 'active' | 'stopping' | 'deleted' | string;
+};
+
+export type BubbleSessionTerminal =
+  | { kind: 'completed' }
+  | { kind: 'failed' | 'cancelled'; message: string };
+
+/** One record of a session's event log: an event of any of its turns, in order. */
+export type BubbleSessionEvent = {
+  sequence: number;
+  sessionId: string;
+  turnId: string;
+  event: BubbleAgentEvent;
+  /** On a turn's last record, written once its slot is released. */
+  terminal?: BubbleSessionTerminal;
+};
+
+export type BubbleStopOptions = {
+  /** Also cancel the turns queued behind the running one (they survive otherwise). */
+  cancelQueued?: boolean;
+};
+
+export type BubbleSessionHandle = {
+  id: string;
+  cwd: string;
+  /** The log's current end; read it before a send to see only what follows. */
+  readonly latestSequence: number;
+  readonly events: AsyncIterable<BubbleSessionEvent>;
+  eventsFrom(afterSequence: number): AsyncIterable<BubbleSessionEvent>;
+  send(options: BubbleRunTurnOptions): AsyncGenerator<BubbleAgentEvent>;
+  steer(content: string): BubbleSteerResult;
+  stop(options?: BubbleStopOptions): number;
+  /** Ends every iteration this handle opened. */
+  close(): void;
+};
 
 /**
  * SDK `subagent_update` payload (agent/subagent/runtime.js buildSubagentUpdate):
@@ -225,10 +308,29 @@ export type BubbleSdkInstance = {
   createSession(options?: { cwd?: string; id?: string }): { id: string; cwd: string };
   getHistory(sessionId: string): unknown[];
   deleteSession(sessionId: string): Promise<void>;
-  /** Abort the in-flight turn of a session, if any. */
-  stop(sessionId: string): void;
+  /**
+   * Abort the in-flight turn of a session, if any. Turns queued behind it run
+   * next unless `cancelQueued` is set. Returns how many turns it cancelled.
+   */
+  stop(sessionId: string, options?: BubbleStopOptions): number;
+  /** Cancel the queued turns of a session, leaving the running one alone. */
+  clearQueue(sessionId: string): number;
+  getSessionRunState(sessionId: string): BubbleSessionRunState;
+  /** A handle on a session's event log, which spans all of its turns. */
+  openSession(sessionId: string): BubbleSessionHandle;
+  /**
+   * Add text to the turn that holds the session slot; it reaches the model at
+   * that turn's next model call. Text only. Without such a turn the SDK starts
+   * one for the text itself (see BubbleSteerResult).
+   */
+  steer(sessionId: string, content: string): BubbleSteerResult;
   listSkills(cwd?: string): BubbleSkillSummary[];
   getModelConfig(): BubbleModelConfig;
+  /**
+   * Start a turn, or queue it behind the one running: turns of one session run
+   * first in, first out. The SDK drives the turn itself; the iterator only
+   * replays its events.
+   */
   runTurn(sessionId: string, options: BubbleRunTurnOptions): AsyncGenerator<BubbleAgentEvent>;
 };
 

@@ -148,6 +148,7 @@ async function main() {
   const live = fixture('bubble-sdk','BubbleSdkAdapter');
   loader.getBubbleSdk = async()=>({
     getModelConfig:()=>({defaultProviderId:'',defaultModel:'',providers:[]}),
+    getSessionRunState:()=>({active:false,queuedTurns:0,pendingSteers:0,phase:'idle'}),
     async *runTurn() {
       yield {type:'turn_start'};
       yield {type:'context_compaction',status:'completed',compactionId:'native:subturn:2',path:'subturn'};
