@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { buildUsageOverview, costAxis } from '../../src/ui/utils/usage-overview-model';
+import { bubbleModelName, relabelUsageReportModels } from '../../src/ui/utils/usage-model-labels';
 import type { ClaudeUsageReport, UsageCostByType } from '../../src/ui/types';
 
 const near = (a: number, b: number) => assert(Math.abs(a - b) < 1e-9, `${a} != ${b}`);
@@ -148,4 +149,45 @@ for (const max of [0.004, 0.4, 3, 7.5, 42, 999, 18_500]) {
   assert(ticks.length >= 1 && ticks.length <= 4, `${max}: ${ticks}`);
   assert(ticks[ticks.length - 1] <= max * 1.0001);
 }
-console.log('usage overview model: totals, agent order, own units, daily points, cost by type, merged models and axis passed');
+
+// Bubble records `<provider>:<id>`: a known provider comes off the name, anything else stays.
+const bubbleProviders = new Set(['google', 'openai', 'zai', 'zhipuai-coding-plan', 'openrouter']);
+assert.equal(bubbleModelName('google:gemini-4-hydrogen', bubbleProviders), 'gemini-4-hydrogen');
+assert.equal(bubbleModelName('OpenRouter:google/gemini-4-argon', bubbleProviders), 'google/gemini-4-argon', 'only the provider goes, whatever its case');
+assert.equal(bubbleModelName('acme:in-house', bubbleProviders), 'acme:in-house', 'an unknown provider stays in the name');
+assert.equal(bubbleModelName('qwen4:8b', bubbleProviders), 'qwen4:8b', 'a colon of the id\'s own is not a provider');
+assert.equal(bubbleModelName('zai/glm-5.3', bubbleProviders), 'zai/glm-5.3'); assert.equal(bubbleModelName('google:', bubbleProviders), 'google:');
+assert.equal(bubbleModelName('gpt-5.6-sol', bubbleProviders), 'gpt-5.6-sol');
+
+// One row per model, whichever provider served it: tokens, dollars and days add up, and the row keeps its ids.
+const prefixed = report({
+  models: [{ model: 'zai:glm-5.3', tokens: 600, cost: 6, sessions: 2 }, { model: 'zhipuai-coding-plan:glm-5.3', tokens: 400, cost: 1, sessions: 1 },
+    { model: 'openai:gpt-5.6-sol', tokens: 300, cost: 3, sessions: 1 }, { model: 'acme:in-house', tokens: 100, cost: 2, sessions: 1 }, { model: 'plain', tokens: 50, cost: 1, sessions: 1 }],
+  dayCosts: { 5: { 'zai:glm-5.3': 6, 'zhipuai-coding-plan:glm-5.3': 1 }, 29: { 'openai:gpt-5.6-sol': 3, 'acme:in-house': 2, plain: 1 } },
+});
+const named = relabelUsageReportModels(prefixed, (model) => bubbleModelName(model, bubbleProviders), { keepSources: true });
+const namedModels = Object.fromEntries(named.models.map((model) => [model.model, model]));
+assert.deepEqual(Object.keys(namedModels), ['glm-5.3', 'gpt-5.6-sol', 'acme:in-house', 'plain']);
+assert.deepEqual([namedModels['glm-5.3'].totalTokens, namedModels['glm-5.3'].sessionCount, namedModels['glm-5.3'].inputTokens], [1000, 3, 500]);
+near(namedModels['glm-5.3'].totalCostUsd, 7);
+assert.deepEqual(namedModels['glm-5.3'].sourceModels, ['zai:glm-5.3', 'zhipuai-coding-plan:glm-5.3']);
+assert.deepEqual(namedModels['gpt-5.6-sol'].sourceModels, ['openai:gpt-5.6-sol'], 'a renamed row keeps its id too');
+assert.equal(namedModels['acme:in-house'].sourceModels, undefined); assert.equal(namedModels.plain.sourceModels, undefined);
+assert.deepEqual(named.daily[29].byModel, { 'glm-5.3': 1000, 'gpt-5.6-sol': 300, 'acme:in-house': 100, plain: 50 });
+assert.deepEqual(named.daily[5].byModelCostUsd, { 'glm-5.3': 7 });
+near(named.models.reduce((sum, model) => sum + model.totalCostUsd, 0), prefixed.totals.totalCostUsd);
+assert.equal(named.totals, prefixed.totals, 'the totals are the report\'s own');
+assert.equal(relabelUsageReportModels(codex, (model) => bubbleModelName(model, bubbleProviders), { keepSources: true }), codex, 'nothing to rename: the same report');
+assert.equal(relabelUsageReportModels(prefixed, (model) => bubbleModelName(model, bubbleProviders)).models[0].sourceModels, undefined, 'ids are kept only when asked');
+// In the overview a Bubble model joins the same model of another agent, and the row names every id in it.
+const joined = buildUsageOverview([
+  { provider: 'codex', title: 'Codex CLI', range: codex, year: codex }, { provider: 'bubble', title: 'Bubble', range: named, year: named },
+], 30);
+const joinedModels = Object.fromEntries(joined.report.models.map((model) => [model.model, model]));
+assert.equal(joinedModels['gpt-5.6-sol'].totalTokens, 4300); near(joinedModels['gpt-5.6-sol'].totalCostUsd, 83);
+assert.deepEqual(joinedModels['gpt-5.6-sol'].sourceModels, ['gpt-5.6-sol', 'openai:gpt-5.6-sol']);
+assert.deepEqual(joinedModels['glm-5.3'].sourceModels, ['zai:glm-5.3', 'zhipuai-coding-plan:glm-5.3']);
+assert.equal(joinedModels.plain.sourceModels, undefined, 'a row under its own id names nothing else');
+near(joined.totalCostUsd, 80 + 13);
+assert.equal(joined.yearDaily[29].byModel['gpt-5.6-sol'], 4300);
+console.log('usage overview model: totals, agent order, own units, daily points, cost by type, merged models, renamed Bubble models and axis passed');

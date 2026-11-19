@@ -2418,6 +2418,8 @@ export interface ClaudeUsageModelSummary {
   /** Devin: billed agent messages and credits. */
   agentMessages?: number;
   credits?: number;
+  /** The recorded ids behind a row shown under another name (Bubble's `<provider>:<id>`). */
+  sourceModels?: string[];
 }
 
 export interface ClaudeUsageDailyPoint {

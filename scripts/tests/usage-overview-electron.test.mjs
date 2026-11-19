@@ -13,6 +13,10 @@ const harness = `
 import React from 'react';
 import {createRoot} from 'react-dom/client';
 import '/src/ui/index.css';
+import geminiLogo from '/src/ui/assets/gemini-color.svg';
+import zhipuLogo from '/src/ui/assets/zhipu-color.svg';
+import openaiLogo from '/src/ui/assets/openai.svg';
+import fireworksLogo from '/src/ui/assets/fireworks-color.svg';
 // Calendar days, not 24-hour steps: a step lands on the wrong day late in the evening after a clock change.
 const dateKey=ago=>{const d=new Date();d.setHours(12,0,0,0);d.setDate(d.getDate()-ago);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')};
 // Deterministic "activity": a different rhythm per agent, some days idle.
@@ -21,7 +25,10 @@ const AGENTS={
  claude:{yearCost:9000,costMode:'estimated',models:[['claude-opus-5-5',.8],['claude-fable-5-2',.2]],tokensPerUsd:3.2e6,split:[.01,.56,.24,.19]},
  codex:{yearCost:2400,costMode:'estimated',costBasis:'api-standard',models:[['gpt-5.6-sol',1]],tokensPerUsd:4.5e6,split:[.05,.45,0,.5]},
  kimi:{yearCost:600,costMode:'estimated',models:[['K2.7 Coding',1]],tokensPerUsd:6.5e6,split:[.1,.4,0,.5]},
- bubble:{yearCost:280,costMode:'actual',models:[['zai/glm-5.3',.7],['in-house-model',.3]],tokensPerUsd:5e6,split:[.2,.2,0,.3],unsplit:.3},
+ // Bubble records "<provider>:<id>": the same model from two providers, one Codex has too, a provider with a
+ // mark for a model without one, a routed id from a provider only the catalog names, and a provider nobody knows.
+ bubble:{yearCost:280,costMode:'actual',models:[['google:gemini-4-hydrogen',.35],['zai:glm-5.3',.2],['zhipuai-coding-plan:glm-5.3',.1],['openai:gpt-5.6-sol',.1],
+  ['openrouter:google/gemini-4-argon',.1],['acme:in-house-model',.1],['fireworks:llama-5',.05]],tokensPerUsd:5e6,split:[.2,.2,0,.3],unsplit:.3},
  deepseek:{yearCost:120,costMode:'estimated',models:[['deepseek-v4-pro',1]],tokensPerUsd:7.7e6,split:[.3,.1,0,.6]},
  opencode:{yearCost:55,costMode:'actual',models:[['big-pickle',1]],tokensPerUsd:2e6,split:[.4,.1,0,.5]},
  devin:{yearCost:0,costMode:'unavailable',models:[['swe-2-high',1]],tokens:4.1e6,billing:{agentMessages:312,credits:0}},
@@ -66,6 +73,7 @@ function report(provider,days){
 const calls=[];let held=null,fail=false;
 window.electron={
  getKimiModelConfig:async()=>({availableModels:[],options:[]}),
+ getBubbleProvidersConfig:async()=>({defaultProviderId:null,providers:['google','openai','zai','zhipuai-coding-plan','fireworks','openrouter'].map(id=>({id,name:id,hasApiKey:true,enabled:true,isDefault:false,configured:true}))}),
  getAgentUsageReport:async(provider,days)=>{calls.push(provider+':'+days);if(held&&held.match(provider,days))await new Promise(resolve=>held.release.push(resolve));if(fail)throw Error('Offline');return report(provider,days)},
  getCodexRateLimits:async()=>null,getClaudePlanUsage:async()=>{throw Error('No subscription')},getGrokPlanUsage:async()=>{throw Error('No subscription')},getQoderPlanUsage:async()=>null,
 };
@@ -75,7 +83,9 @@ useAppStore.getState().setTheme('light');
 const sum=(days,pick)=>PROVIDERS.reduce((total,provider)=>total+pick(report(provider,days),provider),0);
 // An agent counts in dollars when its usage has a cost; one billed in its own unit only has none.
 const dollars=(r)=>r.totals.totalCostUsd;
-window.qa={store:useAppStore,calls,
+window.qa={store:useAppStore,calls,logos:{gemini:geminiLogo,zhipu:zhipuLogo,openai:openaiLogo,fireworks:fireworksLogo},
+ tokens:(provider,days,model)=>report(provider,days).models.find(row=>row.model===model).totalTokens,
+ sessions:(provider,days)=>Object.fromEntries(report(provider,days).models.map(row=>[row.model,row.sessionCount])),
  expected:days=>({cost:sum(days,dollars),tokens:sum(days,r=>r.totals.totalTokens),sessions:sum(days,r=>r.totals.sessionCount),
   agentCost:provider=>dollars(report(provider,days)),
   day:date=>{const spent=PROVIDERS.flatMap(provider=>{const r=report(provider,days);const usd=Object.values(r.daily.find(d=>d.date===date)?.byModelCostUsd||{}).reduce((a,b)=>a+b,0);return usd>0?[[provider,usd]]:[]}).sort((a,b)=>b[1]-a[1]);return {total:spent.reduce((s,[,usd])=>s+usd,0),agents:spent.map(([provider])=>provider)}}}),
@@ -135,6 +145,10 @@ app.whenReady().then(async()=>{
    assert.deepEqual(tip.rows,day.agents,'the agents that spent that day, most expensive first');
    assert.equal(tip.text.includes('Devin'),day.agents.includes('devin'),'an agent is in the tip when it spent dollars that day');assert(!tip.text.includes('Qoder'));};
   const agents=()=>js('[...document.querySelectorAll("[data-usage-agent]")].map(row=>row.dataset.usageAgent)');
+  // A row of the model table: the ids its name stands for, its mark and its tokens.
+  const modelRow=name=>js('(()=>{const row=document.querySelector('+JSON.stringify('[data-usage-model-row="'+name+'"]')+');if(!row)return null;const label=row.querySelector("span[title]"),img=row.querySelector("img"),src=img?img.getAttribute("src"):null;return {title:label.title,name:label.innerText.trim(),logo:src&&(Object.keys(qa.logos).find(mark=>qa.logos[mark]===src)||"other"),tokens:row.children[1].innerText.trim(),sessions:row.children[4].innerText.trim()}})()');
+  const modelRows=()=>js('[...document.querySelectorAll("[data-usage-ledger] tbody tr")].map(row=>row.dataset.usageModelRow)');
+  const fixture=(provider,days,model)=>js('qa.tokens('+JSON.stringify(provider)+','+days+','+JSON.stringify(model)+')');
   await win.loadURL(process.env.QA_URL);await until('!!window.qa');
 
   // "All agents" is the page Usage opens on. Agents answer one by one; nothing is drawn until all have.
@@ -200,13 +214,34 @@ app.whenReady().then(async()=>{
   assert((await text('[data-usage-cost-type="cache-read"]')).startsWith('Cache read ≈$'));
   assert.equal(await text('[data-usage-cost-type="other"]'),'Other '+money(expected.bubble*.3,false));
   // By model: the single-agent table, every agent's models in it, its total the headline's.
-  assert.deepEqual(await js('Array.from(document.querySelectorAll("[data-usage-ledger] thead th")).map(th=>th.innerText.trim())'),['Model','Tokens','Share','Estimated cost','Per 1M','Sessions','Cache hit','Last 13 weeks','Last used']);
+  assert.deepEqual(await js('Array.from(document.querySelectorAll("[data-usage-ledger] thead th")).map(th=>th.innerText.trim())'),['Model','Tokens','Share','Estimated cost','Sessions','Cache hit','Last 13 weeks','Last used']);
+  assert.equal(await js('(()=>{const t=document.querySelector("[data-usage-ledger] table");return t.querySelectorAll("col").length+":"+[...new Set([...t.querySelectorAll("tr")].map(r=>r.children.length))].join()})()'),'8:8','eight columns in every row');
   const total=await js('Array.from(document.querySelectorAll("[data-usage-model-row=\\"total\\"] td")).map(td=>td.innerText.trim())');
-  assert.equal(total[1],compact(expected.tokens));assert.equal(total[3],money(expected.cost,true));assert.equal(total[5],expected.sessions.toLocaleString('en-US'));
+  assert.equal(total[1],compact(expected.tokens));assert.equal(total[3],money(expected.cost,true));assert.equal(total[4],expected.sessions.toLocaleString('en-US'));
   assert.equal(await js('document.querySelector("[data-usage-model-row=\\"claude-opus-5-5\\"]").parentElement.firstElementChild.dataset.usageModelRow'),'claude-opus-5-5','most tokens first');
   await js('document.querySelector("[data-usage-model-row=\\"others\\"] button").click()');
   assert.equal(await js('document.querySelector("[data-usage-model-row=\\"swe-2-high\\"]").children[3].innerText.trim()'),'—','a model billed in messages has no dollars');
   assert.equal(await js('!!document.querySelector("[data-usage-model-row=\\"Auto\\"]")'),false,'a model with credits only is not a row');
+  // Bubble's models go by the model alone: its providers come off the name and stay in the tip, and same-named rows add up.
+  let names=await modelRows();
+  assert.equal(names.some(name=>/^(google|openai|zai|zhipuai-coding-plan|fireworks|openrouter):/.test(name)),false,'no known provider in a name: '+names);
+  assert.equal(names.filter(name=>name==='glm-5.3').length,1);assert.equal(names.filter(name=>name==='gpt-5.6-sol').length,1);
+  let model=await modelRow('gemini-4-hydrogen');
+  assert.deepEqual([model.name,model.title],['gemini-4-hydrogen','google:gemini-4-hydrogen']);assert.equal(model.logo,'gemini','Gemini has its mark');
+  assert.equal(model.tokens,compact(await fixture('bubble',365,'google:gemini-4-hydrogen')));
+  model=await modelRow('glm-5.3');
+  assert.equal(model.title,'zai:glm-5.3, zhipuai-coding-plan:glm-5.3');assert.equal(model.logo,'zhipu');
+  assert.equal(model.tokens,compact(await fixture('bubble',365,'zai:glm-5.3')+await fixture('bubble',365,'zhipuai-coding-plan:glm-5.3')),'one row for a model two providers served');
+  model=await modelRow('gpt-5.6-sol');
+  assert.equal(model.title,'gpt-5.6-sol, openai:gpt-5.6-sol','the row names Codex\'s id and Bubble\'s');assert.equal(model.logo,'openai');
+  assert.equal(model.tokens,compact(await fixture('codex',365,'gpt-5.6-sol')+await fixture('bubble',365,'openai:gpt-5.6-sol')),'Bubble\'s tokens join the same model of Codex');
+  model=await modelRow('google/gemini-4-argon');
+  assert.equal(model.title,'openrouter:google/gemini-4-argon');assert.equal(model.logo,'gemini','a routed id goes by the model at its end');
+  model=await modelRow('llama-5');
+  assert.equal(model.title,'fireworks:llama-5');assert.equal(model.logo,'fireworks','a model without a mark takes its provider\'s');
+  model=await modelRow('acme:in-house-model');
+  assert.deepEqual([model.name,model.title,model.logo],['acme:in-house-model','acme:in-house-model',null],'an unknown provider stays in the name, with a dot');
+  assert.equal(await js('[...document.querySelectorAll("[data-usage-ledger] tbody span[title]")].every(el=>el.scrollWidth<=el.clientWidth)'),true,'every model name fits its column');
   assert.equal(await js('!!document.querySelector("[data-usage-activity]")'),true);
   assert.equal(await js('document.documentElement.scrollWidth<=innerWidth'),true);
   await shot('year-light');
@@ -221,7 +256,7 @@ app.whenReady().then(async()=>{
   expected=await js('(()=>{const e=qa.expected(30);return {cost:e.cost,tokens:e.tokens,sessions:e.sessions}})()');
   assert.equal(await text('[data-usage-daily-cost] > div'),'Daily cost');
   assert((await text('[data-usage-total]')).startsWith(money(expected.cost,true)+' at API prices'));
-  assert.deepEqual(await js('Array.from(document.querySelectorAll("[data-usage-ledger] thead th")).map(th=>th.innerText.trim())').then(h=>h[7]),'Last 30 days');
+  assert.deepEqual(await js('Array.from(document.querySelectorAll("[data-usage-ledger] thead th")).map(th=>th.innerText.trim())').then(h=>h[6]),'Last 30 days');
   tip=await hoverTip('[data-usage-cost-point]:last-child');
   assert.equal(tip.day,await js('[...document.querySelectorAll("[data-usage-cost-point]")].at(-1).dataset.usageCostPoint'),'the last point is today');await tipMatchesDay(30,tip);
   await shot('month-hover');await hover('[data-usage-total]');await shot('month-light');
@@ -249,6 +284,24 @@ app.whenReady().then(async()=>{
   await js('document.querySelector("[data-preference-option=\\"all\\"]").click()');
   await until('!!document.querySelector("[data-usage-overview]")');
   assert.equal(await js('document.querySelectorAll("[data-usage-cost-point]").length'),30,'back on the overview, same range');
+  // Bubble's own page shows the same names: one row for glm-5.3, its sessions added up.
+  await js('document.querySelector("[data-usage-agent=\\"bubble\\"]").click()');
+  await until('document.querySelector("[aria-label=\\"Usage provider\\"]").dataset.preferenceValue==="bubble"&&!!document.querySelector("[data-usage-ledger] tbody tr")&&!document.querySelector("[data-usage-overview]")');
+  await js('document.querySelector("[data-usage-model-row=\\"others\\"] button")?.click()');
+  names=await modelRows();
+  assert.deepEqual(names.filter(name=>name!=='others').sort(),['acme:in-house-model','gemini-4-hydrogen','glm-5.3','google/gemini-4-argon','gpt-5.6-sol','llama-5']);
+  assert.deepEqual(await js('Array.from(document.querySelectorAll("[data-usage-ledger] thead th")).map(th=>th.innerText.trim())'),['Model','Tokens','Share','Total cost','Sessions','Cache hit','Last 30 days','Last used']);
+  model=await modelRow('glm-5.3');
+  assert.equal(model.title,'zai:glm-5.3, zhipuai-coding-plan:glm-5.3');
+  assert.equal(model.tokens,compact(await fixture('bubble',30,'zai:glm-5.3')+await fixture('bubble',30,'zhipuai-coding-plan:glm-5.3')));
+  assert.equal(model.sessions,String(await js('(()=>{const m=qa.sessions("bubble",30);return m["zai:glm-5.3"]+m["zhipuai-coding-plan:glm-5.3"]})()')));
+  assert.equal((await modelRow('gpt-5.6-sol')).title,'openai:gpt-5.6-sol','on Bubble\'s page the row is Bubble\'s alone');
+  assert.equal(await js('document.querySelector("[data-usage-model-row=\\"glm-5.3\\"] svg polyline, [data-usage-model-row=\\"glm-5.3\\"] svg path")!==null'),true,'the merged row draws its trend');
+  await shot('bubble-models');
+  await js('document.querySelector("[aria-label=\\"Usage provider\\"]").click()');
+  await until('!!document.querySelector("[data-preference-option=\\"all\\"]")');
+  await js('document.querySelector("[data-preference-option=\\"all\\"]").click()');
+  await until('!!document.querySelector("[data-usage-overview]")');
 
   // An agent billed in messages whose tokens have API prices counts in dollars like the rest: with an estimate,
   // Devin is in the total, the ranking, the lines and the tip. (Without one it shows its messages, as above.)
@@ -267,7 +320,7 @@ app.whenReady().then(async()=>{
   await hover('[data-usage-total]');await shot('devin-priced');
 
   assert.deepEqual(errors,[]);
-  console.log('usage-overview: loading, headline, agents, daily lines, tip, cost by type, models, ranges, narrow, agent pages, picker and a priced Devin passed');app.exit(0);
+  console.log('usage-overview: loading, headline, agents, daily lines, tip, cost by type, models, Bubble model names, ranges, narrow, agent pages, picker and a priced Devin passed');app.exit(0);
  }catch(error){console.error(error);app.exit(1)}
 });
 `;
