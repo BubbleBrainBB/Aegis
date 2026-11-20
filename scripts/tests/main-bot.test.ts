@@ -66,6 +66,8 @@ function setup(prepare?: (db: MainBotDb) => void) {
     /** Where a run stands now, when a test cares: a decision for another revision is refused. */
     workflowRevisions: new Map<string, number>(),
     told: [] as Array<{ label: string; text: string }>,
+    /** What happens while the bot is being told, before its turn has begun. */
+    whileTelling: null as null | (() => Promise<void>),
     replies: new Map<string, { asked: string | null; reply: string }>(),
     main: { id: 'main', busy: false, turn: { startedAt: 1, typed: true } as { startedAt: number; typed: boolean } | null },
     sendFails: false,
@@ -159,6 +161,8 @@ function setup(prepare?: (db: MainBotDb) => void) {
     tellMain: async (label, text) => {
       if (world.tellFails) return false;
       world.told.push({ label, text });
+      // Starting the bot's turn takes a moment, in which more can happen.
+      await world.whileTelling?.();
       return true;
     },
   };
@@ -734,6 +738,62 @@ async function main() {
     assert.equal(world.told.length, 2);
     assert.match(world.told[1].text, /Codex approved\./);
     assert.equal(store.get(id), null);
+  }
+
+  // --- While the bot is being told of a wait, more happens: what is on its way stays, and nothing else is lost ---
+  {
+    // The task's turn ends in that moment: its reply still reaches the bot.
+    const { bot, store, world } = setup();
+    const id = ok(await bot.startTask({ title: 'Review the dialog fix', prompt: 'have Codex review it', project: 'notes' })).sessionId as string;
+    const task = world.tasks.find((entry) => entry.id === id);
+    assert.ok(task);
+    task.state = 'needs approval';
+    task.workflowWaits = { runId: 'run-now', kind: 'start', title: 'Codex review', detail: '' };
+    world.replies.set(id, { asked: 'have Codex review it', reply: 'Prepared the review for you to start.' });
+    world.whileTelling = async () => {
+      world.whileTelling = null;
+      world.main.busy = true;
+      await bot.onTaskTurnEnded(id, 'completed');
+    };
+    await bot.onWorkflowChanged(id, 'awaiting_confirmation');
+    assert.equal(world.told.length, 1);
+    assert.match(world.told[0].text, /which has NOT started/);
+    world.main.busy = false;
+    await bot.onMainTurnEnded();
+    assert.equal(world.told.length, 2);
+    assert.match(world.told[1].text, /Prepared the review for you to start\./, 'the reply was not let go of in place of what the bot took');
+    assert.ok(store.get(id));
+  }
+  {
+    // The person starts it in the task in that moment: the word is out, so what happened since follows it.
+    const { bot, store, world } = setup();
+    const id = ok(await bot.startTask({ title: 'Review the dialog fix', prompt: 'have Codex review it', project: 'notes' })).sessionId as string;
+    const task = world.tasks.find((entry) => entry.id === id);
+    assert.ok(task);
+    task.runsWorkflow = true;
+    world.replies.set(id, { asked: 'have Codex review it', reply: 'A workflow is planning the review.' });
+    await bot.onTaskTurnEnded(id, 'completed');
+    assert.equal(world.told.length, 1);
+    delete task.runsWorkflow;
+    task.state = 'needs approval';
+    task.workflowWaits = { runId: 'run-now', kind: 'start', title: 'Codex review', detail: '' };
+    world.whileTelling = async () => {
+      world.whileTelling = null;
+      world.main.busy = true;
+      delete task.workflowWaits;
+      task.runsWorkflow = true;
+      task.state = 'working';
+      await bot.onWorkflowChanged(id, 'running');
+    };
+    await bot.onWorkflowChanged(id, 'awaiting_confirmation');
+    assert.equal(world.told.length, 2);
+    assert.match(world.told[1].text, /which has NOT started/);
+    world.main.busy = false;
+    await bot.onMainTurnEnded();
+    assert.equal(world.told.length, 3);
+    assert.match(world.told[2].text, /Since then its workflow has been started, in the task itself: nothing is asked of the person about it\./);
+    assert.equal(world.told[2].text.includes('NOT started'), false);
+    assert.ok(store.get(id), 'what comes of the workflow is still waited for');
   }
 
   // --- Claude without an Anthropic login: ready when the task's model needs none ---

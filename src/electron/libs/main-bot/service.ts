@@ -363,6 +363,8 @@ export class MainBotService {
   /** Tasks whose workflow the bot is calling off itself: no news to it. */
   private readonly callingOff = new Set<string>();
   private delivering = false;
+  /** While reports are on their way to the bot: how many of each task's, counted from the oldest. They stay as they are. */
+  private readonly onTheWay = new Map<string, number>();
   /** The bot's turn the counters below belong to. */
   private countedTurn: number | null = null;
   private startsThisTurn = 0;
@@ -1093,7 +1095,7 @@ export class MainBotService {
     const arm = () => this.store.arm({ taskId: watch.taskId, title: watch.title, device: watch.device, at });
     arm();
     // A wait the bot was to hear of and has not yet: how it stands now takes its place.
-    this.store.dropEarlier(watch.taskId, isWaitNote);
+    this.store.dropEarlier(watch.taskId, isWaitNote, this.onTheWay.get(watch.taskId) ?? 0);
     this.store.setReport(watch.taskId, { status: NOTE, text: workflowNote(task), at });
     arm();
     this.noted.set(watch.taskId, JSON.stringify(task.workflowWaits ?? null));
@@ -1103,11 +1105,16 @@ export class MainBotService {
    * A task no longer waits for the person the way the bot was to hear: a word
    * about that wait it has not taken yet is taken back, so it does not ask the
    * person for what they already did. Where a reply of the task still waits
-   * to be told, which may say the same, `since` goes with it.
+   * to be told, which may say the same, or that word is on its way to the bot
+   * this moment, `since` follows.
    */
   private waitOver(taskId: string, since: string | null, at: number): void {
     this.noted.delete(taskId);
-    if (!this.store.dropEarlier(taskId, isWaitNote) || !since) return;
+    const sent = this.onTheWay.get(taskId) ?? 0;
+    // One the bot is being told this moment cannot be taken back: what happened since follows it.
+    const told = Boolean(this.store.get(taskId)?.earlier.slice(0, sent).some(isWaitNote));
+    const dropped = this.store.dropEarlier(taskId, isWaitNote, sent);
+    if ((!dropped && !told) || !since) return;
     const left = this.store.get(taskId);
     if (left && !left.report && left.earlier.length) this.store.setReport(taskId, { status: NOTE, text: since, at });
   }
@@ -1168,6 +1175,8 @@ export class MainBotService {
     const ready = this.store.all().filter((watch) => watch.report !== null || watch.earlier.length > 0);
     if (!ready.length) return false;
     this.delivering = true;
+    // What is sent now is let go of by its place afterwards: until then nothing of it is taken back.
+    for (const watch of ready) this.onTheWay.set(watch.taskId, watch.earlier.length + (watch.report ? 1 : 0));
     let sent = false;
     try {
       sent = await this.host.tellMain(mainBotReportLabel(ready.map((watch) => watch.title)), this.reportText(ready));
@@ -1185,6 +1194,7 @@ export class MainBotService {
         this.store.dropDelivered(watch.taskId, watch.earlier.length + (watch.report ? 1 : 0));
       }
     }
+    this.onTheWay.clear();
     return sent;
   }
 
