@@ -38,6 +38,7 @@ export type WarmSendOptions = Pick<
   | 'qoderPermissionMode'
   | 'bubblePermissionMode'
   | 'bubblePlanExitMode'
+  | 'bubbleNamesAnotherMode'
   | 'bubbleThinkingLevel'
   | 'claudePromptId'
 >;
@@ -64,6 +65,7 @@ export function buildWarmSendOptions(next: WarmSendOptions): WarmSendOptions {
     qoderPermissionMode: next.qoderPermissionMode,
     bubblePermissionMode: next.bubblePermissionMode,
     bubblePlanExitMode: next.bubblePlanExitMode,
+    bubbleNamesAnotherMode: next.bubbleNamesAnotherMode,
     bubbleThinkingLevel: next.bubbleThinkingLevel,
     claudePromptId: next.claudePromptId,
   };

@@ -28,22 +28,36 @@ const text = (id, role, body) => ({ id, role, text: body, raw: role === "user" ?
 const session = { id: "s1", projectId: "p1", title: "Fix relay", provider: "claude", status: "idle", updatedAt: 1, runId: null };
 const big = { id: "big", projectId: "p1", title: "Long session", provider: "claude", status: "idle", updatedAt: 1, runId: null };
 const bigHistory = Array.from({ length: 4000 }, (_, i) => text("m" + i, i % 2 ? "assistant" : "user", `${i} ` + "x".repeat(2000)));
-const histories = { s1: [text("a", "user", "Hello")], big: bigHistory };
+// A Bubble session, as a host from before it reported Bubble's mode lists it: no permissionMode.
+const bubble = { id: "b1", projectId: "p1", title: "Install deps", provider: "bubble", status: "idle", updatedAt: 1, runId: null, settings: { model: "kimi" } };
+const histories = { s1: [text("a", "user", "Hello")], big: bigHistory, b1: [] };
 const pending = new Set();
-const calls = { send: 0, stop: 0, permission: [], create: [] };
+const calls = { send: 0, stop: 0, permission: [], create: [], settings: [] };
+/** Sessions the fixture lists besides the two every controller sees first. */
+const extraSessions = [];
 let sendGate;
+let holdSend;
+let startGate;
+let holdStart;
 let gateway;
 const runtime = () => ({
   environment: "fixture",
   lan: false,
   projects: () => [{ id: "p1", name: "coworker", path: dir, isRepo: true }],
-  sessions: () => [session, big],
+  sessions: () => [session, big, ...extraSessions],
   history: (id) => histories[id] ?? [],
   start: async (project, provider, prompt, extras) => {
-    calls.create.push({ project: project.id, provider, prompt, worktree: extras?.worktree });
+    calls.create.push({ project: project.id, provider, prompt, worktree: extras?.worktree, ...(extras?.settings ? { settings: extras.settings } : {}) });
+    if (startGate) await startGate;
     return "new";
   },
-  send: async (id, prompt) => {
+  send: async (id, prompt, extras) => {
+    // The Bubble session only records what each message was told to run with; it stays idle.
+    if (id === "b1") {
+      calls.settings.push(extras?.settings);
+      if (sendGate) await sendGate;
+      return true;
+    }
     calls.send++;
     if (sendGate) await sendGate;
     histories[id].push(text("u" + calls.send, "user", prompt));
@@ -270,6 +284,236 @@ await until(() => gateway.status === "connected", "gateway still connected");
   assert.equal(failure?.payload.startId, "s-1");
   assert.equal(offline.handleClientEvent({ type: "session.start", payload: { cwd: "/Users/me/project", prompt: "x", title: "x" } }), false, "local starts stay local");
   offline.close();
+}
+
+// A session's settings chosen on this Mac: the next message from here carries them,
+// the composer's and the main bot's, and after that the other Mac's word counts.
+{
+  const emitted = [];
+  let lists = 0;
+  /** The list as the window holds it: what the bridge had when it last said the list changed. */
+  let published = [];
+  const bridge = new RemoteHostBridge({
+    load: () => ({ hosts: [] }), save: () => {}, createIdentity: crypto.createIdentity,
+    environment: "fixture", emit: (event) => emitted.push(event), crypto, name: "MacBook Air",
+    listChanged: () => { lists++; published = bridge.sessions(); },
+  });
+  extraSessions.push(bubble);
+  const view = await bridge.add(JSON.stringify(gateway.pairing()));
+  const localId = `rh-${view.id}-b1`;
+  const listed = () => bridge.sessions().find((s) => s.id === localId);
+  /** What a composer open on the session shows, and so sends in full with its next message. */
+  const shown = () => published.find((s) => s.id === localId)?.remoteSettings;
+  const titleHere = () => bridge.overview()[0]?.sessions.find((s) => s.id === localId)?.title;
+  /** The host says what it has for the session now; resolves once this Mac has heard it. */
+  let reports = 0;
+  const report = async (settings) => {
+    if (settings) bubble.settings = settings;
+    bubble.title = `Install deps ${++reports}`;
+    // The session row changed over there: every report of a newer host says so.
+    bubble.updatedAt += 1;
+    gateway.capture({ type: "session.status", payload: { sessionId: "b1", status: "idle" } });
+    await until(() => titleHere() === bubble.title, "this Mac heard the host's report", 15000);
+  };
+  const composer = async (prompt, remoteSettings) => {
+    const before = calls.settings.length;
+    assert.equal(bridge.handleClientEvent({ type: "session.continue", payload: { sessionId: localId, prompt, ...(remoteSettings ? { remoteSettings } : {}) } }), true);
+    await until(() => calls.settings.length === before + 1, "the composer's message reached the host");
+    // The answer to the command follows what the host recorded.
+    await new Promise((r) => setTimeout(r, 100));
+    return calls.settings.at(-1);
+  };
+  const mainBot = async (prompt) => {
+    assert.deepEqual(await bridge.sendTo(localId, prompt), { ok: true });
+    return calls.settings.at(-1);
+  };
+  await until(() => listed(), "the bridge lists the Bubble session", 15000);
+
+  // ── An older host: it reports no mode for Bubble and reads a missing one as its default. ──
+  assert.deepEqual(listed().remoteSettings, { model: "kimi" });
+  // The main bot's message before anything was chosen says what this Mac knows, in full.
+  assert.deepEqual(await mainBot("Carry on"), { model: "kimi" });
+
+  // Full Access picked in the composer, and nothing sent yet: the session shows it, also to a composer opened later.
+  const before = lists;
+  bridge.choose(localId, { permissionMode: "bypassPermissions", plan: false });
+  assert.ok(lists > before, "the session list is sent again with the choice");
+  assert.equal(listed().remoteSettings.permissionMode, "bypassPermissions");
+  // The main bot's next message runs with it, and so does every one after: this host never says it took it.
+  assert.deepEqual(await mainBot("npm ci"), { model: "kimi", permissionMode: "bypassPermissions", plan: false });
+  assert.deepEqual(await mainBot("npm test"), { model: "kimi", permissionMode: "bypassPermissions", plan: false });
+  // So does a message from a composer that says nothing itself.
+  assert.equal((await composer("Again")).permissionMode, "bypassPermissions");
+  // The host's list arriving again with the same settings changes nothing.
+  await report();
+  assert.equal(listed().remoteSettings.permissionMode, "bypassPermissions");
+  // What the composer sends with a message is the choice from then on.
+  assert.equal((await composer("Careful now", { model: "kimi", permissionMode: "default", plan: false })).permissionMode, "default");
+  assert.equal((await mainBot("Still careful")).permissionMode, "default");
+
+  // REMOTE-MODES-UNDEFINED-CLEAR, on this older host. Another model is picked in the composer,
+  // which clears the effort there. A message cannot say "no effort", so the host keeps its own:
+  // once the message has gone, this Mac shows what the host reports again, not the clear.
+  await report({ model: "kimi", effort: "high" });
+  bridge.choose(localId, { model: "kimi-2", effort: undefined, fast: undefined });
+  assert.equal(listed().remoteSettings.effort, undefined, "cleared in the composer");
+  const switched = await composer("On the other model", { model: "kimi-2", permissionMode: "default", plan: false });
+  assert.deepEqual([switched.model, switched.effort], ["kimi-2", undefined]);
+  assert.equal(listed().remoteSettings.effort, "high", "the effort the host still runs with is shown");
+  assert.equal(listed().remoteSettings.model, "kimi-2");
+  assert.equal((await mainBot("Same model")).effort, "high", "and said back to a host that keeps nothing");
+
+  // ── A host that reports the mode and keeps what a message leaves out. ──
+  bubble.keepsSettings = ["model", "permissionMode", "plan"];
+  await report({ model: "kimi", permissionMode: "default" });
+  assert.equal(listed().remoteSettings.permissionMode, "default");
+
+  // REMOTE-MODE-03. Nothing is chosen here, and this Mac's copy of the session's settings is
+  // behind: the host has since gone to Full Access (a message sent on that Mac itself) and its
+  // report is not here yet. The main bot's message must not say the stale Default back.
+  bubble.settings = { model: "kimi", permissionMode: "bypassPermissions" };
+  assert.equal(listed().remoteSettings.permissionMode, "default", "this Mac's copy is behind");
+  assert.deepEqual(await mainBot("Go on"), {}, "nothing chosen here: the host runs the message with its own settings");
+  await report();
+  assert.equal(listed().remoteSettings.permissionMode, "bypassPermissions");
+  // A choice made here is said once, and only it; after that the host has it.
+  await report({ model: "kimi", permissionMode: "default" });
+  bridge.choose(localId, { permissionMode: "bypassPermissions", plan: false });
+  assert.deepEqual(await mainBot("With Full Access"), { permissionMode: "bypassPermissions", plan: false });
+  assert.deepEqual(await mainBot("And on"), {}, "said once");
+  await report({ model: "kimi", permissionMode: "bypassPermissions" });
+  assert.equal(listed().remoteSettings.permissionMode, "bypassPermissions");
+  // The session moves on over there (an approved plan, a message from that Mac): this Mac follows.
+  await report({ model: "kimi", permissionMode: "default" });
+  assert.equal(listed().remoteSettings.permissionMode, "default");
+  assert.deepEqual(await mainBot("After the change"), {});
+  // And back there to what was once chosen here: still the host's word, not the old choice.
+  await report({ model: "kimi", permissionMode: "bypassPermissions" });
+  assert.equal(listed().remoteSettings.permissionMode, "bypassPermissions");
+
+  // REMOTE-MODE-01. The host is at Default. Full Access is picked and goes out with a message;
+  // before that message's report is back, Default is picked again. The report, when it comes,
+  // is of the earlier message: it must not undo the later choice.
+  await report({ model: "kimi", permissionMode: "default" });
+  bridge.choose(localId, { permissionMode: "bypassPermissions", plan: false });
+  assert.equal((await composer("First", { model: "kimi", permissionMode: "bypassPermissions", plan: false })).permissionMode, "bypassPermissions");
+  bridge.choose(localId, { permissionMode: "default", plan: false });
+  await report({ model: "kimi", permissionMode: "bypassPermissions" });
+  assert.equal(listed().remoteSettings.permissionMode, "default", "the later choice outlives the earlier message's report");
+  assert.equal((await mainBot("Second")).permissionMode, "default", "the main bot's next message carries the later choice");
+  // The same when the earlier message is still on its way as the later choice is made (an upload takes a while).
+  await report({ model: "kimi", permissionMode: "default" });
+  bridge.choose(localId, { permissionMode: "bypassPermissions", plan: false });
+  sendGate = new Promise((r) => (holdSend = r));
+  const sentBefore = calls.settings.length;
+  bridge.handleClientEvent({ type: "session.continue", payload: { sessionId: localId, prompt: "Slow one", remoteSettings: { model: "kimi", permissionMode: "bypassPermissions", plan: false } } });
+  await until(() => calls.settings.length === sentBefore + 1, "the slow message reached the host");
+  bridge.choose(localId, { permissionMode: "default", plan: false });
+  holdSend();
+  sendGate = undefined;
+  await new Promise((r) => setTimeout(r, 150));
+  await report({ model: "kimi", permissionMode: "bypassPermissions" });
+  assert.equal(listed().remoteSettings.permissionMode, "default");
+  assert.equal((await mainBot("Third")).permissionMode, "default");
+  await report({ model: "kimi", permissionMode: "default" });
+
+  // REMOTE-MODE-01-ACK-ORDER. Default goes out with a message whose answer is late (a dropped
+  // connection). The host takes it and is then put back on Full Access over there, and that
+  // report is here before the answer. The answer is about the past: what this Mac shows, and
+  // what the next message runs with, is the host's newer word.
+  await report({ model: "kimi", permissionMode: "bypassPermissions" });
+  bridge.choose(localId, { permissionMode: "default", plan: false });
+  sendGate = new Promise((r) => (holdSend = r));
+  const lateBefore = calls.settings.length;
+  const late = bridge.sendTo(localId, "Careful");
+  await until(() => calls.settings.length === lateBefore + 1, "the message with Default reached the host");
+  assert.equal(calls.settings.at(-1).permissionMode, "default");
+  await report({ model: "kimi", permissionMode: "bypassPermissions" });
+  holdSend();
+  sendGate = undefined;
+  assert.deepEqual(await late, { ok: true });
+  assert.equal(listed().remoteSettings.permissionMode, "bypassPermissions", "the late answer does not put an older choice over the host's newer report");
+  // The window is told at once: no report need follow the answer, and a composer still
+  // showing the ended choice would say it back to the host with its next message.
+  assert.equal(shown().permissionMode, "bypassPermissions", "the window hears that the choice ended");
+  assert.deepEqual(await mainBot("After the late answer"), {});
+  // The other way round, which is the one that gives access back: Full Access goes out, the
+  // host takes it and is then put back on Default, and that report is here before the answer.
+  await report({ model: "kimi", permissionMode: "default" });
+  bridge.choose(localId, { permissionMode: "bypassPermissions", plan: false });
+  sendGate = new Promise((r) => (holdSend = r));
+  const widerBefore = calls.settings.length;
+  bridge.handleClientEvent({ type: "session.continue", payload: { sessionId: localId, prompt: "Faster", remoteSettings: { model: "kimi", permissionMode: "bypassPermissions", plan: false } } });
+  await until(() => calls.settings.length === widerBefore + 1, "the message with Full Access reached the host");
+  await report({ model: "kimi", permissionMode: "default" });
+  assert.equal(shown().permissionMode, "bypassPermissions", "the choice waits while its message is unanswered");
+  holdSend();
+  sendGate = undefined;
+  await until(() => listed().remoteSettings.permissionMode === "default", "the answer ended the choice");
+  assert.equal(shown().permissionMode, "default", "the window shows the host's Default once the answer is in");
+  // The composer's next message, in full as it shows it, leaves the host on Default.
+  assert.equal((await composer("Next", shown())).permissionMode, "default", "a withdrawn Full Access is not sent back");
+
+  // REMOTE-MODE-ACK-SAME-VALUE-REPICK. Messages join a turn that runs there, so a second can go
+  // while the first is unanswered. Default goes out, and its answer is late. Full Access is
+  // picked and goes out, and the host says it has it. Default is picked again, and has not
+  // gone out when the first answer arrives. That answer is to the first Default: the one
+  // picked since still waits, and the main bot's next message says it.
+  bubble.status = "running";
+  await report({ model: "kimi", permissionMode: "bypassPermissions" });
+  bridge.choose(localId, { permissionMode: "default", plan: false });
+  sendGate = new Promise((r) => (holdSend = r));
+  const firstDefault = holdSend;
+  const repickBefore = calls.settings.length;
+  bridge.handleClientEvent({ type: "session.continue", payload: { sessionId: localId, prompt: "Carefully", remoteSettings: { model: "kimi", permissionMode: "default", plan: false } } });
+  await until(() => calls.settings.length === repickBefore + 1, "the first Default reached the host");
+  sendGate = undefined;
+  bridge.choose(localId, { permissionMode: "bypassPermissions", plan: false });
+  assert.equal((await composer("Faster after all", { model: "kimi", permissionMode: "bypassPermissions", plan: false })).permissionMode, "bypassPermissions");
+  await report({ model: "kimi", permissionMode: "bypassPermissions" });
+  bridge.choose(localId, { permissionMode: "default", plan: false });
+  firstDefault();
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(listed().remoteSettings.permissionMode, "default", "the late answer to the first Default does not settle the Default picked since");
+  assert.equal(shown().permissionMode, "default");
+  bubble.status = "idle";
+  await report();
+  assert.equal((await mainBot("Carefully again")).permissionMode, "default", "the host, on Full Access, is told the Default that was picked last");
+  await report({ model: "kimi", permissionMode: "default" });
+
+  // A task started from here: the host is told the mode, and the new session shows
+  // it at once, before that Mac lists the session.
+  const started = await bridge.createTask(view.id, { projectId: "p1", provider: "bubble", prompt: "Build it", settings: { model: undefined, permissionMode: "bypassPermissions" } });
+  assert.deepEqual(started, { id: `rh-${view.id}-new` });
+  assert.deepEqual(calls.create.at(-1).settings, { permissionMode: "bypassPermissions" });
+  assert.equal(bridge.handleClientEvent({ type: "session.start", payload: { cwd: `/aegis-remote/${view.id}/p1/coworker`, prompt: "From the composer", title: "From the composer", provider: "bubble", startId: "s-2", remoteSettings: { permissionMode: "bypassPermissions", plan: false } } }), true);
+  await until(() => emitted.some((event) => event.type === "session.status" && event.payload.startId === "s-2"), "composer start confirmed");
+  const status = emitted.find((event) => event.type === "session.status" && event.payload.startId === "s-2");
+  assert.deepEqual(status.payload.remoteSettings, { permissionMode: "bypassPermissions", plan: false });
+  assert.deepEqual(calls.create.at(-1).settings, { permissionMode: "bypassPermissions", plan: false });
+  // The session is listed by now: its row carries the choice too, while an older host reports no mode for it.
+  extraSessions.push({ id: "new", projectId: "p1", title: "From the composer", provider: "bubble", status: "idle", updatedAt: 2, runId: null, settings: {} });
+  await report();
+  await until(() => bridge.sessions().some((s) => s.id === `rh-${view.id}-new`), "the new session is listed");
+  assert.equal(bridge.sessions().find((s) => s.id === `rh-${view.id}-new`).remoteSettings.permissionMode, "bypassPermissions");
+
+  // The answer to a start is late, and the session is listed here before it: a mode picked for
+  // it in the meantime is the newer word, not what the start said.
+  startGate = new Promise((r) => (holdStart = r));
+  const createdBefore = calls.create.length;
+  const slowStart = bridge.createTask(view.id, { projectId: "p1", provider: "bubble", prompt: "Slow start", settings: { permissionMode: "bypassPermissions" } });
+  await until(() => calls.create.length === createdBefore + 1, "the start reached the host");
+  bridge.choose(`rh-${view.id}-new`, { permissionMode: "default" });
+  holdStart();
+  startGate = undefined;
+  assert.deepEqual(await slowStart, { id: `rh-${view.id}-new` });
+  assert.equal(bridge.sessions().find((s) => s.id === `rh-${view.id}-new`).remoteSettings.permissionMode, "default", "the start's late answer does not replace a choice made since");
+
+  // A choice for a session that isn't there is dropped quietly.
+  bridge.choose("rh-000000000000-nope", { permissionMode: "bypassPermissions" });
+  bridge.close();
+  extraSessions.length = 0;
+  gateway.capture({ type: "session.status", payload: { sessionId: "b1", status: "idle" } });
 }
 
 // Revoking ends the first controller's access for good.

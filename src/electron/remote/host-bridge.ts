@@ -8,6 +8,7 @@ import { ATTACHMENT_CHUNK_BYTES, environmentLabel, parsePairing, type Pairing, t
 import type { Attachment, ClientEvent, PermissionResult, ServerEvent, SessionInfo, SessionStartPayload, StreamMessage } from "../../shared/types";
 import { parseRemoteProjectPath, remoteProjectPath } from "../../shared/remote/remote-path";
 import { agentCatalog } from "../../shared/remote/agent-catalog";
+import { chooseSettings, effectiveSettings, forgetCleared, markSent, pruneChosen, settingsToSend, type ChosenSettings, type Reported, type Sending } from "../../shared/remote/chosen-settings";
 import { RemoteHostClient, type HostClientOptions, type HostStatus } from "./host-client";
 
 const REMOTE_ID = /^rh-([a-f0-9]{12})-(.+)$/;
@@ -49,6 +50,13 @@ interface Host {
   cursors: Map<string, number>;
   /** Prompts sent into a running turn that the agent hasn't read yet, per session. */
   steers: Map<string, Array<{ promptId: string; prompt: string; effective: string }>>;
+  /**
+   * What this Mac chose for a session there (in the composer, or by starting or
+   * messaging it). A choice waits for the next message from here, whoever sends
+   * it (the composer or the main bot), and after that until that Mac says
+   * something new.
+   */
+  chosen: Map<string, ChosenSettings>;
   /** When the connection last dropped. Short gaps don't count as offline. */
   downSince?: number;
 }
@@ -161,6 +169,7 @@ export class RemoteHostBridge {
       shown: new Map(),
       steers: new Map(),
       cursors: new Map(),
+      chosen: new Map(),
       client: new RemoteHostClient({
         pairing,
         identity: this.saved.identity!,
@@ -222,7 +231,7 @@ export class RemoteHostBridge {
             ...(this.reconnecting(host) ? { reconnecting: true } : {}),
           },
           ...this.settingsOf(session),
-          remoteSettings: session.settings,
+          remoteSettings: this.settingsFor(host, session.id, session),
           createdAt: session.updatedAt,
           updatedAt: session.updatedAt,
         });
@@ -234,6 +243,83 @@ export class RemoteHostBridge {
     const { status } = host.client;
     if (status === "connected" || status === "revoked" || status === "rejected") return false;
     return host.downSince === undefined || Date.now() - host.downSince < OFFLINE_AFTER;
+  }
+  /** What that Mac says of a session now. A newer one answers for the fields it keeps, in reports it numbers. */
+  private reported(host: Host, sessionId: string, session = host.client.state?.sessions.find((s) => s.id === sessionId)): Reported | undefined {
+    if (!session) return undefined;
+    return session.keepsSettings
+      ? { settings: session.settings, version: session.updatedAt, keeps: session.keepsSettings }
+      : { settings: session.settings };
+  }
+  /** What a message from here runs with: that Mac's settings for the session, under what was chosen here since. */
+  private settingsFor(host: Host, sessionId: string, session = host.client.state?.sessions.find((s) => s.id === sessionId)): RemoteTaskSettings {
+    return effectiveSettings(this.reported(host, sessionId, session), host.chosen.get(sessionId));
+  }
+  private keep(host: Host, sessionId: string, chosen: ChosenSettings | undefined) {
+    if (chosen) host.chosen.set(sessionId, chosen);
+    else host.chosen.delete(sessionId);
+  }
+  /** Notes what was chosen here for a session, over what that Mac says now. It waits for a message to carry it. */
+  private remember(host: Host, sessionId: string, picked: RemoteTaskSettings) {
+    this.keep(host, sessionId, chooseSettings(host.chosen.get(sessionId), this.reported(host, sessionId), picked));
+  }
+  /**
+   * What a message is about to say, with what that Mac had said by now. Taken
+   * when the settings are fixed, before anything is waited for: the answer to
+   * the message may come after newer reports, and is measured from here.
+   */
+  private sending(host: Host, sessionId: string, settings: RemoteTaskSettings): Sending {
+    // Which choices it carries: one made again before the answer is here is not among them.
+    return { settings, reported: this.reported(host, sessionId), picked: { ...host.chosen.get(sessionId)?.picked } };
+  }
+  /** The message reached that Mac: the choices it carried are that Mac's to answer now. */
+  private delivered(host: Host, sessionId: string, sending: Sending) {
+    const shown = JSON.stringify(this.settingsFor(host, sessionId));
+    // A field cleared in the composer (the effort, when another model is picked) went unsaid: that Mac kept its own.
+    const sent = forgetCleared(markSent(host.chosen.get(sessionId), sending));
+    // A report newer than the message may be here already: it is the answer.
+    this.keep(host, sessionId, pruneChosen(sent, this.reported(host, sessionId)));
+    // What the session shows may have changed with that (a choice ended by a report that was
+    // here before the answer). No report need follow, so the list is sent again from here:
+    // a composer left showing the ended choice would say it back with its next message.
+    if (JSON.stringify(this.settingsFor(host, sessionId)) !== shown) this.options.listChanged();
+  }
+  /**
+   * What a message with no composer behind it (the main bot's) tells that Mac to
+   * run with: see settingsToSend.
+   */
+  private settingsToSend(host: Host, sessionId: string): RemoteTaskSettings {
+    return cleanSettings(settingsToSend(this.reported(host, sessionId), host.chosen.get(sessionId)));
+  }
+  /**
+   * A task just started there with these settings: they went with its first
+   * message. Only the fields nothing was chosen for meanwhile (that Mac may list
+   * the session, and a composer open on it, before its answer to the start is here).
+   */
+  private started(host: Host, sessionId: string, settings: RemoteTaskSettings) {
+    const chosen = host.chosen.get(sessionId)?.settings ?? {};
+    const fresh = Object.fromEntries(Object.entries(settings).filter(([field]) => !(field in chosen))) as RemoteTaskSettings;
+    this.keep(host, sessionId, chooseSettings(host.chosen.get(sessionId), undefined, fresh));
+    // The session did not exist when the message left: measured from nothing said.
+    this.delivered(host, sessionId, { settings: fresh, reported: undefined, picked: { ...host.chosen.get(sessionId)?.picked } });
+  }
+  /** The fields of a composer's settings that are choices: not what that Mac says itself, or chosen here before. */
+  private choicesIn(host: Host, sessionId: string, settings: RemoteTaskSettings): RemoteTaskSettings {
+    const reported = this.reported(host, sessionId)?.settings;
+    const chosen = host.chosen.get(sessionId)?.settings ?? {};
+    return Object.fromEntries(
+      Object.entries(settings).filter(([field, value]) => field in chosen || value !== reported?.[field as keyof RemoteTaskSettings]),
+    ) as RemoteTaskSettings;
+  }
+  /**
+   * A choice made in the composer of a session on another Mac. It goes there
+   * with the next message from here; a turn already running keeps its own.
+   */
+  choose(id: string, picked: RemoteTaskSettings) {
+    const target = this.resolve(id);
+    if (!target) return;
+    this.remember(target.host, target.sessionId, picked);
+    this.options.listChanged();
   }
   /** What that Mac has set for the session, so this one shows the same. */
   private settingsOf(session: RemoteSession): Partial<SessionInfo> {
@@ -259,6 +345,12 @@ export class RemoteHostBridge {
   }
   private onState(host: Host, state: RemoteState, machineName?: string) {
     if (machineName) host.name = machineName;
+    // A choice made here ends where that Mac has since said otherwise.
+    for (const session of state.sessions) {
+      const chosen = host.chosen.get(session.id);
+      const standing = pruneChosen(chosen, this.reported(host, session.id, session));
+      if (standing !== chosen) this.keep(host, session.id, standing);
+    }
     this.options.listChanged();
     for (const session of state.sessions) {
       const before = host.statuses.get(session.id);
@@ -416,17 +508,20 @@ export class RemoteHostBridge {
       ...(input.settings ? { settings: cleanSettings(input.settings) } : {}),
     });
     if (result.state !== "completed" || !result.sessionId) return { error: this.refusal(host, result) };
+    if (input.settings) this.started(host, result.sessionId, cleanSettings(input.settings));
     return { id: this.localId(host, result.sessionId) };
   }
-  /** Sends a message to an idle session on another Mac, with the settings it has. */
+  /** Sends a message to an idle session on another Mac, with the settings it has and what was chosen here since. */
   async sendTo(id: string, prompt: string): Promise<{ ok: true } | { error: string }> {
     const target = this.resolve(id);
     if (!target) return { error: "This device is no longer connected." };
     const { host, sessionId } = target;
     if (host.client.status !== "connected") return { error: `Can’t reach ${host.name}.` };
-    const session = host.client.state?.sessions.find((s) => s.id === sessionId);
-    const result = await host.client.command("send", { sessionId, prompt, settings: cleanSettings(session?.settings ?? {}) });
-    return result.state === "completed" ? { ok: true } : { error: this.refusal(host, result) };
+    const sending = this.sending(host, sessionId, this.settingsToSend(host, sessionId));
+    const result = await host.client.command("send", { sessionId, prompt, settings: sending.settings });
+    if (result.state !== "completed") return { error: this.refusal(host, result) };
+    this.delivered(host, sessionId, sending);
+    return { ok: true };
   }
   async stopTask(id: string): Promise<{ ok: true } | { error: string }> {
     const target = this.resolve(id);
@@ -483,6 +578,9 @@ export class RemoteHostBridge {
           );
         }
         const id = this.localId(host, result.sessionId);
+        // The composer that opens on the new session shows what it was started with,
+        // before that Mac's list arrives and whether or not it reports each field.
+        if (payload.remoteSettings) this.started(host, result.sessionId, cleanSettings(payload.remoteSettings));
         this.options.emit({
           type: "session.status",
           payload: {
@@ -495,6 +593,7 @@ export class RemoteHostBridge {
             projectCwd: payload.cwd,
             provider: payload.provider,
             device: { id: host.key, name: host.name, online: host.client.status === "connected" },
+            remoteSettings: this.settingsFor(host, result.sessionId),
           },
         });
         await host.client.subscribe(result.sessionId);
@@ -547,18 +646,26 @@ export class RemoteHostBridge {
         host.steers.set(sessionId, waiting);
         this.options.emit({ type: "stream.user_prompt", payload: { sessionId: payload.sessionId, prompt: event.payload.prompt, promptId, deferred: true, createdAt: Date.now() } });
       }
+      // What the composer says differently from that Mac is a choice, for the main bot's messages too.
+      const said = event.payload.remoteSettings ? cleanSettings(event.payload.remoteSettings) : undefined;
+      if (said) this.remember(host, sessionId, this.choicesIn(host, sessionId, said));
+      // Always said in full by a composer: what it shows is what the message runs with.
+      const sending = this.sending(host, sessionId, said ?? this.settingsToSend(host, sessionId));
       void this.upload(host, event.payload.attachments)
         .then((attachmentIds) =>
           host.client.command("send", {
             sessionId,
             prompt,
-            // Always said in full: the host reads a missing mode as its default, not as "keep".
-            settings: cleanSettings(event.payload.remoteSettings ?? session?.settings ?? {}),
+            settings: sending.settings,
             ...(attachmentIds.length ? { attachmentIds } : {}),
             ...(running ? { steer: true } : {}),
           }),
         )
-        .then(report, (error: Error) => fail(explain(error.message)));
+        .then((result) => {
+          // A choice changed while the message was on its way (an upload takes a while) still waits.
+          if (result.state === "completed") this.delivered(host, sessionId, sending);
+          report(result);
+        }, (error: Error) => fail(explain(error.message)));
     }
     else if (event.type === "session.stop") {
       const runId = host.client.state?.sessions.find((s) => s.id === sessionId)?.runId;

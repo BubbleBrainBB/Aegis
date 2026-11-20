@@ -49,6 +49,17 @@ export interface SessionRow {
   codex_reasoning_effort: import('../shared/types').CodexReasoningEffort | null;
   codex_fast_mode: number | null;
   opencode_permission_mode: import('../shared/types').OpenCodePermissionMode | null;
+  /**
+   * The mode the session last ran with, for agents whose runner is the only
+   * other place that knows it. Null until a message said one: the agent's own
+   * default then. Missing on rows read before the columns existed.
+   */
+  bubble_permission_mode?: string | null;
+  /** Where Bubble goes when a plan is approved. */
+  bubble_plan_exit_mode?: string | null;
+  devin_permission_mode?: string | null;
+  mimo_permission_mode?: string | null;
+  minimax_permission_mode?: string | null;
   status: string;
   cwd: string | null;
   project_cwd: string | null;
@@ -206,9 +217,14 @@ export interface RunnerOptions {
     mode: import('../shared/types').ClaudeExecutionMode,
     permissionMode: import('../shared/types').ClaudeAccessMode
   ) => void;
-  /** The Bubble agent switched its own permission mode mid-turn (plan approval). */
+  /**
+   * The Bubble agent switched its own permission mode mid-turn (plan approval).
+   * `supersededBy`: the session's mode is no longer that turn's to change (see
+   * the provider event).
+   */
   onBubblePermissionModeChange?: (
-    mode: import('../shared/types').BubblePermissionMode
+    mode: import('../shared/types').BubblePermissionMode,
+    supersededBy?: 'turn' | 'message'
   ) => void;
 }
 

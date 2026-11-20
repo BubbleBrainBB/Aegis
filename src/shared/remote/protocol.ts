@@ -307,6 +307,15 @@ export interface RemoteSession {
   handoffSourceProvider?: string | null;
   /** The session's current agent settings, used as follow-up defaults. */
   settings?: RemoteTaskSettings;
+  /**
+   * Newer Macs: the settings a message to this session may leave out, because
+   * the session keeps them, also across a restart of its agent (older Macs put
+   * a missing permission mode back on the agent's default). Each is said in
+   * `settings` whenever it is set, and `updatedAt` rises when one changes. A
+   * sender can then say only what it means to change, and must still say the
+   * others: which fields these are depends on the agent.
+   */
+  keepsSettings?: Array<keyof RemoteTaskSettings>;
   /** Pinned in the desktop sidebar. */
   pinned?: boolean;
 }

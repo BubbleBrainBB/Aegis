@@ -1,4 +1,4 @@
-import { captureRemoteEvent, setRemoteWorkflows, setupRemoteIPC, closeRemoteGateway, remoteTaskPayload, codexReferences, setupRemoteHosts, remoteHostSessions, handleRemoteHostEvent, isRemoteSessionId, loadOlderRemoteHistory } from './remote/integration';
+import { captureRemoteEvent, setRemoteWorkflows, setupRemoteIPC, closeRemoteGateway, remoteTaskPayload, sessionTaskSettings, codexReferences, setupRemoteHosts, remoteHostSessions, handleRemoteHostEvent, isRemoteSessionId, loadOlderRemoteHistory } from './remote/integration';
 import {
   getWorkflowSessionPolicy,
   observeTurnMessage,
@@ -684,6 +684,10 @@ function normalizeBubblePermissionMode(
   return value === 'default' || value === 'plan' || value === 'bypassPermissions'
     ? value
     : undefined;
+}
+
+function normalizeBubblePlanExitMode(value?: string | null): 'default' | 'bypassPermissions' | undefined {
+  return value === 'default' || value === 'bypassPermissions' ? value : undefined;
 }
 
 // Bubble thinking levels are the SDK's fixed THINKING_LEVELS union
@@ -5447,7 +5451,8 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
       const session = sessions.getSession(sessionId);
       const provider = session?.provider || 'claude';
       return handleSessionContinue(mainWindow, {
-        sessionId, prompt, ...remoteTaskPayload(provider, extras),
+        // A mode the message leaves out stays what the session has.
+        sessionId, prompt, ...remoteTaskPayload(provider, extras, session ? sessionTaskSettings(session) : {}),
         ...(provider === 'codex' && session?.cwd ? await codexReferences(prompt, session.cwd) : {}),
       });
     },
@@ -10201,8 +10206,7 @@ async function startSession(
   const selectedBubblePermissionMode =
     chosenProvider === 'bubble' ? normalizeBubblePermissionMode(bubblePermissionMode) : undefined;
   const selectedBubblePlanExitMode = chosenProvider === 'bubble'
-    ? bubblePlanExitMode === 'bypassPermissions' ? 'bypassPermissions'
-      : bubblePlanExitMode === 'default' ? 'default' : undefined
+    ? normalizeBubblePlanExitMode(bubblePlanExitMode)
     : undefined;
   const selectedBubbleThinkingLevel =
     chosenProvider === 'bubble' ? normalizeBubbleThinkingLevel(bubbleThinkingLevel) : undefined;
@@ -10282,6 +10286,13 @@ async function startSession(
     teamMode: normalizedTeamMode,
     teamId: normalizedTeamId,
     isChat,
+  });
+  sessions.rememberSessionPermissionMode(session.id, chosenProvider, {
+    bubble: selectedBubblePermissionMode,
+    bubblePlanExit: selectedBubblePlanExitMode,
+    devin: selectedDevinPermissionMode,
+    mimo: selectedMimoPermissionMode,
+    minimax: selectedMinimaxPermissionMode,
   });
   onCreated?.(session.id);
   // Pages opened while it was a draft now belong to the real chat.
@@ -10794,13 +10805,17 @@ async function handleSessionContinueImpl(
   const nextQoderPermissionMode = nextProvider === 'qoder'
     ? normalizeQoderPermissionMode(qoderPermissionMode)
     : undefined;
-  const nextBubblePermissionMode = nextProvider === 'bubble'
-    ? normalizeBubblePermissionMode(bubblePermissionMode)
-    : undefined;
-  const nextBubblePlanExitMode = nextProvider === 'bubble'
-    ? bubblePlanExitMode === 'bypassPermissions' ? 'bypassPermissions'
-      : bubblePlanExitMode === 'default' ? 'default' : undefined
-    : undefined;
+  // A message that names no mode (the main bot's, one from another device)
+  // keeps the session's own, also once the runner that held it is gone.
+  const { permissionMode: nextBubblePermissionMode, planExitMode: nextBubblePlanExitMode } = nextProvider === 'bubble'
+    ? sessions.bubbleModesForTurn({ permissionMode: bubblePermissionMode, planExitMode: bubblePlanExitMode }, session)
+    : { permissionMode: undefined, planExitMode: undefined };
+  // Said against what the session has, before this message is written to it.
+  // Into a running turn, a mode that differs from the session's is a choice
+  // for what comes next: the adapter keeps that turn from undoing it.
+  const nextBubbleNamesAnotherMode = (nextProvider === 'bubble'
+    && sessions.namesAnotherBubbleMode({ permissionMode: bubblePermissionMode, planExitMode: bubblePlanExitMode }, session))
+    || undefined;
   const nextBubbleThinkingLevel = nextProvider === 'bubble'
     ? normalizeBubbleThinkingLevel(bubbleThinkingLevel)
     : undefined;
@@ -10999,6 +11014,13 @@ async function handleSessionContinueImpl(
       nextOpenCodePermissionMode || 'defaultPermissions'
     );
   }
+  sessions.rememberSessionPermissionMode(sessionId, nextProvider, {
+    bubble: nextBubblePermissionMode,
+    bubblePlanExit: nextBubblePlanExitMode,
+    devin: nextDevinPermissionMode,
+    mimo: nextMimoPermissionMode,
+    minimax: nextMinimaxPermissionMode,
+  });
   if (teamMode !== undefined || teamId !== undefined) {
     sessions.updateSessionTeam(sessionId, nextTeamMode, nextTeamId);
   }
@@ -11327,6 +11349,7 @@ async function handleSessionContinueImpl(
         bubblePermissionMode: nextBubblePermissionMode,
         bubbleThinkingLevel: nextBubbleThinkingLevel,
         bubblePlanExitMode: nextBubblePlanExitMode,
+        bubbleNamesAnotherMode: nextBubbleNamesAnotherMode,
         claudePromptId: nextClaudePromptId,
       });
       // A steer keeps the live turn on the model it started with.
@@ -11361,6 +11384,12 @@ async function handleSessionContinueImpl(
         if (nextDeepseekReasoningEffort !== undefined) {
           existingEntry.deepseekReasoningEffort = nextDeepseekReasoningEffort;
         }
+      }
+      // Bubble starts each turn in the mode its send carries. A message that
+      // joins a running turn leaves that turn's mode alone; the mode it named
+      // is kept on the session and the next turn starts with it.
+      if (nextProvider === 'bubble' && !bubbleMidTurn && nextBubblePermissionMode !== undefined) {
+        existingEntry.bubblePermissionMode = nextBubblePermissionMode;
       }
       // Devin applies model and mode live (set_config_option / set_mode)
       // before the next prompt, so neither forces a respawn.
@@ -11519,11 +11548,14 @@ async function handleSessionContinueImpl(
     nextBubbleThinkingLevel,
     undefined,
     nextBubblePlanExitMode,
-    nextDevinPermissionMode,
+    // A fresh runner knows nothing of the mode the last one ran in: a message
+    // that names none starts it in the one the session has. (A runner still
+    // alive is left alone above: the agent may have changed mode itself since.)
+    nextDevinPermissionMode ?? (nextProvider === 'devin' ? normalizeDevinPermissionMode(session.devin_permission_mode) : undefined),
     nextDevinThoughtLevel,
-    nextMimoPermissionMode,
+    nextMimoPermissionMode ?? (nextProvider === 'mimo' ? normalizeMimoPermissionMode(session.mimo_permission_mode) : undefined),
     nextMimoReasoningEffort,
-    nextMinimaxPermissionMode,
+    nextMinimaxPermissionMode ?? (nextProvider === 'minimax' ? normalizeMinimaxPermissionMode(session.minimax_permission_mode) : undefined),
     nextMinimaxThinkingEffort,
     nextClaudePromptId
   );
@@ -12414,21 +12446,36 @@ function startRunner(
         runnerHandles.delete(session.id);
       }
     },
-    onBubblePermissionModeChange: (mode) => {
+    onBubblePermissionModeChange: (mode, supersededBy) => {
       // Keep the live entry in sync so later warm sends see the agent's own
       // switch, then let the composer's plan pill follow it (Claude-style).
       const entry = runnerHandles.get(session.id);
       if (entry) {
         entry.bubblePermissionMode = mode;
       }
+      // And for the session: a later message, or another device, finds the
+      // mode the agent moved to (an approved plan leaves plan mode). Not when
+      // a later turn waits behind this one: the session is set to that turn's
+      // mode, and only that turn's own changes move it.
+      if (provider === 'bubble' && supersededBy !== 'turn') {
+        sessions.rememberBubbleModeSwitch(session.id, mode, supersededBy === 'message');
+      }
       const current = sessions.getSession(session.id);
+      // The composer shows, and sends with its next message, the mode the
+      // session is set to: that is what was just written (or left) above. A
+      // turn whose change no longer speaks for the session (a plan approved
+      // while another plan waits behind it) must not take the composer out of
+      // Plan, or its next message would leave the plan that was never approved.
+      const sessionMode = provider === 'bubble'
+        ? normalizeBubblePermissionMode(current?.bubble_permission_mode) ?? mode
+        : undefined;
       broadcast(mainWindow, {
         type: 'session.status',
         payload: {
           sessionId: session.id,
           status: (current?.status || 'running') as SessionStatus,
           provider,
-          bubblePermissionMode: provider === 'bubble' ? mode : undefined,
+          bubblePermissionMode: sessionMode,
         },
       });
     },

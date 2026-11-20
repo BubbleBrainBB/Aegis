@@ -3314,6 +3314,7 @@ function handleSessionStatus(
     /** A new session started in the background: list it without focusing it. */
     background?: boolean;
     device?: SessionInfo['device'];
+    remoteSettings?: SessionInfo['remoteSettings'];
     cwd?: string;
     projectCwd?: SessionInfo['projectCwd'];
     isChat?: boolean;
@@ -3517,6 +3518,7 @@ function handleSessionStatus(
             teamId !== undefined
               ? teamId || null
               : session.teamId || null,
+          ...(payload.remoteSettings ? { remoteSettings: payload.remoteSettings } : {}),
           latestClaudeModelUsage: session.latestClaudeModelUsage,
           messages: status !== 'running' ? archiveRetryStream(session).messages : session.messages,
           streaming:
@@ -3550,6 +3552,7 @@ function handleSessionStatus(
       number: payload.number,
       status,
       device: payload.device,
+      remoteSettings: payload.remoteSettings,
       scope: scope || 'project',
       agentId: agentId || null,
       source: 'aegis',

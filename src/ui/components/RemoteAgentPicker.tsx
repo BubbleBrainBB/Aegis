@@ -18,6 +18,7 @@ import {
   REMOTE_PERMISSION_MODES,
   type RemoteAgentEntry,
 } from '../../shared/remote/agent-catalog';
+import { chooseSettings, effectiveSettings, markSent, pruneChosen, type ChosenSettings } from '../../shared/remote/chosen-settings';
 import type { RemoteProvider, RemoteTaskSettings } from '../../shared/remote/protocol';
 import type { AgentProvider } from '../../shared/types';
 
@@ -34,31 +35,56 @@ const providerLabel = (provider: string) => PROVIDERS.find((entry) => entry.id =
 const isRemoteProvider = (provider: string | undefined): provider is RemoteProvider =>
   !!provider && provider in REMOTE_PERMISSION_MODES;
 
+const REMOTE_SESSION_ID = /^rh-[a-f0-9]{12}-.+$/;
+
 /**
  * The composer's choices for a task on another Mac, kept apart from this Mac's own
- * preferences. `key` is the session or draft; `initial` is what that Mac has set.
+ * preferences. `key` is the session or draft; `initial` is what that Mac has set,
+ * under what was chosen here for it before.
+ *
+ * A choice for a session that exists is also told to the main process, which sends
+ * it with every later message to that session (the main bot's too) and gives it
+ * back in `initial`: it is not lost when the composer closes or another session is
+ * opened. It reaches the other Mac with the next message; a turn that is running
+ * there keeps the mode it started with.
  */
 export function useRemoteSelection(key: string, catalog: RemoteAgentEntry[], initialProvider: string | undefined, initial?: RemoteTaskSettings) {
-  const [changed, setChanged] = useState<{ key: string; provider?: RemoteProvider; settings: RemoteTaskSettings }>({ key, settings: {} });
-  const own = changed.key === key ? changed : { key, settings: {} as RemoteTaskSettings, provider: undefined };
-  const update = (next: { provider?: RemoteProvider; settings: RemoteTaskSettings }) =>
-    setChanged({ key, provider: next.provider ?? own.provider, settings: { ...own.settings, ...next.settings } });
+  const [changed, setChanged] = useState<{ key: string; provider?: RemoteProvider; chosen?: ChosenSettings }>({ key });
+  const own = changed.key === key ? changed : { key, provider: undefined, chosen: undefined };
+  // What is held here only bridges the moment until `initial` says something new for
+  // the field: the choice came back from the main process (which keeps it until a
+  // message carries it), or the other Mac moved on (an approved plan leaves plan
+  // mode). Dropped for good, so it can't return when that field changes again.
+  const reported = { settings: initial };
+  const chosen = pruneChosen(own.chosen, reported);
+  if (chosen !== own.chosen) setChanged({ key, provider: own.provider, chosen });
+  const update = (picked: RemoteTaskSettings) => {
+    // Handed on at once, so `initial` answers for it from here.
+    const next = chooseSettings(chosen, reported, picked);
+    setChanged({ key, provider: own.provider, chosen: markSent(next, { settings: picked, reported, picked: { ...next?.picked } }) });
+    // Lost only if this window outlives the main process; the next message still says it.
+    if (REMOTE_SESSION_ID.test(key)) window.electron?.remoteHosts?.('choose', { sessionId: key, settings: picked })?.catch(() => {});
+  };
 
   const wanted = own.provider ?? (isRemoteProvider(initialProvider) ? initialProvider : undefined);
   const entry = catalog.find((item) => item.provider === wanted) ?? catalog[0];
   const provider = entry?.provider ?? wanted;
-  const settings: RemoteTaskSettings = { ...initial, ...own.settings };
-  // Each message says what it should run with: the host treats a missing mode as its default.
+  const settings = effectiveSettings(reported, chosen);
+  // Each message says what it should run with, in full: what the composer shows.
+  // An older host treats a missing mode as its default, and a newer one keeps
+  // what a message leaves out, so plan is said either way: not planning is
+  // reported by leaving it out, and saying nothing back would keep a plan that
+  // began over there since.
   const permissionMode = settings.permissionMode ?? (provider ? REMOTE_DEFAULT_PERMISSION[provider] : undefined);
   return {
     provider,
     entry,
-    settings: { ...settings, ...(permissionMode ? { permissionMode } : {}) },
-    setProvider: (next: RemoteProvider) => setChanged({ key, provider: next, settings: {} }),
-    setModel: (model: string) => update({ settings: { model, effort: undefined, fast: undefined } }),
-    setEffort: (effort: string) => update({ settings: { effort } }),
+    settings: { ...settings, ...(permissionMode ? { permissionMode } : {}), plan: settings.plan === true },
+    setProvider: (next: RemoteProvider) => setChanged({ key, provider: next }),
+    setModel: (model: string) => update({ model, effort: undefined, fast: undefined }),
+    setEffort: (effort: string) => update({ effort }),
     setPermission: (mode: string) =>
-      update({ settings: mode === 'plan' && !REMOTE_PERMISSION_MODES[provider as RemoteProvider]?.includes('plan') ? { plan: true } : { permissionMode: mode, plan: false } }),
+      update(mode === 'plan' && !REMOTE_PERMISSION_MODES[provider as RemoteProvider]?.includes('plan') ? { plan: true } : { permissionMode: mode, plan: false }),
   };
 }
 export type RemoteSelection = ReturnType<typeof useRemoteSelection>;

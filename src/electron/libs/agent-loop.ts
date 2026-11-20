@@ -127,7 +127,7 @@ function runProviderServiceAgent(options: RunnerOptions): RunnerHandle {
         if (event.provider === 'bubble') {
           const mode = event.mode;
           if (mode === 'default' || mode === 'plan' || mode === 'bypassPermissions') {
-            options.onBubblePermissionModeChange?.(mode);
+            options.onBubblePermissionModeChange?.(mode, event.supersededBy);
           }
         }
         break;
@@ -319,17 +319,25 @@ function runProviderServiceAgent(options: RunnerOptions): RunnerHandle {
               sendOptions?.deepseekPermissionMode ?? options.deepseekPermissionMode,
             deepseekReasoningEffort:
               sendOptions?.deepseekReasoningEffort ?? options.deepseekReasoningEffort,
-            devinPermissionMode: sendOptions?.devinPermissionMode ?? options.devinPermissionMode,
+            // Permission modes of these three are not filled in from `options`:
+            // those are what the runner was started with, and a message that
+            // names no mode (the main bot's, one from another device) would
+            // put the agent back on it, undoing a mode tightened since. Left
+            // out, the adapter keeps the mode the live agent is in.
+            devinPermissionMode: sendOptions?.devinPermissionMode,
             devinThoughtLevel: sendOptions?.devinThoughtLevel ?? options.devinThoughtLevel,
-            mimoPermissionMode: sendOptions?.mimoPermissionMode ?? options.mimoPermissionMode,
+            mimoPermissionMode: sendOptions?.mimoPermissionMode,
             mimoReasoningEffort: sendOptions?.mimoReasoningEffort ?? options.mimoReasoningEffort,
-            minimaxPermissionMode: sendOptions?.minimaxPermissionMode ?? options.minimaxPermissionMode,
+            minimaxPermissionMode: sendOptions?.minimaxPermissionMode,
             minimaxThinkingEffort: sendOptions?.minimaxThinkingEffort ?? options.minimaxThinkingEffort,
             opencodePermissionMode:
               sendOptions?.opencodePermissionMode ?? options.opencodePermissionMode,
             qoderPermissionMode: sendOptions?.qoderPermissionMode ?? options.qoderPermissionMode,
             bubblePermissionMode: sendOptions?.bubblePermissionMode ?? options.bubblePermissionMode,
-            bubblePlanExitMode: sendOptions?.bubblePlanExitMode ?? options.bubblePlanExitMode,
+            // Nor Bubble's mode to leave a plan for: unsaid, it follows the mode
+            // this message runs in (the adapter's rule), not the runner's first.
+            bubblePlanExitMode: sendOptions?.bubblePlanExitMode,
+            bubbleNamesAnotherMode: sendOptions?.bubbleNamesAnotherMode,
             bubbleThinkingLevel: sendOptions?.bubbleThinkingLevel ?? options.bubbleThinkingLevel,
             codexSkills,
             codexMentions,
