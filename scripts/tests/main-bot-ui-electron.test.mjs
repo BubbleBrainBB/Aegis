@@ -59,6 +59,8 @@ const usage=(uuid,totalTokens)=>({type:'system',subtype:'token_usage',uuid,sessi
 const refreshed={type:'system',subtype:'context_refreshed',uuid:'r',session_id:'main',trigger:'auto'};
 window.qa={workflows:useWorkflowStore,context:(after)=>{const s=getLatestBubbleContextSnapshot([usage('u1',120000),refreshed,...(after?[usage('u2',after)]:[])],'m');return s&&[s.used,s.total,s.percent]},app:useAppStore,summary:(name,input)=>getToolSummary(name,input),display:(name,input,status)=>deriveReadableToolDisplay(name,input,status),kind:(name)=>classifyToolUse(name,{})};
 const started=(sessionId,title,extra={})=>JSON.stringify({sessionId,title,agent:'Claude',device:'MacBook',project:'coworker',...extra});
+// As the bot's conversation mounts them: held back while the bot's own turn runs.
+function Cards(){const busy=useAppStore(s=>s.sessions.main?.status==='running');return <MainBotWorkflowCards messageCount={0} busy={busy}/>}
 function Harness(){
  return <Tooltip.Provider><div style={{display:'flex',height:'100vh',background:'var(--bg-primary)'}}>
  <aside className="aegis-sidebar" style={{width:250,flexShrink:0,padding:8,background:'var(--app-sidebar-panel)'}}><SidebarActiveTasks/></aside>
@@ -78,7 +80,7 @@ function Harness(){
    <MainBotTaskLine toolName="message_task" input={{task:'Nope',message:'hi'}} resultText='There is no task "Nope".' failed={true} pending={false}/>
   </div>
   <div data-qa="waits" style={{maxWidth:560}}><MainBotTaskLine toolName="message_task" input={{task:'Bump the Bubble SDK',message:'Have Codex review it'}} resultText={started('t4','Bump the Bubble SDK')} failed={false} pending={false}/></div>
-  <div data-qa="cards" style={{maxWidth:560}}><MainBotWorkflowCards messageCount={0}/></div>
+  <div data-qa="cards" style={{maxWidth:560}}><Cards/></div>
   <Toaster/>
   <div data-qa="returned" style={{maxWidth:560}}>
    {['Task report: Fix black screen after rotation','Task reports: One · Two','Sub-session finished: Fix it','Sub-sessions finished: A · B','Sub-session result: Fix it','Follow-up result: Fix it'].map((prompt)=>(
@@ -108,7 +110,8 @@ app.whenReady().then(async()=>{
  ipcMain.handle('follow-up-list',()=>[]);
  ipcMain.handle('get-app-preferences',()=>({}));
  const decided=[];
- ipcMain.handle('main-bot-workflow-cards',()=>['t4']);
+ let cardAsks=0;
+ ipcMain.handle('main-bot-workflow-cards',()=>cardAsks++===0?{tasks:[],held:true}:{tasks:['t4'],held:false});
  ipcMain.handle('main-bot-decide-workflow',(_e,taskId,run,start)=>{decided.push([taskId,run,start]);return taskId==='t4'?{ok:true}:{ok:false,error:'No workflow of this task waits to be started.'}});
  const win=new BrowserWindow({width:1100,height:760,show:true,webPreferences:{backgroundThrottling:false,preload:path.join(root,'dist-electron/electron/preload.cjs')}});
  const errors=[];win.webContents.on('console-message',e=>{if(e.level==='error')errors.push(e.message)});
@@ -186,6 +189,13 @@ app.whenReady().then(async()=>{
   const card=()=>js('[...document.querySelectorAll("[data-main-bot-workflow-card]")].map(e=>[e.dataset.mainBotWorkflowCard,e.textContent])');
   await js('new Promise(r=>{const t=()=>document.querySelector("[data-main-bot-workflow-card]")?r():setTimeout(t,50);t()})');
   assert.deepEqual(await card(),[['w1','Codex reviews the SDK bumpWaiting for youCodexreviewer, read-onlyRunsnpm run typecheck Start CancelStarting approves these commands for this run.Details']]);
+  // While the bot writes, the card waits; it is back under the bot's last word when that turn is over.
+  const botStatus=(status)=>js('window.qa.app.setState(s=>({sessions:{...s.sessions,main:{...s.sessions.main,status:"'+status+'"}}}));0');
+  await botStatus('running');await delay(200);
+  assert.deepEqual(await card(),[]);
+  await botStatus('idle');
+  await js('new Promise(r=>{const t=()=>document.querySelector("[data-main-bot-workflow-card]")?r():setTimeout(t,50);t()})');
+  assert.equal((await card()).length,1);
   await screenshot('2-workflow-card');
   // Details unfolds it into the card the task itself shows: the same header, question, members, commands and what it assumes.
   await js('[...document.querySelectorAll("[data-main-bot-workflow-card] button")].find(b=>b.textContent==="Details").click()');await delay(100);

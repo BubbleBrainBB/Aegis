@@ -287,14 +287,23 @@ export function workflowWaitingOn(waits: NonNullable<MainBotTask['workflowWaits'
 /** A report Aegis wrote about a task, not the task's agent. */
 const NOTE = 'note';
 
+/** How the word that a task's workflow waits for the person begins: to start it, or to answer it. */
+const WAITS_TO_START = 'It prepared the workflow "';
+const WAITS_FOR_ANSWER = 'Its workflow "';
+
+/** A word to the bot that a workflow waits for the person. It holds only for as long as that wait lasts. */
+function isWaitNote(report: { status: string; text: string }): boolean {
+  return report.status === NOTE && (report.text.startsWith(WAITS_TO_START) || report.text.startsWith(WAITS_FOR_ANSWER));
+}
+
 /** What the bot is told when a task it waits on goes on through a workflow. */
 function workflowNote(task: MainBotTask): string {
   const waits = task.workflowWaits;
   if (!waits) return 'It goes on through a workflow it started. What comes of that is reported to you when it ends; nothing is asked of the person now.';
   const detail = clip(waits.detail, MAIN_BOT_LIMITS.workflowDetail);
   return waits.kind === 'start'
-    ? `It prepared the workflow "${waits.title}", which has NOT started: it waits for the person to say so.${detail ? ` ${detail}` : ''} Tell them and ask; confirm_workflow starts it or calls it off once they answered. What comes of it is reported to you.`
-    : `Its workflow "${waits.title}" stands still until the person answers it, in the task itself${detail ? `: ${detail}` : '.'}`;
+    ? `${WAITS_TO_START}${waits.title}", which has NOT started: it waits for the person to say so.${detail ? ` ${detail}` : ''} Tell them and ask; confirm_workflow starts it or calls it off once they answered. What comes of it is reported to you.`
+    : `${WAITS_FOR_ANSWER}${waits.title}" stands still until the person answers it, in the task itself${detail ? `: ${detail}` : '.'}`;
 }
 
 /**
@@ -354,6 +363,8 @@ export class MainBotService {
   /** Tasks whose workflow the bot is calling off itself: no news to it. */
   private readonly callingOff = new Set<string>();
   private delivering = false;
+  /** While reports are on their way to the bot: how many of each task's, counted from the oldest. They stay as they are. */
+  private readonly onTheWay = new Map<string, number>();
   /** The bot's turn the counters below belong to. */
   private countedTurn: number | null = null;
   private startsThisTurn = 0;
@@ -927,7 +938,11 @@ export class MainBotService {
     try {
       const done = await this.host.decideWorkflow(task.id, start, run).catch((failure): { error: string } => ({ error: String(failure) }));
       if ('error' in done) return done;
-      this.noted.delete(task.id);
+      this.waitOver(
+        task.id,
+        `Since then the person has ${start ? 'started' : 'called off'} its workflow "${done.title}" themselves: nothing is asked of them about it.`,
+        this.host.now(),
+      );
       // Started: what comes of it is reported back. Called off: nothing more is waited for.
       if (start) this.store.arm({ taskId: task.id, title: task.title, device: task.device, at: this.host.now() });
       else this.store.disarm(task.id);
@@ -947,6 +962,16 @@ export class MainBotService {
       .tasks()
       .filter((task) => task.workflowWaits?.kind === 'start' && isSessionId(task.id) && Boolean(this.store.dispatch(task.id) ?? this.store.get(task.id)))
       .map((task) => task.id);
+  }
+
+  /**
+   * While the bot is told something, or writes, those cards wait: Aegis tells
+   * the bot of a workflow that came to wait, and the card comes under what
+   * the bot says of it, not before. So the bot never asks for what the person
+   * already answered above its question.
+   */
+  cardsHeld(): boolean {
+    return this.delivering || Boolean(this.host.main()?.busy);
   }
 
   /**
@@ -1054,6 +1079,7 @@ export class MainBotService {
       // A task that goes on through a workflow has not said its last word.
       const now = status === 'stopped' ? undefined : this.host.tasks().find((task) => task.id === taskId);
       if (now && (now.runsWorkflow || now.workflowWaits)) this.keepWaiting(watch, now, at);
+      else if (now) this.waitOver(taskId, null, at);
     } finally {
       this.settling.delete(taskId);
     }
@@ -1068,9 +1094,29 @@ export class MainBotService {
   private keepWaiting(watch: { taskId: string; title: string; device: string }, task: MainBotTask, at: number): void {
     const arm = () => this.store.arm({ taskId: watch.taskId, title: watch.title, device: watch.device, at });
     arm();
+    // A wait the bot was to hear of and has not yet: how it stands now takes its place.
+    this.store.dropEarlier(watch.taskId, isWaitNote, this.onTheWay.get(watch.taskId) ?? 0);
     this.store.setReport(watch.taskId, { status: NOTE, text: workflowNote(task), at });
     arm();
     this.noted.set(watch.taskId, JSON.stringify(task.workflowWaits ?? null));
+  }
+
+  /**
+   * A task no longer waits for the person the way the bot was to hear: a word
+   * about that wait it has not taken yet is taken back, so it does not ask the
+   * person for what they already did. Where a reply of the task still waits
+   * to be told, which may say the same, or that word is on its way to the bot
+   * this moment, `since` follows.
+   */
+  private waitOver(taskId: string, since: string | null, at: number): void {
+    this.noted.delete(taskId);
+    const sent = this.onTheWay.get(taskId) ?? 0;
+    // One the bot is being told this moment cannot be taken back: what happened since follows it.
+    const told = Boolean(this.store.get(taskId)?.earlier.slice(0, sent).some(isWaitNote));
+    const dropped = this.store.dropEarlier(taskId, isWaitNote, sent);
+    if ((!dropped && !told) || !since) return;
+    const left = this.store.get(taskId);
+    if (left && !left.report && left.earlier.length) this.store.setReport(taskId, { status: NOTE, text: since, at });
   }
 
   /**
@@ -1088,12 +1134,14 @@ export class MainBotService {
       if (this.noted.get(taskId) === JSON.stringify(task.workflowWaits)) return;
       this.keepWaiting(watch, task, at);
     } else if (status === 'cancelled' && !task.runsWorkflow && task.state !== 'working') {
-      this.noted.delete(taskId);
+      this.waitOver(taskId, null, at);
       if (this.callingOff.has(taskId)) return;
       this.store.setReport(taskId, { status: NOTE, text: 'Its workflow was called off before it ended. Nothing more comes from the task unless it is written to again.', at });
     } else {
       // It no longer waits: should it come to wait again, also for the same thing, that is news again.
-      this.noted.delete(taskId);
+      this.waitOver(taskId, task.runsWorkflow ? 'Since then its workflow has been started, in the task itself: nothing is asked of the person about it.' : null, at);
+      // With what happened since still to be told, the bot goes on waiting for what comes of it.
+      if (this.store.get(taskId)?.report) this.store.arm({ taskId, title: watch.title, device: watch.device, at });
       return;
     }
     await this.deliver();
@@ -1127,6 +1175,8 @@ export class MainBotService {
     const ready = this.store.all().filter((watch) => watch.report !== null || watch.earlier.length > 0);
     if (!ready.length) return false;
     this.delivering = true;
+    // What is sent now is let go of by its place afterwards: until then nothing of it is taken back.
+    for (const watch of ready) this.onTheWay.set(watch.taskId, watch.earlier.length + (watch.report ? 1 : 0));
     let sent = false;
     try {
       sent = await this.host.tellMain(mainBotReportLabel(ready.map((watch) => watch.title)), this.reportText(ready));
@@ -1144,6 +1194,7 @@ export class MainBotService {
         this.store.dropDelivered(watch.taskId, watch.earlier.length + (watch.report ? 1 : 0));
       }
     }
+    this.onTheWay.clear();
     return sent;
   }
 

@@ -5266,7 +5266,7 @@ function setupMainBotEntry(mainWindow: BrowserWindow): void {
   ipcMainHandle('main-bot-refresh-context', async (): Promise<'done' | 'pending' | 'unavailable'> => refreshMainBotContext());
   ipcMainHandle('main-bot-open', async (): Promise<SessionInfo> => buildSessionInfoFromRow(ensureMainBotSession()));
   ipcMainHandle('main-bot-session-id', async (): Promise<string | null> => mainBotSession()?.id ?? null);
-  ipcMainHandle('main-bot-workflow-cards', async (): Promise<string[]> => mainBotWorkflowCards());
+  ipcMainHandle('main-bot-workflow-cards', async (): Promise<{ tasks: string[]; held: boolean }> => mainBotWorkflowCards());
   ipcMainHandle('main-bot-decide-workflow', async (_event, taskId: string, run: { id: string; revision: number }, start: boolean) =>
     typeof taskId === 'string' && typeof run?.id === 'string' && Number.isInteger(run.revision) && typeof start === 'boolean'
       ? decideMainBotWorkflowCard(taskId, { id: run.id, revision: run.revision }, start)

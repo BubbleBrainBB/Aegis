@@ -152,13 +152,14 @@ export function noteMainBotWorkflowChange(sessionId: string | null | undefined, 
   }, 0);
 }
 
-/** The tasks whose waiting workflow the bot's conversation shows a card for. */
-export function mainBotWorkflowCards(): string[] {
+/** The tasks whose waiting workflow the bot's conversation shows a card for; none while they are held back for the bot to speak first. */
+export function mainBotWorkflowCards(): { tasks: string[]; held: boolean } {
   try {
-    return service?.workflowCards() ?? [];
+    const held = service?.cardsHeld() ?? false;
+    return { tasks: held ? [] : (service?.workflowCards() ?? []), held };
   } catch (error) {
     console.error('[main-bot] could not list waiting workflows:', error);
-    return [];
+    return { tasks: [], held: false };
   }
 }
 

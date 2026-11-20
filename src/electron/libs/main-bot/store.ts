@@ -238,6 +238,20 @@ export class MainBotStore {
   }
 
   /**
+   * Take back reports of a task the bot has not taken yet, where `stale` says
+   * so. The first `sent` of them are on their way to the bot and stay: they
+   * are let go of by their place once it took them. Returns how many went.
+   */
+  dropEarlier(taskId: string, stale: (report: MainBotReport) => boolean, sent = 0): number {
+    const watch = this.get(taskId);
+    if (!watch) return 0;
+    const left = watch.earlier.filter((report, index) => index < sent || !stale(report));
+    const dropped = watch.earlier.length - left.length;
+    if (dropped) this.db.prepare('UPDATE main_bot_watches SET earlier = ? WHERE task_id = ?').run(left.length ? JSON.stringify(left) : null, taskId);
+    return dropped;
+  }
+
+  /**
    * Stop waiting for a task's current turn. Reports the bot has not taken yet
    * stay: the last of them becomes what the watch holds.
    */
