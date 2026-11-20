@@ -33,7 +33,7 @@ import {
 import { ensureShellEnvironment } from './libs/shell-environment';
 import { preloadClaudeAgentSdk } from './libs/runner';
 import { listRunningSessions } from './libs/session-store';
-import { createAppUpdater } from './libs/app-updater';
+import { buildUpdateDetail, createAppUpdater, releasePageUrl } from './libs/app-updater';
 import { guardWidgetFrameNavigation, installWidgetProtocol, registerWidgetIpc, registerWidgetSchemePrivileged } from './widget-protocol';
 import { guardSandboxFrameNavigation, guardSandboxFrameRequests } from './libs/frame-navigation-guard';
 import { BROWSER_SESSION_PARTITION } from '../shared/browser-types';
@@ -335,59 +335,6 @@ function logDevLifecycle(event: string, details?: unknown): void {
 
 function shouldAutoOpenDevTools(): boolean {
   return process.env.AEGIS_OPEN_DEVTOOLS === '1';
-}
-
-function stripSimpleHtml(input: string): string {
-  return input
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n\n')
-    .replace(/<[^>]+>/g, '')
-    .trim();
-}
-
-function normalizeReleaseNotes(
-  releaseNotes: unknown
-): string | null {
-  if (typeof releaseNotes === 'string') {
-    const normalized = stripSimpleHtml(releaseNotes).trim();
-    return normalized.length > 0 ? normalized : null;
-  }
-
-  if (Array.isArray(releaseNotes)) {
-    const sections = releaseNotes
-      .map((entry) => {
-        if (!entry || typeof entry !== 'object') {
-          return null;
-        }
-
-        const version = typeof (entry as { version?: unknown }).version === 'string'
-          ? (entry as { version?: string }).version
-          : null;
-        const note = typeof (entry as { note?: unknown }).note === 'string'
-          ? stripSimpleHtml((entry as { note?: string }).note || '')
-          : '';
-
-        if (!note.trim()) {
-          return null;
-        }
-
-        return version ? `Version ${version}\n${note.trim()}` : note.trim();
-      })
-      .filter((value): value is string => Boolean(value && value.trim()));
-
-    return sections.length > 0 ? sections.join('\n\n') : null;
-  }
-
-  return null;
-}
-
-function buildUpdateDetail(info: { releaseNotes?: unknown }): string {
-  const notes = normalizeReleaseNotes(info.releaseNotes);
-  if (!notes) {
-    return 'Aegis downloads the update in the background, then asks you to restart.';
-  }
-
-  return notes;
 }
 
 // 窗口状态持久化
@@ -833,7 +780,7 @@ const appUpdater = createAppUpdater({
   isPackaged: app.isPackaged,
   canInstallInApp: () => !process.env.PORTABLE_EXECUTABLE_FILE,
   showMessageBox: options => dialog.showMessageBox(options),
-  openReleasesPage: () => void shell.openExternal(RELEASES_URL),
+  openReleasesPage: version => void shell.openExternal(releasePageUrl(RELEASES_URL, version)),
   // Session windows show the rail too, and outlive a closed main window on
   // Windows and Linux.
   broadcast: status => {
