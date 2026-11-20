@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { createAppUpdater } from '../../src/electron/libs/app-updater';
+import type { MessageBoxOptions } from 'electron';
+import { buildUpdateDetail, createAppUpdater, releasePageUrl, summarizeReleaseNotes } from '../../src/electron/libs/app-updater';
 import type { AppUpdateStatus } from '../../src/shared/types';
 
 // Drives the update flow with electron-updater's event order, including the
@@ -10,7 +11,12 @@ import type { AppUpdateStatus } from '../../src/shared/types';
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
-function harness(options: { platform?: NodeJS.Platform; portable?: boolean; dialogResponse?: number } = {}) {
+function harness(options: {
+  platform?: NodeJS.Platform;
+  portable?: boolean;
+  dialogResponse?: number;
+  updateDetail?: (info: { releaseNotes?: unknown }) => string;
+} = {}) {
   const clock = { now: 1_000_000 };
   const updater = Object.assign(new EventEmitter(), {
     autoDownload: true,
@@ -40,8 +46,9 @@ function harness(options: { platform?: NodeJS.Platform; portable?: boolean; dial
   const native = new EventEmitter();
   const broadcasts: AppUpdateStatus[] = [];
   const dialogs: string[] = [];
+  const boxes: MessageBoxOptions[] = [];
   const quitting: boolean[] = [];
-  let releasesOpened = 0;
+  const releasePages: Array<string | null | undefined> = [];
   const app = createAppUpdater({
     updater: () => updater,
     nativeUpdater: () => native,
@@ -50,19 +57,20 @@ function harness(options: { platform?: NodeJS.Platform; portable?: boolean; dial
     canInstallInApp: () => !options.portable,
     showMessageBox: async (box) => {
       dialogs.push(String(box.message));
+      boxes.push(box);
       return { response: options.dialogResponse ?? 1 };
     },
-    openReleasesPage: () => {
-      releasesOpened += 1;
+    openReleasesPage: (version) => {
+      releasePages.push(version);
     },
     broadcast: (status) => broadcasts.push(status),
     setQuitting: (value) => quitting.push(value),
-    updateDetail: () => '',
+    updateDetail: options.updateDetail ?? (() => ''),
     log: () => {},
     now: () => clock.now,
   });
   app.setup();
-  return { app, updater, native, broadcasts, dialogs, quitting, clock, releasesOpened: () => releasesOpened };
+  return { app, updater, native, broadcasts, dialogs, boxes, quitting, clock, releasePages, releasesOpened: () => releasePages.length };
 }
 
 async function available(h: ReturnType<typeof harness>, version = '0.0.84') {
@@ -303,6 +311,144 @@ async function main() {
     assert.equal(h.updater.downloads, 0);
     assert.equal(h.releasesOpened(), 1);
     assert.equal(h.app.status().phase, 'available');
+  }
+
+  // The update dialog is a native message box that cannot scroll: it shows
+  // the start of the release notes, never all of a long one.
+  {
+    const fallback = 'Aegis downloads the update in the background, then asks you to restart.';
+    for (const empty of [undefined, null, '', '   ', '<p> </p>', [], [{ version: '0.0.87', note: '' }]]) {
+      assert.equal(buildUpdateDetail({ releaseNotes: empty }), fallback);
+    }
+    assert.equal(buildUpdateDetail({}), fallback);
+
+    // Short notes are shown whole, as text.
+    const short = '<h2>What\'s New</h2>\n<ul>\n<li><strong>Faster start</strong>: the window opens sooner.</li>\n<li>Settings &gt; Usage shows &quot;All agents&quot; &amp; totals.</li>\n</ul>';
+    assert.equal(
+      buildUpdateDetail({ releaseNotes: short }),
+      'What\'s New\n\nFaster start: the window opens sooner.\nSettings > Usage shows "All agents" & totals.',
+    );
+    assert.equal(summarizeReleaseNotes('One line.'), 'One line.');
+    assert.equal(buildUpdateDetail({ releaseNotes: 'Shown as typed: &lt;b&gt; and &amp;lt; and &#8230; and &bogus;' }), 'Shown as typed: <b> and &lt; and … and &bogus;');
+    assert.equal(
+      buildUpdateDetail({ releaseNotes: [{ version: '0.0.87', note: '<p>Second.</p>' }, { version: '0.0.86', note: '<p>First.</p>' }] }),
+      'Version 0.0.87\nSecond.\n\nVersion 0.0.86\nFirst.',
+    );
+
+    // Notes the size and shape of v0.0.87's: 8 sections of long list items, about 10,000 characters of HTML.
+    const item = (section: number, index: number) => `<li><strong>Change ${section}.${index}</strong>: ${'this part of the app does one more thing than it did before, and here is how it works. '.repeat(4).trim()}</li>`;
+    const long = `<h2>What's New</h2>\n${Array.from({ length: 8 }, (_, section) => `<h3>Section ${section}</h3>\n<ul>\n${[0, 1, 2].map((index) => item(section, index)).join('\n')}\n</ul>`).join('\n')}`;
+    assert.ok(long.length > 9_000, `the sample is long (${long.length})`);
+    const detail = buildUpdateDetail({ releaseNotes: long });
+    assert.ok(detail.length <= 600, `at most 600 characters (${detail.length})`);
+    assert.ok(detail.length > 400, `still a useful amount of text (${detail.length})`);
+    assert.ok(detail.split('\n').filter(Boolean).length <= 8, 'at most 8 lines of text');
+    assert.ok(detail.startsWith('What\'s New\nSection 0\n\nChange 0.0: this part of the app'), detail);
+    assert.ok(detail.endsWith('…') && !/[\s.,;:]…$/.test(detail), `ends in a clean ellipsis: ${detail.slice(-30)}`);
+    const full = long.replace(/<[^>]+>/g, '');
+    const kept = detail.slice(0, -1);
+    assert.ok(full.replace(/\n+/g, '\n').startsWith(kept.replace(/\n+/g, '\n')), 'the summary is the start of the notes');
+    assert.match(full.replace(/\n+/g, '\n').charAt(kept.replace(/\n+/g, '\n').length), /[\s.,;:]/, 'cut at the end of a word');
+
+    // Many short lines: the first 8, blank lines between sections kept.
+    const lines = Array.from({ length: 30 }, (_, index) => `Fix number ${index + 1}`);
+    assert.equal(summarizeReleaseNotes(lines.join('\n')), `${lines.slice(0, 8).join('\n')}\n…`);
+    assert.equal(summarizeReleaseNotes(lines.slice(0, 8).join('\n')), lines.slice(0, 8).join('\n'), 'exactly 8 lines are not cut');
+    assert.equal(
+      summarizeReleaseNotes(`Title\n\n\n\n${lines.join('\n\n')}\n\n`),
+      `Title\n\n${lines.slice(0, 7).join('\n\n')}\n…`,
+    );
+
+    // UPDATE-DIALOG-001: the message box also starts a new line at CR, the
+    // vertical tab, the form feed, NEL and the Unicode line and paragraph
+    // separators. Typed or written as an entity, each one counts as a line
+    // break, so none of them gets more than 8 lines into the dialog.
+    {
+      const eight = `${Array.from({ length: 8 }, () => 'Fix').join('\n')}\n…`;
+      const otherBreaks = /[\r\u000B\u000C\u0085\u2028\u2029]/;
+      const bounded = (detail: string, label: string) => {
+        assert.ok(!otherBreaks.test(detail), `${label}: only LF is left as a line break`);
+        const text = detail.split('\n').filter(Boolean);
+        assert.ok(text.length <= 9 && (text.length < 9 || text[8] === '…'), `${label}: at most 8 lines of text, then the ellipsis (${text.length})`);
+        assert.ok(detail.length <= 600, `${label}: at most 600 characters (${detail.length})`);
+      };
+      const breaks: Array<[string, number]> = [
+        ['LF', 0x0a], ['CR', 0x0d], ['VT', 0x0b], ['FF', 0x0c], ['NEL', 0x85], ['LS', 0x2028], ['PS', 0x2029],
+      ];
+      for (const [name, code] of breaks) {
+        const char = String.fromCharCode(code);
+        const forms: Array<[string, string]> = [
+          [`${name} typed`, char],
+          [`${name} as &#${code};`, `&#${code};`],
+          [`${name} as &#x${code.toString(16)};`, `&#x${code.toString(16)};`],
+        ];
+        for (const [label, form] of forms) {
+          // 150 one-word lines in under 600 characters: only the line count can stop it.
+          const detail = buildUpdateDetail({ releaseNotes: `Fix${form}`.repeat(150) });
+          assert.equal(detail, eight, label);
+          bounded(detail, label);
+          assert.equal(summarizeReleaseNotes(`One${char}Two`), 'One\nTwo', `${label}: a line break`);
+          // Long lines too: the character limit still holds.
+          bounded(buildUpdateDetail({ releaseNotes: `${'word '.repeat(30)}${form}`.repeat(40) }), `${label}, long lines`);
+        }
+      }
+      assert.equal(buildUpdateDetail({ releaseNotes: 'Fix&#8232;'.repeat(150) }), eight, 'the reported case');
+      // CRLF is one line break, not a line and a blank line.
+      assert.equal(summarizeReleaseNotes('One\r\nTwo\r\n\r\nThree'), 'One\nTwo\n\nThree');
+      assert.equal(summarizeReleaseNotes(`${'Fix\r\n'.repeat(150)}`), eight);
+      // Mixed breaks in a row are blank lines, kept as one.
+      const mixed = [0x0d, 0x2028, 0x0b, 0x85, 0x2029, 0x0c].map((code) => String.fromCharCode(code)).join('');
+      assert.equal(summarizeReleaseNotes(`One${mixed}Two`), 'One\n\nTwo');
+      bounded(summarizeReleaseNotes(`Fix${mixed}`.repeat(150)), 'mixed breaks');
+      assert.equal(summarizeReleaseNotes(`Fix${mixed}`.repeat(150)).split('\n').filter(Boolean).length, 9);
+    }
+
+    // Text with no word breaks is cut at the limit, not through a character.
+    const unbroken = summarizeReleaseNotes('更'.repeat(2_000));
+    assert.equal(unbroken, `${'更'.repeat(599)}…`);
+    // The limit falls inside the 300th emoji: it goes whole, not as half a surrogate pair.
+    assert.equal(summarizeReleaseNotes('😀'.repeat(1_000)), `${'😀'.repeat(299)}…`);
+    // Here it falls between two: nothing more is dropped.
+    assert.equal(summarizeReleaseNotes(`a${'😀'.repeat(1_000)}`), `a${'😀'.repeat(299)}…`);
+    assert.equal(summarizeReleaseNotes('x'.repeat(600)), 'x'.repeat(600), 'exactly 600 characters are not cut');
+    assert.equal(summarizeReleaseNotes('x'.repeat(601)).length, 600);
+  }
+
+  // The update dialog: Return downloads, Esc is Later, and Release Notes
+  // opens that version's page and leaves the update available.
+  {
+    const notes = `<ul>\n${Array.from({ length: 40 }, (_, index) => `<li>Change ${index + 1}: ${'words '.repeat(40)}</li>`).join('\n')}\n</ul>`;
+    const ask = async (dialogResponse: number) => {
+      const h = harness({ dialogResponse, updateDetail: buildUpdateDetail });
+      h.app.check({ manual: true });
+      h.updater.emit('update-available', { version: '0.0.87', releaseNotes: notes });
+      await tick();
+      return h;
+    };
+
+    const notesPage = await ask(1);
+    const box = notesPage.boxes[0];
+    assert.equal(box.message, 'A new version (0.0.87) is available.');
+    assert.deepEqual(box.buttons, ['Download and Install', 'Release Notes', 'Later']);
+    assert.equal(box.buttons?.[box.defaultId ?? -1], 'Download and Install', 'Return downloads');
+    assert.equal(box.buttons?.[box.cancelId ?? -1], 'Later', 'Esc is Later');
+    assert.ok(String(box.detail).length <= 600 && String(box.detail).endsWith('…'), 'the dialog gets the summary');
+    assert.deepEqual(notesPage.releasePages, ['0.0.87']);
+    assert.equal(notesPage.updater.downloads, 0);
+    assert.deepEqual([notesPage.app.status().phase, notesPage.app.status().version], ['available', '0.0.87'], 'still there to download from the rail');
+
+    const later = await ask(2);
+    assert.deepEqual([later.updater.downloads, later.releasePages.length, later.app.status().phase], [0, 0, 'available']);
+
+    const download = await ask(0);
+    assert.deepEqual([download.updater.downloads, download.releasePages.length, download.app.status().phase], [1, 0, 'downloading']);
+
+    const releases = 'https://github.com/BubbleBrainBB/Aegis/releases';
+    assert.equal(releasePageUrl(releases, '0.0.87'), `${releases}/tag/v0.0.87`);
+    assert.equal(releasePageUrl(releases, 'v0.0.87'), `${releases}/tag/v0.0.87`);
+    assert.equal(releasePageUrl(releases, '1.0.0-beta.1'), `${releases}/tag/v1.0.0-beta.1`);
+    assert.equal(releasePageUrl(releases, '0.0.87/../../evil?x=1'), `${releases}/tag/v0.0.87%2F..%2F..%2Fevil%3Fx%3D1`);
+    for (const none of [undefined, null, '', ' ']) assert.equal(releasePageUrl(releases, none), releases);
   }
 
   console.log('PASS: app updater state machine');

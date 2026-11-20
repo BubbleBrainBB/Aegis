@@ -22,12 +22,144 @@ export interface AppUpdaterDeps {
   /** False for builds with no installer to hand the update to (Windows portable). */
   canInstallInApp: () => boolean;
   showMessageBox: (options: MessageBoxOptions) => Promise<{ response: number }>;
-  openReleasesPage: () => void;
+  /** Opens the page of one release, or the list of releases without a version. */
+  openReleasesPage: (version?: string | null) => void;
   broadcast: (status: AppUpdateStatus) => void;
   setQuitting: (quitting: boolean) => void;
   updateDetail: (info: { releaseNotes?: unknown }) => string;
   log?: (message: string, error?: unknown) => void;
   now?: () => number;
+}
+
+/**
+ * The update dialog is a native message box: it grows with its text, cannot
+ * scroll, and puts its buttons under the text. Long release notes pushed the
+ * buttons off the screen, so the dialog shows only the start of the notes and
+ * the Release Notes button opens the rest.
+ */
+const UPDATE_DETAIL_MAX_LINES = 8;
+const UPDATE_DETAIL_MAX_CHARS = 600;
+const UPDATE_DETAIL_FALLBACK = 'Aegis downloads the update in the background, then asks you to restart.';
+
+/** The update dialog's buttons, by the index the message box answers with. */
+const UPDATE_PROMPT_BUTTONS = ['Download and Install', 'Release Notes', 'Later'];
+const UPDATE_PROMPT_DOWNLOAD = 0;
+const UPDATE_PROMPT_RELEASE_NOTES = 1;
+const UPDATE_PROMPT_LATER = 2;
+
+/**
+ * Every character the message box starts a new line at, not only LF: CR, the
+ * vertical tab, the form feed, NEL and the Unicode line and paragraph
+ * separators. Counting lines by LF alone let the others through as one "line".
+ */
+const LINE_BREAKS = /\r\n|[\r\u000B\u000C\u0085\u2028\u2029]/g;
+
+const HTML_ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
+
+function decodeCodePoint(code: number, fallback: string): string {
+  return Number.isInteger(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : fallback;
+}
+
+function stripSimpleHtml(input: string): string {
+  return input
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n\n')
+    .replace(/<[^>]+>/g, '')
+    // After the tags, so escaped markup in the notes stays text.
+    .replace(/&(?:#(\d+)|#x([0-9a-f]+)|([a-z]+));/gi, (match, decimal?: string, hex?: string, name?: string) => {
+      if (decimal) return decodeCodePoint(Number.parseInt(decimal, 10), match);
+      if (hex) return decodeCodePoint(Number.parseInt(hex, 16), match);
+      return HTML_ENTITIES[(name ?? '').toLowerCase()] ?? match;
+    })
+    .trim();
+}
+
+function normalizeReleaseNotes(releaseNotes: unknown): string | null {
+  if (typeof releaseNotes === 'string') {
+    const normalized = stripSimpleHtml(releaseNotes).trim();
+    return normalized.length > 0 ? normalized : null;
+  }
+
+  if (Array.isArray(releaseNotes)) {
+    const sections = releaseNotes
+      .map((entry) => {
+        if (!entry || typeof entry !== 'object') {
+          return null;
+        }
+
+        const version = typeof (entry as { version?: unknown }).version === 'string'
+          ? (entry as { version?: string }).version
+          : null;
+        const note = typeof (entry as { note?: unknown }).note === 'string'
+          ? stripSimpleHtml((entry as { note?: string }).note || '')
+          : '';
+
+        if (!note.trim()) {
+          return null;
+        }
+
+        return version ? `Version ${version}\n${note.trim()}` : note.trim();
+      })
+      .filter((value): value is string => Boolean(value && value.trim()));
+
+    return sections.length > 0 ? sections.join('\n\n') : null;
+  }
+
+  return null;
+}
+
+/**
+ * The start of the release notes: at most UPDATE_DETAIL_MAX_LINES lines of
+ * text (single blank lines between them are kept and not counted) and
+ * UPDATE_DETAIL_MAX_CHARS characters, ending in … when something was left out.
+ */
+export function summarizeReleaseNotes(notes: string): string {
+  const kept: string[] = [];
+  let textLines = 0;
+  let droppedLines = false;
+  // After the entities are decoded, so &#8232; and the like count as line breaks too.
+  for (const raw of notes.replace(LINE_BREAKS, '\n').split('\n')) {
+    const line = raw.trim();
+    if (!line) {
+      if (kept.length > 0 && kept[kept.length - 1] !== '') kept.push('');
+      continue;
+    }
+    if (textLines === UPDATE_DETAIL_MAX_LINES) {
+      droppedLines = true;
+      break;
+    }
+    kept.push(line);
+    textLines += 1;
+  }
+  while (kept.length > 0 && kept[kept.length - 1] === '') kept.pop();
+  const text = kept.join('\n');
+
+  if (text.length <= UPDATE_DETAIL_MAX_CHARS && !droppedLines) return text;
+  if (droppedLines && text.length + 2 <= UPDATE_DETAIL_MAX_CHARS) return `${text}\n…`;
+
+  // Leave room for the ellipsis, and end on a whole word when one ends nearby.
+  const room = UPDATE_DETAIL_MAX_CHARS - 1;
+  let head = text.slice(0, room);
+  if (!/\s/.test(text.charAt(room))) {
+    const lastBreak = head.search(/\s\S*$/);
+    if (lastBreak >= room - 80) head = head.slice(0, lastBreak);
+    // No word break nearby (CJK, a long URL): cut here, but not through a surrogate pair.
+    else if (/[\uD800-\uDBFF]$/.test(head)) head = head.slice(0, -1);
+  }
+  return `${head.replace(/[\s.,;:!?…-]+$/, '')}…`;
+}
+
+/** The update dialog's detail text: the start of the release notes, if there are any. */
+export function buildUpdateDetail(info: { releaseNotes?: unknown }): string {
+  const notes = normalizeReleaseNotes(info.releaseNotes);
+  const summary = notes ? summarizeReleaseNotes(notes) : '';
+  return summary || UPDATE_DETAIL_FALLBACK;
+}
+
+/** A release's page (releases are tagged v<version>), or the list of releases without a version. */
+export function releasePageUrl(releasesUrl: string, version?: string | null): string {
+  const tag = version?.trim().replace(/^v/i, '');
+  return tag ? `${releasesUrl}/tag/v${encodeURIComponent(tag)}` : releasesUrl;
 }
 
 /**
@@ -203,11 +335,14 @@ export function createAppUpdater(deps: AppUpdaterDeps) {
         title: 'Update available',
         message: `A new version${version ? ` (${version})` : ''} is available.`,
         detail: deps.updateDetail(info ?? {}),
-        buttons: ['Download and Install', 'Later'],
-        defaultId: 0,
-        cancelId: 1,
+        buttons: UPDATE_PROMPT_BUTTONS,
+        // Return downloads, Esc is Later.
+        defaultId: UPDATE_PROMPT_DOWNLOAD,
+        cancelId: UPDATE_PROMPT_LATER,
       });
-      if (result.response === 0) download();
+      if (result.response === UPDATE_PROMPT_DOWNLOAD) download();
+      // The update stays available: the rail and Settings still offer the download.
+      else if (result.response === UPDATE_PROMPT_RELEASE_NOTES) deps.openReleasesPage(version);
     });
 
     updater.on('update-not-available', () => {
