@@ -396,6 +396,11 @@ export function initialize(): void {
       codex_reasoning_effort TEXT,
       codex_fast_mode INTEGER DEFAULT 0,
       opencode_permission_mode TEXT DEFAULT 'defaultPermissions',
+      bubble_permission_mode TEXT,
+      bubble_plan_exit_mode TEXT,
+      devin_permission_mode TEXT,
+      mimo_permission_mode TEXT,
+      minimax_permission_mode TEXT,
       status TEXT NOT NULL DEFAULT 'idle',
       cwd TEXT,
       allowed_tools TEXT,
@@ -581,6 +586,12 @@ export function initialize(): void {
   ensureColumn('sessions', 'codex_reasoning_effort', 'TEXT');
   ensureColumn('sessions', 'codex_fast_mode', 'INTEGER DEFAULT 0');
   ensureColumn('sessions', 'opencode_permission_mode', "TEXT DEFAULT 'defaultPermissions'");
+  // No default: a session from before these existed has said no mode yet.
+  ensureColumn('sessions', 'bubble_permission_mode', 'TEXT');
+  ensureColumn('sessions', 'bubble_plan_exit_mode', 'TEXT');
+  ensureColumn('sessions', 'devin_permission_mode', 'TEXT');
+  ensureColumn('sessions', 'mimo_permission_mode', 'TEXT');
+  ensureColumn('sessions', 'minimax_permission_mode', 'TEXT');
   ensureColumn('sessions', 'todo_state', "TEXT DEFAULT 'todo'");
   ensureColumn('sessions', 'pinned', 'INTEGER DEFAULT 0');
   ensureColumn('sessions', 'folder_path', 'TEXT');
@@ -2303,6 +2314,132 @@ export function updateSessionOpenCodePermissionMode(
     UPDATE sessions SET opencode_permission_mode = ?, updated_at = ? WHERE id = ?
   `);
   stmt.run(mode ? normalizeOpenCodePermissionMode(mode) : null, now, sessionId);
+}
+
+const AGENT_PERMISSION_MODE_COLUMNS = {
+  bubble: 'bubble_permission_mode',
+  devin: 'devin_permission_mode',
+  mimo: 'mimo_permission_mode',
+  minimax: 'minimax_permission_mode',
+} as const;
+
+export type StoredPermissionModeProvider = keyof typeof AGENT_PERMISSION_MODE_COLUMNS;
+
+export function storesPermissionMode(provider: string | null | undefined): provider is StoredPermissionModeProvider {
+  return !!provider && Object.prototype.hasOwnProperty.call(AGENT_PERMISSION_MODE_COLUMNS, provider);
+}
+
+/**
+ * The permission mode a Bubble, Devin, MiMo or MiniMax session now runs with.
+ * Their runners hold it while they live; this keeps it for the session, so a
+ * later message (or another device) finds it after the runner is gone. The
+ * caller has checked the value against the agent's own modes.
+ */
+export function updateSessionAgentPermissionMode(
+  sessionId: string,
+  provider: StoredPermissionModeProvider,
+  mode: string | null
+): void {
+  getDb()
+    .prepare(`UPDATE sessions SET ${AGENT_PERMISSION_MODE_COLUMNS[provider]} = ?, updated_at = ? WHERE id = ?`)
+    .run(mode || null, Date.now(), sessionId);
+}
+
+/** The mode Bubble returns to when a plan is approved. */
+export function updateSessionBubblePlanExitMode(
+  sessionId: string,
+  mode: 'default' | 'bypassPermissions' | null
+): void {
+  getDb()
+    .prepare('UPDATE sessions SET bubble_plan_exit_mode = ?, updated_at = ? WHERE id = ?')
+    .run(mode === 'default' || mode === 'bypassPermissions' ? mode : null, Date.now(), sessionId);
+}
+
+type BubbleMode = 'default' | 'plan' | 'bypassPermissions';
+type BubblePlanExitMode = 'default' | 'bypassPermissions';
+const bubbleMode = (value: unknown): BubbleMode | undefined =>
+  value === 'default' || value === 'plan' || value === 'bypassPermissions' ? value : undefined;
+const bubblePlanExitMode = (value: unknown): BubblePlanExitMode | undefined =>
+  value === 'default' || value === 'bypassPermissions' ? value : undefined;
+
+/**
+ * The modes a Bubble turn runs with: what its message says, else what the
+ * session has. A message that names no mode (the main bot's, one from another
+ * device) must not put the session back on the default, also once the runner
+ * that held its mode is gone. The mode to leave plan for is read from the
+ * session only while planning: any other mode is itself where the session stays.
+ */
+export function bubbleModesForTurn(
+  said: { permissionMode?: string | null; planExitMode?: string | null },
+  session: Pick<SessionRow, 'bubble_permission_mode' | 'bubble_plan_exit_mode'>,
+): { permissionMode?: BubbleMode; planExitMode?: BubblePlanExitMode } {
+  const permissionMode = bubbleMode(said.permissionMode) ?? bubbleMode(session.bubble_permission_mode);
+  const planExitMode = bubblePlanExitMode(said.planExitMode)
+    ?? (permissionMode === 'plan' ? bubblePlanExitMode(session.bubble_plan_exit_mode) : undefined);
+  return { permissionMode, planExitMode };
+}
+
+/**
+ * Keep the mode a session was just told to run with, for the agents whose
+ * runner alone knows it otherwise (Claude, Codex and OpenCode have columns of
+ * their own). A mode left unsaid changes nothing.
+ */
+export function rememberSessionPermissionMode(
+  sessionId: string,
+  provider: string,
+  modes: {
+    bubble?: BubbleMode;
+    bubblePlanExit?: BubblePlanExitMode;
+    devin?: string;
+    mimo?: string;
+    minimax?: string;
+  },
+): void {
+  if (!storesPermissionMode(provider)) return;
+  const mode = modes[provider];
+  if (mode) updateSessionAgentPermissionMode(sessionId, provider, mode);
+  if (provider !== 'bubble') return;
+  // Bubble leaves plan for this one. Any other mode is where it stays.
+  const exit = modes.bubblePlanExit ?? (modes.bubble && modes.bubble !== 'plan' ? modes.bubble : undefined);
+  if (exit) updateSessionBubblePlanExitMode(sessionId, exit);
+}
+
+/**
+ * Bubble changed mode itself in the turn it runs (an approved plan leaves plan
+ * mode for the one that turn was started with). The session follows, so a
+ * later message, or another device, finds the mode the agent moved to.
+ *
+ * Unless a mode was chosen for the next turn after that turn began
+ * (`nextTurnChosen`: a message that joined the running turn named another one).
+ * What a turn does with the mode it was started in must not undo that choice.
+ * One case remains: the choice still says plan, and the plan is now approved.
+ * Planning is over, so the session goes to the mode chosen to follow it.
+ */
+export function rememberBubbleModeSwitch(sessionId: string, mode: BubbleMode, nextTurnChosen: boolean): void {
+  if (!nextTurnChosen) {
+    rememberSessionPermissionMode(sessionId, 'bubble', { bubble: mode });
+    return;
+  }
+  if (mode === 'plan') return;
+  const row = getSession(sessionId);
+  if (row?.bubble_permission_mode !== 'plan') return;
+  updateSessionAgentPermissionMode(sessionId, 'bubble', bubblePlanExitMode(row.bubble_plan_exit_mode) ?? mode);
+}
+
+/**
+ * Whether a message names another mode for a Bubble session than the one the
+ * session has: a new choice, as opposed to a composer saying again what the
+ * running turn already runs with.
+ */
+export function namesAnotherBubbleMode(
+  said: { permissionMode?: string | null; planExitMode?: string | null },
+  session: Pick<SessionRow, 'bubble_permission_mode' | 'bubble_plan_exit_mode'>,
+): boolean {
+  const mode = bubbleMode(said.permissionMode);
+  const exit = bubblePlanExitMode(said.planExitMode);
+  if (mode && mode !== bubbleMode(session.bubble_permission_mode)) return true;
+  // The mode to follow a plan matters while planning; elsewhere it only repeats the mode.
+  return mode === 'plan' && exit !== undefined && exit !== bubblePlanExitMode(session.bubble_plan_exit_mode);
 }
 
 // 切换 Session Pinned 状态

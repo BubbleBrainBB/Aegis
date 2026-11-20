@@ -10,11 +10,12 @@ import { RemoteJournal } from "./journal";
 import { defaultRelay } from "./relay-auth";
 import { projectMessages } from "../../shared/remote/projection";
 import { parseTurnReport } from "../../shared/turn-report";
-import type { RemoteAgentOptions, RemoteSession } from "../../shared/remote/protocol";
+import { taskSettingsSchema, type RemoteAgentOptions, type RemoteSession } from "../../shared/remote/protocol";
 import type { SessionRow } from "../types";
 import type { WorkflowAction, WorkflowActionResult, WorkflowRunView } from "../../shared/workflow";
 import type { ClientEvent, ServerEvent } from "../../shared/types";
-export { remoteTaskPayload } from "./task-payload";
+import { keptSettings, sessionTaskSettings } from "./task-payload";
+export { remoteTaskPayload, sessionTaskSettings } from "./task-payload";
 import { getClaudeModelConfigWithCatalog } from "../libs/claude-settings";
 import { getCodexModelConfig } from "../libs/codex-settings";
 import { getBubbleModelConfig } from "../libs/bubble-settings";
@@ -194,6 +195,13 @@ export function setupRemoteHosts(emit: (event: ServerEvent) => void, listChanged
     if (action === "remove" && typeof payload?.id === "string") return hostBridge!.remove(payload.id);
     if (action === "retry" && typeof payload?.id === "string") return hostBridge!.retry(payload.id);
     if (action === "agents" && typeof payload?.id === "string") return hostBridge!.agents(payload.id);
+    if (action === "choose" && typeof payload?.sessionId === "string") {
+      const parsed = taskSettingsSchema.safeParse(payload.settings ?? {});
+      if (!parsed.success) throw new Error("Invalid task settings");
+      // A cleared field arrives as undefined, which the parse drops: put it back.
+      const cleared = Object.keys(payload.settings ?? {}).filter((key) => payload.settings[key] === undefined && key in taskSettingsSchema.shape);
+      return hostBridge!.choose(payload.sessionId, { ...parsed.data, ...Object.fromEntries(cleared.map((key) => [key, undefined])) });
+    }
     throw new Error("Unknown remote host action");
   });
   hostBridge.start();
@@ -236,13 +244,8 @@ export function setupRemoteIPC(
     runId: null,
     handoffSourceProvider: s.handoff_source_provider,
     pinned: s.pinned === 1,
-    settings: {
-      model: s.model || undefined,
-      effort: (s.provider === "codex" ? s.codex_reasoning_effort : s.provider === "claude" ? s.claude_reasoning_effort : null) || undefined,
-      fast: s.provider === "codex" && s.codex_fast_mode != null ? s.codex_fast_mode === 1 : undefined,
-      permissionMode: (s.provider === "codex" ? s.codex_permission_mode : s.provider === "claude" ? s.claude_access_mode : null) || undefined,
-      plan: (s.provider === "codex" ? s.codex_execution_mode : s.provider === "claude" ? s.claude_execution_mode : null) === "plan" || undefined,
-    },
+    settings: sessionTaskSettings(s),
+    keepsSettings: keptSettings(s.provider),
   });
   const get = () => {
     if (gateway) return gateway;

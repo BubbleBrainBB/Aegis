@@ -26,7 +26,7 @@ import {
   type ToolOutcome,
 } from '../../src/electron/libs/main-bot/service';
 import { MAIN_BOT_MEMORY_LIMITS, MainBotMemory } from '../../src/electron/libs/main-bot/memory';
-import { STARTUP_FAILED, startTaskSession } from '../../src/electron/libs/main-bot/start';
+import { STARTUP_FAILED, remoteStartSettings, startTaskSession } from '../../src/electron/libs/main-bot/start';
 import { MainBotStore, type MainBotDb } from '../../src/electron/libs/main-bot/store';
 
 const LOCAL_ID = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -387,6 +387,33 @@ async function main() {
     await bot.checkRemote();
     assert.equal(world.told.length, 3);
     assert.match(world.told[2].text, /done once more/);
+  }
+
+  // --- A task on another Mac starts with this Mac's composer permission mode, as one here does ---
+  {
+    const desktop = {
+      'cowork.preferredBubblePermissionMode': 'bypassPermissions',
+      'cowork.preferredCodexPermissionMode': 'fullAccess',
+      'cowork.preferredClaudePermissionMode': 'plan',
+      'cowork.preferredDevinPermissionMode': 'bypass',
+      'cowork.preferredKimiPermissionMode': 'yolo',
+      // This Mac's models are not the other Mac's: never sent unless the bot named one.
+      'cowork.preferredBubbleModel': 'local-only-model',
+    };
+    // Full Access in the composer here is Full Access there; without it that Mac asks before every command.
+    assert.deepEqual(remoteStartSettings('bubble', undefined, desktop), { permissionMode: 'bypassPermissions' });
+    assert.deepEqual(remoteStartSettings('bubble', 'kimi-k2', desktop), { model: 'kimi-k2', permissionMode: 'bypassPermissions' });
+    assert.deepEqual(remoteStartSettings('codex', undefined, desktop), { permissionMode: 'fullAccess' });
+    assert.deepEqual(remoteStartSettings('devin', undefined, desktop), { permissionMode: 'bypass' });
+    // Nothing chosen here: nothing said, and that Mac starts the agent on its default.
+    assert.equal(remoteStartSettings('bubble', undefined, {}), undefined);
+    assert.deepEqual(remoteStartSettings('bubble', 'kimi-k2', {}), { model: 'kimi-k2' });
+    assert.equal(remoteStartSettings('minimax', undefined, desktop), undefined);
+    // A dispatched task does the work: the composer's leftover plan mode is not a mode to start it in.
+    assert.equal(remoteStartSettings('claude', undefined, desktop), undefined);
+    // A mode that Mac would not take for this agent is not sent, nor one of an agent it cannot run.
+    assert.equal(remoteStartSettings('bubble', undefined, { 'cowork.preferredBubblePermissionMode': 'fullAccess' }), undefined);
+    assert.equal(remoteStartSettings('kimi', undefined, desktop), undefined);
   }
 
   // --- A session that exists but whose agent never started: the bot hears of it ---

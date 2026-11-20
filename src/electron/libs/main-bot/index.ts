@@ -26,6 +26,7 @@ import { assistantText } from '../workflow/session-hooks';
 import { MainBotMemory } from './memory';
 import { MainBotService, NOT_SIGNED_IN, claudeForModel, localTaskState, type MainBotAgent, type MainBotChatLine, type MainBotDevice, type MainBotHost, type MainBotStart, type MainBotTask } from './service';
 import { MainBotStore, type MainBotDb } from './store';
+import { remoteStartSettings } from './start';
 import { setMainBotTools } from './tools';
 
 /** What the main process lends the bot: the same entry points the composer and the phone use. */
@@ -327,12 +328,14 @@ async function start(input: MainBotStart, needs: MainBotDeps): Promise<{ id: str
   if (!PROVIDERS.includes(provider)) return { error: `"${input.agent}" is not an agent Aegis knows.` };
   if (input.device.id !== null) {
     if (!input.project?.remoteId) return { error: `A task on ${input.device.name} needs one of its projects.` };
+    // The permission mode the composer here would start this agent with, as below.
+    const settings = remoteStartSettings(provider, input.model, readDesktopPreferences(join(needs.userDataDir, 'renderer-state.json')));
     return createRemoteTask(input.device.id, {
       projectId: input.project.remoteId,
       provider,
       prompt: input.effectivePrompt,
       worktree: input.worktree,
-      ...(input.model ? { settings: { model: input.model } } : {}),
+      ...(settings ? { settings } : {}),
     });
   }
   // The same model, permission mode and effort the composer would start this agent with.

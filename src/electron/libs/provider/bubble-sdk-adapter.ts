@@ -131,6 +131,16 @@ type ActiveBubbleSession = {
   model?: string;
   permissionMode?: BubblePermissionMode;
   planExitMode?: 'default' | 'bypassPermissions';
+  /**
+   * The turn whose own mode changes are the session's: the newest one started
+   * or queued, since the session is set to what that turn was given. A plan
+   * approved in a turn before it concerns that turn alone. Null once a message
+   * that joined the running turn named another mode: that choice is for what
+   * comes next, and no turn running now may replace it.
+   */
+  modeOwner?: symbol | null;
+  /** The turn the SDK runs: the one a steer joins, and whose options the SDK reuses for a steer left unread. */
+  runningTurn?: symbol;
   contextTokens?: number;
   nativeContextWindow?: number;
   contextProviderId?: string;
@@ -531,6 +541,9 @@ export class BubbleSdkAdapter implements ProviderAdapter {
     // one finds the turn and joins it, instead of starting a second one.
     const batch = this.openBatch(session);
     this.adoptTurnConfig(session, this.resolveTurnConfig(session, input));
+    // The session is set to what this turn was given: its mode changes are the session's.
+    const turn = Symbol('turn');
+    session.modeOwner = turn;
 
     let prompt: string | BubbleContentPart[];
     try {
@@ -558,7 +571,7 @@ export class BubbleSdkAdapter implements ProviderAdapter {
 
     // The turn loop consumes the runTurn generator for the whole turn; it
     // routes its own failures, so the floating promise never rejects.
-    void this.runTurnLoop(session, prompt, session.model);
+    void this.runTurnLoop(session, prompt, session.model, turn);
   }
 
   /**
@@ -983,7 +996,8 @@ export class BubbleSdkAdapter implements ProviderAdapter {
   private async runTurnLoop(
     session: ActiveBubbleSession,
     prompt: string | BubbleContentPart[],
-    model: string | undefined
+    model: string | undefined,
+    turn: symbol
   ): Promise<void> {
     const batch = session.batch ?? this.openBatch(session);
     try {
@@ -999,13 +1013,14 @@ export class BubbleSdkAdapter implements ProviderAdapter {
         permissionMode: session.permissionMode,
         planExitMode: session.planExitMode,
         thinkingLevel: session.thinkingLevel,
-      }));
+      }, turn));
       // The turn holds the session slot from here, so a steer reaches it.
+      session.runningTurn = turn;
       batch.markReady(true);
       for await (const event of stream) {
         // What a stopped turn still sends while it winds down is dropped.
         if (!this.owns(session, batch)) break;
-        this.handleBubbleEvent(session, event);
+        this.handleBubbleEvent(session, event, turn);
       }
       this.settleBatchWork(session, batch);
     } catch (error) {
@@ -1024,6 +1039,8 @@ export class BubbleSdkAdapter implements ProviderAdapter {
     batch: BubbleBatch,
     prompt: string | BubbleContentPart[],
     config: BubbleTurnConfig,
+    /** Names the turn, for telling whose the session's mode is (see modeOwner). */
+    turn: symbol,
     /** A turn queued behind another: the session takes its config when it starts, not before. */
     adoptOnStart = false
   ): BubbleRunTurnOptions {
@@ -1045,12 +1062,13 @@ export class BubbleSdkAdapter implements ProviderAdapter {
         if (!this.isLive(session)) return;
         if (own) {
           if (adoptOnStart) this.adoptTurnConfig(session, config);
+          session.runningTurn = turn;
           assertBubbleSessionReader(prompt, info.tools, session.threadId);
         } else {
           // A turn the SDK started with these options. It runs in the mode
           // they name, even if the turn before it left that mode (an approved
           // plan), so the session says what the turn really runs in.
-          this.noteMode(session, info.mode);
+          this.noteMode(session, info.mode, turn);
         }
         session.model = info.model || session.model;
         session.contextProviderId = info.providerId;
@@ -1234,8 +1252,17 @@ export class BubbleSdkAdapter implements ProviderAdapter {
       && !this.invokesSkill(sdk, session, text)
       && sdk.getSessionRunState(session.providerSessionId).queuedTurns === 0;
     if (steerable) {
-      return text.trim() ? this.steer(session, batch, sdk, text) : null;
+      if (!text.trim()) return null;
+      // It joins the running turn, which keeps its mode. Another mode it names
+      // is for what comes next: from here no running turn's change replaces it.
+      if (input.bubbleNamesAnotherMode) session.modeOwner = null;
+      return this.steer(session, batch, sdk, text);
     }
+    // A turn of its own behind the running one. The session is set to what it
+    // was given from now on, so the turns before it no longer speak for the
+    // session's mode: a plan approved in one of them is that turn's alone.
+    const turn = Symbol('turn');
+    session.modeOwner = turn;
 
     // An earlier steer the running turn does not read gets a turn of its own
     // from the SDK, at the end of the queue. Queue this one once the SDK has
@@ -1250,12 +1277,12 @@ export class BubbleSdkAdapter implements ProviderAdapter {
     // what the composer said when it was sent, as any turn does.
     const stream = sdk.runTurn(
       session.providerSessionId,
-      this.turnOptions(session, batch, prompt, this.resolveTurnConfig(session, input), true)
+      this.turnOptions(session, batch, prompt, this.resolveTurnConfig(session, input), turn, true)
     );
     return async () => {
       for await (const event of stream) {
         if (!this.owns(session, batch)) return;
-        this.handleBubbleEvent(session, event);
+        this.handleBubbleEvent(session, event, turn);
       }
     };
   }
@@ -1291,6 +1318,8 @@ export class BubbleSdkAdapter implements ProviderAdapter {
   private steer(session: ActiveBubbleSession, batch: BubbleBatch, sdk: BubbleSdkInstance, text: string): () => Promise<void> {
     const handle = sdk.openSession(session.providerSessionId);
     batch.handles.add(handle);
+    // A turn the SDK starts for this text runs on the options of the turn it joined.
+    const joined = session.runningTurn;
     const release = () => {
       batch.handles.delete(handle);
       handle.close();
@@ -1316,7 +1345,7 @@ export class BubbleSdkAdapter implements ProviderAdapter {
       try {
         const outcome = await placed;
         if (outcome.type === 'input_queued') {
-          await this.followTurn(session, batch, handle, from, outcome.turnId);
+          await this.followTurn(session, batch, handle, from, outcome.turnId, joined);
         } else if (outcome.type === 'input_rejected' && outcome.reason === 'no_continuation') {
           // The running turn ended without reading it and no turn could be
           // started for it. (A turn that failed or was stopped reports itself.)
@@ -1337,12 +1366,14 @@ export class BubbleSdkAdapter implements ProviderAdapter {
     batch: BubbleBatch,
     handle: BubbleSessionHandle,
     from: number,
-    turnId: string
+    turnId: string,
+    /** The turn whose options the SDK started this one with. */
+    turn: symbol | undefined
   ): Promise<void> {
     for await (const record of handle.eventsFrom(from)) {
       if (!this.owns(session, batch)) return;
       if (record.turnId !== turnId) continue;
-      this.handleBubbleEvent(session, record.event);
+      this.handleBubbleEvent(session, record.event, turn);
       if (!record.terminal) continue;
       if (record.terminal.kind === 'failed') {
         throw new Error(record.terminal.message || 'Bubble turn failed.');
@@ -1352,15 +1383,24 @@ export class BubbleSdkAdapter implements ProviderAdapter {
   }
 
   /** The mode a turn runs in, when the session was not the one to choose it. */
-  private noteMode(session: ActiveBubbleSession, mode: string): void {
+  private noteMode(session: ActiveBubbleSession, mode: string, turn: symbol | undefined): void {
     if (mode !== 'default' && mode !== 'plan' && mode !== 'bypassPermissions') return;
     if ((session.permissionMode ?? 'default') === mode) return;
     session.permissionMode = mode;
     if (mode !== 'plan') session.planExitMode = mode;
-    this.emit({ type: 'permission_mode_changed', threadId: session.threadId, provider: 'bubble', mode });
+    this.emit({ type: 'permission_mode_changed', threadId: session.threadId, provider: 'bubble', mode, ...this.modeSuperseded(session, turn) });
   }
 
-  private handleBubbleEvent(session: ActiveBubbleSession, event: BubbleAgentEvent): void {
+  /**
+   * Whether a mode change in `turn` is still the session's to follow (see
+   * modeOwner). The turn runs in its new mode either way.
+   */
+  private modeSuperseded(session: ActiveBubbleSession, turn: symbol | undefined): { supersededBy?: 'turn' | 'message' } {
+    if (session.modeOwner === undefined || session.modeOwner === turn) return {};
+    return { supersededBy: session.modeOwner === null ? 'message' : 'turn' };
+  }
+
+  private handleBubbleEvent(session: ActiveBubbleSession, event: BubbleAgentEvent, turn?: symbol): void {
     switch (event.type) {
       case 'context_usage':
         this.updateContextUsage(session, getNumber(event.usedTokens), getNumber(event.contextWindow), event.estimated === true);
@@ -1456,6 +1496,7 @@ export class BubbleSdkAdapter implements ProviderAdapter {
             threadId: session.threadId,
             provider: 'bubble',
             mode,
+            ...this.modeSuperseded(session, turn),
           });
         }
         return;

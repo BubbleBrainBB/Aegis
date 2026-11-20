@@ -1685,6 +1685,8 @@ export interface SessionStatusPayload {
   titlePending?: boolean;
   /** Set when the session runs on another Mac. */
   device?: { id: string; name: string; online: boolean; reconnecting?: boolean };
+  /** With `device`, for a task just started there: what it was started with. */
+  remoteSettings?: import('./remote/protocol').RemoteTaskSettings;
   /** A new session started in the background: list it without focusing it. */
   background?: boolean;
   /** The composer start that created this session. */

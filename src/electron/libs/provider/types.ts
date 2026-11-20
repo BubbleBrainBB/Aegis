@@ -152,6 +152,12 @@ export interface ProviderSendTurnInput {
   qoderPermissionMode?: QoderPermissionMode;
   bubblePermissionMode?: BubblePermissionMode;
   bubblePlanExitMode?: 'default' | 'bypassPermissions';
+  /**
+   * Bubble: this message names another mode than the session has. When it
+   * joins a running turn that is a choice for what comes next, which the
+   * running turn's own mode changes (an approved plan) must not replace.
+   */
+  bubbleNamesAnotherMode?: boolean;
   /** Bubble thinking level (per-model open set). Absent = SDK/model default. */
   bubbleThinkingLevel?: string;
   codexSkills?: ProviderInputReference[];
@@ -228,7 +234,11 @@ export type ProviderRuntimeEvent =
   // The agent switched its own permission mode mid-turn (e.g. Bubble's plan
   // approval calls setMode('default')) — lets the composer pill follow the
   // runtime instead of staying stuck on the mode it last sent.
-  | { type: 'permission_mode_changed'; threadId: string; provider: ProviderKind; mode: string }
+  // `supersededBy`: the session's mode is no longer this turn's to change. A
+  // later turn waits behind it with a mode of its own ('turn'), or a message
+  // that joined it named another mode for what comes next ('message'). The
+  // turn itself still runs in `mode`.
+  | { type: 'permission_mode_changed'; threadId: string; provider: ProviderKind; mode: string; supersededBy?: 'turn' | 'message' }
   // Usage a stopped turn already incurred, as a usage_record to persist for
   // accounting only (no status, transcript or turn bookkeeping). Process-wide:
   // a stop has already detached the runner's forwarder.

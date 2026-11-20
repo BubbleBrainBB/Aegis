@@ -5,6 +5,8 @@
   "verify:theme-variables": 2,
   "verify:review-diff-panel": 0,
   "verify:session-continue-permissions": 3,
+  "verify:remote-permission-modes": 6,
+  "verify:remote-bubble-modes": 12,
   "verify:workstream-stages": 3,
   "verify:workstream-preamble-order": 2,
   "verify:workstream-duration": 2,
