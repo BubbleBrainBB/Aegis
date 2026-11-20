@@ -41,6 +41,7 @@ const liveId=store.getState().createDraftSession('/tmp/live');
 const taskId=store.getState().createDraftSession('/tmp/task');
 const childId=store.getState().createDraftSession('/tmp/child');
 const reviewId=store.getState().createDraftSession('/tmp/review');
+const daysId=store.getState().createDraftSession('/tmp/days');
 const done=(createdAt,ms)=>({type:'result',subtype:'success',duration_ms:ms,total_cost_usd:0,usage:{input_tokens:1,output_tokens:1},createdAt});
 const use=(uuid,createdAt,id,name,input)=>({type:'assistant',uuid,createdAt,message:{content:[{type:'tool_use',id,name,input}]}});
 const result=(uuid,createdAt,id,content)=>({type:'user',uuid,createdAt,message:{content:[{type:'tool_result',tool_use_id:id,content,is_error:false}]}});
@@ -84,12 +85,37 @@ const parent=[
  say('p3',2100,'CAME-BACK: The export names are fixed on its branch.'),
  done(2200,2000),
 ];
+// The bot's conversation over several days: a divider names each day.
+const noon=ago=>{const at=new Date();at.setHours(12,0,0,0);at.setDate(at.getDate()-ago);return at.getTime()};
+const days=[
+ {type:'user_prompt',prompt:'LONG-AGO-ASK',createdAt:noon(400)},
+ say('y1',noon(400)+1000,'LONG-AGO-ANSWER'),
+ done(noon(400)+2000,1000),
+ {type:'user_prompt',prompt:'EARLIER-ASK',createdAt:noon(3)},
+ say('y2',noon(3)+1000,'EARLIER-ANSWER'),
+ done(noon(3)+2000,1000),
+ // A report that came back the day after draws no row: its day opens above the answer.
+ {type:'user_prompt',prompt:'Task report: Write the hello world doc',workflowPrompt:'follow-up',createdAt:noon(1)},
+ say('y3',noon(1)+1000,'YESTERDAY-ANSWER'),
+ done(noon(1)+2000,1000),
+ // A day that opens with a fresh context: the date first, then the "New" rule.
+ {type:'system',subtype:'context_refreshed',uuid:'y4',session_id:daysId,trigger:'auto',createdAt:noon(0)},
+ {type:'user_prompt',prompt:'TODAY-ASK',createdAt:noon(0)+1000},
+ say('y5',noon(0)+2000,'TODAY-ANSWER'),
+ done(noon(0)+3000,1000),
+];
+const dayLabels=[
+ new Intl.DateTimeFormat('en-US',{month:'short',day:'numeric',year:'numeric'}).format(new Date(noon(400))),
+ new Intl.DateTimeFormat('en-US',{weekday:'long'}).format(new Date(noon(3))),
+ 'Yesterday','Today',
+];
 // A turn that has not finished: the chip is there already, and the trace still shows.
 const live=bot.slice(0,5);
 const put=(id,messages,extra={})=>store.setState(s=>({sessions:{...s.sessions,[id]:{...s.sessions[id],isDraft:false,hydrated:true,hasMoreHistory:false,provider:'claude',status:'completed',model:'x',messages,...extra}}}));
 put(botId,bot,{provider:'bubble',title:'Aegis',isChat:true});
 put(parentId,parent,{title:'Export work'});
 put(liveId,live,{provider:'bubble',status:'running',title:'Aegis'});
+put(daysId,days,{provider:'bubble',title:'Aegis',isChat:true});
 put(taskId,[],{title:'Write the hello world doc',provider:'qoder',status:'completed'});
 put(reviewId,[],{title:'Review the hello world doc',status:'running'});
 put(childId,[],{title:'Fix empty export file names',status:'completed'});
@@ -97,7 +123,7 @@ store.setState({mainBotSessionId:botId});
 const now=Date.now();
 useFollowUpStore.setState({loaded:true,proposals:{f1:{id:'f1',revision:2,kind:'session',parentSessionId:parentId,toolUseId:'tu-f1',title:'Fix empty export file names',reason:'',plan:'',acceptanceCriteria:'',provider:'claude',model:null,permissionMode:null,status:'started',childSessionId:childId,place:'worktree',worktreeBranch:null,baseRef:null,lastError:null,detachedAt:null,reports:[],createdAt:now,updatedAt:now}}});
 useAppStore.getState().setTheme('light');
-window.qa={store,botId,parentId,liveId,taskId,reviewId};
+window.qa={store,botId,parentId,liveId,taskId,reviewId,daysId,dayLabels};
 function Pane(){
  const [id,setId]=useState(botId);
  window.qa.show=setId;
@@ -157,6 +183,7 @@ app.whenReady().then(async()=>{
   assert.equal(at.rows.length,1,'the session has one row: '+JSON.stringify(at));
   assert.ok(at.out<at.rows[0]&&at.rows[0]<at.back,'the session row sits between the two answers: '+JSON.stringify(at));
   assert.equal(await js('!!document.querySelector("#real-chat [data-sub-sessions-finished]")'),false,'no finished row');
+  assert.equal(await js('document.querySelectorAll("#real-chat [data-day-divider]").length'),0,'an ordinary session has no day dividers');
   await shot('3-sub-session');
 
   // A turn still running: the chip is under the message already, and the trace shows the work going on.
@@ -167,6 +194,18 @@ app.whenReady().then(async()=>{
   assert.ok(seen.chips[0].top>=seen.bubble.bottom&&seen.chips[0].top-seen.bubble.bottom<=12,'under the message while the turn runs: '+JSON.stringify(seen));
   assert.equal(await js('document.querySelector("#real-chat [data-message-index=\\"1\\"]").childElementCount'),1,'the running turn keeps its trace');
   await shot('4-running');
+
+  // Days: the bot's conversation names each day above the first thing drawn on it.
+  await js('qa.store.setState({mainBotSessionId:qa.daysId});qa.show(qa.daysId)');
+  await until('document.querySelectorAll("#real-chat [data-day-divider]").length>=4','the day dividers');
+  const dayRows=await js('(()=>{const top=e=>Math.round(e.getBoundingClientRect().top);const leaf=t=>[...document.querySelectorAll("#real-chat p,#real-chat span,#real-chat div")].filter(e=>e.children.length===0&&e.textContent.startsWith(t))[0];const at=t=>{const e=leaf(t);return e?top(e):null};const dividers=[...document.querySelectorAll("#real-chat [data-day-divider]")];const fresh=document.querySelector("#real-chat [data-context-refreshed]");return {labels:dividers.map(e=>e.dataset.dayDivider),roles:dividers.map(e=>e.getAttribute("role")),tops:dividers.map(top),longAgo:at("LONG-AGO-ASK"),earlierAnswer:at("EARLIER-ANSWER"),earlier:at("EARLIER-ASK"),yesterday:at("YESTERDAY-ANSWER"),fresh:fresh?top(fresh):null,today:at("TODAY-ASK")}})()');
+  assert.deepEqual(dayRows.labels,await js('qa.dayLabels'),'a date with its year, a weekday, Yesterday, Today: '+JSON.stringify(dayRows));
+  assert.deepEqual(dayRows.roles,['separator','separator','separator','separator']);
+  assert.ok(dayRows.tops[0]<dayRows.longAgo&&dayRows.longAgo<dayRows.tops[1]&&dayRows.tops[1]<dayRows.earlier,'each day above its first message: '+JSON.stringify(dayRows));
+  assert.ok(dayRows.earlierAnswer<dayRows.tops[2]&&dayRows.tops[2]<dayRows.yesterday,'a report that draws no row: the day opens above its answer: '+JSON.stringify(dayRows));
+  assert.ok(dayRows.yesterday<dayRows.tops[3]&&dayRows.tops[3]<dayRows.fresh&&dayRows.fresh<dayRows.today,'the date, then the New rule: '+JSON.stringify(dayRows));
+  assert.equal(await js('document.querySelectorAll("#real-chat [data-day-divider]").length'),4,'one divider a day');
+  await shot('5-days');
   assert.deepEqual(errors,[],'renderer errors');
   console.log(JSON.stringify({ok:true}));app.exit(0);
  }catch(e){console.error(e);await shot('failure');app.exit(1)}

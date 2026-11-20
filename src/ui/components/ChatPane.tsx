@@ -60,6 +60,8 @@ import { SubSessionCard } from './follow-up/SubSessionCard';
 import { MainBotTaskLine } from './main-bot/MainBotTaskLine';
 import { MainBotTaskChip } from './main-bot/MainBotTaskChip';
 import { MainBotWorkflowCards } from './main-bot/MainBotWorkflowCards';
+import { DayDivider } from './main-bot/DayDivider';
+import { dayStarts } from '../utils/conversation-days';
 import { mainBotToolKind } from '../../shared/main-bot';
 import { TaskCardsAfterAnswerProvider } from './AssistantWorkstream';
 import { findProposalForChild, useFollowUpStore } from '../store/useFollowUpStore';
@@ -1406,6 +1408,21 @@ export function ChatPane({
     }
     return ids;
   }, [isMainBotChat, timelineItems, toolResultsMap]);
+  // The main bot's conversation is the one that is never left for a new one,
+  // so it runs on for days: a divider names each day above the first thing
+  // drawn on it. Rows that draw nothing do not open a day.
+  const dayByTimelineIndex = useMemo(() => {
+    if (!isMainBotChat) return new Map<number, number>();
+    return dayStarts(timelineItems.map((item) => {
+      if (item.type === 'work') return quietWork.has(item.group.id) && !item.active ? undefined : item.group.messages[0]?.createdAt;
+      const message = item.message;
+      if (message.type === 'assistant') return message.createdAt;
+      if (message.type === 'system') return message.subtype === 'context_refreshed' ? message.createdAt : undefined;
+      if (message.type !== 'user_prompt' || message.workflowPrompt === 'event') return undefined;
+      return message.workflowPrompt === 'follow-up' && isDeliveredResultLabel(message.prompt) ? undefined : message.createdAt;
+    }));
+  }, [isMainBotChat, timelineItems, quietWork]);
+  const firstDayIndex = dayByTimelineIndex.keys().next().value;
 
   // Where each finished turn ends in the timeline: its result cards (files
   // changed, designs written) go there, after the final reply.
@@ -2287,6 +2304,8 @@ export function ChatPane({
                   const followUpCards = followUpCalls
                     ? followUpCalls.map((call) => <FollowUpCard key={call.toolUseId} {...call} />)
                     : null;
+                  const day = dayByTimelineIndex.get(idx);
+                  const dayDivider = day === undefined ? null : <DayDivider day={day} first={idx === firstDayIndex} />;
                   const taskCalls = taskCardsByTimelineIndex.get(idx);
                   const taskCards = taskCalls
                     ? taskCalls.map((call) =>
@@ -2308,6 +2327,7 @@ export function ChatPane({
                       : '';
                     return (
                       <div key={item.group.id} className={copyActionText ? 'group' : undefined}>
+                        {dayDivider}
                         <div
                           data-message-index={item.group.originalIndices[0]}
                           className={highlighted ? 'rounded-2xl transition-colors duration-300' : undefined}
@@ -2378,6 +2398,7 @@ export function ChatPane({
                     : '';
                   return (
                     <div key={`message-${item.originalIndex}`} className={copyActionText ? 'group' : undefined}>
+                      {dayDivider}
                       <div
                         data-message-index={item.originalIndex}
                         data-outline-created-at={
