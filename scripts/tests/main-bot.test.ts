@@ -654,6 +654,88 @@ async function main() {
     assert.equal((await bot.decideWorkflowCard(id, { id: 'run-3', revision: 1 }, true)).ok, false);
   }
 
+  // --- Answered before the bot heard of the wait: it is not told to ask for what was already decided ---
+  for (const start of [true, false]) {
+    for (const where of ['card', 'task'] as const) {
+      const { bot, store, world } = setup();
+      const id = ok(await bot.startTask({ title: 'Review the dialog fix', prompt: 'have Codex review it', project: 'notes' })).sessionId as string;
+      const task = world.tasks.find((entry) => entry.id === id);
+      assert.ok(task);
+      assert.equal(bot.cardsHeld(), false);
+      // Its turn ends while the workflow is still being planned; the bot is told, and writes its reply.
+      task.runsWorkflow = true;
+      world.replies.set(id, { asked: 'have Codex review it', reply: 'A workflow is planning the review.' });
+      await bot.onTaskTurnEnded(id, 'completed');
+      assert.equal(world.told.length, 1);
+      world.main.busy = true;
+      world.main.turn = { startedAt: 2, typed: false };
+      // Planned while the bot still writes: the word to the bot has to wait, and the card in its conversation with it.
+      delete task.runsWorkflow;
+      task.state = 'needs approval';
+      task.workflowWaits = { runId: 'run-early', kind: 'start', title: 'Codex review', detail: 'Members: codex reviewer, read-only.' };
+      await bot.onWorkflowChanged(id, 'awaiting_confirmation');
+      assert.equal(world.told.length, 1);
+      assert.equal(bot.cardsHeld(), true);
+      assert.deepEqual(bot.workflowCards(), [id]);
+      // The person answers before the bot's turn is over: on a card drawn before it began, or in the task itself.
+      if (where === 'card') {
+        assert.deepEqual(await bot.decideWorkflowCard(id, { id: 'run-early', revision: 1 }, start), { ok: true });
+      } else {
+        delete task.workflowWaits;
+        if (start) task.runsWorkflow = true;
+        task.state = start ? 'working' : 'idle';
+      }
+      await bot.onWorkflowChanged(id, start ? 'running' : 'cancelled');
+      world.main.busy = false;
+      await bot.onMainTurnEnded();
+      assert.equal(bot.cardsHeld(), false);
+      const news = world.told.slice(1).map((entry) => entry.text).join('\n');
+      assert.equal(news.includes('NOT started'), false, 'nothing is asked of the person that they already answered');
+      if (where === 'task' && !start) {
+        // Called off in the task: no turn follows that, so the bot hears of it, and only of it.
+        assert.equal(world.told.length, 2);
+        assert.match(news, /Its workflow was called off before it ended/);
+      } else {
+        assert.equal(world.told.length, 1);
+      }
+      assert.equal(Boolean(store.get(id)), start, 'started: its result is still waited for; called off: nothing is');
+    }
+  }
+
+  // --- A reply that says "press Start", not taken yet when the person does: what happened since goes with it ---
+  {
+    const { bot, store, world } = setup();
+    const id = ok(await bot.startTask({ title: 'Review the dialog fix', prompt: 'have Codex review it', project: 'notes' })).sessionId as string;
+    const task = world.tasks.find((entry) => entry.id === id);
+    assert.ok(task);
+    world.main.busy = true;
+    task.state = 'needs approval';
+    task.workflowWaits = { runId: 'run-late', kind: 'start', title: 'Codex review', detail: '' };
+    world.replies.set(id, { asked: 'have Codex review it', reply: 'Prepared the review. Press Start on its card.' });
+    await bot.onTaskTurnEnded(id, 'completed');
+    assert.equal(world.told.length, 0);
+    // Started in the task itself.
+    delete task.workflowWaits;
+    task.runsWorkflow = true;
+    task.state = 'working';
+    await bot.onWorkflowChanged(id, 'running');
+    world.main.busy = false;
+    await bot.onMainTurnEnded();
+    assert.equal(world.told.length, 1);
+    assert.match(world.told[0].text, /Press Start on its card\./);
+    assert.match(world.told[0].text, /\[About "Review the dialog fix"\].*Since then its workflow has been started, in the task itself: nothing is asked of the person about it\./);
+    assert.equal(world.told[0].text.includes('NOT started'), false);
+    assert.ok(store.get(id), 'what comes of the workflow is still waited for');
+    // And what comes of it reaches the bot.
+    delete task.runsWorkflow;
+    task.state = 'idle';
+    world.replies.set(id, { asked: null, reply: 'Codex approved.' });
+    await bot.onTaskTurnEnded(id, 'completed');
+    assert.equal(world.told.length, 2);
+    assert.match(world.told[1].text, /Codex approved\./);
+    assert.equal(store.get(id), null);
+  }
+
   // --- Claude without an Anthropic login: ready when the task's model needs none ---
   {
     const listed: MainBotAgent[] = [

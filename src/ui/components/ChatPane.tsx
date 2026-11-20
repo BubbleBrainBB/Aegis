@@ -2546,7 +2546,7 @@ export function ChatPane({
               {apiRetry ? <StreamRetryStatus retry={apiRetry} /> : null}
 
               {/* Workflows its tasks prepared that wait to be started: answered here, under its last word. */}
-              {isMainBotChat ? <MainBotWorkflowCards messageCount={session.messages.length} /> : null}
+              {isMainBotChat ? <MainBotWorkflowCards messageCount={session.messages.length} busy={session.status === 'running'} /> : null}
 
               {/* Only show the idle activity label when no trace or final answer owns it. */}
               {(() => {

@@ -9,6 +9,10 @@
 // (which also sets what the bot waits for), not through a turn of the bot. The
 // card then gives way to one line saying what was done, until the conversation
 // moves on; from there the task's chip and its report say how it stands.
+//
+// While the bot writes, the cards wait: Aegis tells the bot of a workflow that
+// came to wait, and the card comes under what the bot says of it, not before.
+// So the bot never asks for what was already answered above its question.
 
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
@@ -42,7 +46,7 @@ function waitingRuns(runs: Record<string, WorkflowRunView>): WorkflowRunView[] {
     .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
 }
 
-export function MainBotWorkflowCards({ messageCount }: { messageCount: number }) {
+export function MainBotWorkflowCards({ messageCount, busy }: { messageCount: number; busy: boolean }) {
   const loaded = useWorkflowStore((state) => state.loaded);
   useEffect(() => {
     if (!loaded) void useWorkflowStore.getState().load();
@@ -52,27 +56,33 @@ export function MainBotWorkflowCards({ messageCount }: { messageCount: number })
 
   // Which of them belong to tasks the bot handed work to: asked again when
   // the set of waiting runs changes, or the conversation does (a task the bot
-  // has just written to counts from then on).
+  // has just written to counts from then on), or the bot starts or ends a turn.
   const waitingKey = waiting.map((run) => run.id).join(' ');
   const [tasks, setTasks] = useState<ReadonlySet<string>>(() => new Set());
+  const [again, setAgain] = useState(0);
   useEffect(() => {
     if (!waitingKey) {
       setTasks(new Set());
       return;
     }
     let stale = false;
+    let timer: number | undefined;
     void window.electron
       .mainBotWorkflowCards?.()
-      .then((ids) => {
-        if (!stale) setTasks(new Set(ids));
+      .then((cards) => {
+        if (stale) return;
+        setTasks(new Set(cards.tasks));
+        // Held back for the bot to speak first, yet no turn of it runs here: asked again shortly, in case none follows.
+        if (cards.held && !busy) timer = window.setTimeout(() => setAgain((count) => count + 1), 500);
       })
       .catch(() => undefined);
     return () => {
       stale = true;
+      if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [waitingKey, messageCount]);
+  }, [waitingKey, messageCount, busy, again]);
 
-  const cards = useMemo(() => waiting.filter((run) => tasks.has(run.parent!.sessionId)), [waiting, tasks]);
+  const cards = useMemo(() => (busy ? [] : waiting.filter((run) => tasks.has(run.parent!.sessionId))), [waiting, tasks, busy]);
   const lines = useMemo(
     () => Object.entries(decided).filter(([runId, entry]) => entry.messageCount === messageCount && !cards.some((run) => run.id === runId)),
     [decided, messageCount, cards]
