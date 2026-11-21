@@ -78,6 +78,7 @@ import {
 } from '../utils/grok-reasoning';
 import {
   bubbleThinkingLevelsForModel,
+  carriedBubbleThinkingLevel,
   getDefaultBubbleThinkingLevel,
   savePreferredBubbleThinkingLevel,
 } from '../utils/bubble-reasoning';
@@ -1459,7 +1460,7 @@ export function useComposerAgentSelection(input?: {
   const [bubbleThinkingLevel, setBubbleThinkingLevelState] = useState<string | null>(() => {
     if (provider !== 'bubble') return null;
     return (
-      input?.bubbleThinkingLevel ||
+      carriedBubbleThinkingLevel(bubbleModelConfig.availableModels, model, input?.bubbleThinkingLevel) ||
       getDefaultBubbleThinkingLevel(bubbleModelConfig.availableModels, model)
     );
   });
@@ -1472,7 +1473,7 @@ export function useComposerAgentSelection(input?: {
     if (provider === 'bubble') {
       setBubbleThinkingLevelState(
         (current) =>
-          input?.bubbleThinkingLevel ||
+          carriedBubbleThinkingLevel(bubbleModelConfig.availableModels, model, input?.bubbleThinkingLevel) ||
           (current && bubbleThinkingLevelsForModel(bubbleModelConfig.availableModels, model).includes(current)
             ? current
             : null) ||
