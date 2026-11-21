@@ -5,6 +5,8 @@
 // for it (on the left, above the answer, in a turn nobody typed), from the
 // moment the call is made; a turn that only handed tasks out shows no trace
 // row, and the chip opens the task beside the conversation.
+// The main bot's conversation has no outline rail (it never ends, so its ticks
+// would pack into a solid bar); an ordinary conversation keeps its own.
 // QA_CAPTURE=<dir> saves screenshots.
 import { createServer } from 'vite';
 import { mkdtemp, writeFile, rm, mkdir } from 'node:fs/promises';
@@ -167,6 +169,8 @@ app.whenReady().then(async()=>{
   assert.equal(copies.afterResult,0,'no copy button before the next report: '+JSON.stringify(copies));
   const lastCopies=await js('(()=>{const r=e=>e.getBoundingClientRect();const leaf=t=>[...document.querySelectorAll("#real-chat p,#real-chat span,#real-chat div")].filter(e=>e.children.length===0&&e.textContent.startsWith(t))[0];const on=r(leaf("FOLLOW-ON")),asked=r(leaf("How is it going?")),last=r(leaf("LOOKED-UP"));const tops=[...document.querySelectorAll("#real-chat button")].filter(b=>/copy/i.test(b.getAttribute("aria-label")||b.title||"")).map(b=>r(b).top);return {beforeAsked:tops.filter(t=>t>=on.bottom&&t<asked.top).length,afterLast:tops.filter(t=>t>=last.bottom).length}})()');
   assert.deepEqual(lastCopies,{beforeAsked:0,afterLast:1},'the copy button comes after the last word: '+JSON.stringify(lastCopies));
+  // No outline rail beside the main bot's conversation, though it has prompts enough for one.
+  assert.equal(await js('document.querySelectorAll("#real-chat [aria-label=\\"Conversation outline\\"],#real-chat .chat-outline-pane,#real-chat [data-outline-tick]").length'),0,'the main bot has no outline');
   await shot('1-main-bot');
   // The chip opens the task beside the conversation, which stays where it is.
   const shown=await js('qa.store.getState().activeSessionId');
@@ -184,7 +188,12 @@ app.whenReady().then(async()=>{
   assert.ok(at.out<at.rows[0]&&at.rows[0]<at.back,'the session row sits between the two answers: '+JSON.stringify(at));
   assert.equal(await js('!!document.querySelector("#real-chat [data-sub-sessions-finished]")'),false,'no finished row');
   assert.equal(await js('document.querySelectorAll("#real-chat [data-day-divider]").length'),0,'an ordinary session has no day dividers');
+  // An ordinary conversation keeps its outline: a tick per prompt.
+  await until('document.querySelectorAll("#real-chat [aria-label=\\"Conversation outline\\"] [data-outline-tick]").length===2','the outline of an ordinary conversation');
   await shot('3-sub-session');
+  // The same conversation loses it once it is the main bot's.
+  await js('qa.store.setState({mainBotSessionId:qa.parentId})');
+  await until('!document.querySelector("#real-chat .chat-outline-pane")','no outline once the conversation is the main bot');
 
   // A turn still running: the chip is under the message already, and the trace shows the work going on.
   await js('qa.store.setState({mainBotSessionId:qa.liveId});qa.show(qa.liveId)');
