@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronDown, Terminal } from './icons';
 import { useAgentReadiness, type AgentReadinessEntry } from '../hooks/useAgentReadiness';
@@ -8,11 +8,9 @@ import { OpenCodeLogo } from './OpenCodeLogo';
 import claudeLogo from '../assets/claude-color.svg';
 import openaiLogo from '../assets/openai.svg';
 import grokLogo from '../assets/grok.svg';
-import {
-  TerminalChrome,
-  type TerminalChromeTab,
-} from '../terminal/TerminalChrome';
-import { terminalHost, terminalKey, type TerminalHooks } from '../terminal/terminal-host';
+import { TerminalChrome } from '../terminal/TerminalChrome';
+import type { TerminalHooks } from '../terminal/terminal-host';
+import { terminalTabs, type TerminalTab, type TerminalTabDraft } from '../terminal/terminal-tabs';
 
 type TerminalAgentSpec = {
   kind: TerminalAgentKind;
@@ -75,8 +73,13 @@ function activityFromEvent(state: Exclude<TerminalActivityState, 'idle'> | null,
   return hasRunningSubprocess ? 'running' : null;
 }
 
-type TerminalTab = TerminalChromeTab;
-
+/**
+ * The terminal tabs of one scope. The tabs and their shells belong to the
+ * scope, not to this component: they are kept in `terminalTabs`, so leaving
+ * the panel (another session, Settings, a different workspace) only takes
+ * the terminals off screen. Coming back shows the same tabs, still running.
+ * A tab ends when the user closes it or its session is deleted.
+ */
 export function SessionTerminal({
   sessionId,
   cwd,
@@ -92,13 +95,6 @@ export function SessionTerminal({
   onRequestClose?: () => void;
   hideChromeTabs?: boolean;
 }) {
-  const tabsRef = useRef<TerminalTab[]>([]);
-  const activeTabIdRef = useRef<string | null>(null);
-  const nextTabNumberRef = useRef(1);
-  const previousThreadIdRef = useRef<string | null>(null);
-  const [tabs, setTabs] = useState<TerminalTab[]>([]);
-  const [activeTabId, setActiveTabId] = useState<string | null>(null);
-  const [status, setStatus] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerAnchor, setPickerAnchor] = useState<{ top: number; left: number } | null>(null);
   const chevronButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -110,6 +106,7 @@ export function SessionTerminal({
   const normalizedSessionId = sessionId?.trim() || null;
   const runtimeThreadId = terminalScopeId?.trim() || normalizedSessionId;
   const canStart = Boolean(runtimeThreadId && normalizedCwd);
+  const { tabs, activeTabId, status } = useSyncExternalStore(terminalTabs.subscribe, () => terminalTabs.get(runtimeThreadId));
 
   const agentReadiness = useAgentReadiness(null, visible);
   const readinessByProvider = useMemo(() => {
@@ -139,77 +136,29 @@ export function SessionTerminal({
     return { initialCommand: spec.command, initialNotice: null };
   }, []);
 
-  const createTab = useCallback(
-    (terminalNumber: number, agentKind: TerminalAgentKind = 'shell'): TerminalTab => {
+  /** A new tab for this scope, started in the folder the session has now. */
+  const draftTab = useCallback(
+    (agentKind: TerminalAgentKind, tabCwd: string): TerminalTabDraft => {
       const spec = TERMINAL_AGENT_SPECS.find((item) => item.kind === agentKind) ?? TERMINAL_AGENT_SPECS[0];
-      const labelPrefix = spec.kind === 'shell' ? 'Terminal' : spec.label;
       const launch = buildLaunch(spec.kind);
       return {
-        id: `terminal-${Date.now()}-${terminalNumber}`,
-        label: labelPrefix,
+        label: spec.kind === 'shell' ? 'Terminal' : spec.label,
         agent: spec.kind,
-        activity: null,
         initialCommand: launch.initialCommand,
         initialNotice: launch.initialNotice,
+        cwd: tabCwd,
       };
     },
     [buildLaunch]
   );
 
-  const createInitialTab = useCallback(() => {
-    const initialTab = createTab(nextTabNumberRef.current);
-    nextTabNumberRef.current += 1;
-    tabsRef.current = [initialTab];
-    setTabs([initialTab]);
-    setActiveTabId(initialTab.id);
-  }, [createTab]);
-
+  // The scope's first tab, once it is shown. Tabs that already exist are
+  // left alone: this runs again on every mount (twice in development) and
+  // whenever the folder changes, and none of that may touch a running shell.
   useEffect(() => {
-    tabsRef.current = tabs;
-  }, [tabs]);
-
-  useEffect(() => {
-    activeTabIdRef.current = activeTabId;
-  }, [activeTabId]);
-
-  useEffect(() => {
-    const previousThreadId = previousThreadIdRef.current;
-    if (previousThreadId && previousThreadId !== runtimeThreadId) {
-      terminalHost.destroyScope(previousThreadId);
-    }
-    previousThreadIdRef.current = runtimeThreadId;
-
-    if (!canStart) {
-      if (runtimeThreadId) {
-        terminalHost.destroyScope(runtimeThreadId);
-      }
-      tabsRef.current = [];
-      nextTabNumberRef.current = 1;
-      setTabs([]);
-      setActiveTabId(null);
-      setStatus(null);
-      return;
-    }
-
-    terminalHost.destroyScope(runtimeThreadId!);
-    tabsRef.current = [];
-    nextTabNumberRef.current = 1;
-    setTabs([]);
-    setActiveTabId(null);
-    setStatus(null);
-    createInitialTab();
-
-    return () => {
-      if (runtimeThreadId) {
-        terminalHost.destroyScope(runtimeThreadId);
-      }
-    };
-  }, [canStart, createInitialTab, normalizedCwd, runtimeThreadId]);
-
-  useEffect(() => {
-    if (!visible || !canStart || tabsRef.current.length > 0) return;
-    createInitialTab();
-  }, [canStart, createInitialTab, visible]);
+    if (!visible || !runtimeThreadId || !normalizedCwd) return;
+    terminalTabs.ensure(runtimeThreadId, () => draftTab('shell', normalizedCwd));
+  }, [draftTab, normalizedCwd, runtimeThreadId, visible]);
 
   useEffect(() => {
     if (!pickerOpen) return;
@@ -242,18 +191,15 @@ export function SessionTerminal({
 
   const handleAddTabWithAgent = useCallback(
     (agentKind: TerminalAgentKind) => {
-      if (!canStart) return;
-      const nextTab = createTab(nextTabNumberRef.current, agentKind);
-      nextTabNumberRef.current += 1;
-      setTabs((current) => [...current, nextTab]);
-      setActiveTabId(nextTab.id);
+      if (!runtimeThreadId || !normalizedCwd) return;
+      terminalTabs.add(runtimeThreadId, draftTab(agentKind, normalizedCwd));
       if (lastAgentKind !== agentKind) {
         setLastAgentKind(agentKind);
         writeStoredAgentKind(agentKind);
       }
       setPickerOpen(false);
     },
-    [canStart, createTab, lastAgentKind]
+    [draftTab, lastAgentKind, normalizedCwd, runtimeThreadId]
   );
 
   const handleAddTab = useCallback(() => {
@@ -263,44 +209,38 @@ export function SessionTerminal({
   const handleCloseTab = useCallback(
     (tabId: string) => {
       if (!runtimeThreadId) return;
-      terminalHost.destroy(terminalKey(runtimeThreadId, tabId));
-      if (tabsRef.current.length <= 1) {
-        tabsRef.current = [];
-        setTabs([]);
-        setActiveTabId(null);
-        setStatus(null);
-        onRequestClose?.();
-        return;
-      }
-      setTabs((current) => {
-        const filtered = current.filter((tab) => tab.id !== tabId);
-        if (activeTabIdRef.current === tabId) {
-          setActiveTabId(filtered[0]?.id || null);
-        }
-        return filtered;
-      });
+      // Removing the tab ends its shell; the last one closes the panel tab too.
+      if (terminalTabs.remove(runtimeThreadId, tabId) === 0) onRequestClose?.();
     },
     [runtimeThreadId, onRequestClose]
   );
 
-  const updateTabActivity = useCallback((tabId: string, activity: TerminalActivityState | null) => {
-    tabsRef.current = tabsRef.current.map((tab) => (tab.id === tabId ? { ...tab, activity } : tab));
-    setTabs((current) => current.map((tab) => (tab.id === tabId ? { ...tab, activity } : tab)));
-  }, []);
+  const handleActiveTabChange = useCallback(
+    (tabId: string) => {
+      if (runtimeThreadId) terminalTabs.setActive(runtimeThreadId, tabId);
+    },
+    [runtimeThreadId]
+  );
 
+  // These outlive the component: a terminal keeps reporting while its panel
+  // is away, so they write to the tab store rather than to component state.
   const hooksForTab = useCallback(
-    (tab: TerminalTab): TerminalHooks => ({
-      onActivity: (event) => {
-        updateTabActivity(tab.id, activityFromEvent(event.agentState, event.hasRunningSubprocess));
-      },
-      onExit: () => {
-        updateTabActivity(tab.id, null);
-      },
-      onError: (message) => {
-        setStatus(message);
-      },
-    }),
-    [updateTabActivity]
+    (tab: TerminalTab): TerminalHooks => {
+      const scope = runtimeThreadId;
+      if (!scope) return {};
+      return {
+        onActivity: (event) => {
+          terminalTabs.setActivity(scope, tab.id, activityFromEvent(event.agentState, event.hasRunningSubprocess));
+        },
+        onExit: () => {
+          terminalTabs.setActivity(scope, tab.id, null);
+        },
+        onError: (message) => {
+          terminalTabs.setStatus(scope, message);
+        },
+      };
+    },
+    [runtimeThreadId]
   );
 
   const picker = canStart ? (
@@ -334,7 +274,7 @@ export function SessionTerminal({
 
   return (
     <>
-      {!canStart || !runtimeThreadId || !normalizedCwd ? (
+      {!runtimeThreadId || (!normalizedCwd && tabs.length === 0) ? (
         <section className="flex h-full min-h-0 flex-col">
           <div className="flex flex-1 items-center justify-center px-6 text-center text-sm text-[var(--text-muted)]">
             Select a project folder in the current session to use the terminal.
@@ -344,11 +284,12 @@ export function SessionTerminal({
         <div className="relative h-full min-h-0">
           <TerminalChrome
             threadId={runtimeThreadId}
-            cwd={normalizedCwd}
+            // Existing tabs carry their own folder; this one is for tabs without.
+            cwd={normalizedCwd ?? ''}
             visible={visible}
             tabs={tabs}
             activeTabId={activeTabId}
-            onActiveTabChange={setActiveTabId}
+            onActiveTabChange={handleActiveTabChange}
             onCloseTab={handleCloseTab}
             onAddTab={handleAddTab}
             picker={picker}

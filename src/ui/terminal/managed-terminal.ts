@@ -153,6 +153,10 @@ export class ManagedTerminal {
     this.connect();
   }
 
+  /**
+   * Takes the terminal off screen. The shell keeps running and its output is
+   * held; `mount` puts the same screen back.
+   */
   unmount(): void {
     const element = this.xterm.element;
     if (element && this.container && element.parentElement === this.container) element.remove();
@@ -183,8 +187,10 @@ export class ManagedTerminal {
   }
 
   update(spec: TerminalSpec): void {
-    const reconnect = spec.cwd !== this.spec.cwd || spec.agent !== this.spec.agent;
-    this.spec = spec;
+    // The shell stays in the folder it was started in: a session that moves
+    // to another folder must not restart what is running here.
+    const reconnect = spec.agent !== this.spec.agent;
+    this.spec = { ...spec, cwd: this.spec.cwd };
     this.restyle();
     if (!reconnect) return;
     this.openSerial += 1;
@@ -274,6 +280,7 @@ export class ManagedTerminal {
     void this.env.bridge.clear({ threadId: this.spec.scope, terminalId: this.spec.tabId }).catch(() => undefined);
   }
 
+  /** Ends the terminal for good: the shell, whatever runs in it, and its saved history. */
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
@@ -283,7 +290,9 @@ export class ManagedTerminal {
     this.output.discard();
     if (this.resyncHandle !== null) this.clock.cancelDelay(this.resyncHandle);
     if (this.webglPending !== null) this.clock.cancelFrame(this.webglPending);
-    void this.env.bridge.close({ threadId: this.spec.scope, terminalId: this.spec.tabId }).catch(() => undefined);
+    void this.env.bridge
+      .close({ threadId: this.spec.scope, terminalId: this.spec.tabId, deleteHistory: true })
+      .catch(() => undefined);
     this.xterm.dispose();
   }
 

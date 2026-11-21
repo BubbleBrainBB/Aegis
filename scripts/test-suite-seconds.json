@@ -113,6 +113,7 @@
   "verify:prompt-history": 2,
   "verify:search-palette": 5,
   "verify:browser": 29,
+  "verify:terminal-lifecycle": 12,
   "verify:terminal-ui": 19,
   "verify:claude-turn-latency": 2,
   "verify:claude-interrupt-stop": 4,

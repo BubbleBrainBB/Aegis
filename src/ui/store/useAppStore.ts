@@ -89,6 +89,7 @@ import { applySessionAgentSelection } from '../utils/session-model';
 import { useBrowserStateStore } from './useBrowserStateStore';
 import { useWidgetDraftStore } from './useWidgetDraftStore';
 import { useDesignDraftStore } from './useDesignDraftStore';
+import { terminalTabs } from '../terminal/terminal-tabs';
 import {
   SIDE_CHAT_PENDING_TAB,
   SIMULATOR_PICK_TAB,
@@ -1128,6 +1129,8 @@ export const useAppStore = create<Store>()(
         break;
 
       case 'session.deleted':
+        // Its terminals were kept alive across session switches; they end here.
+        terminalTabs.dropOwner(event.payload.sessionId);
         streamDeltaCoalescer.discardSession(event.payload.sessionId);
         useWidgetDraftStore.getState().clear(event.payload.sessionId);
         useDesignDraftStore.getState().clear(event.payload.sessionId);
@@ -2634,6 +2637,8 @@ export const useAppStore = create<Store>()(
       if (!session?.isDraft) {
         return state;
       }
+      // A thrown-away draft takes its terminals with it.
+      terminalTabs.dropOwner(sessionId);
 
       const { [sessionId]: _removed, ...rest } = state.sessions;
       // Vacate every leaf holding the removed draft (it stays as an empty pane).
@@ -3636,6 +3641,8 @@ function handleSessionStatus(
       );
       // The main process moved the draft's browser pages already; follow it.
       useBrowserStateStore.getState().rekeyChat(pendingDraftSessionId, sessionId);
+      // Terminals opened on the draft stay with the session it became.
+      terminalTabs.adoptOwner(pendingDraftSessionId, sessionId);
     }
 
     set({

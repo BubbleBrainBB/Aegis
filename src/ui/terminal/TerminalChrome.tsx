@@ -3,18 +3,11 @@ import { TerminalActivityIndicator } from './TerminalActivityIndicator';
 import { TerminalIdentityIcon } from './TerminalIdentityIcon';
 import { TerminalViewportPane } from './TerminalViewportPane';
 import { terminalHost, terminalKey, type TerminalHooks, type TerminalSpec } from './terminal-host';
-import type { TerminalActivityState, TerminalAgentKind } from '../../shared/terminal';
+import type { TerminalTab } from './terminal-tabs';
 import { Copy, Plus, Search, Trash2, X } from '../components/icons';
 import { isImeComposing } from '../utils/ime';
 
-export type TerminalChromeTab = {
-  id: string;
-  label: string;
-  agent: TerminalAgentKind;
-  activity: TerminalActivityState | null;
-  initialCommand: string | null;
-  initialNotice: string | null;
-};
+export type TerminalChromeTab = TerminalTab;
 
 export function TerminalChrome({
   threadId,
@@ -32,7 +25,7 @@ export function TerminalChrome({
   threadId: string;
   cwd: string;
   visible: boolean;
-  tabs: TerminalChromeTab[];
+  tabs: readonly TerminalChromeTab[];
   activeTabId: string | null;
   onActiveTabChange: (tabId: string) => void;
   onCloseTab: (tabId: string) => void;
@@ -54,7 +47,8 @@ export function TerminalChrome({
             key: terminalKey(threadId, tab.id),
             scope: threadId,
             tabId: tab.id,
-            cwd,
+            // A tab keeps the folder it was opened in.
+            cwd: tab.cwd ?? cwd,
             agent: tab.agent,
             launch: tab.initialCommand,
             notice: tab.initialNotice,

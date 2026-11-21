@@ -7,6 +7,8 @@ import { createServer } from 'vite';
 // The embedded terminal UI (TerminalChrome + terminal host) against a fake
 // backend: one replay per start, held output keeps its order, large pastes
 // are split, exit stops input, and one event subscription serves all tabs.
+// A panel that unmounts and mounts again gets the same shells and screens
+// back; only closing a tab closes its shell.
 // QA_CAPTURE=<dir> saves screenshots.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const qaRoot = path.join(root, 'dev-fixtures');
@@ -34,14 +36,15 @@ window.electron={terminal:{
 }};
 const React=await import('react');const {createRoot}=await import('react-dom/client');
 const {TerminalChrome}=await import('/src/ui/terminal/TerminalChrome.tsx');
+const {terminalHost,terminalKey}=await import('/src/ui/terminal/terminal-host.ts');
 await import('/src/ui/index.css');
 const tab=(id,extra={})=>({id,label:id,agent:'shell',activity:null,initialCommand:null,initialNotice:null,...extra});
 function Harness(){
- const [state,setState]=React.useState({tabs:[tab('a',{initialCommand:'claude'}),tab('b')],active:'a',visible:true});
+ const [state,setState]=React.useState({tabs:[tab('a',{initialCommand:'claude'}),tab('b')],active:'a',visible:true,mounted:true,cwd:'/tmp'});
  window.qa.set=patch=>setState(s=>({...s,...patch}));
  window.qa.hooks=[];
  const hooksForTab=React.useCallback(t=>({onError:m=>window.qa.hooks.push('error:'+t.id+':'+m),onExit:c=>window.qa.hooks.push('exit:'+t.id+':'+c),onActivity:e=>window.qa.hooks.push('activity:'+t.id)}),[]);
- return <div style={{height:'100vh',width:state.width||'100vw'}}><TerminalChrome threadId="scope" cwd="/tmp" visible={state.visible} tabs={state.tabs} activeTabId={state.active} onActiveTabChange={id=>setState(s=>({...s,active:id}))} onCloseTab={()=>{}} onAddTab={()=>{}} hooksForTab={hooksForTab}/></div>;
+ return <div style={{height:'100vh',width:state.width||'100vw'}}>{state.mounted?<TerminalChrome threadId="scope" cwd={state.cwd} visible={state.visible} tabs={state.tabs} activeTabId={state.active} onActiveTabChange={id=>setState(s=>({...s,active:id}))} onCloseTab={id=>{terminalHost.destroy(terminalKey('scope',id));setState(s=>({...s,tabs:s.tabs.filter(t=>t.id!==id),active:s.active===id?(s.tabs.find(t=>t.id!==id)||{}).id||null:s.active}))}} onAddTab={()=>{}} hooksForTab={hooksForTab}/>:null}</div>;
 }
 window.qa.render=()=>createRoot(document.getElementById('root')).render(<Harness/>);
 window.qa.screen=id=>[...document.querySelectorAll('[data-terminal-runtime-key="scope::'+id+'"] .xterm-rows > div')].map(r=>r.textContent.replace(/\\u00a0/g,' ').trimEnd()).join('\\n');
@@ -103,6 +106,25 @@ app.whenReady().then(async()=>{
   const order=['HELD-1','HELD-2','HELD-3'].map(t=>shown.indexOf(t));
   assert.ok(order.every(i=>i>=0)&&order[0]<order[1]&&order[1]<order[2],'held output keeps arrival order: '+order);
 
+  // The panel goes away (another session, Settings) and comes back: the same
+  // shells and screens, no close and no second open. Output from the time
+  // away is there, and a folder change on the way restarts nothing.
+  const opensBeforeAway=(await calls('open')).length;
+  await js('qa.set({mounted:false})');await delay(150);
+  assert.equal(await js('document.querySelectorAll(".xterm").length'),0,'the terminals are off screen');
+  await emit({type:'output',terminalId:'a',data:'AWAY-1\\r\\n'});
+  await emit({type:'output',terminalId:'a',data:'AWAY-2\\r\\n'});
+  await js('qa.set({mounted:true,cwd:"/elsewhere"})');
+  await until('qa.screen("a").includes("AWAY-2")','output produced while away appears');
+  const back=await screen('a');
+  const kept=['HISTORY-A','LIVE-1','HELD-3','AWAY-1','AWAY-2'].map(t=>back.indexOf(t));
+  assert.ok(kept.every((at,i)=>at>=0&&(i===0||at>kept[i-1])),'the screen and the output from the time away are kept, in order: '+kept);
+  await delay(300);
+  assert.equal((await calls('open')).length,opensBeforeAway,'coming back opens no shell');
+  assert.equal((await calls('close')).length,0,'and going away closed none');
+  assert.equal(await js('qa.listeners.size'),1,'still one event subscription');
+  await screenshot('1b-back');
+
   // A paste larger than one backend write is split, in order, without loss.
   const before=(await calls('write')).length;
   await js('(()=>{const dt=new DataTransfer();dt.setData("text/plain","x".repeat(150000));const ta=document.querySelector("[data-terminal-runtime-key=\\\\"scope::a\\\\"] textarea");ta.focus();ta.dispatchEvent(new ClipboardEvent("paste",{clipboardData:dt,bubbles:true,cancelable:true}))})()');
@@ -131,8 +153,12 @@ app.whenReady().then(async()=>{
   assert.equal((await screen('a')).trim(),'');
   assert.equal((await calls('clear')).length,1);
 
+  // Closing a tab ends its shell: one close, for that tab, its history included.
+  await js('document.querySelector("[aria-label=\\\\"Close b\\\\"]").click()');await delay(200);
+  assert.deepEqual(await calls('close'),[{threadId:'scope',terminalId:'b',deleteHistory:true}]);
+
   assert.deepEqual(errors.filter(e=>!/No handler registered/.test(e)),[]);
-  console.log(JSON.stringify({ok:true,checks:['single replay per start','one event subscription','launch once','one resize per size','held output order','paste split','report filtering','exit stops input','clear']}));
+  console.log(JSON.stringify({ok:true,checks:['single replay per start','one event subscription','launch once','one resize per size','held output order','paste split','report filtering','panel away keeps shells','exit stops input','clear','close once']}));
   app.exit(0);
  }catch(e){console.error(e);console.error(errors);await screenshot('failure');app.exit(1)}
 });

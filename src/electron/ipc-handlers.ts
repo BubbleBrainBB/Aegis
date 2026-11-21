@@ -385,7 +385,7 @@ import { collectSessionSources, type SessionSourcePreview } from '../shared/sess
 import { isGrokModelId } from '../shared/provider-model';
 import { getProviderService } from './libs/provider/service';
 import { isKimiServerRuntimeConfirmed, warmKimiCapabilityProbe } from './libs/provider/kimi-adapter-facade';
-import { disposeTerminalRuntime } from './libs/terminal-runtime';
+import { disposeTerminalRuntime, terminalManager } from './libs/terminal-runtime';
 import { disposeTerminalTransportServer } from './libs/terminal-transport-server';
 
 // === IPC 模块导入（从 ipc-handlers.ts 拆分） ===
@@ -10645,6 +10645,8 @@ async function startSession(
   onCreated?.(session.id);
   // Pages opened while it was a draft now belong to the real chat.
   if (payload.draftSessionId) browserManager.rekeyChat(payload.draftSessionId, session.id);
+  // Terminals opened on the draft keep running under the real chat.
+  if (payload.draftSessionId) terminalManager.adoptOwner(payload.draftSessionId, session.id);
   // So do designs drawn on the draft's canvas.
   if (payload.draftSessionId) moveSessionDesigns(payload.draftSessionId, session.id);
 
@@ -13837,6 +13839,8 @@ function handleSessionDelete(mainWindow: BrowserWindow, sessionId: string): void
   }
   forgetBrowserUseApprovals(sessionId);
   browserManager.closeChat(sessionId);
+  // The session's terminals go with it: shells, what runs in them, and their history.
+  terminalManager.closeOwner(sessionId);
   void releaseSessionDevices(sessionId).catch(() => {});
   void forgetBrowserUseScreenshots(sessionId).catch(() => {});
 
