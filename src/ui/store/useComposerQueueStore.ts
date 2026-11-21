@@ -26,6 +26,8 @@ export interface QueuedComposerMessage {
   design?: import('../../shared/types').DesignPromptRef;
   /** The canvas selection shown in the composer when it was queued. */
   designSelection?: DesignSelectionRef;
+  /** Comments on diff lines it carries (already written into effectivePrompt). */
+  reviewComments?: import('../../shared/review-comments').ReviewComment[];
   /** A sent prompt handed back (Stop withdrew it): when it was first sent. */
   sentAt?: number;
   /** An exclusive action keeps its captured session configuration. */

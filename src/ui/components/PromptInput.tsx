@@ -38,6 +38,9 @@ import { sendEvent } from '../hooks/useIPC';
 import type { Attachment } from '../types';
 import { AttachmentChips } from './AttachmentChips';
 import { DesignSelectionChip } from './design/DesignSelectionChip';
+import { ReviewCommentsChip } from './ReviewComments';
+import { getReviewComments, openReviewComment, useReviewCommentStore, useReviewComments } from '../store/useReviewCommentStore';
+import { withReviewComments, type ReviewComment } from '../../shared/review-comments';
 import { useDesignStore } from '../store/useDesignStore';
 import { useAttachmentImport } from '../hooks/useAttachmentImport';
 import { ClaudeSkillMenu } from './ClaudeSkillMenu';
@@ -207,6 +210,8 @@ export function PromptInput({
   const imageStudio = useImageStudioStore(state => targetSessionId ? state.sessions[targetSessionId] || EMPTY_IMAGE_STUDIO : EMPTY_IMAGE_STUDIO);
   // What is selected on this chat's open design canvas; the next message is about it.
   const designSelection = useDesignStore(state => targetSessionId ? state.selections[targetSessionId] : undefined);
+  // Comments written on diff lines in Changes; the next message takes them.
+  const reviewComments = useReviewComments(targetSessionId);
   const imageAttachmentsLoading = useImageStudioAttachments(targetSessionId, imageStudio.selected, setAttachments);
   const goalTargetRef = useRef(targetSessionId);
   goalTargetRef.current = targetSessionId;
@@ -876,7 +881,7 @@ export function PromptInput({
     }
 
     if (attachmentImport.pending.current > 0 || imageAttachmentsLoading) return;
-    if (!prompt.trim() && attachments.length === 0) return;
+    if (!prompt.trim() && attachments.length === 0 && reviewComments.length === 0) return;
     if (runtimeProvider === 'deepseek') {
       const imageError = deepseekImageInputError(attachments, agentSelection.model, agentSelection.deepseekModelConfig);
       if (imageError) { toast.error(imageError); return; }
@@ -1139,6 +1144,10 @@ export function PromptInput({
         return;
       }
 
+      // Comments on diff lines go with this message: as text the agent reads,
+      // and as data for the pills above the bubble.
+      const outgoingReviewComments = getReviewComments(activeSession.id);
+
       // Queue locally for all providers, or steer when the runtime supports it.
       // Queued messages auto-send after successful completion.
       const shouldSteer = !imageEdit && canSteerWhileRunning && ((preferences.followUpBehavior === 'steer') !== invertFollowUp);
@@ -1146,23 +1155,27 @@ export function PromptInput({
         useComposerQueueStore.getState().enqueue(activeSession.id, {
           id: crypto.randomUUID(),
           displayPrompt: outgoingPrompt,
-          effectivePrompt: outgoingEffectivePrompt,
+          effectivePrompt: withReviewComments(outgoingEffectivePrompt, outgoingReviewComments),
           attachments: outgoingAttachments,
           references: codexReferences,
           exclusive: imageEdit,
           ...(outgoingDesignSelection ? { designSelection: outgoingDesignSelection } : {}),
+          ...(outgoingReviewComments.length ? { reviewComments: outgoingReviewComments } : {}),
         });
+        useReviewCommentStore.getState().clear(activeSession.id);
         resetComposer();
         return;
       }
 
       sendContinueEvent(activeSession.id, {
         displayPrompt: outgoingPrompt,
-        effectivePrompt: outgoingEffectivePrompt,
+        effectivePrompt: withReviewComments(outgoingEffectivePrompt, outgoingReviewComments),
         attachments: outgoingAttachments,
         references: codexReferences,
         ...(outgoingDesignSelection ? { designSelection: outgoingDesignSelection } : {}),
+        ...(outgoingReviewComments.length ? { reviewComments: outgoingReviewComments } : {}),
       });
+      useReviewCommentStore.getState().clear(activeSession.id);
       resetComposer();
     } finally {
       if (draftStartId) releaseUnsentStart(draftStartId);
@@ -1180,6 +1193,7 @@ export function PromptInput({
       references: CodexReferencePayload;
       design?: DesignPromptRef;
       designSelection?: DesignSelectionRef;
+      reviewComments?: ReviewComment[];
     }
   ) => {
     sendEvent({
@@ -1190,6 +1204,7 @@ export function PromptInput({
         effectivePrompt: outgoing.effectivePrompt,
         ...(outgoing.design ? { design: outgoing.design } : {}),
         ...(outgoing.designSelection ? { designSelection: outgoing.designSelection } : {}),
+        ...(outgoing.reviewComments?.length ? { reviewComments: outgoing.reviewComments } : {}),
         attachments: outgoing.attachments.length > 0 ? outgoing.attachments : undefined,
         ...(remoteTarget ? { remoteSettings: remoteSelection.settings } : {}),
         provider: runtimeProvider,
@@ -1380,6 +1395,7 @@ export function PromptInput({
       },
       // A batch shares one canvas selection (the queue splits where it changes).
       ...(items[0].designSelection ? { designSelection: items[0].designSelection } : {}),
+      reviewComments: items.flatMap((item) => item.reviewComments ?? []),
     });
     // Config for the flushed turn is read from the CURRENT composer selection,
     // matching what a manual send at this moment would use.
@@ -1641,6 +1657,11 @@ export function PromptInput({
                     <span className="truncate">{item.designSelection.label}</span>
                   </span>
                 ) : null}
+                {item.reviewComments?.length ? (
+                  <span className="flex-shrink-0 text-[11px] text-[var(--text-muted)]">
+                    {item.reviewComments.length} comment{item.reviewComments.length > 1 ? 's' : ''}
+                  </span>
+                ) : null}
                 {item.attachments.length > 0 ? (
                   <span className="flex-shrink-0 text-[11px] text-[var(--text-muted)]">
                     +{item.attachments.length} file{item.attachments.length > 1 ? 's' : ''}
@@ -1756,6 +1777,17 @@ export function PromptInput({
                     });
                   }
                 }}
+              />
+            </div>
+          )}
+
+          {reviewComments.length > 0 && targetSessionId && (
+            <div className="px-5 pt-4">
+              <ReviewCommentsChip
+                comments={reviewComments}
+                onOpen={openReviewComment}
+                onRemove={(comment) => useReviewCommentStore.getState().remove(targetSessionId, comment.id)}
+                onRemoveAll={() => useReviewCommentStore.getState().clear(targetSessionId)}
               />
             </div>
           )}
@@ -2101,7 +2133,7 @@ export function PromptInput({
                 disabled={
                   goalSubmitting ||
                   attachmentImport.isImporting ||
-                  (!prompt.trim() && attachments.length === 0) ||
+                  (!prompt.trim() && attachments.length === 0 && reviewComments.length === 0) ||
                   modelSetupRequired ||
                   pendingStart ||
                   draftStartLocked ||

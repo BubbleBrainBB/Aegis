@@ -42,6 +42,7 @@ import { registerDesignIpc } from './design/ipc';
 import { deleteSessionDesigns, markDesignCommentSent, moveSessionDesigns, settleDesignTurn } from './design/service';
 import { sanitizeDesignPromptRef } from '../shared/design-comment';
 import { sanitizeDesignSelectionRef } from '../shared/design-selection';
+import { sanitizeReviewComments } from '../shared/review-comments';
 import { designContextText } from './design/focus';
 import { chatFolderInstructions, chatsFolderInfo, createChatFolder, noteChatFolderInstructionsDelivered, takeChatFolderInstructions } from './libs/chat-folders';
 import { startTaskSession } from './libs/main-bot/start';
@@ -10657,6 +10658,8 @@ async function handleSessionContinueImpl(
   const referenceContext = appendSessionReferences('', prompt, sessionId, provider || session.provider || 'claude');
   // The canvas selection the composer showed; it describes this message only.
   const designSelection = sanitizeDesignSelectionRef(payload.designSelection);
+  // Comments on diff lines: the renderer wrote them into effectivePrompt; these draw the message's pills.
+  const reviewComments = sanitizeReviewComments(payload.reviewComments);
 
   // Steer lock (docs/delegate-mcp-plan.md): while a delegated agent runs in
   // this session's working directory, "lead blocked on the tool call = single
@@ -11086,6 +11089,7 @@ async function handleSessionContinueImpl(
         ...(workflowPrompt ? { workflowPrompt } : {}),
         ...(design ? { design } : {}),
         ...(designSelection ? { designSelection } : {}),
+        ...(reviewComments ? { reviewComments } : {}),
         ...(claudeSteer ? { steer: true } : {}),
         ...(nextClaudePromptId ? { promptId: nextClaudePromptId, deferred: true } : {}),
       },
@@ -11100,6 +11104,7 @@ async function handleSessionContinueImpl(
       ...(workflowPrompt ? { workflowPrompt } : {}),
       ...(design ? { design } : {}),
       ...(designSelection ? { designSelection } : {}),
+      ...(reviewComments ? { reviewComments } : {}),
       ...(claudeSteer ? { steer: true } : {}),
       ...(nextClaudePromptId ? { promptId: nextClaudePromptId } : {}),
     };
@@ -11116,6 +11121,7 @@ async function handleSessionContinueImpl(
           sentAt: createdAt,
           ...(draftDesign ? { design: draftDesign } : {}),
           ...(designSelection ? { designSelection } : {}),
+          ...(reviewComments ? { reviewComments } : {}),
         },
       });
     } else {

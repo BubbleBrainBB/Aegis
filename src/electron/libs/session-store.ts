@@ -15,6 +15,7 @@ import { DEFAULT_WORKSPACE_CHANNEL_ID } from '../../shared/types';
 import { normalizeCodexReasoningEffort } from '../../shared/codex-reasoning';
 import { normalizeDeepseekAgentPreset } from '../../shared/deepseek-agent-preset';
 import { DEEPSEEK_COST_ACCOUNTING, estimateDeepseekUsageCost } from './deepseek-pricing';
+import { promptWithReviewComments } from '../../shared/review-comments';
 import type { SessionRow, StreamMessage, SessionStatus } from '../types';
 import type { ArtifactRow, DerivedSummaryRow } from '../types';
 import type {
@@ -797,7 +798,7 @@ function extractMessageType(message: StreamMessage): string {
 
 function extractSearchableMessageText(message: StreamMessage): string {
   if (message.type === 'user_prompt') {
-    return message.prompt || '';
+    return promptWithReviewComments(message.prompt || '', message.reviewComments);
   }
 
   if (message.type === 'assistant') {

@@ -5,6 +5,7 @@ import type { SessionOrganizationChange } from '../../shared/session-organizatio
 import { ipcMainHandle } from '../util';
 import * as sessions from '../libs/session-store';
 import { remoteListChanged } from '../remote/integration';
+import { promptWithReviewComments } from '../../shared/review-comments';
 
 export function setupSessionOrganizationIPC() {
   ipcMainHandle('get-session-organization', () => sessions.getSessionOrganization());
@@ -51,7 +52,7 @@ export async function getSessionMarkdown(sessionId: string): Promise<string> {
     if (record.parent_tool_use_id || record.parentToolUseId) continue;
     if (!['user_prompt', 'user', 'assistant'].includes(message.type)) continue;
     const content = record.message?.content;
-    const text = typeof record.prompt === 'string' ? record.prompt : typeof content === 'string' ? content :
+    const text = typeof record.prompt === 'string' ? promptWithReviewComments(record.prompt, record.reviewComments) : typeof content === 'string' ? content :
       Array.isArray(content) ? content.filter(block => block.type === 'text').map(block => block.text || '').join('\n\n') : '';
     if (!text.trim()) continue;
     parts.push(`## ${message.type === 'assistant' ? 'Assistant' : 'User'}\n\n${text}\n`);
