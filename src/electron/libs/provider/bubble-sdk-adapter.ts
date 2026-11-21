@@ -1,7 +1,7 @@
 import { questionAnswerValues, resolveQuestionAnswer } from '../../../shared/question-answers';
 import { CompactionTracker } from './compaction-tracker';
 import { addAgentCost, costFields, emptyCostDetails } from '../agent-cost';
-import { assertBubbleSessionReader, bubbleHostTools } from '../bubble-session-reader';
+import { assertBubbleSessionReader, bubbleHostTools, bubbleRoleOptions } from '../bubble-session-reader';
 import { isProjectFileApproval } from './project-access';
 import { WidgetDraftTracker } from '../widget-draft';
 import { EventEmitter } from 'events';
@@ -1048,6 +1048,7 @@ export class BubbleSdkAdapter implements ProviderAdapter {
     return {
       prompt,
       hostTools: bubbleHostTools(session.threadId),
+      ...bubbleRoleOptions(session.threadId),
       ...(config.model ? { model: config.model } : {}),
       ...(config.permissionMode ? { mode: config.permissionMode } : {}),
       planExitMode: config.planExitMode ?? 'default',

@@ -1,7 +1,8 @@
 // The main bot's notes: what it has to know however long ago it learned it.
 // One markdown file per subject in a folder of its own, so the person can open
-// and correct them. The bot is shown them when its job is explained to it and
-// reads or changes one through its tools; nothing is extracted on its behalf.
+// and correct them. The bot is shown them when a context starts, now and then
+// after and when they change, and reads or changes one through its tools;
+// nothing is extracted on its behalf.
 
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';

@@ -9,6 +9,8 @@ import {
   LIST_HANDED_OUT_TOOL,
   LIST_PROJECTS_TOOL,
   LIST_TASKS_TOOL,
+  MAIN_BOT_BUILTIN_TOOLS,
+  MAIN_BOT_INSTRUCTIONS,
   MAIN_BOT_LIMITS,
   MESSAGE_TASK_TOOL,
   READ_CONVERSATION_TOOL,
@@ -178,7 +180,7 @@ const SPECS: Array<{
   },
   {
     name: READ_MEMORY_TOOL,
-    description: 'One of your notes in full. The list of them comes with the message that explains your job.',
+    description: 'One of your notes in full. Aegis lists them for you when a context starts, now and then after, and when they change.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -206,6 +208,17 @@ const SPECS: Array<{
     run: (bot, args) => bot.writeMemory(args as { name: string; description?: string; content?: string; mode?: string }),
   },
 ];
+
+/**
+ * What a turn of the main bot's conversation runs with besides its host tools:
+ * its job as the system prompt, and of the agent's built-in tools only the
+ * ones that look. Left with the coding agent's prompt and all of its tools, a
+ * model may hand work to subagents or a workflow of its own instead of a task:
+ * that prompt names those and not start_task.
+ */
+export function mainBotTurnOptions(): { systemPrompt: string; allowedTools: string[] } {
+  return { systemPrompt: MAIN_BOT_INSTRUCTIONS, allowedTools: [...MAIN_BOT_BUILTIN_TOOLS] };
+}
 
 /** The host tools for a turn of the main bot's conversation. */
 export function createMainBotTools(): object[] {

@@ -162,11 +162,26 @@ export function mainBotReportTitles(text: string): string[] | null {
   return match ? match[1].split(' · ').filter(Boolean) : null;
 }
 
-/** What the bot is told about its job. Sent with the first message of each app run, now and then after, and when its context starts afresh. */
+/**
+ * The built-in tools of the coding agent the bot keeps, by name: the ones that
+ * look, and the ones the person answers. It hands work out with its own tools
+ * (main-bot/tools.ts), so it has none that do the work: no subagents, no
+ * workflows, no shell, no writing. Without the tool search too: nothing it may
+ * use waits to be loaded, and a search that finds nothing reads as "there is
+ * no such tool".
+ */
+export const MAIN_BOT_BUILTIN_TOOLS: readonly string[] = ['read', 'ls', 'grep', 'web_search', 'web_fetch', 'question', 'exit_plan_mode'];
+
+/**
+ * The bot's job: the system prompt of every turn of its conversation, in place
+ * of the coding agent's, which lists the built-in tools only and tells the
+ * agent to delegate to subagents of its own.
+ */
 export const MAIN_BOT_INSTRUCTIONS = [
   `You are ${MAIN_BOT_NAME}, the person's main bot in the Aegis desktop app: the one conversation from which they run every task, on this Mac and on the other Macs it controls. Take as little of their attention as you can, and give as much value as you can. Answer plainly and briefly, in the language they write in.`,
   '',
   'You do not do project work yourself. What you can answer from what you know or from the task list, you answer. Anything that needs reading or changing files, running commands or more than a short answer goes to a task: a session of a coding agent working in one project, which the person can open and read.',
+  'A task is the only way work leaves your hands. You have no subagents and no workflows of your own, and nothing that changes a file or runs a command: work you did by yourself would show in no task list, and the person could not open or follow it. When they ask you to hand something out, that is start_task (or message_task for a task that exists), in this turn.',
   '',
   'Looking:',
   '- Each message comes with a note from Aegis on how things stand now: which tasks wait for the person, which of yours are still working, and what else is running.',

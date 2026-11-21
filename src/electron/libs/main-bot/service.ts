@@ -4,7 +4,6 @@
 // or on another Mac, so no agent has to be taught about it.
 
 import {
-  MAIN_BOT_INSTRUCTIONS,
   MAIN_BOT_LIMITS,
   mainBotReportLabel,
   mainBotReportTitles,
@@ -163,14 +162,14 @@ export interface StartTaskArgs {
 /** How long a task on another Mac may take to show as working before it counts as done. */
 const REMOTE_GRACE_MS = 10_000;
 const RECENT_MS = 7 * 86_400_000;
-/** How many of the bot's turns pass before it is told its job again. */
-const INSTRUCTIONS_EVERY = 20;
+/** How many of the bot's turns pass before its notes are listed for it in full again. */
+const NOTES_EVERY = 20;
 const STATE_ORDER: MainBotTaskState[] = ['needs approval', 'asks', 'failed', 'working', 'idle'];
-/** Notes this small in all go to the bot in full with its job; of the rest it gets the list. */
+/** Notes this small in all go to the bot in full when they are listed; of the rest it gets the list. */
 const NOTES_INLINE_BYTES = 4_000;
 /** `main_bot_meta`: a fresh context is due with the bot's next turn: 'auto' when its context filled up, else the person asked. */
 const REFRESH_PENDING = 'refresh_pending';
-/** `main_bot_meta`: the agent's thread is empty and has yet to be told its job and what went before. */
+/** `main_bot_meta`: the agent's thread is empty and has yet to be told what went before. */
 const BRIEF_PENDING = 'brief_pending';
 /** `main_bot_meta`: turns the bot answered since its context last started afresh; none before the first time. */
 const FRESH_TURNS = 'fresh_turns';
@@ -370,8 +369,8 @@ export class MainBotService {
   private startsThisTurn = 0;
   /** Starts and messages since the user last wrote. */
   private actionsWithoutUser = 0;
-  /** The bot's turns since it last got its instructions, per conversation. */
-  private readonly turnsSinceInstructed = new Map<string, number>();
+  /** The bot's turns since its notes were last listed for it in full, per conversation. */
+  private readonly turnsSinceNotes = new Map<string, number>();
   /** The notes as the bot last saw them listed; null before it saw any. */
   private notesShown: string | null = null;
   /** The turn now running was told what went before a fresh context. */
@@ -392,17 +391,18 @@ export class MainBotService {
   // ---- What the bot reads with each message ----
 
   /**
-   * Appended to what the bot's agent reads: how things stand now, and its job.
-   * The job goes with the first message of an app run and again every so
-   * often, so a long conversation whose start was compacted away still has it.
+   * Appended to what the bot's agent reads: how things stand now. Its job is
+   * not in here: that is the system prompt of every turn (mainBotTurnOptions).
    * All of this stays in the agent's thread, so what does not change from turn
-   * to turn (the notes) is sent when it changed, not every time.
+   * to turn (the notes) goes with the first message of an app run, again every
+   * so often (a long conversation's start may have been compacted away) and
+   * when it changed, not every time.
    */
   turnContext(sessionId: string): string {
-    const since = this.turnsSinceInstructed.get(sessionId);
+    const since = this.turnsSinceNotes.get(sessionId);
     const fresh = this.store.meta(BRIEF_PENDING) !== null;
-    const first = fresh || since === undefined || since >= INSTRUCTIONS_EVERY;
-    this.turnsSinceInstructed.set(sessionId, first || since === undefined ? 1 : since + 1);
+    const first = fresh || since === undefined || since >= NOTES_EVERY;
+    this.turnsSinceNotes.set(sessionId, first || since === undefined ? 1 : since + 1);
     if (fresh) this.briefed = true;
     const now = this.host.now();
     const devices = this.host.devices();
@@ -438,7 +438,6 @@ export class MainBotService {
       '',
       '',
       '<aegis_main_bot>',
-      ...(first ? [MAIN_BOT_INSTRUCTIONS, ''] : []),
       ...(fresh ? [...this.recap(now), ''] : []),
       `How things stand now (${new Date(now).toISOString()}), read from Aegis, not from this conversation:`,
       ...lines,
@@ -448,7 +447,7 @@ export class MainBotService {
   }
 
   /**
-   * The bot's notes, for a message that explains its job (`full`): the small
+   * The bot's notes, listed in full (`full`) for a message that opens a context or comes long after: the small
    * ones whole, since it will not think to look before it hands work out, and
    * the list of the rest. Otherwise only when they changed behind its back.
    */
@@ -625,7 +624,7 @@ export class MainBotService {
       if (!this.host.freshThread(entering, automatic)) return false;
     } catch (failure) {
       console.error('[main-bot] could not start a fresh context:', failure);
-      // The thread may be empty already: better told its job twice than not at all.
+      // The thread may be empty already: better told what went before twice than not at all.
       this.store.setMeta(BRIEF_PENDING, '1');
       return false;
     }
@@ -639,7 +638,7 @@ export class MainBotService {
     this.store.setMeta(BRIEF_PENDING, '1');
     this.store.setMeta(FRESH_TURNS, '0');
     this.store.setMeta(FRESH_BASELINE, BASELINE_DUE);
-    this.turnsSinceInstructed.clear();
+    this.turnsSinceNotes.clear();
     this.notesShown = null;
     this.contextUsage = null;
     this.baselineDue = true;
@@ -1155,8 +1154,8 @@ export class MainBotService {
         const turns = this.store.meta(FRESH_TURNS);
         if (turns !== null) this.store.setMeta(FRESH_TURNS, String((Number(turns) || 0) + 1));
       } else if (status === 'error') {
-        // The agent may have read nothing of that turn: its job goes with the next one again.
-        this.turnsSinceInstructed.clear();
+        // The agent may have read nothing of that turn: its notes go with the next one again.
+        this.turnsSinceNotes.clear();
       }
       // A turn the person stopped decides nothing; one that failed may have failed for being too full.
       if (status !== 'stopped') this.freshenWhenFull();
