@@ -2,6 +2,7 @@ import path from 'path';
 import { CLAUDE_TASK_WRITE_TOOLS, replayClaudeTaskCalls, toolResultText, type ClaudeTaskToolCall } from '../../shared/claude-task-tools';
 import { collectChangedFilePaths } from '../../shared/outline-summary';
 import type { StreamMessage } from '../../shared/types';
+import { promptWithReviewComments } from '../../shared/review-comments';
 import { getCurrentBranch, getShortStatus } from './git-service';
 import { extractAssistantText, isLocalUtilityAssistantText } from './transcript-text';
 
@@ -48,7 +49,7 @@ export function collectHandoffTurns(history: StreamMessage[]): Turn[] {
   for (const message of history) {
     if (message.parentToolUseId) continue;
     if (message.type === 'user_prompt') {
-      const prompt = message.prompt.trim();
+      const prompt = promptWithReviewComments(message.prompt, message.reviewComments).trim();
       if (prompt) turns.push({ role: 'User', text: prompt });
       continue;
     }

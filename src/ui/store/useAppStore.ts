@@ -3735,10 +3735,10 @@ function handleSessionDeleted(
 
 // 处理用户 prompt
 function handleUserPrompt(
-  payload: { sessionId: string; prompt: string; attachments?: Attachment[]; createdAt?: number; workflowPrompt?: WorkflowPromptKind; design?: import('../../shared/types').DesignPromptRef; designSelection?: import('../../shared/types').DesignSelectionRef; steer?: boolean; promptId?: string; deferred?: boolean },
+  payload: { sessionId: string; prompt: string; attachments?: Attachment[]; createdAt?: number; workflowPrompt?: WorkflowPromptKind; design?: import('../../shared/types').DesignPromptRef; designSelection?: import('../../shared/types').DesignSelectionRef; reviewComments?: import('../../shared/review-comments').ReviewComment[]; steer?: boolean; promptId?: string; deferred?: boolean },
   set: SetState
 ) {
-  const { sessionId, prompt, attachments, createdAt, workflowPrompt, design, designSelection, steer, promptId, deferred } = payload;
+  const { sessionId, prompt, attachments, createdAt, workflowPrompt, design, designSelection, reviewComments, steer, promptId, deferred } = payload;
 
   set((state) => {
     const session = state.sessions[sessionId];
@@ -3752,6 +3752,7 @@ function handleUserPrompt(
       ...(workflowPrompt ? { workflowPrompt } : {}),
       ...(design ? { design } : {}),
       ...(designSelection ? { designSelection } : {}),
+      ...(reviewComments?.length ? { reviewComments } : {}),
       ...(steer ? { steer: true } : {}),
       ...(promptId ? { promptId } : {}),
     };
@@ -3843,6 +3844,7 @@ function handlePromptsWithdrawn(
     references: {},
     ...(item.design ? { design: item.design } : {}),
     ...(item.designSelection ? { designSelection: item.designSelection } : {}),
+    ...(item.reviewComments?.length ? { reviewComments: item.reviewComments } : {}),
   })));
 }
 

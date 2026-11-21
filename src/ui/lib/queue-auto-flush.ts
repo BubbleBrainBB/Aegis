@@ -65,6 +65,7 @@ function flushIfUnowned(sessionId: string, provider: AgentProvider | undefined):
       codexMentions: items.flatMap((item) => item.references.codexMentions ?? []),
       // A batch shares one canvas selection (the queue splits where it changes).
       ...(items[0].designSelection ? { designSelection: items[0].designSelection } : {}),
+      ...(items.some((item) => item.reviewComments?.length) ? { reviewComments: items.flatMap((item) => item.reviewComments ?? []) } : {}),
       teamMode: 'solo',
       teamId: null,
     },

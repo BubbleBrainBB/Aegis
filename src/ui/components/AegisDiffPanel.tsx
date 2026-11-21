@@ -1,5 +1,6 @@
 import { useAppPreferences } from '../store/useAppPreferences';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { DiffLineAnnotation, FileDiffOptions, SelectedLineRange } from '@pierre/diffs';
 import { FileDiff, Virtualizer } from '@pierre/diffs/react';
 import { toast } from 'sonner';
 import type { GitPatchScope, ReviewDiffSelection, SessionView } from '../types';
@@ -27,6 +28,7 @@ import {
   FileSearch,
   Loader2,
   Maximize2,
+  MessageSquare,
   Minimize2,
   MoreHorizontal,
   RefreshCw,
@@ -50,6 +52,17 @@ import {
 import * as Dialog from './ui/dialog';
 import { ExpandAllGlyph, GitCommitHorizontalGlyph, SplitDiffGlyph } from './diff-glyphs';
 import { isImeComposing } from '../utils/ime';
+import type { ReviewComment } from '../../shared/review-comments';
+import { useReviewCommentStore, useReviewComments } from '../store/useReviewCommentStore';
+import {
+  hasReviewDiffLine,
+  reviewCommentAnchor,
+  reviewCommentRange,
+  reviewDiffRows,
+  reviewScopeKey,
+  type ReviewCommentAnchor,
+} from '../utils/review-comment-lines';
+import { ReviewCommentCard, ReviewCommentEditor } from './ReviewComments';
 
 // Matches the app's compact menus (13px, tight rows) instead of the roomier
 // DropdownMenuItem default.
@@ -300,6 +313,16 @@ export function AegisDiffPanel({
       });
     },
     [expandFile]
+  );
+
+  // Comments go out with the task's next message, so a diff with no started
+  // task behind it (a draft, a bare folder) takes none.
+  const reviewSessionId = session && !session.isDraft ? session.id : null;
+  const reviewScope = sourceLabel(data.selection, activeTurn);
+  const reviewKey = reviewScopeKey(data.selection);
+  const review = useMemo<DiffReviewTarget | null>(
+    () => (reviewSessionId ? { sessionId: reviewSessionId, scope: reviewScope, scopeKey: reviewKey } : null),
+    [reviewSessionId, reviewScope, reviewKey]
   );
 
   const showEmpty = !data.loading && data.files.length === 0;
@@ -555,6 +578,7 @@ export function AegisDiffPanel({
                   onToggle={() => toggleFile(file.key)}
                   options={diffOptions}
                   richPreview={richPreview}
+                  review={review}
                 />
               ))}
             </div>
@@ -571,18 +595,40 @@ export function AegisDiffPanel({
   );
 }
 
+/** The task and diff that comments written here belong to. */
+interface DiffReviewTarget {
+  sessionId: string;
+  /** The diff's name as the toolbar shows it. */
+  scope: string;
+  scopeKey: string;
+}
+
+type ReviewAnnotation = { kind: 'comment'; comment: ReviewComment } | { kind: 'editor' };
+
+/**
+ * Puts the diff's gutter "+" in the space left of the line number (the diff
+ * draws it over the code edge by default). The space itself is made by
+ * `.aegis-file-diff--comments` in index.css, which widens the number column.
+ */
+const REVIEW_GUTTER_CSS = `
+[data-gutter-utility-slot] { right: unset; left: 6px; justify-content: flex-start; align-items: center; }
+[data-utility-button] { width: calc(1lh - 4px); height: calc(1lh - 4px); margin-right: 0; border-radius: 5px; }
+`;
+
 function DiffFileCard({
   file,
   expanded,
   onToggle,
   options,
   richPreview,
+  review,
 }: {
   file: AegisDiffFile;
   expanded: boolean;
   onToggle: () => void;
-  options: Parameters<typeof FileDiff>[0]['options'];
+  options: FileDiffOptions<ReviewAnnotation>;
   richPreview: boolean;
+  review: DiffReviewTarget | null;
 }) {
   const basename = basenameOfDiffPath(file.path);
   const dir = file.path.slice(0, file.path.length - basename.length);
@@ -591,6 +637,118 @@ function DiffFileCard({
   const fileDiff = useMemo(
     () => (richPreview || !file.diff ? file.diff : { ...file.diff, lang: 'text' as const }),
     [file.diff, richPreview]
+  );
+
+  // Unsent comments on this file, in this diff. The editor is open on `draft`:
+  // new lines picked in the gutter, or a saved comment being edited.
+  const sessionComments = useReviewComments(review?.sessionId);
+  const comments = useMemo(
+    () => (review ? sessionComments.filter((comment) => comment.filePath === file.path && comment.scopeKey === review.scopeKey) : []),
+    [sessionComments, review, file.path]
+  );
+  const [draft, setDraft] = useState<{ anchor: ReviewCommentAnchor; commentId?: string } | null>(null);
+  const editing = draft?.commentId ? comments.find((comment) => comment.id === draft.commentId) : undefined;
+  const rows = useMemo(() => (fileDiff ? reviewDiffRows(fileDiff) : []), [fileDiff]);
+
+  useEffect(() => {
+    setDraft(null);
+  }, [review?.sessionId, review?.scopeKey]);
+
+  // Lines being picked right now (a press or drag in the gutter), drawn as selected.
+  const [picking, setPicking] = useState<SelectedLineRange | null>(null);
+
+  const reviewOptions = useMemo<FileDiffOptions<ReviewAnnotation>>(
+    () => (review && fileDiff
+      ? {
+          ...options,
+          unsafeCSS: `${options.unsafeCSS ?? ''}${REVIEW_GUTTER_CSS}`,
+          enableGutterUtility: true,
+          // Dragging from the "+" or over line numbers picks several lines.
+          // While an editor is open its lines stay selected and the "+" stays
+          // on them; a press on another line's number starts a new pick.
+          enableLineSelection: true,
+          // Needed for the "+" to start a pick; the pick is read when it ends.
+          onGutterUtilityClick: () => undefined,
+          onLineSelectionStart: setPicking,
+          onLineSelectionChange: setPicking,
+          onLineSelectionEnd: (range) => {
+            setPicking(null);
+            setDraft(range ? { anchor: reviewCommentAnchor(fileDiff, range) } : null);
+          },
+        }
+      : options),
+    [options, review, fileDiff]
+  );
+
+  const lineAnnotations = useMemo(() => {
+    const annotations: DiffLineAnnotation<ReviewAnnotation>[] = [];
+    for (const comment of comments) {
+      if (comment.id === draft?.commentId) continue;
+      // A refreshed diff may no longer show the line; the comment stays in the composer.
+      if (!hasReviewDiffLine(rows, comment.endLine, comment.endSide)) continue;
+      annotations.push({ side: comment.endSide, lineNumber: comment.endLine, metadata: { kind: 'comment', comment } });
+    }
+    if (draft) {
+      annotations.push({ side: draft.anchor.endSide, lineNumber: draft.anchor.endLine, metadata: { kind: 'editor' } });
+    }
+    return annotations;
+  }, [comments, draft, rows]);
+
+  const saveDraft = useCallback(
+    (text: string) => {
+      if (!review || !draft) return;
+      const store = useReviewCommentStore.getState();
+      if (draft.commentId) {
+        store.updateText(review.sessionId, draft.commentId, text);
+      } else {
+        store.add(review.sessionId, {
+          id: crypto.randomUUID(),
+          filePath: file.path,
+          ...draft.anchor,
+          text,
+          scope: review.scope,
+          scopeKey: review.scopeKey,
+        });
+      }
+      setDraft(null);
+    },
+    [review, draft, file.path]
+  );
+
+  const renderAnnotation = useCallback(
+    (annotation: DiffLineAnnotation<ReviewAnnotation>) => {
+      const meta = annotation.metadata;
+      if (meta.kind === 'editor') {
+        if (!draft) return null;
+        return (
+          <ReviewCommentEditor
+            key={`${draft.commentId ?? 'new'}:${draft.anchor.startSide}:${draft.anchor.startLine}:${draft.anchor.endSide}:${draft.anchor.endLine}`}
+            anchor={draft.anchor}
+            initialText={editing?.text}
+            onSubmit={saveDraft}
+            onCancel={() => setDraft(null)}
+          />
+        );
+      }
+      const comment = meta.comment;
+      return (
+        <ReviewCommentCard
+          comment={comment}
+          onEdit={() => setDraft({
+            anchor: {
+              startLine: comment.startLine,
+              startSide: comment.startSide,
+              endLine: comment.endLine,
+              endSide: comment.endSide,
+              code: comment.code,
+            },
+            commentId: comment.id,
+          })}
+          onRemove={() => review && useReviewCommentStore.getState().remove(review.sessionId, comment.id)}
+        />
+      );
+    },
+    [draft, editing?.text, saveDraft, review]
   );
 
   return (
@@ -616,16 +774,29 @@ function DiffFileCard({
         {file.status === 'D' || file.status === 'R' ? (
           <span className="shrink-0 text-[11px] text-[var(--text-muted)]">{statusLabel(file)}</span>
         ) : null}
+        {comments.length > 0 ? (
+          <span
+            data-review-comment-count
+            className="ml-auto inline-flex shrink-0 items-center gap-1 text-[12px] tabular-nums text-[var(--accent)]"
+            title={`${comments.length} unsent ${comments.length === 1 ? 'comment' : 'comments'}`}
+          >
+            <MessageSquare className="h-3.5 w-3.5" />
+            {comments.length}
+          </span>
+        ) : null}
       </button>
 
       {expanded ? (
         <div className="aegis-diff-body -mx-3 bg-[var(--bg-primary)]">
           {fileDiff ? (
-            <FileDiff
+            <FileDiff<ReviewAnnotation>
               fileDiff={fileDiff}
-              options={options}
+              options={reviewOptions}
+              lineAnnotations={lineAnnotations}
+              selectedLines={picking ?? (draft ? reviewCommentRange(draft.anchor) : null)}
+              renderAnnotation={renderAnnotation}
               disableWorkerPool
-              className="aegis-file-diff"
+              className={review ? 'aegis-file-diff aegis-file-diff--comments' : 'aegis-file-diff'}
             />
           ) : (
             <div className="px-4 py-3 text-xs text-[var(--text-muted)]">

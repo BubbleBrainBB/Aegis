@@ -4219,7 +4219,23 @@ button.aegis-mdx-metadata-key:hover {
   --diffs-bg-context-override: var(--bg-secondary);
   --diffs-bg-separator-override: var(--bg-secondary);
   --diffs-fg-number-override: var(--text-muted);
+  /* The gutter "+" and the lines picked for a comment use the app accent. */
+  --diffs-modified-color-override: var(--accent);
   background: var(--bg-primary);
+}
+
+/* Room left of the line numbers for the "+" that starts a comment. */
+.aegis-file-diff--comments {
+  --diffs-min-number-column-width: calc(4ch + 1lh + 2px);
+}
+
+/* A comment or its editor under diff lines: sans text in a mono block. */
+.aegis-review-annotation {
+  box-sizing: border-box;
+  max-width: 640px;
+  padding: 8px 14px 10px 0;
+  font-family: var(--font-sans, system-ui, sans-serif);
+  white-space: normal;
 }
 
 .aegis-file-diff pre,

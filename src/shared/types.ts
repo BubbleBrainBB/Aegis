@@ -1,4 +1,5 @@
 import type { ComputerUseGrantView, ComputerUseLiveFrame, ComputerUseMediaRef } from './computer-use';
+import type { ReviewComment } from './review-comments';
 
 // 共享类型定义（可导出）
 
@@ -1031,7 +1032,7 @@ export type ServerEvent =
   | { type: 'session.renamed'; payload: { sessionId: string; title: string; updatedAt: number } }
   | {
       type: 'stream.user_prompt';
-      payload: { sessionId: string; prompt: string; attachments?: Attachment[]; createdAt?: number; workflowPrompt?: WorkflowPromptKind; design?: DesignPromptRef; designSelection?: DesignSelectionRef; steer?: boolean; promptId?: string;
+      payload: { sessionId: string; prompt: string; attachments?: Attachment[]; createdAt?: number; workflowPrompt?: WorkflowPromptKind; design?: DesignPromptRef; designSelection?: DesignSelectionRef; reviewComments?: ReviewComment[]; steer?: boolean; promptId?: string;
         /** Sent into a busy runner: not stored until the CLI takes it (stream.prompt_started), or withdrawn. */
         deferred?: boolean };
     }
@@ -1304,6 +1305,11 @@ export interface SessionContinuePayload {
   design?: DesignPromptRef;
   /** The canvas selection shown in the composer when this was sent. */
   designSelection?: DesignSelectionRef;
+  /**
+   * Comments on diff lines sent with this message. `effectivePrompt` already
+   * carries them as text; these are for the pills above the message.
+   */
+  reviewComments?: ReviewComment[];
   workflowPrompt?: WorkflowPromptKind;
   attachments?: Attachment[];
   provider?: AgentProvider;
@@ -1946,6 +1952,7 @@ export interface WithdrawnPrompt {
   attachments: Attachment[];
   design?: DesignPromptRef;
   designSelection?: DesignSelectionRef;
+  reviewComments?: ReviewComment[];
 }
 
 export type StreamMessageBase = {
@@ -1999,7 +2006,7 @@ export interface AvailableCommand {
 
 export type StreamMessage =
   | (StreamMessageBase & {
-      type: 'user_prompt'; prompt: string; attachments?: Attachment[]; workflowPrompt?: WorkflowPromptKind; design?: DesignPromptRef; designSelection?: DesignSelectionRef;
+      type: 'user_prompt'; prompt: string; attachments?: Attachment[]; workflowPrompt?: WorkflowPromptKind; design?: DesignPromptRef; designSelection?: DesignSelectionRef; reviewComments?: ReviewComment[];
       /** Steered into the live turn: not a turn boundary (streaming and retry state carry on). */
       steer?: boolean;
       /** Claude: the prompt's SDK uuid (its host echo carries it), so a withdrawn steer can be removed. */

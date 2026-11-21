@@ -39,6 +39,9 @@ import type {
   ToolStatus,
 } from '../types';
 import type { DesignSelectionRef } from '../../shared/types';
+import type { ReviewComment } from '../../shared/review-comments';
+import { ReviewCommentPills } from './ReviewComments';
+import { openReviewComment } from '../store/useReviewCommentStore';
 import { isImeComposing } from '../utils/ime';
 
 type UserPromptPrefixDisplay = PromptPrefixDisplay;
@@ -108,6 +111,7 @@ export function MessageCard({
           prompt={message.prompt}
           attachments={message.attachments}
           designSelection={message.designSelection}
+          reviewComments={message.reviewComments}
           createdAt={message.createdAt}
           actions={userPromptActions}
           sessionId={sessionId}
@@ -218,6 +222,7 @@ function UserPromptCard({
   prompt,
   attachments,
   designSelection,
+  reviewComments,
   createdAt,
   actions,
   sessionId,
@@ -226,6 +231,7 @@ function UserPromptCard({
   prompt: string;
   attachments?: Attachment[];
   designSelection?: DesignSelectionRef;
+  reviewComments?: ReviewComment[];
   createdAt?: number;
   actions?: {
     canEditAndRetry: boolean;
@@ -438,6 +444,14 @@ function UserPromptCard({
                 documentId: designSelection.documentId,
                 boardId: designSelection.boardIds[0],
               }) : undefined}
+            />
+          </div>
+        )}
+        {reviewComments && reviewComments.length > 0 && (
+          <div className="mb-1 flex w-full min-w-0 justify-end">
+            <ReviewCommentPills
+              comments={reviewComments}
+              onOpen={currentSessionId && activeWorkspace === 'chat' ? openReviewComment : undefined}
             />
           </div>
         )}
