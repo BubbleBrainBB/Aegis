@@ -6,6 +6,7 @@
 // methods follow resolveProjectTrust, so the trust seam ends where they begin.
 // 0.0.70 changed it again, outside the patched seams: runTurn fits the thinking
 // level it is given to the model's own levels (resolveTurnThinkingLevel).
+// 0.0.71 and 0.0.72 leave the file as it was in 0.0.70.
 // Patched here: repeatable, serialized project trust; explicit deny rules for
 // read-only host tools; a host tool shadowing a same-named MCP tool instead of
 // failing the turn; and no turn started for an unread steer once the turn it
@@ -16,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 
 export async function patchBubbleSdk(root) {
   const pkg = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
-  if (pkg.version !== '0.0.70') throw new Error(`Review Bubble host patch for SDK ${pkg.version}`);
+  if (pkg.version !== '0.0.72') throw new Error(`Review Bubble host patch for SDK ${pkg.version}`);
   const jsPath = path.join(root, 'dist/sdk/index.js');
   const typesPath = path.join(root, 'dist/sdk/index.d.ts');
   let js = await readFile(jsPath, 'utf8');
