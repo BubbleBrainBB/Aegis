@@ -62,6 +62,7 @@ function addModel(
   if (!name || modelsByName.has(name)) {
     return;
   }
+  const reasoningLevels = bubbleSelectableReasoningLevels(model.reasoningLevels);
   modelsByName.set(name, {
     name,
     label: model.name?.trim() || name,
@@ -70,13 +71,25 @@ function addModel(
     isDefault: false,
     maxContextSize: typeof model.contextWindow === 'number' ? model.contextWindow : null,
     capabilities: [],
-    // Thinking-level metadata straight from the SDK catalog: the composer's
-    // Reasoning picker lists these per model, defaultReasoningLevel seeds it.
-    reasoningLevels: (model.reasoningLevels || []).filter(
-      (level) => typeof level === 'string' && level.trim().length > 0
-    ),
-    defaultReasoningLevel: model.defaultReasoningLevel?.trim() || null,
+    // Thinking-level metadata from the SDK catalog: the composer's Reasoning
+    // picker lists these per model, defaultReasoningLevel seeds it.
+    reasoningLevels,
+    defaultReasoningLevel: reasoningLevels.length > 0 ? model.defaultReasoningLevel?.trim() || null : null,
   });
+}
+
+/**
+ * The levels a person can choose between. A lone "medium" is the SDK's
+ * placeholder for a model that always thinks and has no grades (its
+ * isThinkingOnlyLevels rule: Nex-N2.6, kimi-k2.7-code): there is nothing to
+ * pick and no grade to name, so it lists none and a turn names no level,
+ * which the SDK runs as that model's only one.
+ */
+export function bubbleSelectableReasoningLevels(levels: readonly unknown[] | undefined): string[] {
+  const named = (levels || []).filter(
+    (level): level is string => typeof level === 'string' && level.trim().length > 0
+  );
+  return named.length === 1 && named[0] === 'medium' ? [] : named;
 }
 
 type BubbleDiscoveryContext = {

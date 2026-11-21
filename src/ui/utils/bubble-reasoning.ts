@@ -52,6 +52,22 @@ export function bubbleThinkingLevelsForModel(
   return matched?.reasoningLevels ?? [];
 }
 
+/**
+ * The level a session carries, unless its model is listed with none to choose.
+ * A model that always thinks used to be listed with the SDK's "medium"
+ * placeholder, and a session from then still carries it: it is not a grade to
+ * show or send, the SDK runs such a model at its only level.
+ */
+export function carriedBubbleThinkingLevel(
+  models: BubbleModelConfig['availableModels'] | undefined,
+  model: string | null | undefined,
+  level: string | null | undefined
+): string | null {
+  if (!level) return null;
+  const matched = (models ?? []).find((entry) => entry.name === model);
+  return matched && (matched.reasoningLevels ?? []).length === 0 ? null : level;
+}
+
 /** Label for a thinking level (known tiers get hand labels, unknown pass through capitalized). */
 export function formatBubbleThinkingLevelLabel(level: string): string {
   const trimmed = level.trim().toLowerCase();
