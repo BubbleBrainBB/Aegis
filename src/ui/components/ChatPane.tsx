@@ -1650,10 +1650,12 @@ export function ChatPane({
 
   // Loaded turns feeding the outline rail; the rail merges these with its
   // full-history index so fresh prompts, streaming replies, and just-edited
-  // files show up without a refetch.
+  // files show up without a refetch. The main bot's conversation never ends,
+  // so a tick per prompt would pack into a solid bar: it has no outline.
+  const showOutline = !isMainBotChat;
   const outlineLivePrompts = useMemo<SessionUserPromptSummary[]>(
-    () => buildSessionUserPromptSummaries(session?.messages || []),
-    [session?.messages]
+    () => (showOutline ? buildSessionUserPromptSummaries(session?.messages || []) : []),
+    [session?.messages, showOutline]
   );
 
   // A target naming a tool call lands on the work group that holds the call.
@@ -2166,7 +2168,7 @@ export function ChatPane({
               detached={computerUsePreviewSessionId === sessionId}
             />
           ) : null}
-          {sessionId ? (
+          {sessionId && showOutline ? (
             <ChatOutlineRail
               sessionId={sessionId}
               livePrompts={outlineLivePrompts}
