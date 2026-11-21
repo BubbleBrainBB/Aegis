@@ -236,6 +236,10 @@ export type BubbleRunTurnOptions = {
   onPlanApproval?: (planMarkdown: string) => Promise<boolean>;
   /** Turn-scoped host tools (Bubble ToolRegistryEntry objects); see bubbleHostTools(). */
   hostTools?: object[];
+  /** In place of the system prompt Bubble builds, for an agent with a role of its own; see bubbleRoleOptions(). */
+  systemPrompt?: string;
+  /** Only these built-in and MCP tools are offered; host tools always are. Left out: all of them. */
+  allowedTools?: string[];
 };
 
 export type BubbleSessionSummary = {

@@ -6,7 +6,7 @@ import { isBrowserUseEnabled } from './browser-use-permissions';
 import { createNativeDesignTools } from '../design/tools';
 import { createNativeReportStatus } from './turn-report-tool';
 import { createNativeStartSession } from './follow-up/tool';
-import { createMainBotTools, isMainBotSession } from './main-bot/tools';
+import { createMainBotTools, isMainBotSession, mainBotTurnOptions } from './main-bot/tools';
 import type { BubbleContentPart } from './provider/bubble-sdk-loader';
 
 export const BUBBLE_SESSION_TOOL = 'read_session';
@@ -33,6 +33,15 @@ export function bubbleHostTools(sessionId?: string): object[] {
   // Workflow members are refused at call time.
   if (sessionId) tools.push(createNativeStartSession(sessionId));
   return tools;
+}
+
+/**
+ * A role of its own for a session's turns (`runTurn({ systemPrompt, allowedTools })`):
+ * the main bot's. Every other session runs as the coding agent, with all of
+ * its tools.
+ */
+export function bubbleRoleOptions(sessionId?: string): { systemPrompt?: string; allowedTools?: string[] } {
+  return isMainBotSession(sessionId) ? mainBotTurnOptions() : {};
 }
 
 export function assertBubbleSessionReader(prompt: string | BubbleContentPart[], tools: string[], currentSessionId: string): void {

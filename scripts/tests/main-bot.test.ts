@@ -8,7 +8,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeF
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { MAIN_BOT_LIMITS, isMainBotLookupToolName, isMainBotTaskActionToolName, mainBotReportTitles, mainBotToolKind, mainBotWorkflowCalledOff, parseMainBotTaskResult } from '../../src/shared/main-bot';
+import { MAIN_BOT_BUILTIN_TOOLS, MAIN_BOT_INSTRUCTIONS, MAIN_BOT_LIMITS, isMainBotLookupToolName, isMainBotTaskActionToolName, mainBotReportTitles, mainBotToolKind, mainBotWorkflowCalledOff, parseMainBotTaskResult } from '../../src/shared/main-bot';
 import {
   MainBotService,
   NOT_SIGNED_IN,
@@ -28,7 +28,10 @@ import {
 import { MAIN_BOT_MEMORY_LIMITS, MainBotMemory } from '../../src/electron/libs/main-bot/memory';
 import { STARTUP_FAILED, remoteStartSettings, startTaskSession } from '../../src/electron/libs/main-bot/start';
 import { MainBotStore, type MainBotDb } from '../../src/electron/libs/main-bot/store';
+import { mainBotTurnOptions } from '../../src/electron/libs/main-bot/tools';
 
+/** The notes listed in full: with the message that opens a context, and now and then after. */
+const NOTES_IN_FULL = /Your notes(?:: none yet| \(read_memory shows one in full)/;
 const LOCAL_ID = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 
 function setup(prepare?: (db: MainBotDb) => void) {
@@ -1010,18 +1013,33 @@ async function main() {
     const projects = ok(await bot.listProjects());
     assert.deepEqual(projects.devices[0].agentsReady, ['Claude', 'Codex']);
     assert.equal(projects.devices[1].device, 'Mac mini');
-    // The instructions go once per app run; how things stand goes every time.
+    // Its job is the system prompt of every turn, not part of a message. The notes
+    // go in full once per app run; how things stand goes every time.
     const first = bot.turnContext('main');
-    assert.match(first, /You are Aegis/);
+    assert.doesNotMatch(first, /You are Aegis/);
+    assert.match(first, NOTES_IN_FULL);
     assert.match(first, /This Mac \(MacBook\): 1 working, 1 waiting for the person/);
     assert.match(first, /"Remote job" \(rh-aaaaaaaaaaaa-x, Codex, server, on Mac mini\): asks, Which branch\?/);
     const second = bot.turnContext('main');
-    assert.doesNotMatch(second, /You are Aegis/);
+    assert.doesNotMatch(second, NOTES_IN_FULL);
     assert.match(second, /"Busy" \(#2, Codex, coworker\), last active 5 min ago/);
-    // A long conversation is told its job again now and then: its start may have been compacted away.
+    // A long conversation is shown its notes again now and then: its start may have been compacted away.
     const later = Array.from({ length: 19 }, () => bot.turnContext('main'));
-    assert.ok(later.slice(0, 18).every((text) => !/You are Aegis/.test(text)));
-    assert.match(later[18], /You are Aegis/);
+    assert.ok(later.slice(0, 18).every((text) => !NOTES_IN_FULL.test(text)));
+    assert.match(later[18], NOTES_IN_FULL);
+  }
+
+  // --- Its turns: its job as the system prompt, and none of the coding agent's tools that do the work ---
+  {
+    const options = mainBotTurnOptions();
+    assert.equal(options.systemPrompt, MAIN_BOT_INSTRUCTIONS);
+    assert.match(options.systemPrompt, /^You are Aegis/);
+    assert.match(options.systemPrompt, /You have no subagents and no workflows of your own/);
+    assert.match(options.systemPrompt, /that is start_task \(or message_task for a task that exists\), in this turn/);
+    assert.deepEqual(options.allowedTools, [...MAIN_BOT_BUILTIN_TOOLS]);
+    assert.deepEqual(options.allowedTools, ['read', 'ls', 'grep', 'web_search', 'web_fetch', 'question', 'exit_plan_mode']);
+    // The words Bubble takes for a request to orchestrate (and answers with "use run_workflow") stay harmless: there is no such tool.
+    for (const gone of ['spawn_agent', 'run_workflow', 'bash', 'write', 'edit', 'tool_search']) assert.ok(!options.allowedTools.includes(gone), gone);
   }
 
   // --- Notes: what outlasts the conversation ---
@@ -1211,7 +1229,7 @@ async function main() {
     await bot.onTaskTurnEnded(id, 'completed');
     ok(bot.writeMemory({ name: 'person', description: 'How they work', content: 'Short answers.' }));
     bot.turnContext('main');
-    assert.doesNotMatch(bot.turnContext('main'), /You are Aegis/);
+    assert.doesNotMatch(bot.turnContext('main'), NOTES_IN_FULL);
     world.conversation = [
       { asked: 'Make the export faster', reply: 'I gave the profiling to Claude in notes.' },
       { asked: null, reply: 'The slow part is the totals. Shall I have them cached?' },
@@ -1227,14 +1245,14 @@ async function main() {
     assert.deepEqual(world.freshThreads, [true], 'once');
     tick(60_000);
     const brief = restarted.turnContext('main');
-    assert.match(brief, /You are Aegis/);
+    assert.doesNotMatch(brief, /You are Aegis/, 'its job is the system prompt');
     assert.match(brief, /Your context starts afresh here/);
     assert.match(brief, /The end of the conversation, oldest first:\n- \[#1\] The person wrote: "Make the export faster" You answered: "I gave the profiling to Claude in notes\."/);
     assert.match(brief, /- \[#3\] The report of "Profile the export" came in\. You answered: "The slow part is the totals\. Shall I have them cached\?"/);
     // It is told that none of it is to be done again, and where the words themselves can be found.
     assert.match(brief, /every request in it was answered or handed out already, so start nothing from it again\. Take new requests only from what comes after this\./);
     assert.match(brief, /read_conversation searches all that was said here/);
-    assert.match(brief, /- read_conversation searches what was said in this conversation/, 'its job says so too');
+    assert.match(MAIN_BOT_INSTRUCTIONS, /- read_conversation searches what was said in this conversation/, 'its job says so too');
     assert.match(brief, /- "Profile the export", for "Faster export" finished a turn 1 min ago: "The slow part is the totals\."/, 'reports are not in the conversation: they come from the record');
     assert.match(brief, /<note name="person">\nShort answers\.\n<\/note>/);
     // A turn that fails may have told the agent nothing: the next one gets it all again.
@@ -1243,18 +1261,18 @@ async function main() {
     await restarted.onMainTurnEnded('completed');
     const after = restarted.turnContext('main');
     assert.doesNotMatch(after, /Your context starts afresh here/);
-    assert.doesNotMatch(after, /You are Aegis/);
+    assert.doesNotMatch(after, NOTES_IN_FULL);
     // With nothing running it happens at once.
     world.threadFree = true;
     assert.equal(restarted.freshContext(), 'done');
     assert.deepEqual(world.freshThreads, [true, false]);
     assert.match(restarted.turnContext('main'), /Your context starts afresh here/);
-    // An ordinary turn that fails is told its job again, without the rest.
+    // An ordinary turn that fails is shown its notes again, without the rest.
     const plain = setup();
     plain.bot.turnContext('main');
     await plain.bot.onMainTurnEnded('error');
     const retold = plain.bot.turnContext('main');
-    assert.match(retold, /You are Aegis/);
+    assert.match(retold, NOTES_IN_FULL);
     assert.doesNotMatch(retold, /Your context starts afresh here/);
   }
 
