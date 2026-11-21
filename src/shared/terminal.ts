@@ -415,6 +415,14 @@ export function validateTerminalCloseInput(value: unknown): TerminalValidationRe
   };
 }
 
+/**
+ * A terminal scope belongs to an owner (a session id) when it is that id or
+ * starts with it and a colon, as in `<sessionId>:right-terminal`.
+ */
+export function terminalScopeBelongsTo(scope: string, ownerId: string): boolean {
+  return Boolean(ownerId) && (scope === ownerId || scope.startsWith(`${ownerId}:`));
+}
+
 export function buildTerminalRuntimeKey(threadId: string, terminalId: string = DEFAULT_TERMINAL_ID): string {
   return `${threadId}::${terminalId}`;
 }

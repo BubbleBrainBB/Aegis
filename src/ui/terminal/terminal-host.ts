@@ -1,6 +1,7 @@
 import { buildTerminalRuntimeKey, type TerminalEvent } from '../../shared/terminal';
 import { ManagedTerminal, type TerminalEnvironment, type TerminalSpec, type TerminalView } from './managed-terminal';
 import { browserClock, type Clock } from './terminal-streams';
+import { terminalTabs } from './terminal-tabs';
 import { THEME_APPLIED_EVENT } from '../theme/themes';
 
 export type { TerminalHooks, TerminalSpec, TerminalView } from './managed-terminal';
@@ -14,6 +15,10 @@ const RECOVERY_SETTLE_MS = 120;
  * event stream fans events out by key, and one set of window listeners
  * refits whatever is on screen after the app regains focus or visibility
  * (GPU surfaces can come back stale).
+ *
+ * A terminal outlives the panel that shows it: `unmount` only takes it off
+ * screen, and a later `mount` with the same key gets the same screen and
+ * shell back. Only `destroy` ends it.
  */
 export class TerminalHost {
   private readonly terminals = new Map<string, ManagedTerminal>();
@@ -54,12 +59,6 @@ export class TerminalHost {
     this.terminals.delete(key);
     terminal.destroy();
     if (!this.terminals.size) this.quiet();
-  }
-
-  destroyScope(scope: string): void {
-    for (const terminal of [...this.terminals.values()]) {
-      if (terminal.scope === scope) this.destroy(terminal.key);
-    }
   }
 
   focus(key: string): void {
@@ -131,3 +130,6 @@ export class TerminalHost {
 }
 
 export const terminalHost = new TerminalHost();
+
+// A tab removed from the tab store (closed, or dropped with its session) ends here.
+terminalTabs.onRemove((scope, tabId) => terminalHost.destroy(terminalKey(scope, tabId)));
