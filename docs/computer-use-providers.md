@@ -117,7 +117,7 @@ the bridge.
 | Pi | custom tools | closure | none (Pi has no approval) | image | no Plan mode | card always | live with the real adapter (`probe:computer-use-adapters pi`) |
 | OpenCode | bridge, the server's inline config | resolver: `_meta['ai.opencode/sessionID']`, as Browser Use | none expected (asks are limited to edit/shell/webfetch) | file path | yes | card always | CI for the entry and the resolver only. **Not live**: no model on the test machine had usable credentials. |
 | Codex | its own client | — | — | — | — | — | unchanged |
-| **Kimi** | **none** | — | — | — | — | — | disabled, see below |
+| **Kimi** | **none** | — | — | — | — | — | not supported for now, see below |
 
 Notes:
 
@@ -133,7 +133,7 @@ Notes:
   none of Aegis's tools, so none of these either. DeepSeek, Grok and Qoder
   give them to members that are not read-only, as Bubble does.
 
-### Kimi: not supported, on purpose
+### Kimi: not supported for now, on purpose
 
 Kimi's server runtime (`kimi web`, what new Kimi sessions run on) takes MCP
 servers only from its user-level `mcp.json`: one configuration for the whole
@@ -148,7 +148,12 @@ are per session, and the binding has to be something the model cannot
 influence. So Kimi is handed no Computer use entry at all (nothing is written
 to `mcp.json`), and a Kimi session has no Computer use tools.
 
-What would change this: a per-session MCP entry in Kimi's server API (the
+Decided 2026-11-22: Kimi stays without Computer use for now. Binding its
+calls by matching the sessions' histories, the weaker way its browser tools
+use, was considered and turned down for desktop control. It is looked at
+again once Kimi's runtime can bind a call to a session.
+
+What would make that possible: a per-session MCP entry in Kimi's server API (the
 core has `addSessionMcpServer`, the REST surface does not expose it), a
 session id in its MCP request metadata (then `bindResolver` fits, as for
 OpenCode), or moving Kimi to its ACP runtime, which takes `mcpServers` per
