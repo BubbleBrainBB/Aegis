@@ -378,6 +378,8 @@ function formatDottedSegment(value: string): string {
  */
 export function buildCodexMcpConfigOverrideArgs(options?: {
   computerUsePolicy?: ComputerUseSpawnPolicy;
+  /** Whether Computer use's read tools ask Aegis before they run; see buildComputerUseMcpOverrideArgs. */
+  computerUseReadsAsk?: boolean;
 }): string[] {
   const text = readText();
   const sections = findMcpSections(splitLines(text));
@@ -448,6 +450,7 @@ export function buildCodexMcpConfigOverrideArgs(options?: {
       clientPath: resolveComputerUseClientPath(),
       policy: options?.computerUsePolicy ?? 'mutating',
       hasNodeRepl: privateNames.has(NODE_REPL_SERVER_NAME),
+      readsAsk: options?.computerUseReadsAsk,
     })
   );
 

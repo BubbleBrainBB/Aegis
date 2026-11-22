@@ -48,6 +48,8 @@ export interface McpToolApprovalElicitation {
   turnId: string | null;
   toolCallId: string | null;
   riskLevel: string | null;
+  /** `codex_approval_kind` of the request: `mcp_tool_call` when Codex asks whether a tool may run. */
+  approvalKind: string | null;
   requestType: string | null;
   canonicalApp: string | null;
   grantEligible: boolean;
@@ -128,6 +130,18 @@ function isCompatibleApprovalSchema(schema: unknown): boolean {
   return Object.keys(props).length === 0;
 }
 
+/**
+ * The tool a Codex approval question is about. Codex 0.166 sends the tool's
+ * description and arguments in `_meta` but its name only in the sentence it
+ * would show: `Allow the <server> MCP server to run tool "<name>"?`. A name
+ * that is not found stays unknown, and an unknown tool is treated as one
+ * that acts.
+ */
+export function toolNameFromApprovalMessage(message: string | null): string | null {
+  const match = /\brun tool "([A-Za-z0-9_.:-]+)"/.exec(message || '');
+  return match ? match[1] : null;
+}
+
 export function parseMcpToolApprovalElicitation(
   method: string,
   params: unknown
@@ -158,12 +172,20 @@ export function parseMcpToolApprovalElicitation(
     asString(meta.server_name) ||
     asString(meta.connector_name) ||
     null;
+  const askedMessage =
+    asString(request.message) ||
+    asString(envelope.message) ||
+    asString(request.question) ||
+    asString(envelope.question) ||
+    null;
   const toolName =
     asString(meta[MCP_APPROVAL_META.toolNameKey]) ||
     asString(request.tool) ||
     asString(envelope.tool) ||
     asString(envelope.toolName) ||
     asString(request.name) ||
+    // Codex 0.166 names the tool nowhere but in its question.
+    (kind === MCP_APPROVAL_META.kindMcpToolCall ? toolNameFromApprovalMessage(askedMessage) : null) ||
     null;
   const toolTitle =
     asString(meta[MCP_APPROVAL_META.toolTitleKey]) ||
@@ -172,10 +194,7 @@ export function parseMcpToolApprovalElicitation(
     asString(envelope.title) ||
     null;
   const message =
-    asString(request.message) ||
-    asString(envelope.message) ||
-    asString(request.question) ||
-    asString(envelope.question) ||
+    askedMessage ||
     (toolName ? `Allow the ${server || 'MCP'} server to run "${toolName}"?` : null);
 
   const looksLikeToolApproval =
@@ -240,6 +259,7 @@ export function parseMcpToolApprovalElicitation(
       asString(meta.toolCallId) ||
       null,
     riskLevel: asString(envelope.riskLevel) || asString(meta.risk_level) || asString(meta.riskLevel) || null,
+    approvalKind: kind,
     requestType,
     canonicalApp: app,
     grantEligible,
@@ -271,6 +291,36 @@ export function computerUseServerLabel(server: string | null): string {
   }
   if (isNodeReplServerName(server)) return 'node_repl';
   return server || 'MCP';
+}
+
+/**
+ * A tool approval request as codex-cli 0.166.0 sends it (captured from a real
+ * app-server): flat, `mode` instead of `request.type`, and no tool name or
+ * title in `_meta`.
+ */
+export function codexToolApprovalElicitationFixture(input: {
+  threadId: string;
+  server?: string;
+  tool: string;
+  params?: Record<string, unknown>;
+  turnId?: string;
+}): Record<string, unknown> {
+  const server = input.server || AEGIS_COMPUTER_USE_SERVER_NAME;
+  const params = input.params ?? {};
+  return {
+    threadId: input.threadId,
+    turnId: input.turnId ?? 'turn-cu-1',
+    serverName: server,
+    mode: 'form',
+    _meta: {
+      codex_approval_kind: 'mcp_tool_call',
+      tool_description: `What ${input.tool} does`,
+      tool_params: params,
+      tool_params_display: Object.entries(params).map(([name, value]) => ({ name, value, display_name: name })),
+    },
+    message: `Allow the ${server} MCP server to run tool "${input.tool}"?`,
+    requestedSchema: { type: 'object', properties: {} },
+  };
 }
 
 export function wrappedComputerUseElicitationFixture(input: {

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -23,7 +23,10 @@ import {
 } from '../../src/shared/computer-use';
 import {
   buildComputerUseMcpOverrideArgs,
+  codexFullAccessApprovalPolicy,
+  computerUseReadsAskAegis,
   ComputerUseLease,
+  injectsComputerUseServer,
   persistComputerUseMedia,
   resolveComputerUseArtifact,
   resolveComputerUseSpawnPolicy,
@@ -31,7 +34,9 @@ import {
 import { ComputerUseGrantRegistry } from '../../src/electron/libs/codex-computer-use-grants';
 import {
   buildMcpElicitationResponse,
+  codexToolApprovalElicitationFixture,
   parseMcpToolApprovalElicitation,
+  toolNameFromApprovalMessage,
   wrappedComputerUseElicitationFixture,
 } from '../../src/electron/libs/codex-computer-use-elicitation';
 import { classifyToolUse, deriveReadableToolDisplay, formatReadableToolSummary } from '../../src/ui/utils/tool-summary';
@@ -177,6 +182,63 @@ function testElicitationParser() {
   assert.equal('_meta' in decline, false);
 }
 
+/** The request as codex-cli 0.166.0 really sends it: no tool name but in the question. */
+function testRealApprovalRequestShape() {
+  assert.equal(toolNameFromApprovalMessage('Allow the aegis-computer-use MCP server to run tool "list_apps"?'), 'list_apps');
+  assert.equal(toolNameFromApprovalMessage('Allow the server to run something?'), null);
+  assert.equal(toolNameFromApprovalMessage(null), null);
+
+  const read = parseMcpToolApprovalElicitation(
+    'mcpServer/elicitation/request',
+    codexToolApprovalElicitationFixture({ threadId: 'p1', tool: 'get_app_state', params: { app: 'Finder' } })
+  );
+  assert.ok(read);
+  assert.equal(read.toolName, 'get_app_state');
+  assert.equal(read.server, 'aegis-computer-use');
+  assert.equal(read.approvalKind, 'mcp_tool_call');
+  assert.equal(read.isComputerUse, true);
+  assert.equal(read.action?.kind, 'get_app_state');
+  assert.equal(read.action?.mutating, false, 'a look is known to be a look');
+  assert.equal(read.providerThreadId, 'p1');
+  assert.equal(read.turnId, 'turn-cu-1');
+
+  const click = parseMcpToolApprovalElicitation(
+    'mcpServer/elicitation/request',
+    codexToolApprovalElicitationFixture({ threadId: 'p1', tool: 'click', params: { app: 'Finder', element_index: '4' } })
+  );
+  assert.equal(click?.toolName, 'click');
+  assert.equal(click?.action?.mutating, true);
+  assert.equal(click?.canonicalApp, 'Finder');
+  assert.equal(click?.grantEligible, true, '"until revoked" is offered again for a real request');
+  assert.deepEqual(click?.toolParamsDisplay.map((item) => item.name), ['app', 'element_index']);
+
+  // A question that names no tool: unknown, and unknown counts as acting.
+  const unnamed = parseMcpToolApprovalElicitation('mcpServer/elicitation/request', {
+    ...codexToolApprovalElicitationFixture({ threadId: 'p1', tool: 'click' }),
+    message: 'Allow this?',
+  });
+  assert.equal(unnamed?.toolName, null);
+  assert.equal(unnamed?.action?.kind, 'unknown');
+  assert.equal(unnamed?.action?.mutating, true);
+  assert.equal(unnamed?.grantEligible, false);
+
+  // Another server's tool: an approval, not Computer use.
+  const other = parseMcpToolApprovalElicitation(
+    'mcpServer/elicitation/request',
+    codexToolApprovalElicitationFixture({ threadId: 'p1', server: 'github', tool: 'create_issue', params: { title: 'x' } })
+  );
+  assert.equal(other?.isComputerUse, false);
+  assert.equal(other?.approvalKind, 'mcp_tool_call');
+  assert.equal(other?.toolName, 'create_issue');
+
+  // A name given outright still wins over the sentence.
+  const wrapped = parseMcpToolApprovalElicitation(
+    'mcpServer/elicitation/request',
+    wrappedComputerUseElicitationFixture({ threadId: 'p1', tool: 'click', app: 'Finder', message: 'Allow the x MCP server to run tool "list_apps"?' })
+  );
+  assert.equal(wrapped?.toolName, 'click');
+}
+
 function testOverridesAndLease() {
   assert.equal(resolveComputerUseSpawnPolicy({ permissionMode: 'defaultPermissions' }), 'mutating');
   assert.equal(resolveComputerUseSpawnPolicy({ permissionMode: 'auto' }), 'mutating');
@@ -202,11 +264,49 @@ function testOverridesAndLease() {
   assert.equal(joined.includes('"click"'), false);
   assert.equal(joined.includes('mcp_servers.node_repl.disabled_tools=["js", "js_add_node_module_dir"]'), true);
 
-  const mutating = buildComputerUseMcpOverrideArgs({
+  // The two read tools ask before they run, each by its own setting; the
+  // tools that act keep the server's "writes". (A server-wide "prompt" would
+  // also work for the reads, but changes what the acting tools send.)
+  const READS_ASK = [
+    'mcp_servers.aegis-computer-use.tools.list_apps.approval_mode="prompt"',
+    'mcp_servers.aegis-computer-use.tools.get_app_state.approval_mode="prompt"',
+  ];
+  assert.deepEqual(readOnly.filter((arg) => arg.includes('.approval_mode="prompt"')), READS_ASK, 'Plan: reads ask');
+  const mutatingArgs = buildComputerUseMcpOverrideArgs({
     clientPath: '/tmp/SkyComputerUseClient',
     policy: 'mutating',
     hasNodeRepl: true,
-  }).join(' ');
+  });
+  assert.deepEqual(mutatingArgs.filter((arg) => arg.includes('.approval_mode="prompt"')), READS_ASK, 'Default and Full Access: reads ask');
+  assert.equal(mutatingArgs.filter((arg) => arg.includes('default_tools_approval_mode="prompt"')).length, 0);
+  assert.ok(mutatingArgs.includes('mcp_servers.aegis-computer-use.default_tools_approval_mode="writes"'));
+  // Auto mode: Codex's own reviewer would answer instead of Aegis, so reads do not ask there.
+  assert.equal(computerUseReadsAskAegis('auto'), false);
+  for (const mode of ['defaultPermissions', 'fullAccess', undefined, null]) assert.equal(computerUseReadsAskAegis(mode), true);
+  const autoArgs = buildComputerUseMcpOverrideArgs({
+    clientPath: '/tmp/SkyComputerUseClient',
+    policy: 'mutating',
+    hasNodeRepl: false,
+    readsAsk: false,
+  });
+  assert.deepEqual(autoArgs.filter((arg) => arg.includes('approval_mode="prompt"')), []);
+  // Without the client there is no server, and nothing to ask about.
+  const absent = buildComputerUseMcpOverrideArgs({ clientPath: null, policy: 'mutating', hasNodeRepl: false });
+  assert.deepEqual(absent.filter((arg) => arg.includes('approval_mode')), []);
+  assert.equal(injectsComputerUseServer(absent), false);
+  assert.equal(injectsComputerUseServer(mutatingArgs), true);
+  assert.equal(injectsComputerUseServer(readOnly), true);
+
+  // Full Access: "never" would let Codex approve Computer use calls without
+  // Aegis hearing of them. With the server injected, tool approvals of MCP
+  // servers are the one thing that reaches the client; every other category
+  // stays off, as "never" has it.
+  assert.equal(codexFullAccessApprovalPolicy(false), 'never');
+  assert.deepEqual(codexFullAccessApprovalPolicy(true), {
+    granular: { sandbox_approval: false, rules: false, skill_approval: false, request_permissions: false, mcp_elicitations: true },
+  });
+
+  const mutating = mutatingArgs.join(' ');
   assert.equal(mutating.includes('"click"'), true);
   // Codex's own client has select_text (its tools/list says so) and keeps it;
   // the cua-driver gateway, which cannot do it, does not offer it.
@@ -292,7 +392,7 @@ function testMediaSidecar() {
       assert.equal(resolveComputerUseArtifact(dir, 'linked', sha), null, 'nor read through');
       // A file under the right name that is a link elsewhere is not followed either.
       const real = join(artifacts, 'session-1', `${sha}.jpg`);
-      rmSync(real);
+      unlinkSync(real);
       symlinkSync(join(outside, `${sha}.jpg`), real);
       assert.equal(resolveComputerUseArtifact(dir, 'session-1', sha), null);
       // And writing does not go through it: the linked file keeps its bytes.
@@ -319,11 +419,12 @@ function testMediaSidecar() {
       assert.deepEqual(persistComputerUseMedia({ userDataDir: profile, sessionId: 'session-2', payload }).mediaRefs, []);
       assert.deepEqual(readdirSync(elsewhere), ['session-1']);
       // A file where the folder should be is not a folder either.
-      rmSync(join(profile, 'computer-use-artifacts'));
+      // unlinkSync, not rmSync: Node 23.9 refuses to rmSync a link to a folder.
+      unlinkSync(join(profile, 'computer-use-artifacts'));
       writeFileSync(join(profile, 'computer-use-artifacts'), '');
       assert.deepEqual(persistComputerUseMedia({ userDataDir: profile, sessionId: 'session-1', payload }).mediaRefs, []);
       // Put right again, it works: the check is made each time, nothing is remembered.
-      rmSync(join(profile, 'computer-use-artifacts'));
+      unlinkSync(join(profile, 'computer-use-artifacts'));
       const again = persistComputerUseMedia({ userDataDir: profile, sessionId: 'session-1', payload });
       assert.equal(again.mediaRefs.length, 1);
       assert.ok(resolveComputerUseArtifact(profile, 'session-1', sha));
@@ -341,8 +442,7 @@ function testMediaSidecar() {
 }
 
 function testWorkstreamStage() {
-  const entries: WorkstreamEntry[] = [
-    {
+  const click: Extract<WorkstreamEntry, { type: 'tool' | 'memory' }> = {
       id: 'cu-1',
       type: 'tool',
       toolName: 'mcp__aegis-computer-use__click',
@@ -360,8 +460,8 @@ function testWorkstreamStage() {
         tool_use_id: 'cu-1',
         content: 'ok',
       },
-    },
-  ];
+  };
+  const entries: WorkstreamEntry[] = [click];
   const stages = summarizeWorkstreamEntries(entries);
   assert.equal(stages[0]?.kind, 'computer_use');
   assert.equal(stages[0]?.defaultExpanded, false);
@@ -369,12 +469,12 @@ function testWorkstreamStage() {
   assert.equal(stages[0]?.computerUseApp, 'Finder');
 
   const grouped = summarizeWorkstreamEntries([
-    entries[0],
+    click,
     {
-      ...entries[0],
+      ...click,
       id: 'cu-2',
       summary: 'Typing in Notes',
-      block: { ...entries[0].block, id: 'cu-2', name: 'mcp__aegis-computer-use__type_text' },
+      block: { ...click.block, id: 'cu-2', name: 'mcp__aegis-computer-use__type_text' },
       result: { type: 'tool_result', tool_use_id: 'cu-2', content: 'ok' },
     },
   ]);
@@ -679,6 +779,7 @@ function testPreviewSourceWiring() {
 
 testClassification();
 testElicitationParser();
+testRealApprovalRequestShape();
 testOverridesAndLease();
 testMediaSidecar();
 testWorkstreamStage();

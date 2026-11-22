@@ -78,6 +78,7 @@
     "verify:computer-use-live": "npx tsx scripts/verify-computer-use-live.ts",
     "fetch:cua-driver": "node scripts/fetch-cua-driver.mjs",
     "verify:codex-computer-use-e2e": "npm run transpile:electron && node scripts/tests/codex-computer-use.e2e.mjs",
+    "verify:codex-computer-use-routing": "npm run transpile:electron && node scripts/verify-codex-computer-use-routing.mjs",
     "verify:codex-config-isolation-e2e": "npm run transpile:electron && node scripts/tests/codex-config-isolation-electron.test.mjs",
     "verify:codex-per-thread-e2e": "npm run transpile:electron && node scripts/tests/codex-per-thread-app-server.e2e.mjs",
     "verify:delegate-mcp": "npm run transpile:electron && node scripts/verify-delegate-mcp.mjs",

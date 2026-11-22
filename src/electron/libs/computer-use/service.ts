@@ -459,16 +459,19 @@ export class ComputerUseGateway {
     this.driverSessions.clear();
     this.permissionsInstance = null;
     this.shared.grants.revokeOwner('gateway', reason);
-    // The calls on their way are over (for one that was with the driver:
-    // the driver process is gone), then the driver is stopped behind
-    // whatever was queued, so that nothing queued finds it gone and starts
-    // another. Only then is the desktop handed back.
-    await Promise.all(ending.map((context) => context.settled));
+    // The stop takes its place in the line now, in this same step, behind
+    // what is already queued and ahead of anything that comes after. A call
+    // that arrives from here on belongs to the next lifetime and must never
+    // reach the driver of this one, however long the calls being ended
+    // (a cold start, a driver being killed) take to get out of the way.
     const stop = () => this.driver.stop();
     const stopped = this.driverQueue.then(stop, stop);
     this.driverQueue = stopped.catch(() => undefined);
+    // The driver is gone and the calls that were on their way are over; only
+    // then is the desktop handed back.
     try {
       await stopped;
+      await Promise.all(ending.map((context) => context.settled));
     } finally {
       for (const [sessionId, toolUseIds] of held) {
         for (const toolUseId of toolUseIds) this.shared.lease.release(sessionId, toolUseId);
@@ -615,6 +618,10 @@ export class ComputerUseGateway {
     if ('error' in match) return fail(match.error);
     const app = match.app;
     if (this.isOwnApp(app)) return fail(COMPUTER_USE_DENIED_TARGET_MESSAGE);
+    // Looking again replaces what was known of the app. Until this look has
+    // succeeded nothing is known: when it finds no window, the indexes of
+    // the earlier look are not left behind for a later click to use.
+    this.states.get(sessionId)?.delete(stateKey(app));
 
     let pid = app.running ? app.pid : 0;
     let window = pid ? await this.pickWindow(context, pid, instance) : null;
@@ -821,7 +828,11 @@ export class ComputerUseGateway {
     if (result.isError) return fail(outcome);
     // Every action returns what the window looks like now.
     const after = await this.snapshot(context, state, outcome);
-    return after.isError ? { text: `${outcome}\n\n(The window could not be read afterwards: call get_app_state.)`, images: [], isError: false } : after;
+    if (!after.isError) return after;
+    // The action ran and the window could not be read after it: its indexes
+    // are no longer known to be right, so the app has to be looked at again.
+    this.forgetState(call.sessionId, state);
+    return { text: `${outcome}\n\n(The window could not be read afterwards: call get_app_state.)`, images: [], isError: false };
   }
 
   /**
@@ -910,6 +921,13 @@ export class ComputerUseGateway {
       isDeniedComputerUseTarget(app.name) ||
       (app.pid > 0 && this.host.ownProcessIds().includes(app.pid))
     );
+  }
+
+  private forgetState(sessionId: string, state: AppState): void {
+    const states = this.states.get(sessionId);
+    for (const [key, known] of states ?? []) {
+      if (known === state) states!.delete(key);
+    }
   }
 
   private statesOf(sessionId: string): Map<string, AppState> {
@@ -1080,11 +1098,11 @@ function actionPhrase(tool: string): string {
 
 /**
  * A click count as it was given, or null when it is not one. Left out: 1.
- * Nothing is rounded or guessed: 1.6 is not a double click, and a word is not
- * a single one.
+ * Nothing is rounded or guessed: 1.6 is not a double click, a word is not a
+ * single one, and an explicit null is not the same as saying nothing.
  */
 function readClickCount(value: unknown): number | null {
-  if (value === undefined || value === null) return 1;
+  if (value === undefined) return 1;
   const count = typeof value === 'string' && /^[123]$/.test(value.trim()) ? Number(value) : value;
   return typeof count === 'number' && Number.isInteger(count) && count >= 1 && count <= 3 ? count : null;
 }

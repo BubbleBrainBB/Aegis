@@ -105,6 +105,10 @@ class ScriptedDriver implements ComputerUseDriver {
   exitGate: Gate | null = null;
   /** The window each next listing shows, by id (null: none); after these, window 71. */
   windowIds: Array<number | null> = [];
+  /** How many next reads of a window fail outright. */
+  failedReads = 0;
+  /** What happened to the driver, in order: `start:1`, `list_apps@1`, `stop`. */
+  log: string[] = [];
   private snapshots = 0;
 
   async start(signal?: AbortSignal): Promise<number> {
@@ -115,6 +119,7 @@ class ScriptedDriver implements ComputerUseDriver {
       if (!this.started) {
         this.started = true;
         this.instance += 1;
+        this.log.push(`start:${this.instance}`);
       }
     }
     if (signal?.aborted) throw new Error(COMPUTER_USE_CANCELLED_MESSAGE);
@@ -133,6 +138,7 @@ class ScriptedDriver implements ComputerUseDriver {
     }
     if (options.instance === undefined) await this.start(options.signal);
     this.calls.push({ tool, args, instance: options.instance });
+    this.log.push(`${tool}@${this.instance}`);
     const held = this.hold?.tool === tool ? this.hold : null;
     if (held) {
       this.hold = null;
@@ -202,6 +208,10 @@ class ScriptedDriver implements ComputerUseDriver {
       case 'launch_app':
         return ok('launched', { pid: 600 });
       case 'get_window_state': {
+        if (this.failedReads > 0) {
+          this.failedReads -= 1;
+          return { isError: true, text: 'window_id_not_found', structured: null, images: [] };
+        }
         this.snapshots += 1;
         const id = `s${String(this.snapshots).padStart(8, '0')}`;
         if (this.unsettledReads > 0) {
@@ -233,6 +243,7 @@ class ScriptedDriver implements ComputerUseDriver {
   async stop(): Promise<void> {
     this.stopped += 1;
     this.started = false;
+    this.log.push('stop');
   }
 
   stopSync(): void {
@@ -946,6 +957,92 @@ async function testWindowThatGoesAway() {
 }
 
 /**
+ * What was known of an app is what the last look at it found. When that look
+ * finds no window, or an action leaves the window unreadable, the indexes of
+ * an earlier look are not there for a later click to use.
+ */
+async function testALookThatFailsForgetsTheLastOne() {
+  const h = harness({ facts: { s1: { fullAccess: true } } });
+  assert.equal((await h.call('s1', 'get_app_state', { app: 'Calculator' })).isError, false);
+  assert.equal((await h.call('s1', 'click', { app: 'Calculator', element_index: '20' })).isError, false);
+  // The same app, looked at again: its window is gone.
+  h.driver.windowIds = Array(60).fill(null);
+  const lost = await h.call('s1', 'get_app_state', { app: 'com.apple.calculator' });
+  assert.equal(lost.isError, true);
+  assert.match(lost.text, /has no window to look at yet/);
+  const clicks = h.driver.of('click').length;
+  for (const app of ['Calculator', 'com.apple.calculator']) {
+    const stale = await h.call('s1', 'click', { app, element_index: '20' });
+    assert.match(stale.text, /Call get_app_state/, `${app}: the first look's indexes are gone`);
+  }
+  assert.equal(h.driver.of('click').length, clicks, 'nothing is sent on a snapshot that is no longer the app');
+  // Another app the session looked at keeps its own state.
+  h.driver.windowIds = [];
+  await h.call('s1', 'get_app_state', { app: 'com.apple.Notes' });
+  h.driver.windowIds = Array(60).fill(null);
+  await h.call('s1', 'get_app_state', { app: 'Calculator' });
+  h.driver.windowIds = [];
+  assert.equal((await h.call('s1', 'click', { app: 'com.apple.Notes', element_index: '20' })).isError, false);
+  h.dispose();
+
+  // An action ran, and the window could not be read after it.
+  const a = harness({ facts: { s1: { fullAccess: true } } });
+  await a.call('s1', 'get_app_state', { app: 'Calculator' });
+  a.driver.failedReads = 1;
+  const acted = await a.call('s1', 'click', { app: 'Calculator', element_index: '20' });
+  assert.equal(acted.isError, false, 'the click itself ran');
+  assert.match(acted.text, /could not be read afterwards/);
+  assert.match((await a.call('s1', 'click', { app: 'Calculator', element_index: '6' })).text, /Call get_app_state/);
+  assert.equal(a.driver.of('click').length, 1);
+  a.dispose();
+}
+
+/**
+ * Changing the driver draws a line in the queue at once: what arrives after
+ * it never reaches the driver that is being replaced, however long that one
+ * takes to get out of the way.
+ */
+async function testNothingNewReachesTheOldDriver() {
+  const h = harness({ facts: { s1: { fullAccess: true } } });
+  // The old driver is still coming up, with a call waiting on it.
+  h.driver.startGate = gate();
+  const waiting = h.call('s1', 'list_apps');
+  await settle();
+  assert.deepEqual(h.driver.log, []);
+  // The driver path changes (the switch stays on), and a new call arrives while the old one is still in the way.
+  const changing = h.gateway.shutdown('driver-changed');
+  const fresh = h.call('s1', 'list_apps');
+  await settle();
+  const cold = h.driver.startGate;
+  h.driver.startGate = null;
+  cold.open();
+  await changing;
+  assert.equal((await waiting).text, COMPUTER_USE_CANCELLED_MESSAGE);
+  assert.equal((await fresh).isError, false);
+  assert.deepEqual(h.driver.log, ['start:1', 'stop', 'start:2', 'check_permissions@2', 'list_apps@2'],
+    'the old driver took nothing after the change began; the new call went to the new one');
+  h.dispose();
+
+  // The same with a call in flight on the old driver.
+  const f = harness({ facts: { s1: { fullAccess: true } } });
+  await f.call('s1', 'list_apps');
+  const held = f.driver.holdNext('list_apps');
+  f.driver.exitGate = gate();
+  const inFlight = f.call('s1', 'list_apps');
+  await held.entered.promise;
+  const off = f.gateway.shutdown('driver-changed');
+  const next = f.call('s1', 'list_apps');
+  await settle();
+  f.driver.exitGate.open();
+  await off;
+  await inFlight;
+  assert.equal((await next).isError, false);
+  const after = f.driver.log.slice(f.driver.log.indexOf('stop'));
+  assert.deepEqual(after, ['stop', 'start:2', 'check_permissions@2', 'list_apps@2']);
+  f.dispose();
+}
+
+/**
  * The desktop is handed back when the session's action is over, not when it
  * was told to stop: a request that was with the driver is over when the
  * driver process is gone. Until then nobody else gets the desktop.
@@ -1250,6 +1347,9 @@ async function testActionMapping() {
     ['click', { app: 'Calculator', element_index: '20', click_count: 0 }, /click_count must be a whole number/],
     ['click', { app: 'Calculator', x: 1, y: 2, click_count: 2.5 }, /click_count must be a whole number/],
     ['click', { app: 'Calculator', element_index: '20', click_count: true }, /click_count must be a whole number/],
+    // Said and empty is not the same as not said: an explicit null is refused, not read as one click.
+    ['click', { app: 'Calculator', element_index: '20', click_count: null }, /click_count must be a whole number/],
+    ['click', { app: 'Calculator', x: 1, y: 2, click_count: null }, /click_count must be a whole number/],
     ['scroll', { app: 'Calculator', element_index: '1', direction: 'sideways' }, /direction must be/],
     ['press_key', { app: 'Calculator', key: 'hyper+x' }, /not a modifier/],
     ['press_key', { app: 'Calculator', key: 'asterisk' }, /type other characters with type_text/],
@@ -1684,6 +1784,8 @@ async function main() {
   await testSwitchOffEndsWhatWaits();
   await testStopEndsWhatIsOnItsWay();
   await testWindowThatGoesAway();
+  await testALookThatFailsForgetsTheLastOne();
+  await testNothingNewReachesTheOldDriver();
   await testLeaseHandedBackAfterTheActionEnded();
   await testRecheckedAfterThePermissionProbe();
   await testRecheckedWhenSent();

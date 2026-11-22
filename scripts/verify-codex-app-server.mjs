@@ -51,7 +51,7 @@ const elicitationMod = require('../dist-electron/electron/libs/codex-computer-us
 const { computerUseGrants } = grantsMod.default ?? grantsMod;
 const leaseMod = require('../dist-electron/electron/libs/codex-computer-use.js');
 const { computerUseLease } = leaseMod.default ?? leaseMod;
-const { wrappedComputerUseElicitationFixture } = elicitationMod.default ?? elicitationMod;
+const { wrappedComputerUseElicitationFixture, codexToolApprovalElicitationFixture } = elicitationMod.default ?? elicitationMod;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FAKE_BIN = join(__dirname, 'fake-codex-app-server.mjs');
@@ -1915,37 +1915,170 @@ function liveChild() {
 async function testComputerUseLease() {
   console.log('Computer Use lease (shared with the cua-driver gateway)');
   const freeDesktop = () => computerUseLease.releaseThread(computerUseLease.currentOwner()?.threadId ?? '');
-  const elicit = (manager, id, tool) =>
+  // The request as codex-cli 0.166.0 really sends it (no tool name but in the question).
+  const elicit = (manager, id, tool, extra = {}) =>
     manager.handleStdoutLine(JSON.stringify({
       jsonrpc: '2.0',
       id,
       method: 'mcpServer/elicitation/request',
-      params: wrappedComputerUseElicitationFixture({ threadId: 'p1', tool, app: 'com.apple.finder' }),
+      params: codexToolApprovalElicitationFixture({ threadId: 'p1', tool, params: { app: 'com.apple.finder' }, ...extra }),
     }));
-
-  // While another session holds the desktop, a Codex Computer use call that
-  // asks is declined whatever it is: looking is held to the lease like acting.
-  {
+  const MODES = {
+    Default: { codexPermissionMode: 'defaultPermissions' },
+    Plan: { codexPermissionMode: 'defaultPermissions', codexExecutionMode: 'plan' },
+    'Full Access': { codexPermissionMode: 'fullAccess' },
+  };
+  const session = (mode) => {
     freeDesktop();
     computerUseGrants.revokeAll('test-reset');
-    const { adapter, manager, outbound, events } = createCapturingAdapter();
-    seedSession(manager, 't1', 'p1', { status: 'running', codexPermissionMode: 'defaultPermissions' });
-    adapter.sessions.set('t1', { threadId: 't1', providerThreadId: 'p1', status: 'running' });
+    const fixture = createCapturingAdapter();
+    seedSession(fixture.manager, 't1', 'p1', { status: 'running', ...MODES[mode] });
+    fixture.adapter.sessions.set('t1', { threadId: 't1', providerThreadId: 'p1', status: 'running' });
+    const answer = (id) => fixture.outbound.find((m) => m.id === id)?.result?.action;
+    const cards = () => fixture.events.filter((event) => event.type === 'permission_request').length;
+    return { ...fixture, answer, cards };
+  };
+
+  // What each mode asks Codex for, so that Computer use calls reach Aegis at
+  // all: the read tools ask in every mode but Auto (codex-computer-use.test),
+  // and Full Access lets tool approvals through instead of "never".
+  {
+    const { manager } = createCapturingManager();
+    const policy = (mode, execution) => [
+      manager.buildThreadPermissionOptions('/tmp/proj', mode, execution).approvalPolicy,
+      manager.buildTurnPermissionOptions('/tmp/proj', mode, execution).approvalPolicy,
+    ];
+    const GRANULAR = { granular: { sandbox_approval: false, rules: false, skill_approval: false, request_permissions: false, mcp_elicitations: true } };
+    assert.deepEqual(policy('fullAccess', 'execute'), ['never', 'never'], 'without Aegis\'s Computer use server, Full Access is "never" as before');
+    manager.computerUseInjected = true;
+    assert.deepEqual(policy('fullAccess', 'execute'), [GRANULAR, GRANULAR], 'with it, only MCP tool approvals reach the client');
+    assert.deepEqual(policy('defaultPermissions', 'execute'), ['on-request', 'on-request']);
+    assert.deepEqual(policy('defaultPermissions', 'plan'), ['on-request', 'on-request']);
+    assert.deepEqual(policy('fullAccess', 'plan'), ['on-request', 'on-request'], 'Plan is Plan in Full Access too');
+    assert.equal(manager.buildThreadPermissionOptions('/tmp/proj', 'auto', 'execute').approvalsReviewer, 'auto_review');
+    ok('Full Access lets Computer use approvals reach Aegis; the other modes already do');
+  }
+
+  // Default, Plan, Full Access: a look goes through the same check. Nobody
+  // else has the desktop: it runs, with no card and without taking the
+  // desktop. Another session has it: declined.
+  for (const mode of Object.keys(MODES)) {
+    const { manager, answer, cards } = session(mode);
+    elicit(manager, 401, 'get_app_state');
+    elicit(manager, 402, 'list_apps');
+    await sleep(10);
+    assert.equal(answer(401), 'accept', `${mode}: get_app_state runs`);
+    assert.equal(answer(402), 'accept', `${mode}: list_apps runs`);
+    assert.equal(cards(), 0, `${mode}: a look shows no card`);
+    assert.equal(computerUseLease.currentOwner(), null, `${mode}: a look takes nothing`);
     assert.equal(computerUseLease.tryAcquire('bubble-session', 'bubble-call'), true);
-    for (const [id, tool] of [[401, 'get_app_state'], [402, 'list_apps'], [403, 'click']]) {
+    for (const [id, tool] of [[403, 'get_app_state'], [404, 'list_apps'], [405, 'click']]) {
       elicit(manager, id, tool);
       await sleep(10);
-      assert.equal(outbound.find((m) => m.id === id)?.result?.action, 'decline', `${tool} is declined`);
+      assert.equal(answer(id), 'decline', `${mode}: ${tool} is declined while another session holds the desktop`);
     }
-    assert.equal(events.filter((event) => event.type === 'permission_request').length, 0, 'no card for a desktop that is taken');
+    assert.equal(cards(), 0, `${mode}: no card for a desktop that is taken`);
     assert.equal(computerUseLease.currentOwner()?.threadId, 'bubble-session', 'the holder keeps it');
-    // Free again: the same read goes on as it always did.
+    // Aegis itself is not looked at either.
     freeDesktop();
-    elicit(manager, 404, 'get_app_state');
+    elicit(manager, 406, 'get_app_state', { params: { app: 'com.aegis.desktop' } });
     await sleep(10);
-    assert.notEqual(outbound.find((m) => m.id === 404)?.result?.action, 'decline');
-    assert.equal(computerUseLease.currentOwner(), null, 'a read that is let through takes nothing');
-    ok('a read asked for while another session holds the desktop is declined');
+    assert.equal(answer(406), 'decline', `${mode}: Aegis itself is not read`);
+    ok(`${mode}: a look is checked against the lease, then let through without a card`);
+  }
+
+  // An action, per mode.
+  {
+    const { adapter, manager, events, answer, cards } = session('Default');
+    elicit(manager, 411, 'click');
+    await sleep(10);
+    assert.equal(answer(411), undefined, 'Default: an action waits for the user');
+    assert.equal(cards(), 1);
+    assert.equal(events.find((event) => event.type === 'permission_request').input.toolName, 'click', 'the card names the tool of a real request');
+    assert.equal(computerUseLease.actionsOf('t1').length, 1, 'the desktop is taken when the action is asked about');
+    await adapter.respondToRequest('t1', events.find((event) => event.type === 'permission_request').requestId, { behavior: 'deny' });
+    assert.equal(answer(411), 'decline');
+    assert.equal(computerUseLease.currentOwner(), null, 'a declined action gives its hold back');
+    // A tool Codex's question does not name counts as acting.
+    elicit(manager, 412, 'click', { tool: 'click' });
+    manager.handleStdoutLine(JSON.stringify({
+      jsonrpc: '2.0', id: 413, method: 'mcpServer/elicitation/request',
+      params: { ...codexToolApprovalElicitationFixture({ threadId: 'p1', tool: 'x' }), message: 'Allow this?' },
+    }));
+    await sleep(10);
+    assert.equal(answer(413), undefined, 'an unnamed tool is not let through as a look');
+    assert.equal(cards(), 3);
+    ok('Default: an action shows the card and holds the desktop while it is asked about');
+  }
+  {
+    const { manager, answer, cards } = session('Plan');
+    elicit(manager, 421, 'click');
+    await sleep(10);
+    assert.equal(answer(421), 'decline');
+    assert.equal(cards(), 0);
+    assert.equal(computerUseLease.currentOwner(), null);
+    ok('Plan: an action is declined');
+  }
+  {
+    const { manager, answer, cards, notify } = session('Full Access');
+    elicit(manager, 431, 'click');
+    elicit(manager, 432, 'type_text');
+    await sleep(10);
+    assert.equal(answer(431), 'accept');
+    assert.equal(answer(432), 'accept');
+    assert.equal(cards(), 0, 'Full Access asks nobody');
+    assert.equal(computerUseLease.actionsOf('t1').length, 2, 'and takes the desktop for what it does');
+    assert.equal(computerUseLease.tryAcquire('bubble-session', 'bubble-call'), false);
+    // Another turn's end is not this one's.
+    notify('turn/completed', { threadId: 'p1', turn: { id: 'turn-other', status: 'completed', error: null } });
+    await sleep(10);
+    assert.equal(computerUseLease.actionsOf('t1').length, 2, "a terminal of another turn does not end this turn's hold");
+    notify('turn/completed', { threadId: 'p1', turn: { id: 'turn-cu-1', status: 'completed', error: null } });
+    await sleep(10);
+    assert.equal(computerUseLease.currentOwner(), null, "the turn's own terminal does");
+    // Aegis itself, and a desktop that is taken, are refused in Full Access too.
+    elicit(manager, 433, 'click', { params: { app: 'com.aegis.desktop' } });
+    computerUseLease.tryAcquire('bubble-session', 'bubble-call');
+    elicit(manager, 434, 'click');
+    await sleep(10);
+    assert.equal(answer(433), 'decline');
+    assert.equal(answer(434), 'decline');
+    // Another server's tool approval: Full Access never asked about those, and still does not.
+    freeDesktop();
+    elicit(manager, 435, 'create_issue', { server: 'github', params: { title: 'x' } });
+    await sleep(10);
+    assert.equal(answer(435), 'accept');
+    assert.equal(cards(), 0);
+    assert.equal(computerUseLease.currentOwner(), null);
+    ok('Full Access: an action runs without a card, after the same checks, and holds the desktop until its turn ends');
+  }
+
+  // A hold is this taking's own. Two processes of one session number their
+  // requests alike; the exit of one must not end what the other holds.
+  {
+    freeDesktop();
+    const old = createCapturingManager();
+    const next = createCapturingManager();
+    const oldChild = liveChild();
+    const nextChild = liveChild();
+    old.manager.child = oldChild;
+    next.manager.child = nextChild;
+    for (const { manager } of [old, next]) seedSession(manager, 't1', 'p1', { status: 'running', activeTurnId: 'turn-cu-1', codexPermissionMode: 'fullAccess' });
+    elicit(old.manager, 7, 'click');
+    elicit(next.manager, 7, 'click');
+    await sleep(10);
+    const holds = computerUseLease.actionsOf('t1');
+    assert.equal(holds.length, 2, 'the same request id in two processes is two holds');
+    assert.ok(holds.every((id) => id !== '7' && /^codex:/.test(id)), 'named by the taking, not by the request id');
+    oldChild.exit();
+    assert.deepEqual(computerUseLease.actionsOf('t1'), [holds[1]], "the old process exiting ends its own hold, not the new one's");
+    // An error on a process that is still running is not its end.
+    next.manager.cleanupGeneration(next.manager.generation, 'process_error');
+    assert.deepEqual(computerUseLease.actionsOf('t1'), [holds[1]], 'process_error with the child alive keeps the desktop');
+    assert.equal(computerUseLease.tryAcquire('bubble-session', 'bubble-call'), false);
+    nextChild.exit();
+    assert.equal(computerUseLease.currentOwner(), null, 'its exit hands the desktop back');
+    ok('a hold is released by its own turn or its own process, never by a look-alike');
   }
 
   // A stop the turn never confirmed: nobody knows what it is still doing, so
@@ -1956,18 +2089,18 @@ async function testComputerUseLease() {
     const child = liveChild();
     manager.child = child;
     const settled = collect('stop_settled');
-    seedSession(manager, 't1', 'p1', { status: 'running', activeTurnId: 'turn-1' });
-    assert.equal(computerUseLease.tryAcquire('t1', 'action-1'), true);
+    seedSession(manager, 't1', 'p1', { status: 'running', activeTurnId: 'turn-1', codexPermissionMode: 'fullAccess' });
+    elicit(manager, 441, 'click', { turnId: 'turn-1' });
+    await sleep(10);
+    assert.equal(computerUseLease.actionsOf('t1').length, 1);
     responders.set('turn/interrupt', () => ({ result: {} }));
     await manager.stopSession('t1');
     await sleep(500); // > AEGIS_CODEX_STOP_CONFIRM_TIMEOUT_MS (250ms)
     assert.equal(settled[0]?.confirmed, false);
     assert.equal(computerUseLease.currentOwner()?.threadId, 't1', 'not handed back on an unconfirmed stop');
     assert.equal(computerUseLease.tryAcquire('bubble-session', 'bubble-call'), false);
-    // A turn the same thread starts meanwhile (on another process) keeps what it takes.
-    assert.equal(computerUseLease.tryAcquire('t1', 'action-2'), true);
     child.exit();
-    assert.deepEqual(computerUseLease.actionsOf('t1'), ['action-2'], "only the stopped turn's hold goes with the process");
+    assert.equal(computerUseLease.currentOwner(), null);
     ok('unconfirmed stop keeps the desktop until the process has exited');
   }
 
@@ -1976,8 +2109,9 @@ async function testComputerUseLease() {
     freeDesktop();
     const { manager, responders, notify } = createCapturingManager();
     manager.child = liveChild();
-    seedSession(manager, 't1', 'p1', { status: 'running', activeTurnId: 'turn-1' });
-    computerUseLease.tryAcquire('t1', 'action-1');
+    seedSession(manager, 't1', 'p1', { status: 'running', activeTurnId: 'turn-1', codexPermissionMode: 'fullAccess' });
+    elicit(manager, 451, 'click', { turnId: 'turn-1' });
+    await sleep(10);
     responders.set('turn/interrupt', () => ({ result: {} }));
     await manager.stopSession('t1');
     assert.equal(computerUseLease.currentOwner()?.threadId, 't1', 'held while the interrupt is pending');
@@ -1993,8 +2127,9 @@ async function testComputerUseLease() {
     const { manager } = createCapturingManager();
     const child = liveChild();
     manager.child = child;
-    seedSession(manager, 't1', 'p1', { status: 'running', activeTurnId: 'turn-1' });
-    computerUseLease.tryAcquire('t1', 'action-1');
+    seedSession(manager, 't1', 'p1', { status: 'running', activeTurnId: 'turn-1', codexPermissionMode: 'fullAccess' });
+    elicit(manager, 461, 'click', { turnId: 'turn-1' });
+    await sleep(10);
     const stopping = manager.stop();
     await sleep(10);
     assert.ok(child.signals.length >= 1, 'the process was told to go');
@@ -2005,17 +2140,22 @@ async function testComputerUseLease() {
     ok('runtime stop hands the desktop back once the process is gone');
   }
 
-  // A process that is already gone: nothing to wait for.
+  // A process that has exited: nothing to wait for.
   {
     freeDesktop();
     const { manager } = createCapturingManager();
-    seedSession(manager, 't1', 'p1', { status: 'running', activeTurnId: 'turn-1' });
-    computerUseLease.tryAcquire('t1', 'action-1');
+    const child = liveChild();
+    manager.child = child;
+    seedSession(manager, 't1', 'p1', { status: 'running', activeTurnId: 'turn-1', codexPermissionMode: 'fullAccess' });
+    elicit(manager, 471, 'click', { turnId: 'turn-1' });
+    await sleep(10);
+    child.exitCode = 0;
     manager.cleanupGeneration(manager.generation, 'process_exit');
     assert.equal(computerUseLease.currentOwner(), null);
     ok('process exit hands the desktop back at once');
   }
   freeDesktop();
+  computerUseGrants.revokeAll('test-reset');
 }
 
 // ── Design canvas developer message ───────────────────────────────────────

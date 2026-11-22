@@ -70,10 +70,62 @@ function serializeTomlArray(values: readonly string[]): string {
   return `[${values.map((value) => `"${escapeOverrideString(value)}"`).join(', ')}]`;
 }
 
+/**
+ * What Codex is told for Full Access once Aegis injects its Computer use
+ * server: nothing asks, as with `never`, except that tool approvals of MCP
+ * servers reach the client. Aegis answers those itself, at once, after the
+ * check every Computer use call gets (one session has the desktop at a time).
+ *
+ * With `never` Codex approves such calls on its own and Aegis never hears of
+ * them (measured on codex-cli 0.166.0), so a Full Access session would read
+ * and act on the desktop while another session holds it. Every category but
+ * `mcp_elicitations` stays off, which is what `never` does with them: a
+ * command that would need approval is refused, not asked about.
+ */
+export const CODEX_FULL_ACCESS_WITH_COMPUTER_USE_APPROVAL = {
+  granular: {
+    sandbox_approval: false,
+    rules: false,
+    skill_approval: false,
+    request_permissions: false,
+    mcp_elicitations: true,
+  },
+} as const;
+
+/** `never`, or the policy above when this process was given Aegis's Computer use server. */
+export function codexFullAccessApprovalPolicy(
+  computerUseInjected: boolean
+): 'never' | typeof CODEX_FULL_ACCESS_WITH_COMPUTER_USE_APPROVAL {
+  return computerUseInjected ? CODEX_FULL_ACCESS_WITH_COMPUTER_USE_APPROVAL : 'never';
+}
+
+/**
+ * Whether Computer use's read tools ask Aegis before they run, for a session
+ * in this permission mode. Not in Auto: there Codex's own reviewer answers
+ * approvals, so a read that asked would wait for a review each time (seconds,
+ * measured on codex-cli 0.166.0) and Aegis would still not be asked.
+ */
+export function computerUseReadsAskAegis(permissionMode: string | null | undefined): boolean {
+  return permissionMode !== 'auto';
+}
+
+/** Whether these spawn arguments give the process Aegis's Computer use server. */
+export function injectsComputerUseServer(args: readonly string[]): boolean {
+  return args.some((arg) => arg.startsWith(`mcp_servers.${AEGIS_COMPUTER_USE_SERVER_NAME}.command=`));
+}
+
 export function buildComputerUseMcpOverrideArgs(input: {
   clientPath: string | null;
   policy: ComputerUseSpawnPolicy;
   hasNodeRepl: boolean;
+  /**
+   * Whether the two read tools ask before they run (default: they do). They
+   * then reach Aegis like the tools that act, so that a session cannot look
+   * at the desktop while another holds it; Aegis lets them through without
+   * a card. Off in Auto mode, where Codex's own reviewer would answer
+   * instead of Aegis (seconds per look, and no check).
+   */
+  readsAsk?: boolean;
 }): string[] {
   const args: string[] = [];
   const push = (assignment: string) => {
@@ -99,6 +151,12 @@ export function buildComputerUseMcpOverrideArgs(input: {
     push(`${prefix}.tool_timeout_sec=120`);
     push(`${prefix}.default_tools_approval_mode="writes"`);
     push(`${prefix}.enabled_tools=${serializeTomlArray(tools)}`);
+    if (input.readsAsk !== false) {
+      // Per tool, not as the server's default: the tools that act keep "writes".
+      for (const tool of COMPUTER_USE_READ_ONLY_TOOLS) {
+        push(`${prefix}.tools.${tool}.approval_mode="prompt"`);
+      }
+    }
   }
 
   if (input.hasNodeRepl) {
