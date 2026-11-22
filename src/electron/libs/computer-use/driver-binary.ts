@@ -8,7 +8,7 @@
 import { execFileSync } from 'child_process';
 import { existsSync, statSync } from 'fs';
 import path from 'path';
-import type { ComputerUseDriverStatus } from '../../../shared/computer-use';
+import { cuaDriverAssetName, cuaDriverReleaseUrl, type ComputerUseDriverStatus } from '../../../shared/computer-use';
 import { baseCuaDriverEnv } from './driver-env';
 import { getComputerUseSettings, isComputerUsePlatformSupported } from './settings';
 
@@ -35,6 +35,15 @@ export function cuaDriverCandidates(
   // dist-electron/electron/libs/computer-use → the repo root.
   candidates.push(path.resolve(__dirname, '..', '..', '..', '..', 'native', 'cua-driver', 'dist', BINARY_NAME));
   return candidates;
+}
+
+/**
+ * Whether this runs from a source checkout, where `npm run fetch:cua-driver`
+ * exists. An installed app carries no scripts folder, so the person there is
+ * told where to download the driver instead.
+ */
+function isSourceCheckout(): boolean {
+  return existsSync(path.resolve(__dirname, '..', '..', '..', '..', 'scripts', 'fetch-cua-driver.mjs'));
 }
 
 const versionByFile = new Map<string, string | null>();
@@ -74,6 +83,8 @@ export function resolveCuaDriver(options: {
   configuredPath?: string;
   platform?: NodeJS.Platform;
   readVersion?: (binaryPath: string) => string | null;
+  /** Whether `npm run fetch:cua-driver` exists here; found out when not given. */
+  sourceCheckout?: boolean;
 } = {}): ComputerUseDriverStatus {
   const pinnedVersion = CUA_DRIVER_VERSION;
   if (!isComputerUsePlatformSupported(options.platform)) {
@@ -92,7 +103,9 @@ export function resolveCuaDriver(options: {
       path: null,
       version: null,
       pinnedVersion,
-      message: `Computer use isn't available in this build: cua-driver ${pinnedVersion} was not found. Run "npm run fetch:cua-driver", or set its path here.`,
+      message: (options.sourceCheckout ?? isSourceCheckout())
+        ? `cua-driver ${pinnedVersion} was not found. Run "npm run fetch:cua-driver", or set its path below.`
+        : `cua-driver ${pinnedVersion} was not found. It does not come with Aegis yet: download ${cuaDriverAssetName(pinnedVersion)} from ${cuaDriverReleaseUrl(pinnedVersion)}, unpack it, and set the path of the cua-driver file below.`,
     };
   }
   const version = (options.readVersion ?? readCuaDriverVersion)(binaryPath);

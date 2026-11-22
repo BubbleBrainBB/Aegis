@@ -600,6 +600,16 @@ export function formatComputerUseLabel(
 /** Whether the pinned cua-driver binary is there to run. */
 export type ComputerUseDriverState = 'ready' | 'missing' | 'version-mismatch' | 'unsupported-platform';
 
+/** The page of the cua-driver release Aegis runs, for someone who has to download it. */
+export function cuaDriverReleaseUrl(version: string): string {
+  return `https://github.com/trycua/cua/releases/tag/cua-driver-rs-v${version}`;
+}
+
+/** The archive on that page that holds the macOS binary. */
+export function cuaDriverAssetName(version: string): string {
+  return `cua-driver-rs-${version}-darwin-universal-binary.tar.gz`;
+}
+
 export interface ComputerUseDriverStatus {
   state: ComputerUseDriverState;
   /** The binary Aegis would run; null when none was found. */

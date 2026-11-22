@@ -1482,6 +1482,13 @@ function testDriverSetup() {
   if (!existsSync(join(__dirname, '..', '..', 'native', 'cua-driver', 'dist', 'cua-driver'))) {
     assert.equal(missing.state, 'missing');
     assert.match(missing.message || '', /fetch:cua-driver/);
+    // An installed app has no npm scripts: it is told where the driver is downloaded.
+    const installed = resolveCuaDriver({ ...lookup, env: { AEGIS_CUA_DRIVER_PATH: join(dir, 'absent') }, readVersion: () => null, sourceCheckout: false });
+    assert.equal(installed.state, 'missing');
+    assert.doesNotMatch(installed.message || '', /npm run/);
+    assert.ok((installed.message || '').includes(`https://github.com/trycua/cua/releases/tag/cua-driver-rs-v${CUA_DRIVER_VERSION}`));
+    assert.ok((installed.message || '').includes(/export const ASSET = `([^`]+)`/.exec(fetchScript)![1].replace('${VERSION}', CUA_DRIVER_VERSION)));
+    assert.ok((/export const URL = `([^`]+)`/.exec(fetchScript)?.[1] ?? '').startsWith('https://github.com/trycua/cua/releases/download/cua-driver-rs-v${VERSION}/'));
   }
   writeFileSync(binary, '');
   assert.equal(resolveCuaDriver({ ...lookup, readVersion: () => '0.56.9' }).state, 'version-mismatch');

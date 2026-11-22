@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import type { ComputerUseSettingsView } from '../../../shared/computer-use';
+import { cuaDriverReleaseUrl, type ComputerUseSettingsView } from '../../../shared/computer-use';
 import { SettingsGroup, SettingsRow, SettingsToggle } from './SettingsPrimitives';
 
 /**
@@ -73,7 +73,7 @@ export function ComputerUseSettings() {
   return (
     <SettingsGroup
       title="Computer use"
-      description="Lets Bubble look at and operate apps on this Mac. It can read any window except Aegis's own; every click, key press or typed text asks you first unless the conversation runs in Full Access."
+      description="Lets agents look at and operate apps on this Mac: Bubble, Claude, DeepSeek Harness, Qoder, Devin, MiniMax Code, MiMo Code, Grok Build, Pi and OpenCode. They can read any window except Aegis's own; every click, key press or typed text asks you first unless the conversation runs in Full Access. Codex has its own Computer use, which this switch does not change."
     >
       <SettingsRow
         variant="card"
@@ -124,6 +124,16 @@ export function ComputerUseSettings() {
               disabled={busy}
               spellCheck={false}
             />
+            {driverReady ? null : (
+              <button
+                type="button"
+                className="settings-button"
+                data-computer-use-driver-download
+                onClick={() => void window.electron.openExternalUrl(cuaDriverReleaseUrl(view.driver.pinnedVersion))}
+              >
+                Download page
+              </button>
+            )}
             <button
               type="button"
               className="settings-button"
