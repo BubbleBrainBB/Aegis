@@ -6,11 +6,13 @@ import { loadPreferredDevinPermissionMode } from './devin-permission';
 import { loadPreferredKimiPermissionMode } from './kimi-permission';
 import { loadPreferredMimoPermissionMode } from './mimo-permission';
 import { loadPreferredMinimaxPermissionMode } from './minimax-permission';
+import { loadPreferredAntigravityPermissionMode } from './antigravity-permission';
 import { loadPreferredQoderPermissionMode } from './qoder-permission';
 
 type ContinuePermissions = Pick<SessionContinuePayload,
   'kimiPermissionMode' | 'grokPermissionMode' | 'qoderPermissionMode' |
-  'deepseekPermissionMode' | 'bubblePermissionMode' | 'devinPermissionMode' | 'mimoPermissionMode' | 'minimaxPermissionMode'>;
+  'deepseekPermissionMode' | 'bubblePermissionMode' | 'devinPermissionMode' | 'mimoPermissionMode' | 'minimaxPermissionMode' |
+  'antigravityPermissionMode'>;
 
 /**
  * Follow-ups without a mounted chat composer still need its permission
@@ -39,6 +41,8 @@ export function sessionContinuePermissions(
       return { mimoPermissionMode: loadPreferredMimoPermissionMode() };
     case 'minimax':
       return { minimaxPermissionMode: loadPreferredMinimaxPermissionMode() };
+    case 'antigravity':
+      return { antigravityPermissionMode: loadPreferredAntigravityPermissionMode() };
     case 'bubble':
       return { bubblePermissionMode: session.bubblePermissionMode === 'plan'
         ? 'plan' : loadPreferredBubblePermissionMode() };

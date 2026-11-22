@@ -54,6 +54,9 @@ import type {
   MinimaxModelConfig,
   MinimaxRuntimeStatus,
   MinimaxThinkingEfforts,
+  AntigravityModelConfig,
+  AntigravityRuntimeStatus,
+  AntigravityThoughtLevels,
   DeepseekKeyStatus,
   BrowserUsePermissionSettings,
   PiModelConfig,
@@ -316,6 +319,12 @@ declare global {
     getMinimaxModelConfig: () => Promise<MinimaxModelConfig>;
     getMinimaxRuntimeStatus: () => Promise<MinimaxRuntimeStatus>;
     getMinimaxThinkingEfforts: (model: string | null) => Promise<MinimaxThinkingEfforts>;
+    getAntigravityModelConfig: () => Promise<AntigravityModelConfig>;
+    getAntigravityRuntimeStatus: (refresh?: boolean) => Promise<AntigravityRuntimeStatus>;
+    getAntigravityThoughtLevels: (model: string | null) => Promise<AntigravityThoughtLevels>;
+    setAntigravityCliPath: (
+      value: string | null
+    ) => Promise<{ ok: true; status: AntigravityRuntimeStatus } | { ok: false; message: string }>;
     getDeepseekKeyStatus: () => Promise<DeepseekKeyStatus>;
     getDeepseekApiKey: () => Promise<string>;
     setDeepseekApiKey: (apiKey: string) => Promise<DeepseekKeyStatus>;

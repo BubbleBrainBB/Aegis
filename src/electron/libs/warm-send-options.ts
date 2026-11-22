@@ -34,6 +34,8 @@ export type WarmSendOptions = Pick<
   | 'mimoReasoningEffort'
   | 'minimaxPermissionMode'
   | 'minimaxThinkingEffort'
+  | 'antigravityPermissionMode'
+  | 'antigravityThoughtLevel'
   | 'opencodePermissionMode'
   | 'qoderPermissionMode'
   | 'bubblePermissionMode'
@@ -61,6 +63,8 @@ export function buildWarmSendOptions(next: WarmSendOptions): WarmSendOptions {
     mimoReasoningEffort: next.mimoReasoningEffort,
     minimaxPermissionMode: next.minimaxPermissionMode,
     minimaxThinkingEffort: next.minimaxThinkingEffort,
+    antigravityPermissionMode: next.antigravityPermissionMode,
+    antigravityThoughtLevel: next.antigravityThoughtLevel,
     opencodePermissionMode: next.opencodePermissionMode,
     qoderPermissionMode: next.qoderPermissionMode,
     bubblePermissionMode: next.bubblePermissionMode,

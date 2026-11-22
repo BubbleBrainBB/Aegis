@@ -36,9 +36,9 @@ const run='https://github.com/BubbleBrainBB/Aegis/actions/runs/18842391207';
 window.qaOutput=['Refreshing checks status every 10 seconds. Press Ctrl+C to quit.','',
  'CI/Lint & Typecheck\\tpass\\t1m12s\\t'+run+'/job/53719921034','CI/Unit tests\\tpass\\t2m40s\\t'+run+'/job/53719921102',
  'CI/Test & Build (macOS)\\tpending\\t0\\t'+run+'/job/53719921187',''].join('\\n');
-for(const p of ['Claude','Codex','Kimi','Grok','Opencode','Pi','Bubble','Qoder','Deepseek','Devin','Mimo','Minimax'])window.electron['get'+p+'ModelConfig']=async()=>({defaultModel:null,options:[],availableModels:[]});
+for(const p of ['Claude','Codex','Kimi','Grok','Opencode','Pi','Bubble','Qoder','Deepseek','Devin','Mimo','Minimax','Antigravity'])window.electron['get'+p+'ModelConfig']=async()=>({defaultModel:null,options:[],availableModels:[]});
 window.electron.getDevinThoughtLevels=async()=>({model:null,levels:[],defaultLevel:null});
-window.electron.getMinimaxThinkingEfforts=async()=>({model:null,levels:[],defaultLevel:null});
+window.electron.getMinimaxThinkingEfforts=async()=>({model:null,levels:[],defaultLevel:null});window.electron.getAntigravityThoughtLevels=async()=>({model:null,levels:[],defaultLevel:null});
 const store=useAppStore.getState();const id=store.createDraftSession('/tmp');
 const call={type:'assistant',uuid:'a1',createdAt:Date.now()-252000,message:{role:'assistant',content:[{type:'tool_use',id:'toolu_b1',name:'Bash',input:{command:'gh pr checks 103 --watch',run_in_background:true,description:'Wait for CI rerun to finish'}}]}};
 useAppStore.setState(s=>({sessions:{...s.sessions,[id]:{...s.sessions[id],isDraft:false,provider:'claude',status:'idle',model:'claude-opus-5-5',messages:[call],

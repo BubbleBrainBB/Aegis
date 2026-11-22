@@ -233,7 +233,8 @@ function normalizeAutomationProvider(value?: string | null): AgentProvider {
     value === 'deepseek' ||
     value === 'devin' ||
     value === 'mimo' ||
-    value === 'minimax'
+    value === 'minimax' ||
+    value === 'antigravity'
     ? value
     : 'claude';
 }
@@ -384,6 +385,7 @@ export function initialize(): void {
       devin_session_id TEXT,
       mimo_session_id TEXT,
       minimax_session_id TEXT,
+      antigravity_session_id TEXT,
       provider TEXT NOT NULL DEFAULT 'claude',
       model TEXT,
       conversation_scope TEXT DEFAULT 'project',
@@ -402,6 +404,7 @@ export function initialize(): void {
       devin_permission_mode TEXT,
       mimo_permission_mode TEXT,
       minimax_permission_mode TEXT,
+      antigravity_permission_mode TEXT,
       status TEXT NOT NULL DEFAULT 'idle',
       cwd TEXT,
       allowed_tools TEXT,
@@ -574,6 +577,7 @@ export function initialize(): void {
   ensureColumn('sessions', 'devin_session_id', 'TEXT');
   ensureColumn('sessions', 'mimo_session_id', 'TEXT');
   ensureColumn('sessions', 'minimax_session_id', 'TEXT');
+  ensureColumn('sessions', 'antigravity_session_id', 'TEXT');
   ensureColumn('sessions', 'provider', "TEXT NOT NULL DEFAULT 'claude'");
   ensureColumn('sessions', 'model', 'TEXT');
   ensureColumn('sessions', 'conversation_scope', "TEXT DEFAULT 'project'");
@@ -593,6 +597,7 @@ export function initialize(): void {
   ensureColumn('sessions', 'devin_permission_mode', 'TEXT');
   ensureColumn('sessions', 'mimo_permission_mode', 'TEXT');
   ensureColumn('sessions', 'minimax_permission_mode', 'TEXT');
+  ensureColumn('sessions', 'antigravity_permission_mode', 'TEXT');
   ensureColumn('sessions', 'todo_state', "TEXT DEFAULT 'todo'");
   ensureColumn('sessions', 'pinned', 'INTEGER DEFAULT 0');
   ensureColumn('sessions', 'folder_path', 'TEXT');
@@ -913,6 +918,9 @@ function getSessionSourceOrigin(sessionId: string): SessionSource {
   if (row.provider === 'minimax') {
     return 'minimax_local';
   }
+  if (row.provider === 'antigravity') {
+    return 'antigravity_local';
+  }
   return 'aegis';
 }
 
@@ -1177,7 +1185,9 @@ function backfillMessageMetadata(): void {
                                 ? 'mimo_local'
                                 : row.provider === 'minimax'
                                   ? 'minimax_local'
-                                  : 'aegis';
+                                  : row.provider === 'antigravity'
+                                    ? 'antigravity_local'
+                                    : 'aegis';
         const searchText = normalizeSearchText(extractSearchableMessageText(parsed));
         updateStmt.run(extractMessageType(parsed), sourceOrigin, searchText, row.created_at, row.id);
         upsertSearchIndexStmt.run(row.id, row.session_id, sourceOrigin, searchText, row.created_at);
@@ -1487,7 +1497,7 @@ export function createSession(params: {
   associatedWorktreeRef?: string | null;
   allowedTools?: string;
   prompt?: string;
-  provider?: 'claude' | 'codex' | 'opencode' | 'kimi' | 'grok' | 'pi' | 'qoder' | 'bubble' | 'deepseek' | 'devin' | 'mimo' | 'minimax';
+  provider?: 'claude' | 'codex' | 'opencode' | 'kimi' | 'grok' | 'pi' | 'qoder' | 'bubble' | 'deepseek' | 'devin' | 'mimo' | 'minimax' | 'antigravity';
   model?: string;
   scope?: SessionScope;
   agentId?: string | null;
@@ -2202,8 +2212,17 @@ export function updateMinimaxSessionId(sessionId: string, minimaxSessionId: stri
   stmt.run(minimaxSessionId, now, sessionId);
 }
 
+// Update the Antigravity ACP session id
+export function updateAntigravitySessionId(sessionId: string, antigravitySessionId: string): void {
+  const now = Date.now();
+  const stmt = getDb().prepare(`
+    UPDATE sessions SET antigravity_session_id = ?, updated_at = ? WHERE id = ?
+  `);
+  stmt.run(antigravitySessionId, now, sessionId);
+}
+
 // 更新 Session Provider
-export function updateSessionProvider(sessionId: string, provider: 'claude' | 'codex' | 'opencode' | 'kimi' | 'grok' | 'pi' | 'qoder' | 'bubble' | 'deepseek' | 'devin' | 'mimo' | 'minimax'): void {
+export function updateSessionProvider(sessionId: string, provider: 'claude' | 'codex' | 'opencode' | 'kimi' | 'grok' | 'pi' | 'qoder' | 'bubble' | 'deepseek' | 'devin' | 'mimo' | 'minimax' | 'antigravity'): void {
   const now = Date.now();
   const stmt = getDb().prepare(`
     UPDATE sessions SET provider = ?, updated_at = ? WHERE id = ?
@@ -2322,6 +2341,7 @@ const AGENT_PERMISSION_MODE_COLUMNS = {
   devin: 'devin_permission_mode',
   mimo: 'mimo_permission_mode',
   minimax: 'minimax_permission_mode',
+  antigravity: 'antigravity_permission_mode',
 } as const;
 
 export type StoredPermissionModeProvider = keyof typeof AGENT_PERMISSION_MODE_COLUMNS;
@@ -2331,7 +2351,7 @@ export function storesPermissionMode(provider: string | null | undefined): provi
 }
 
 /**
- * The permission mode a Bubble, Devin, MiMo or MiniMax session now runs with.
+ * The permission mode a Bubble, Devin, MiMo, MiniMax or Antigravity session now runs with.
  * Their runners hold it while they live; this keeps it for the session, so a
  * later message (or another device) finds it after the runner is gone. The
  * caller has checked the value against the agent's own modes.
@@ -2394,6 +2414,7 @@ export function rememberSessionPermissionMode(
     devin?: string;
     mimo?: string;
     minimax?: string;
+    antigravity?: string;
   },
 ): void {
   if (!storesPermissionMode(provider)) return;
@@ -3797,6 +3818,7 @@ const USAGE_PROVIDER_MODEL_FALLBACK: Partial<Record<AgentProvider, string>> = {
   devin: 'Devin',
   mimo: 'MiMo',
   minimax: 'MiniMax',
+  antigravity: 'Antigravity',
 };
 
 function looksLikeClaudeModelAlias(value: string): boolean {
@@ -3805,7 +3827,7 @@ function looksLikeClaudeModelAlias(value: string): boolean {
 
 // Providers whose model ids come from their own catalog: a Claude name there
 // (Devin's claude-opus-…) is the model the user picked, not an SDK alias.
-const OWN_MODEL_ID_PROVIDERS = new Set<AgentProvider>(['devin']);
+const OWN_MODEL_ID_PROVIDERS = new Set<AgentProvider>(['devin', 'antigravity']);
 
 // Picks the model name to attribute a result row to. For claude the session
 // model is authoritative; for Claude-compatible providers, prefer the
@@ -4592,7 +4614,7 @@ function priceDevinRequests(requests: DevinRequest[], model: string) {
 
 // Builds a usage report for any provider whose runner stores Claude-shaped
 // `result` messages: claude itself and every other provider except codex and
-// opencode (kimi, grok, pi, qoder, bubble, deepseek, devin, mimo, minimax).
+// opencode (kimi, grok, pi, qoder, bubble, deepseek, devin, mimo, minimax, antigravity).
 function getClaudeProtocolUsageReport(
   provider: AgentProvider,
   days: ClaudeUsageRangeDays = 30

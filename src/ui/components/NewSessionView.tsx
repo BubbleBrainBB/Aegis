@@ -396,6 +396,14 @@ export function NewSessionView() {
           agentSelection.provider === 'minimax'
             ? agentSelection.minimaxThinkingEffort || undefined
             : undefined,
+        antigravityPermissionMode:
+          agentSelection.provider === 'antigravity'
+            ? agentSelection.antigravityPermissionMode
+            : undefined,
+        antigravityThoughtLevel:
+          agentSelection.provider === 'antigravity'
+            ? agentSelection.antigravityThoughtLevel || undefined
+            : undefined,
         bubblePermissionMode:
           agentSelection.provider === 'bubble'
             ? agentSelection.bubbleExecutionMode === 'plan'
@@ -784,6 +792,15 @@ export function NewSessionView() {
                         menuSide="top"
                       />
                     )}
+                    {agentSelection.provider === 'antigravity' && (
+                      <PermissionModePicker
+                        value={agentSelection.antigravityPermissionMode}
+                        options={agentSelection.antigravityPermissionModeOptions}
+                        onChange={agentSelection.setAntigravityPermissionMode}
+                        disabled={pendingStart}
+                        menuSide="top"
+                      />
+                    )}
                     {agentSelection.provider === 'bubble' && (
                       <PermissionModePicker
                         value={agentSelection.bubblePermissionMode}
@@ -851,6 +868,9 @@ export function NewSessionView() {
                       minimaxThinkingEfforts={agentSelection.minimaxThinkingEfforts}
                       minimaxThinkingEffort={agentSelection.minimaxThinkingEffort}
                       onMinimaxThinkingEffortChange={agentSelection.setMinimaxThinkingEffort}
+                      antigravityThoughtLevels={agentSelection.antigravityThoughtLevels}
+                      antigravityThoughtLevel={agentSelection.antigravityThoughtLevel}
+                      onAntigravityThoughtLevelChange={agentSelection.setAntigravityThoughtLevel}
                       codexFastMode={agentSelection.codexFastMode}
                       onCodexFastModeChange={(enabled) =>
                         agentSelection.selectAgentConfiguration({ provider: 'codex', codexFastMode: enabled })

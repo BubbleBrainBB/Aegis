@@ -12,6 +12,7 @@ import { DeepseekSdkAdapter } from './provider/deepseek-sdk-adapter';
 import { DevinAcpAdapter } from './provider/devin-acp-adapter';
 import { MimoAcpAdapter } from './provider/mimo-acp-adapter';
 import { MinimaxAcpAdapter } from './provider/minimax-acp-adapter';
+import { AntigravityAcpAdapter } from './provider/antigravity-acp-adapter';
 import { computerUseTranscript } from './computer-use/provider-mcp';
 import { isDev } from '../util';
 
@@ -39,6 +40,7 @@ export function ensureProviderService(): void {
   service.registerAdapter(new DevinAcpAdapter());
   service.registerAdapter(new MimoAcpAdapter());
   service.registerAdapter(new MinimaxAcpAdapter());
+  service.registerAdapter(new AntigravityAcpAdapter());
 
   if (isDev()) {
     console.log('[ProviderService] initialized with adapters:', service.listAdapters().map((a) => a.provider));
@@ -200,6 +202,8 @@ function runProviderServiceAgent(options: RunnerOptions): RunnerHandle {
       mimoReasoningEffort: options.mimoReasoningEffort,
       minimaxPermissionMode: options.minimaxPermissionMode,
       minimaxThinkingEffort: options.minimaxThinkingEffort,
+      antigravityPermissionMode: options.antigravityPermissionMode,
+      antigravityThoughtLevel: options.antigravityThoughtLevel,
       opencodePermissionMode: options.opencodePermissionMode,
       qoderPermissionMode: options.qoderPermissionMode,
       bubblePermissionMode: options.bubblePermissionMode,
@@ -340,6 +344,8 @@ function runProviderServiceAgent(options: RunnerOptions): RunnerHandle {
             mimoReasoningEffort: sendOptions?.mimoReasoningEffort ?? options.mimoReasoningEffort,
             minimaxPermissionMode: sendOptions?.minimaxPermissionMode,
             minimaxThinkingEffort: sendOptions?.minimaxThinkingEffort ?? options.minimaxThinkingEffort,
+            antigravityPermissionMode: sendOptions?.antigravityPermissionMode,
+            antigravityThoughtLevel: sendOptions?.antigravityThoughtLevel ?? options.antigravityThoughtLevel,
             opencodePermissionMode:
               sendOptions?.opencodePermissionMode ?? options.opencodePermissionMode,
             qoderPermissionMode: sendOptions?.qoderPermissionMode ?? options.qoderPermissionMode,

@@ -74,7 +74,7 @@ const planAt = ipc.indexOf('const claudePlan =');
 const dispatchAt = ipc.indexOf('existingEntry.handle.send(', planAt);
 assert.ok(planAt > 0 && dispatchAt > planAt, 'plan precedes the warm dispatch');
 const span = ipc.slice(planAt, dispatchAt);
-const otherProviderGate = /await get(Opencode|Kimi|Grok|Devin|Mimo|Minimax)RuntimeStatus\(\)/;
+const otherProviderGate = /await get(Opencode|Kimi|Grok|Devin|Mimo|Minimax|Antigravity)RuntimeStatus\(\)/;
 for (const line of span.split('\n').filter(l => !l.trim().startsWith('//') && /\bawait\b/.test(l))) {
   assert.match(line, otherProviderGate, `no await may sit between the Claude plan and its dispatch: ${line.trim()}`);
 }

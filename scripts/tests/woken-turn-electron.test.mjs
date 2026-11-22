@@ -27,9 +27,9 @@ window.electron = {
  getSessionGoal:async()=>({goal:null,supported:false,revision:0}),onSessionGoalChanged:()=>()=>{},
  getBubbleProvidersConfig:async()=>({providers:[]}),getProjectFolders:async()=>[],getModels:async()=>[],
 };
-for(const p of ['Claude','Kimi','Grok','Opencode','Pi','Bubble','Qoder','Deepseek','Devin','Mimo','Minimax','Codex'])window.electron['get'+p+'ModelConfig']=async()=>({defaultModel:null,options:[],availableModels:[]});
+for(const p of ['Claude','Kimi','Grok','Opencode','Pi','Bubble','Qoder','Deepseek','Devin','Mimo','Minimax','Antigravity','Codex'])window.electron['get'+p+'ModelConfig']=async()=>({defaultModel:null,options:[],availableModels:[]});
 window.electron.getDevinThoughtLevels=async()=>({model:null,levels:[],defaultLevel:null});
-window.electron.getMinimaxThinkingEfforts=async()=>({model:null,levels:[],defaultLevel:null});
+window.electron.getMinimaxThinkingEfforts=async()=>({model:null,levels:[],defaultLevel:null});window.electron.getAntigravityThoughtLevels=async()=>({model:null,levels:[],defaultLevel:null});
 const store=useAppStore;
 const chatId=store.getState().createDraftSession('/tmp/woken-turn');
 const otherId=store.getState().createDraftSession('/tmp/woken-turn-other');

@@ -43,9 +43,9 @@ const PATCH=${JSON.stringify(PATCH)};
 window.electron={getProjectTree:async()=>null,cancelProjectTreeRead:async()=>{},getRecentCwds:async()=>[],getProjectGitSummary:async()=>({isGitRepository:false}),getAgentRuntimeDirectory:async()=>({checkedAt:Date.now(),entries:[]}),getSessionUserPrompts:async()=>[],getSessionGoal:async()=>({goal:null,supported:false,revision:0}),onSessionGoalChanged:()=>()=>{},getBubbleProvidersConfig:async()=>({providers:[]}),getProjectFolders:async()=>[],getModels:async()=>[],listCodexSkills:async()=>({skills:[]}),
  getGitPatch:async(cwd,scope)=>({ok:true,scope,patch:PATCH,repoRoot:cwd,truncated:false}),getGitCommits:async()=>({ok:true,commits:[]}),getGitOverview:async()=>({ok:false}),getGitBranchChanges:async()=>({ok:false}),
  sendClientEvent:event=>qa.events.push(event)};
-for(const p of ['Claude','Kimi','Grok','Opencode','Pi','Bubble','Qoder','Deepseek','Devin','Mimo','Minimax','Codex'])window.electron['get'+p+'ModelConfig']=async()=>({defaultModel:null,options:[],availableModels:[]});
+for(const p of ['Claude','Kimi','Grok','Opencode','Pi','Bubble','Qoder','Deepseek','Devin','Mimo','Minimax','Antigravity','Codex'])window.electron['get'+p+'ModelConfig']=async()=>({defaultModel:null,options:[],availableModels:[]});
 window.electron.getDevinThoughtLevels=async()=>({model:null,levels:[],defaultLevel:null});
-window.electron.getMinimaxThinkingEfforts=async()=>({model:null,levels:[],defaultLevel:null});
+window.electron.getMinimaxThinkingEfforts=async()=>({model:null,levels:[],defaultLevel:null});window.electron.getAntigravityThoughtLevels=async()=>({model:null,levels:[],defaultLevel:null});
 window.electron.getDeepseekModelConfig=async()=>({defaultModel:'deepseek-flash',options:['deepseek-flash'],availableModels:[{id:'deepseek-flash',name:'DeepSeek V4.1 Flash',reasoningEfforts:['none','high','max']}]});
 const store=useAppStore,id=store.getState().createDraftSession('/tmp/review-qa');
 store.setState(s=>({connected:true,projectCwd:'/tmp/review-qa',activeSessionId:id,sessions:{...s.sessions,[id]:{...s.sessions[id],isDraft:false,provider:'deepseek',model:'deepseek-flash',status:'completed',messages:[],hydrated:true}}}));

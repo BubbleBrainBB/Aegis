@@ -20,6 +20,7 @@ import type {
   KimiThinking,
   DevinThoughtLevels,
   MinimaxThinkingEfforts,
+  AntigravityThoughtLevels,
 } from '../../shared/types';
 import {
   GROK_REASONING_EFFORT_LABELS,
@@ -56,6 +57,7 @@ import { DeepseekLogo } from './DeepseekLogo';
 import { DevinLogo } from './DevinLogo';
 import { MimoLogo } from './MimoLogo';
 import { MinimaxLogo } from './MinimaxLogo';
+import { AntigravityLogo } from './AntigravityLogo';
 
 export function AgentIcon({ provider }: { provider: AgentProvider }) {
   if (provider === 'claude') {
@@ -93,6 +95,9 @@ export function AgentIcon({ provider }: { provider: AgentProvider }) {
   }
   if (provider === 'minimax') {
     return <MinimaxLogo />;
+  }
+  if (provider === 'antigravity') {
+    return <AntigravityLogo />;
   }
   return null;
 }
@@ -994,6 +999,9 @@ export function ComposerAgentModelPicker({
   minimaxThinkingEfforts,
   minimaxThinkingEffort,
   onMinimaxThinkingEffortChange,
+  antigravityThoughtLevels,
+  antigravityThoughtLevel,
+  onAntigravityThoughtLevelChange,
   codexFastMode,
   onCodexFastModeChange,
   kimiThinkingOptions,
@@ -1032,6 +1040,9 @@ export function ComposerAgentModelPicker({
   minimaxThinkingEfforts?: MinimaxThinkingEfforts | null;
   minimaxThinkingEffort?: string | null;
   onMinimaxThinkingEffortChange?: (effort: string) => void;
+  antigravityThoughtLevels?: AntigravityThoughtLevels | null;
+  antigravityThoughtLevel?: string | null;
+  onAntigravityThoughtLevelChange?: (level: string) => void;
   codexFastMode?: boolean;
   onCodexFastModeChange?: (enabled: boolean) => void;
   /** Thinking tiers valid for the selected kimi model (metadata-derived). */
@@ -1090,6 +1101,9 @@ export function ComposerAgentModelPicker({
   const minimaxEffortSuffix = agentProvider === 'minimax' && minimaxThinkingEffort
     ? ` ${formatMinimaxThinkingEffortLabel(minimaxThinkingEfforts ?? null, minimaxThinkingEffort)}`
     : '';
+  const antigravityEffortSuffix = agentProvider === 'antigravity' && antigravityThoughtLevel
+    ? ` ${formatMinimaxThinkingEffortLabel(antigravityThoughtLevels ?? null, antigravityThoughtLevel)}`
+    : '';
   const kimiThinkingSuffix =
     agentProvider === 'kimi' &&
     (kimiThinkingOptions?.length ?? 0) > 0 &&
@@ -1108,6 +1122,7 @@ export function ComposerAgentModelPicker({
     devinEffortSuffix ||
     mimoEffortSuffix ||
     minimaxEffortSuffix ||
+    antigravityEffortSuffix ||
     kimiThinkingSuffix;
 
   return (
@@ -1402,7 +1417,10 @@ export function ComposerAgentModelPicker({
               );
             }
 
-            if (provider === 'minimax') {
+            // Antigravity shares the panel: models and per-model thinking levels,
+            // both as its ACP session offers them.
+            if (provider === 'minimax' || provider === 'antigravity') {
+              const antigravity = provider === 'antigravity';
               return (
                 <DropdownMenu.Sub key={provider}>
                   <DropdownMenu.SubTrigger className="flex cursor-default items-center gap-2 rounded-[var(--radius-lg)] px-2.5 py-2 outline-none transition-colors data-[highlighted]:bg-[var(--bg-tertiary)]">
@@ -1429,12 +1447,13 @@ export function ComposerAgentModelPicker({
                       <MinimaxAgentSubContent
                         modelOptions={modelOptions}
                         selectedModel={modelValueByProvider[provider]}
-                        thoughtLevels={minimaxThinkingEfforts ?? null}
-                        thoughtLevel={minimaxThinkingEffort ?? null}
+                        thoughtLevels={(antigravity ? antigravityThoughtLevels : minimaxThinkingEfforts) ?? null}
+                        thoughtLevel={(antigravity ? antigravityThoughtLevel : minimaxThinkingEffort) ?? null}
                         onSelectModel={(option) => handleAgentAndModelChange(provider, option)}
                         onThoughtLevelChange={(level) => {
                           onAgentChange(provider);
-                          onMinimaxThinkingEffortChange?.(level);
+                          if (antigravity) onAntigravityThoughtLevelChange?.(level);
+                          else onMinimaxThinkingEffortChange?.(level);
                         }}
                       />
                     </DropdownMenu.SubContent>

@@ -15,6 +15,7 @@ import { DeepseekLogo } from './DeepseekLogo';
 import { DevinLogo } from './DevinLogo';
 import { MimoLogo } from './MimoLogo';
 import { MinimaxLogo } from './MinimaxLogo';
+import { AntigravityLogo } from './AntigravityLogo';
 
 function ProviderIcon({ provider }: { provider: AgentProvider }) {
   if (provider === 'claude') {
@@ -55,6 +56,9 @@ function ProviderIcon({ provider }: { provider: AgentProvider }) {
   }
   if (provider === 'minimax') {
     return <MinimaxLogo />;
+  }
+  if (provider === 'antigravity') {
+    return <AntigravityLogo />;
   }
 
   return null;

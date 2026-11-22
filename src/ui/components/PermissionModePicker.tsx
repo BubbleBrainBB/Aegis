@@ -91,7 +91,7 @@ function PermissionModeOptionRow<M extends string>({
           {option.label}
         </span>
         {option.description ? (
-          <span className="block truncate text-[12px] text-[var(--text-muted)]">{option.description}</span>
+          <span className={`block text-[12px] text-[var(--text-muted)] ${option.wrapDescription ? 'leading-[1.35]' : 'truncate'}`}>{option.description}</span>
         ) : null}
       </span>
       {active ? (
