@@ -262,6 +262,16 @@ import {
   getMinimaxThinkingEfforts,
 } from './libs/minimax-cli';
 import { normalizeMinimaxPermissionMode, normalizeMinimaxThinkingEffort } from './libs/provider/minimax-acp-adapter';
+import {
+  describeAntigravityCliPathProblem,
+  formatAntigravityRuntimeBlockingMessage,
+  getAntigravityModelConfig,
+  getAntigravityRuntimeStatus,
+  getAntigravityThoughtLevels,
+  setAntigravityCliPathSource,
+} from './libs/antigravity-cli';
+import { normalizeAntigravityPermissionMode, normalizeAntigravityThoughtLevel } from './libs/provider/antigravity-acp-adapter';
+import { humanDrivenOnlyRefusal, isHumanDrivenOnlyProvider, type PromptOrigin } from '../shared/human-driven-providers';
 import { AutomationScheduler } from './libs/automation-scheduler';
 import { recycleSessionWorktree } from './libs/worktree-hygiene';
 import {
@@ -2004,6 +2014,7 @@ function formatProviderLabel(provider: SessionInfo['provider']): string {
   if (provider === 'devin') return 'Devin';
   if (provider === 'mimo') return 'MiMo Code';
   if (provider === 'minimax') return 'MiniMax Code';
+  if (provider === 'antigravity') return 'Antigravity';
   return 'Claude Code';
 }
 
@@ -3634,7 +3645,7 @@ const runnerHandles = new Map<
   string,
   {
     handle: RunnerHandle;
-    provider: 'claude' | 'codex' | 'opencode' | 'kimi' | 'grok' | 'pi' | 'qoder' | 'bubble' | 'deepseek' | 'devin' | 'mimo' | 'minimax';
+    provider: 'claude' | 'codex' | 'opencode' | 'kimi' | 'grok' | 'pi' | 'qoder' | 'bubble' | 'deepseek' | 'devin' | 'mimo' | 'minimax' | 'antigravity';
     claudeAccessMode?: import('../shared/types').ClaudeAccessMode;
     claudeExecutionMode?: import('../shared/types').ClaudeExecutionMode;
     claudeReasoningEffort?: import('../shared/types').ClaudeReasoningEffort;
@@ -3655,6 +3666,8 @@ const runnerHandles = new Map<
     mimoReasoningEffort?: string;
     minimaxPermissionMode?: import('../shared/types').MinimaxPermissionMode;
     minimaxThinkingEffort?: string;
+    antigravityPermissionMode?: import('../shared/types').AntigravityPermissionMode;
+    antigravityThoughtLevel?: string;
     opencodePermissionMode?: import('../shared/types').OpenCodePermissionMode;
     qoderPermissionMode?: import('../shared/types').QoderPermissionMode;
     bubblePermissionMode?: import('../shared/types').BubblePermissionMode;
@@ -5200,6 +5213,7 @@ type RunnerSettings = Pick<
   | 'kimiPermissionMode' | 'kimiThinking' | 'grokPermissionMode' | 'grokReasoningEffort'
   | 'deepseekPermissionMode' | 'deepseekReasoningEffort' | 'devinPermissionMode' | 'devinThoughtLevel'
   | 'mimoPermissionMode' | 'mimoReasoningEffort' | 'minimaxPermissionMode' | 'minimaxThinkingEffort'
+  | 'antigravityPermissionMode' | 'antigravityThoughtLevel'
   | 'qoderPermissionMode' | 'bubblePermissionMode'
 >;
 
@@ -5239,6 +5253,8 @@ function providerSettingsOf(
       return { mimoPermissionMode: runner?.mimoPermissionMode, mimoReasoningEffort: runner?.mimoReasoningEffort };
     case 'minimax':
       return { minimaxPermissionMode: runner?.minimaxPermissionMode, minimaxThinkingEffort: runner?.minimaxThinkingEffort };
+    case 'antigravity':
+      return { antigravityPermissionMode: runner?.antigravityPermissionMode, antigravityThoughtLevel: runner?.antigravityThoughtLevel };
     case 'qoder':
       return { qoderPermissionMode: runner?.qoderPermissionMode };
     case 'bubble':
@@ -5555,11 +5571,59 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
   // threadId and dies with abort). Currently: the codex model catalog push —
   // it feeds fast-mode eligibility enrichment (P0-3).
   ensureProviderService();
+  // The agy executable the user chose in Settings, if any.
+  setAntigravityCliPathSource(() => getAppPreferences().antigravityCliPath);
   getProviderService().events.on('event', (event) => {
     if (event.type === 'goal_changed') publishSessionGoal(event.threadId, event.goal, true, event.resumeConfirmation);
     // A stopped turn's incurred usage: an accounting-only usage_record that
     // the Usage report and /cost count, outside the transcript and turn state.
     if (event.type === 'usage_unreported') sessions.addUsageRecord(event.threadId, event.message);
+    // The agent's own title for its session replaces the first-sentence
+    // title, unless the task was renamed meanwhile.
+    if (event.type === 'session_title') {
+      const placeholder = agentTitlePlaceholders.get(event.threadId);
+      const title = event.title.trim().slice(0, 120);
+      if (placeholder !== undefined && title) {
+        agentTitlePlaceholders.delete(event.threadId);
+        if (title !== placeholder && sessions.updateSessionTitle(event.threadId, title, placeholder)) {
+          const row = sessions.getSession(event.threadId);
+          if (row) {
+            broadcast(mainWindow, {
+              type: 'session.status',
+              payload: {
+                sessionId: event.threadId,
+                status: (row.status || 'running') as SessionStatus,
+                title: row.title,
+                titlePending: false,
+                scope: normalizeSessionScope(row.conversation_scope),
+                agentId: row.agent_id || null,
+                hiddenFromThreads: row.hidden_from_threads === 1,
+              },
+            });
+          }
+        }
+      }
+    }
+    // Antigravity changed its own mode (`/plan`, an approved plan): the
+    // session keeps it and the composer follows.
+    if (event.type === 'permission_mode_changed' && event.provider === 'antigravity') {
+      const mode = normalizeAntigravityPermissionMode(event.mode);
+      const row = sessions.getSession(event.threadId);
+      if (mode && row?.provider === 'antigravity') {
+        const entry = runnerHandles.get(event.threadId);
+        if (entry) entry.antigravityPermissionMode = mode;
+        sessions.updateSessionAgentPermissionMode(event.threadId, 'antigravity', mode);
+        broadcast(mainWindow, {
+          type: 'session.status',
+          payload: {
+            sessionId: event.threadId,
+            status: (row.status || 'running') as SessionStatus,
+            provider: 'antigravity',
+            antigravityPermissionMode: mode,
+          },
+        });
+      }
+    }
     if (event.type === 'status_change' && event.status === 'running' && getCachedSessionGoal(event.threadId)?.goal?.status === 'active') {
       sessions.updateSessionStatus(event.threadId, 'running');
       broadcast(mainWindow, { type: 'session.status', payload: { sessionId: event.threadId, status: 'running' } });
@@ -6364,6 +6428,13 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
         const targetProvider = payload?.targetProvider;
         if (!targetProvider || targetProvider === sourceProvider) {
           return { ok: false as const, message: 'Pick a different agent to hand off to.' };
+        }
+        // A handoff opens the new agent with a brief Aegis wrote from the transcript.
+        if (isHumanDrivenOnlyProvider(targetProvider)) {
+          return {
+            ok: false as const,
+            message: `${formatProviderLabel(targetProvider)} only takes messages you type. Start a new ${formatProviderLabel(targetProvider)} task instead.`,
+          };
         }
         const history = sessions.getSessionHistory(source.id);
         if (collectHandoffTurns(history).length === 0) {
@@ -7435,6 +7506,28 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
 
   ipcMainHandle('get-minimax-thinking-efforts', async (_event, model?: string | null) => {
     return getMinimaxThinkingEfforts(typeof model === 'string' ? model : null);
+  });
+
+  // Antigravity: everything here is read over ACP from `agy acp` itself.
+  ipcMainHandle('get-antigravity-model-config', async () => {
+    return getAntigravityModelConfig();
+  });
+
+  ipcMainHandle('get-antigravity-runtime-status', async (_event, refresh?: boolean) => {
+    return getAntigravityRuntimeStatus(refresh === true);
+  });
+
+  ipcMainHandle('get-antigravity-thought-levels', async (_event, model?: string | null) => {
+    return getAntigravityThoughtLevels(typeof model === 'string' ? model : null);
+  });
+
+  // The executable override: a path the user chose, run as is with `acp`.
+  ipcMainHandle('set-antigravity-cli-path', async (_event, value?: string | null) => {
+    const next = typeof value === 'string' ? value.trim() : '';
+    const problem = describeAntigravityCliPathProblem(next);
+    if (problem) return { ok: false as const, message: problem };
+    setAppPreferences({ antigravityCliPath: next });
+    return { ok: true as const, status: await getAntigravityRuntimeStatus(true) };
   });
 
   ipcMainHandle('get-pi-model-config', async () => {
@@ -9865,12 +9958,14 @@ async function handleClientEvent(
       flushSessionLink();
       break;
 
+    // The one place a prompt is known to come from a person: the composers
+    // of this app's own windows send these two events and nothing else does.
     case 'session.start':
-      await handleSessionStart(mainWindow, event.payload);
+      await handleSessionStart(mainWindow, event.payload, undefined, 'user');
       break;
 
     case 'session.continue':
-      await handleSessionContinue(mainWindow, event.payload);
+      await handleSessionContinue(mainWindow, event.payload, undefined, 'user');
       break;
 
     case 'session.editLatestPrompt':
@@ -10010,7 +10105,9 @@ function buildSessionInfoFromRow(
                             ? 'mimo_local'
                             : row.provider === 'minimax'
                               ? 'minimax_local'
-                              : 'aegis',
+                              : row.provider === 'antigravity'
+                                ? 'antigravity_local'
+                                : 'aegis',
     readOnly: row.session_origin === 'claude_remote',
     cwd: row.cwd || undefined,
     projectCwd: row.project_cwd || row.cwd || null,
@@ -10073,6 +10170,12 @@ async function waitForRunnerHandle(sessionId: string, timeoutMs = 15_000): Promi
   }
   return handle;
 }
+
+/**
+ * Tasks still carrying their first-sentence title, for agents that title
+ * their own session (Antigravity): that title replaces this one, once.
+ */
+const agentTitlePlaceholders = new Map<string, string>();
 
 /**
  * Name a new task with the agent that runs it: Claude's live session titles
@@ -10158,8 +10261,25 @@ function handleSessionList(mainWindow: BrowserWindow, replyOnly = false): void {
 async function handleSessionStart(
   mainWindow: BrowserWindow,
   payload: SessionStartPayload,
-  onCreated?: (sessionId: string) => void
+  onCreated?: (sessionId: string) => void,
+  /** Who wrote the prompt. Only the composer's client event says `user`. */
+  origin: PromptOrigin = 'app'
 ): Promise<string | null> {
+  // An agent that only a person may drive takes no start from anything else:
+  // refused here, before a session exists, whoever the caller is.
+  const refusal = humanDrivenOnlyRefusal(
+    payload.provider || 'claude',
+    origin,
+    Boolean(payload.workflowPrompt || payload.automationRunId)
+  );
+  if (refusal) {
+    if (payload.automationRunId) {
+      sessions.finishAutomationRun(payload.automationRunId, 'failed', refusal);
+      broadcastAutomationChanged(mainWindow);
+    }
+    broadcast(mainWindow, { type: 'runner.error', payload: { message: refusal, startId: payload.startId } });
+    return null;
+  }
   // A composer's start (it sends a startId) must hear about any failure, so it
   // can give the user's message back. Once the session's status carried the
   // startId the composer has let the message go, and this error only reports.
@@ -10224,6 +10344,8 @@ async function startSession(
     mimoReasoningEffort,
     minimaxPermissionMode,
     minimaxThinkingEffort,
+    antigravityPermissionMode,
+    antigravityThoughtLevel,
     opencodePermissionMode,
     qoderPermissionMode,
     bubblePermissionMode,
@@ -10309,8 +10431,10 @@ async function startSession(
   const sendsGoalAsIs = (chosenProvider === 'claude' && startGoal.isGoal)
     || (chosenProvider === 'kimi' && startGoal.isGoal && Boolean(startGoal.objective));
   // A goal command goes out verbatim, so a chat's folder note waits for the next message.
-  const sendsChatNote = isChat && Boolean(sessionCwd) && !sendsGoalAsIs;
-  const runnerPrompt = chosenProvider === 'claude' && startGoal.isGoal ? sourcePrompt
+  const sendsChatNote = isChat && Boolean(sessionCwd) && !sendsGoalAsIs && !isHumanDrivenOnlyProvider(chosenProvider);
+  // An agent only a person may drive gets the message as sent: no notes of Aegis's.
+  const runnerPrompt = isHumanDrivenOnlyProvider(chosenProvider) ? effectiveRunnerPrompt
+    : chosenProvider === 'claude' && startGoal.isGoal ? sourcePrompt
     : chosenProvider === 'kimi' && startGoal.isGoal && startGoal.objective
       ? kimiGoalStartPrompt(startGoal.objective)
       : augmentPromptForLiveWidgetProtocol(
@@ -10364,6 +10488,10 @@ async function startSession(
     chosenProvider === 'minimax' ? normalizeMinimaxPermissionMode(minimaxPermissionMode) : undefined;
   const selectedMinimaxThinkingEffort =
     chosenProvider === 'minimax' ? normalizeMinimaxThinkingEffort(minimaxThinkingEffort) : undefined;
+  const selectedAntigravityPermissionMode =
+    chosenProvider === 'antigravity' ? normalizeAntigravityPermissionMode(antigravityPermissionMode) : undefined;
+  const selectedAntigravityThoughtLevel =
+    chosenProvider === 'antigravity' ? normalizeAntigravityThoughtLevel(antigravityThoughtLevel) : undefined;
   const normalizedTeamMode = normalizeSessionTeamMode(teamMode);
   const normalizedTeamId =
     normalizedTeamMode === 'team' || normalizedTeamMode === 'manual'
@@ -10385,6 +10513,10 @@ async function startSession(
   // The task's agent names it in the background; meanwhile the first sentence
   // stands in (and stays, should naming fail), shown as loading.
   const namesItself = sessionScope !== 'dm' && !skipTitleGeneration && Boolean(sourcePrompt);
+  // Naming is a prompt Aegis writes. An agent only a person may drive is never
+  // sent one: its task keeps the first sentence until the agent's own title
+  // for the session arrives over its connection (see session_title).
+  const namedByOneShot = namesItself && !isHumanDrivenOnlyProvider(chosenProvider);
   const session = sessions.createSession({
     title: (namesItself && generateSessionTitleLocally(sourcePrompt)) || title,
     cwd: sessionCwd,
@@ -10429,6 +10561,7 @@ async function startSession(
     devin: selectedDevinPermissionMode,
     mimo: selectedMimoPermissionMode,
     minimax: selectedMinimaxPermissionMode,
+    antigravity: selectedAntigravityPermissionMode,
   });
   onCreated?.(session.id);
   // Pages opened while it was a draft now belong to the real chat.
@@ -10485,14 +10618,16 @@ async function startSession(
       devinPermissionMode: selectedDevinPermissionMode,
       mimoPermissionMode: selectedMimoPermissionMode,
       minimaxPermissionMode: selectedMinimaxPermissionMode,
+      antigravityPermissionMode: selectedAntigravityPermissionMode,
       hiddenFromThreads: session.hidden_from_threads === 1,
       channelId: normalizeWorkspaceChannelId(session.workspace_channel_id),
       teamMode: normalizeSessionTeamMode(session.team_mode),
       teamId: session.team_id || null,
-      ...(namesItself ? { titlePending: true } : {}),
+      ...(namedByOneShot ? { titlePending: true } : {}),
     },
   });
-  if (namesItself) {
+  if (namesItself && !namedByOneShot) agentTitlePlaceholders.set(session.id, session.title);
+  if (namedByOneShot) {
     nameTaskWithItsAgent(mainWindow, session, {
       request: sourcePrompt,
       provider: chosenProvider,
@@ -10655,6 +10790,18 @@ async function startSession(
       });
       return null;
     }
+  } else if (chosenProvider === 'antigravity') {
+    const runtimeStatus = await getAntigravityRuntimeStatus();
+    if (!runtimeStatus.ready) {
+      sessions.updateSessionStatus(session.id, 'error');
+      broadcast(mainWindow, {
+        type: 'runner.error',
+        payload: {
+          message: formatAntigravityRuntimeBlockingMessage(runtimeStatus),
+        },
+      });
+      return null;
+    }
   }
 
   // The folder note is in this first message; a start that stopped earlier
@@ -10709,7 +10856,10 @@ async function startSession(
     selectedMimoPermissionMode,
     selectedMimoReasoningEffort,
     selectedMinimaxPermissionMode,
-    selectedMinimaxThinkingEffort
+    selectedMinimaxThinkingEffort,
+    undefined,
+    selectedAntigravityPermissionMode,
+    selectedAntigravityThoughtLevel
   );
   return session.id;
 }
@@ -10720,7 +10870,21 @@ async function handleSessionContinue(
   mainWindow: BrowserWindow,
   payload: SessionContinuePayload,
   internal?: { hideGoalPrompt: boolean },
+  /** Who wrote the prompt. Only the composer's client event says `user`. */
+  origin: PromptOrigin = 'app',
 ): Promise<boolean> {
+  // An agent that only a person may drive takes no turn from anything else.
+  // Checked against the agent the turn would run on: the session's own, or
+  // the one this message moves it to.
+  const refusal = humanDrivenOnlyRefusal(
+    payload.provider || sessions.getSession(payload.sessionId)?.provider || 'claude',
+    origin,
+    Boolean(payload.workflowPrompt)
+  );
+  if (refusal) {
+    broadcast(mainWindow, { type: 'runner.error', payload: { sessionId: payload.sessionId, message: refusal } });
+    return false;
+  }
   if (sessionDispatchLeases.has(payload.sessionId)) {
     broadcast(mainWindow, { type: 'runner.error', payload: { sessionId: payload.sessionId, message: 'A message is already being submitted. Please wait.' } });
     return false;
@@ -10771,6 +10935,8 @@ async function handleSessionContinueImpl(
     mimoReasoningEffort,
     minimaxPermissionMode,
     minimaxThinkingEffort,
+    antigravityPermissionMode,
+    antigravityThoughtLevel,
     opencodePermissionMode,
     qoderPermissionMode,
     bubblePermissionMode,
@@ -10909,7 +11075,7 @@ async function handleSessionContinueImpl(
   // First prompt of a provider-handoff session: inject the handoff brief so
   // the new agent knows where the work stands and how to read the rest.
   const handoffContextText =
-    session.handoff_pending === 1
+    session.handoff_pending === 1 && !isHumanDrivenOnlyProvider(nextProvider)
       ? buildHandoffBrief({
           history: historyBeforeContinue,
           title: session.title,
@@ -10929,7 +11095,9 @@ async function handleSessionContinueImpl(
   }
   // Goal commands reach the agent verbatim: Claude's, and Kimi's `/goal --`
   // start prompt (context appended would become part of the objective).
-  const runnerPrompt = (nextProvider === 'claude' || nextProvider === 'kimi') && parseGoalInput(prompt, false).isGoal ? prompt.trim() : augmentPromptForLiveWidgetProtocol(
+  // An agent only a person may drive gets the message as sent: no notes of Aegis's.
+  const runnerPrompt = isHumanDrivenOnlyProvider(nextProvider) ? effectiveRunnerPrompt
+    : (nextProvider === 'claude' || nextProvider === 'kimi') && parseGoalInput(prompt, false).isGoal ? prompt.trim() : augmentPromptForLiveWidgetProtocol(
     await buildRunnerPromptWithMemory(nextProvider, effectiveRunnerPrompt + referenceContext + designContextText(sessionId, designSelection) + sessions.buildProjectSourcesContext(session.project_cwd || session.cwd, session.cwd, session.env_mode === 'worktree' && Boolean(session.worktree_path)) + (session.session_role === 'main' ? mainBotTurnContext(sessionId) : takeChatFolderInstructions(sessionId, session.cwd, session.is_chat === 1)), session.cwd || undefined),
     historyBeforeContinue
   );
@@ -10989,6 +11157,12 @@ async function handleSessionContinueImpl(
     : undefined;
   const nextMinimaxThinkingEffort = nextProvider === 'minimax'
     ? normalizeMinimaxThinkingEffort(minimaxThinkingEffort)
+    : undefined;
+  const nextAntigravityPermissionMode = nextProvider === 'antigravity'
+    ? normalizeAntigravityPermissionMode(antigravityPermissionMode)
+    : undefined;
+  const nextAntigravityThoughtLevel = nextProvider === 'antigravity'
+    ? normalizeAntigravityThoughtLevel(antigravityThoughtLevel)
     : undefined;
   const nextTeamMode = teamMode !== undefined
     ? normalizeSessionTeamMode(teamMode)
@@ -11170,6 +11344,7 @@ async function handleSessionContinueImpl(
     devin: nextDevinPermissionMode,
     mimo: nextMimoPermissionMode,
     minimax: nextMinimaxPermissionMode,
+    antigravity: nextAntigravityPermissionMode,
   });
   if (teamMode !== undefined || teamId !== undefined) {
     sessions.updateSessionTeam(sessionId, nextTeamMode, nextTeamId);
@@ -11379,6 +11554,19 @@ async function handleSessionContinueImpl(
       });
       return false;
     }
+  } else if (nextProvider === 'antigravity') {
+    const runtimeStatus = await getAntigravityRuntimeStatus();
+    if (!runtimeStatus.ready) {
+      sessions.updateSessionStatus(sessionId, 'error');
+      broadcast(mainWindow, {
+        type: 'runner.error',
+        payload: {
+          message: formatAntigravityRuntimeBlockingMessage(runtimeStatus),
+          sessionId,
+        },
+      });
+      return false;
+    }
   }
 
   // While a codex turn is still streaming, a follow-up send becomes a
@@ -11498,6 +11686,8 @@ async function handleSessionContinueImpl(
         mimoReasoningEffort: nextMimoReasoningEffort,
         minimaxPermissionMode: nextMinimaxPermissionMode,
         minimaxThinkingEffort: nextMinimaxThinkingEffort,
+        antigravityPermissionMode: nextAntigravityPermissionMode,
+        antigravityThoughtLevel: nextAntigravityThoughtLevel,
         opencodePermissionMode: nextOpenCodePermissionMode,
         qoderPermissionMode: nextQoderPermissionMode,
         bubblePermissionMode: nextBubblePermissionMode,
@@ -11567,6 +11757,13 @@ async function handleSessionContinueImpl(
       if (nextProvider === 'minimax' && nextMinimaxThinkingEffort !== undefined) {
         existingEntry.minimaxThinkingEffort = nextMinimaxThinkingEffort;
       }
+      // Antigravity: model and thinking level via set_config_option, mode via set_mode.
+      if (nextProvider === 'antigravity' && nextAntigravityPermissionMode !== undefined) {
+        existingEntry.antigravityPermissionMode = nextAntigravityPermissionMode;
+      }
+      if (nextProvider === 'antigravity' && nextAntigravityThoughtLevel !== undefined) {
+        existingEntry.antigravityThoughtLevel = nextAntigravityThoughtLevel;
+      }
       return true;
     }
   }
@@ -11622,7 +11819,9 @@ async function handleSessionContinueImpl(
                             ? session.mimo_session_id ?? undefined
                             : nextProvider === 'minimax'
                               ? session.minimax_session_id ?? undefined
-                              : undefined;
+                              : nextProvider === 'antigravity'
+                                ? session.antigravity_session_id ?? undefined
+                                : undefined;
   let nextResumeSessionId = resumeSessionId;
 
   if (
@@ -11711,7 +11910,9 @@ async function handleSessionContinueImpl(
     nextMimoReasoningEffort,
     nextMinimaxPermissionMode ?? (nextProvider === 'minimax' ? normalizeMinimaxPermissionMode(session.minimax_permission_mode) : undefined),
     nextMinimaxThinkingEffort,
-    nextClaudePromptId
+    nextClaudePromptId,
+    nextAntigravityPermissionMode ?? (nextProvider === 'antigravity' ? normalizeAntigravityPermissionMode(session.antigravity_permission_mode) : undefined),
+    nextAntigravityThoughtLevel
   );
   return true;
 }
@@ -11723,7 +11924,7 @@ function startRunner(
   prompt: string,
   resumeSessionId?: string,
   attachments?: Attachment[],
-  providerOverride?: 'claude' | 'codex' | 'opencode' | 'kimi' | 'grok' | 'pi' | 'qoder' | 'bubble' | 'deepseek' | 'devin' | 'mimo' | 'minimax',
+  providerOverride?: 'claude' | 'codex' | 'opencode' | 'kimi' | 'grok' | 'pi' | 'qoder' | 'bubble' | 'deepseek' | 'devin' | 'mimo' | 'minimax' | 'antigravity',
   modelOverride?: string,
   betasOverride?: string[],
   claudeAccessMode?: import('../shared/types').ClaudeAccessMode,
@@ -11767,7 +11968,9 @@ function startRunner(
   mimoReasoningEffort?: string,
   minimaxPermissionMode?: import('../shared/types').MinimaxPermissionMode,
   minimaxThinkingEffort?: string,
-  claudePromptId?: string
+  claudePromptId?: string,
+  antigravityPermissionMode?: import('../shared/types').AntigravityPermissionMode,
+  antigravityThoughtLevel?: string
 ): void {
   if (!session) return;
 
@@ -11813,6 +12016,8 @@ function startRunner(
             ? 'kimi acp'
             : provider === 'devin' || provider === 'mimo' || provider === 'minimax'
               ? `${provider} acp`
+            : provider === 'antigravity'
+              ? 'agy acp'
               : 'opencode sdk',
       model: resolvedModelOverride,
       cwd: runnerSession.cwd || process.cwd(),
@@ -11875,6 +12080,8 @@ function startRunner(
     mimoReasoningEffort,
     minimaxPermissionMode,
     minimaxThinkingEffort,
+    antigravityPermissionMode,
+    antigravityThoughtLevel,
     codexSkills: provider === 'codex' ? codexSkills : undefined,
     codexMentions: provider === 'codex' ? codexMentions : undefined,
     opencodePermissionMode,
@@ -11987,6 +12194,11 @@ function startRunner(
           }
         } else if (provider === 'minimax') {
           sessions.updateMinimaxSessionId(session.id, message.session_id);
+          if (message.model) {
+            sessions.updateSessionModel(session.id, message.model);
+          }
+        } else if (provider === 'antigravity') {
+          sessions.updateAntigravitySessionId(session.id, message.session_id);
           if (message.model) {
             sessions.updateSessionModel(session.id, message.model);
           }
@@ -12848,6 +13060,8 @@ function startRunner(
     mimoReasoningEffort: provider === 'mimo' ? normalizeMimoReasoningEffort(mimoReasoningEffort) : undefined,
     minimaxPermissionMode: provider === 'minimax' ? normalizeMinimaxPermissionMode(minimaxPermissionMode) : undefined,
     minimaxThinkingEffort: provider === 'minimax' ? normalizeMinimaxThinkingEffort(minimaxThinkingEffort) : undefined,
+    antigravityPermissionMode: provider === 'antigravity' ? normalizeAntigravityPermissionMode(antigravityPermissionMode) : undefined,
+    antigravityThoughtLevel: provider === 'antigravity' ? normalizeAntigravityThoughtLevel(antigravityThoughtLevel) : undefined,
     activeAgentId: normalizedActiveAgentId,
     activeAgentRunId: normalizedActiveAgentRunId,
     onTurnDone,

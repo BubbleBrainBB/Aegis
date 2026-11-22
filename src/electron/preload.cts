@@ -735,6 +735,18 @@ contextBridge.exposeInMainWorld('electron', {
   getMinimaxThinkingEfforts: (model: string | null) => {
     return ipcRenderer.invoke('get-minimax-thinking-efforts', model);
   },
+  getAntigravityModelConfig: () => {
+    return ipcRenderer.invoke('get-antigravity-model-config');
+  },
+  getAntigravityRuntimeStatus: (refresh?: boolean) => {
+    return ipcRenderer.invoke('get-antigravity-runtime-status', refresh === true);
+  },
+  getAntigravityThoughtLevels: (model: string | null) => {
+    return ipcRenderer.invoke('get-antigravity-thought-levels', model);
+  },
+  setAntigravityCliPath: (value: string | null) => {
+    return ipcRenderer.invoke('set-antigravity-cli-path', value);
+  },
 
   getPiModelConfig: () => {
     return ipcRenderer.invoke('get-pi-model-config');

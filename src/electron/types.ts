@@ -36,7 +36,8 @@ export interface SessionRow {
   devin_session_id: string | null;
   mimo_session_id: string | null;
   minimax_session_id: string | null;
-  provider: 'claude' | 'codex' | 'opencode' | 'kimi' | 'grok' | 'pi' | 'qoder' | 'bubble' | 'deepseek' | 'devin' | 'mimo' | 'minimax';
+  antigravity_session_id: string | null;
+  provider: 'claude' | 'codex' | 'opencode' | 'kimi' | 'grok' | 'pi' | 'qoder' | 'bubble' | 'deepseek' | 'devin' | 'mimo' | 'minimax' | 'antigravity';
   model: string | null;
   conversation_scope: import('../shared/types').SessionScope | null;
   agent_id: string | null;
@@ -60,6 +61,7 @@ export interface SessionRow {
   devin_permission_mode?: string | null;
   mimo_permission_mode?: string | null;
   minimax_permission_mode?: string | null;
+  antigravity_permission_mode?: string | null;
   status: string;
   cwd: string | null;
   project_cwd: string | null;
@@ -162,6 +164,8 @@ export interface RunnerOptions {
   mimoReasoningEffort?: string;
   minimaxPermissionMode?: import('../shared/types').MinimaxPermissionMode;
   minimaxThinkingEffort?: string;
+  antigravityPermissionMode?: import('../shared/types').AntigravityPermissionMode;
+  antigravityThoughtLevel?: string;
   /** Set when the session is a member of an app-level workflow (plan §6.3). */
   workflowPolicy?: import('../shared/workflow').WorkflowSessionPolicy;
   codexSkills?: import('../shared/types').ProviderInputReference[];

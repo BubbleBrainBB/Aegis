@@ -25,6 +25,7 @@ import {
 } from 'react';
 import { ArrowElbowRight, CornerDownRight, MousePointer, Plus, Square, Trash2 } from './icons';
 import { toast } from 'sonner';
+import { isHumanDrivenOnlyProvider } from '../../shared/human-driven-providers';
 import { getSessionReferenceCapabilityError, supportsSessionReferences } from '../../shared/session-links';
 import { useAppStore } from '../store/useAppStore';
 import {
@@ -440,6 +441,12 @@ export function PromptInput({
       if (!activeSession || handoffBusyRef.current) {
         return;
       }
+      // A handoff opens the new agent with a brief Aegis wrote; an agent only
+      // a person may drive does not take one.
+      if (isHumanDrivenOnlyProvider(target)) {
+        toast.error(`${providerLabel(target)} only takes messages you type. Start a new ${providerLabel(target)} task instead.`);
+        return;
+      }
       const confirmed = await confirmDialog({
         title: `Hand off to ${providerLabel(target)}?`,
         description: `This conversation is locked to ${providerLabel(activeSession.provider)}. Handing off creates a new session for ${providerLabel(target)} that carries the conversation over — your next message will include the context so the new agent can continue the work.`,
@@ -510,6 +517,7 @@ export function PromptInput({
   const isDevinContextVisible = runtimeProvider === 'devin' && activeSession?.provider === 'devin';
   const isMimoContextVisible = runtimeProvider === 'mimo' && activeSession?.provider === 'mimo';
   const isMinimaxContextVisible = runtimeProvider === 'minimax' && activeSession?.provider === 'minimax';
+  const isAntigravityContextVisible = runtimeProvider === 'antigravity' && activeSession?.provider === 'antigravity';
   const claudeContextModel = isClaudeContextVisible ? selectedModel || activeSession?.model || null : null;
   const openCodeContextModel = isOpenCodeContextVisible ? selectedModel || activeSession?.model || null : null;
   const piContextModel = isPiContextVisible ? selectedModel || activeSession?.model || null : null;
@@ -518,10 +526,10 @@ export function PromptInput({
 
   const codexContextSnapshot = useMemo(
     () =>
-      isCodexContextVisible || isKimiContextVisible || isGrokContextVisible || isDeepseekContextVisible || isDevinContextVisible || isMimoContextVisible || isMinimaxContextVisible
+      isCodexContextVisible || isKimiContextVisible || isGrokContextVisible || isDeepseekContextVisible || isDevinContextVisible || isMimoContextVisible || isMinimaxContextVisible || isAntigravityContextVisible
         ? getLatestCodexContextSnapshot(activeSession.messages)
         : null,
-    [activeSession?.messages, isCodexContextVisible, isKimiContextVisible, isGrokContextVisible, isDeepseekContextVisible, isDevinContextVisible, isMimoContextVisible, isMinimaxContextVisible]
+    [activeSession?.messages, isCodexContextVisible, isKimiContextVisible, isGrokContextVisible, isDeepseekContextVisible, isDevinContextVisible, isMimoContextVisible, isMinimaxContextVisible, isAntigravityContextVisible]
   );
   const claudeContextSnapshot = useMemo(() => {
     if (!isClaudeContextVisible) {
@@ -1123,6 +1131,14 @@ export function PromptInput({
               runtimeProvider === 'minimax'
                 ? agentSelection.minimaxThinkingEffort || undefined
                 : undefined,
+            antigravityPermissionMode:
+              runtimeProvider === 'antigravity'
+                ? agentSelection.antigravityPermissionMode
+                : undefined,
+            antigravityThoughtLevel:
+              runtimeProvider === 'antigravity'
+                ? agentSelection.antigravityThoughtLevel || undefined
+                : undefined,
             bubblePermissionMode:
               runtimeProvider === 'bubble'
                 ? agentSelection.bubbleExecutionMode === 'plan'
@@ -1287,6 +1303,14 @@ export function PromptInput({
         minimaxThinkingEffort:
           runtimeProvider === 'minimax'
             ? agentSelection.minimaxThinkingEffort || undefined
+            : undefined,
+        antigravityPermissionMode:
+          runtimeProvider === 'antigravity'
+            ? agentSelection.antigravityPermissionMode
+            : undefined,
+        antigravityThoughtLevel:
+          runtimeProvider === 'antigravity'
+            ? agentSelection.antigravityThoughtLevel || undefined
             : undefined,
         bubblePermissionMode:
           runtimeProvider === 'bubble'
@@ -1994,6 +2018,15 @@ export function PromptInput({
                   menuSide={menuSide}
                 />
               )}
+              {agentSelection.provider === 'antigravity' && (
+                <PermissionModePicker
+                  value={agentSelection.antigravityPermissionMode}
+                  options={agentSelection.antigravityPermissionModeOptions}
+                  onChange={agentSelection.setAntigravityPermissionMode}
+                  disabled={startLocked}
+                  menuSide={menuSide}
+                />
+              )}
               {agentSelection.provider === 'bubble' && (
                 <PermissionModePicker
                   value={agentSelection.bubblePermissionMode}
@@ -2101,6 +2134,9 @@ export function PromptInput({
                 minimaxThinkingEfforts={agentSelection.minimaxThinkingEfforts}
                 minimaxThinkingEffort={agentSelection.minimaxThinkingEffort}
                 onMinimaxThinkingEffortChange={agentSelection.setMinimaxThinkingEffort}
+                antigravityThoughtLevels={agentSelection.antigravityThoughtLevels}
+                antigravityThoughtLevel={agentSelection.antigravityThoughtLevel}
+                onAntigravityThoughtLevelChange={agentSelection.setAntigravityThoughtLevel}
                 codexFastMode={agentSelection.codexFastMode}
                 onCodexFastModeChange={(enabled) =>
                   handleAgentConfigurationChange({ provider: 'codex', codexFastMode: enabled })

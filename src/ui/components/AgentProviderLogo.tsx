@@ -10,9 +10,10 @@ import minimaxLogo from '../assets/minimax-color.svg';
 import { OpenCodeLogo } from './OpenCodeLogo';
 import { DeepseekLogo } from './DeepseekLogo';
 import { MimoLogo } from './MimoLogo';
+import { AntigravityLogo } from './AntigravityLogo';
 import type { AgentProvider } from '../types';
 
-const PROVIDER_LOGO_SRC: Record<Exclude<AgentProvider, 'opencode' | 'deepseek' | 'mimo' | 'bubble'>, string> = {
+const PROVIDER_LOGO_SRC: Record<Exclude<AgentProvider, 'opencode' | 'deepseek' | 'mimo' | 'bubble' | 'antigravity'>, string> = {
   claude: claudeLogo,
   codex: openaiLogo,
   kimi: moonshotLogo,
@@ -35,6 +36,8 @@ export function AgentProviderLogo({ provider, className }: { provider: AgentProv
       return <DeepseekLogo className={className} />;
     case 'mimo':
       return <MimoLogo className={className} />;
+    case 'antigravity':
+      return <AntigravityLogo className={`${className} text-[var(--text-primary)]`} />;
     case 'bubble':
       // The SVG themes itself by the OS colour scheme, not the app theme, so
       // paint it as a mask in currentColor instead.

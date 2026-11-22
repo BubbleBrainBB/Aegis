@@ -29,6 +29,7 @@ import type {
   DevinPermissionMode,
   MimoPermissionMode,
   MinimaxPermissionMode,
+  AntigravityPermissionMode,
   OpenCodePermissionMode,
   QoderPermissionMode,
   BubblePermissionMode,
@@ -52,7 +53,7 @@ import type { SessionRow } from '../../types';
 
 // ── Provider Identity ──────────────────────────────────────────────────────
 
-export type ProviderKind = 'claude' | 'codex' | 'opencode' | 'kimi' | 'grok' | 'pi' | 'qoder' | 'bubble' | 'deepseek' | 'devin' | 'mimo' | 'minimax';
+export type ProviderKind = 'claude' | 'codex' | 'opencode' | 'kimi' | 'grok' | 'pi' | 'qoder' | 'bubble' | 'deepseek' | 'devin' | 'mimo' | 'minimax' | 'antigravity';
 
 export interface ProviderAdapterCapabilities {
   /** Supports switching model mid-session */
@@ -108,6 +109,8 @@ export interface ProviderSessionStartInput {
   mimoReasoningEffort?: string;
   minimaxPermissionMode?: MinimaxPermissionMode;
   minimaxThinkingEffort?: string;
+  antigravityPermissionMode?: AntigravityPermissionMode;
+  antigravityThoughtLevel?: string;
   codexSkills?: ProviderInputReference[];
   codexMentions?: ProviderInputReference[];
   opencodePermissionMode?: OpenCodePermissionMode;
@@ -148,6 +151,8 @@ export interface ProviderSendTurnInput {
   mimoReasoningEffort?: string;
   minimaxPermissionMode?: MinimaxPermissionMode;
   minimaxThinkingEffort?: string;
+  antigravityPermissionMode?: AntigravityPermissionMode;
+  antigravityThoughtLevel?: string;
   opencodePermissionMode?: OpenCodePermissionMode;
   qoderPermissionMode?: QoderPermissionMode;
   bubblePermissionMode?: BubblePermissionMode;
@@ -230,6 +235,10 @@ export type ProviderRuntimeEvent =
       error: string | null;
     }
   | { type: 'error'; threadId: string; error: Error }
+  // The agent named its own session (ACP session_info_update). Only agents
+  // whose titles are fit to show send it; the host uses it for a task that
+  // still has its first-sentence title.
+  | { type: 'session_title'; threadId: string; provider: ProviderKind; title: string }
   | { type: 'system_init'; threadId: string; sessionId: string; model?: string }
   // The agent switched its own permission mode mid-turn (e.g. Bubble's plan
   // approval calls setMode('default')) — lets the composer pill follow the

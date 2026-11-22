@@ -87,7 +87,8 @@ function isCodexTokenUsageMessage(
       message.provider === 'deepseek' ||
       message.provider === 'devin' ||
       message.provider === 'mimo' ||
-      message.provider === 'minimax')
+      message.provider === 'minimax' ||
+      message.provider === 'antigravity')
   );
 }
 
