@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import type { ComputerUseSettingsView } from '../../../shared/computer-use';
+import { cuaDriverReleaseUrl, type ComputerUseSettingsView } from '../../../shared/computer-use';
 import { SettingsGroup, SettingsRow, SettingsToggle } from './SettingsPrimitives';
 
 /**
@@ -68,12 +68,15 @@ export function ComputerUseSettings() {
 
   const unsupported = view.driver.state === 'unsupported-platform';
   const driverReady = view.driver.state === 'ready';
+  // The driver the app ships with needs no path: the field is for a source
+  // checkout, and for an installed copy whose own driver is missing or damaged.
+  const builtIn = driverReady && view.driver.source === 'bundled';
   const pathChanged = pathDraft.trim() !== view.driverPath;
 
   return (
     <SettingsGroup
       title="Computer use"
-      description="Lets Bubble look at and operate apps on this Mac. It can read any window except Aegis's own; every click, key press or typed text asks you first unless the conversation runs in Full Access."
+      description="Lets agents look at and operate apps on this Mac: Bubble, Claude, DeepSeek Harness, Qoder, Devin, MiniMax Code, MiMo Code, Grok Build, Pi and OpenCode. They can read any window except Aegis's own; every click, key press or typed text asks you first unless the conversation runs in Full Access. Codex has its own Computer use, which this switch does not change."
     >
       <SettingsRow
         variant="card"
@@ -102,9 +105,11 @@ export function ComputerUseSettings() {
             align="start"
             label="Driver"
             description={
-              driverReady
-                ? `cua-driver ${view.driver.version} · ${view.driver.path}`
-                : view.driver.message ?? undefined
+              builtIn
+                ? `cua-driver ${view.driver.version}, included with Aegis.`
+                : driverReady
+                  ? `cua-driver ${view.driver.version} · ${view.driver.path}`
+                  : view.driver.message ?? undefined
             }
           >
             <span
@@ -114,27 +119,39 @@ export function ComputerUseSettings() {
               {driverReady ? 'Ready' : view.driver.state === 'missing' ? 'Not found' : 'Wrong version'}
             </span>
           </SettingsRow>
-          <div className="settings-row flex items-center gap-2 px-4 py-3" data-settings-label="Driver path">
-            <input
-              className="settings-control min-w-0 flex-1"
-              aria-label="cua-driver path"
-              placeholder={`Path to cua-driver ${view.driver.pinnedVersion} (optional)`}
-              value={pathDraft}
-              onChange={(event) => setPathDraft(event.target.value)}
-              disabled={busy}
-              spellCheck={false}
-            />
-            <button
-              type="button"
-              className="settings-button"
-              disabled={busy || !pathChanged}
-              onClick={() =>
-                void apply(() => window.electron.setComputerUseDriverPath(pathDraft), 'Failed to save the driver path.')
-              }
-            >
-              Save
-            </button>
-          </div>
+          {builtIn ? null : (
+            <div className="settings-row flex items-center gap-2 px-4 py-3" data-settings-label="Driver path">
+              <input
+                className="settings-control min-w-0 flex-1"
+                aria-label="cua-driver path"
+                placeholder={`Path to cua-driver ${view.driver.pinnedVersion} (optional)`}
+                value={pathDraft}
+                onChange={(event) => setPathDraft(event.target.value)}
+                disabled={busy}
+                spellCheck={false}
+              />
+              {driverReady ? null : (
+                <button
+                  type="button"
+                  className="settings-button"
+                  data-computer-use-driver-download
+                  onClick={() => void window.electron.openExternalUrl(cuaDriverReleaseUrl(view.driver.pinnedVersion))}
+                >
+                  Download page
+                </button>
+              )}
+              <button
+                type="button"
+                className="settings-button"
+                disabled={busy || !pathChanged}
+                onClick={() =>
+                  void apply(() => window.electron.setComputerUseDriverPath(pathDraft), 'Failed to save the driver path.')
+                }
+              >
+                Save
+              </button>
+            </div>
+          )}
           {view.permissions ? (
             <>
               <PermissionRow

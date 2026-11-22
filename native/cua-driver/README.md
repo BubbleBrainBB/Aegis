@@ -30,15 +30,37 @@ downloads the asset from the GitHub release, checks the SHA-256 above, and
 puts `cua-driver` and `cua-cursor-theme` in `native/cua-driver/dist/` (ignored
 by git). Nothing is installed system-wide and no Python is involved.
 
-Aegis looks for the binary in this order:
+## In the macOS app
 
-1. `AEGIS_CUA_DRIVER_PATH`
-2. the path set in Settings → Browser → Computer use
-3. `<app resources>/cua-driver/cua-driver` (for a packaged app; not bundled yet)
-4. `native/cua-driver/dist/cua-driver`
+The macOS app ships the driver: `release.yml` runs the fetch before packaging,
+and `electron-builder.json` (`mac.extraResources`) copies the two files to
+`Aegis.app/Contents/Resources/cua-driver/`. electron-builder signs them with
+the app (Aegis's Developer ID and entitlements in place of upstream's
+signature) and they are notarized with it. The release workflow then checks,
+in the packaged app, that both are universal, signed by the app's team, and
+that the driver answers as the pinned version. Windows and Linux builds carry
+no driver; Computer use is macOS only.
+
+Someone who installs Aegis does not download or set anything; Settings shows
+the driver as included.
+
+## Where Aegis looks
+
+In this order; the first place that holds the pinned version is run:
+
+1. `<app resources>/cua-driver/cua-driver`, the copy the app ships with
+2. `AEGIS_CUA_DRIVER_PATH`
+3. the path set in Settings → Browser → Computer use
+4. `native/cua-driver/dist/cua-driver`, what the fetch leaves in a checkout
+
+The shipped copy is first, so an installed app runs the driver it was signed
+and notarized with whatever the environment or a saved path says. A
+development run has no such copy, and the variable and the saved path decide.
+A file that is there but does not answer as the pinned version (a damaged
+copy) does not hide a good one further down.
 
 When none is there, or the version differs, agents are not offered the tools
-and Settings says why.
+and Settings says why. Aegis never downloads the driver while running.
 
 ## Changing the version
 
