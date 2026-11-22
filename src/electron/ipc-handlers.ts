@@ -103,10 +103,13 @@ import { getCodexMcpServers, saveCodexMcpServers } from './libs/codex-mcp-settin
 import { codexProcessFitsComputerUse, computerUseReadsAskAegis, resolveComputerUseArtifact } from './libs/codex-computer-use';
 import { computerUseGrants } from './libs/codex-computer-use-grants';
 import {
+  disposeComputerUseMcpBridge,
   getComputerUseDriverStatus,
   getComputerUseGateway,
   initializeComputerUseGateway,
 } from './libs/computer-use';
+import { isComputerUsePlanMode } from './libs/computer-use/session-modes';
+import { forgetComputerUseMcpSession } from './libs/computer-use/provider-mcp';
 import {
   getComputerUseSettings,
   isComputerUseEnabled,
@@ -4010,6 +4013,40 @@ function flushDeepseekRunners(): void {
 }
 
 /**
+ * Providers whose runtime is handed the Computer use tools when it starts
+ * (an MCP entry, or custom tools) and keeps that list for its whole life.
+ * Bubble takes its tools per turn; Codex has its own client; OpenCode's one
+ * server restarts itself when it is idle; Kimi gets none.
+ */
+const COMPUTER_USE_FIXED_AT_START: ReadonlySet<string> = new Set([
+  'claude', 'deepseek', 'devin', 'grok', 'mimo', 'minimax', 'pi', 'qoder',
+]);
+
+/**
+ * The Computer use switch or its driver changed: runtimes that were started
+ * with the other answer are retired, so each session's next turn starts one
+ * with the tools it should have now. A session in the middle of a turn keeps
+ * its runtime until the turn ends (Claude and DeepSeek then retire theirs;
+ * the others at their next restart). Until then the gateway answers for the
+ * switch itself: a call made after it went off is refused.
+ */
+function flushComputerUseRunners(): void {
+  for (const [id, entry] of runnerHandles) {
+    if (!COMPUTER_USE_FIXED_AT_START.has(entry.provider)) continue;
+    const running = entry.provider === 'claude'
+      ? (entry.inFlightTurns ?? 0) > 0
+      : sessions.getSession(id)?.status === 'running';
+    if (running) {
+      if (entry.provider === 'claude' || entry.provider === 'deepseek') entry.doomed = true;
+      continue;
+    }
+    clearStopFallbackTimer(entry);
+    entry.handle.abort();
+    runnerHandles.delete(id);
+  }
+}
+
+/**
  * Retire a session's kept-alive runner regardless of provider. Every provider
  * keeps its handle between turns (connection reuse) and every live session is
  * bound to the cwd it started with, so a workspace change (handoff, worktree
@@ -5816,9 +5853,11 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
         signal,
       }),
   });
-  // Computer use through cua-driver (Bubble today; Codex keeps its own
-  // client). The gateway asks here for what it needs to know about a session
-  // and for the COMPUTER USE card. It starts no process until a tool is called.
+  // Computer use through cua-driver, for every provider that is wired to the
+  // gateway (Bubble with host tools, the others over the gateway's MCP
+  // bridge; Codex keeps its own client). The gateway asks here for what it
+  // needs to know about a session and for the COMPUTER USE card. It starts no
+  // process until a tool is called.
   initializeComputerUseGateway(
     {
       getSession: (sessionId) => {
@@ -5828,9 +5867,8 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
         if (!row || !runner) return null;
         const workflowPolicy = getWorkflowSessionPolicy(sessionId);
         return {
-          // Bubble is the one provider with these tools so far; each provider
-          // added later brings its own way of saying "Plan".
-          planMode: runner.provider === 'bubble' && runner.bubblePermissionMode === 'plan',
+          // Each provider says "Plan" in its own field (session-modes.ts).
+          planMode: isComputerUsePlanMode(runner),
           fullAccess: isSessionFullAccess(sessionId),
           readOnlyWorkflowRole: workflowPolicy?.readOnly ? workflowPolicy.role : null,
           // A rebuilt runner is another runtime: grants and calls of the old one end with it.
@@ -5887,6 +5925,9 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
     // driver stops and the gateway's grants go. (Not when the environment
     // keeps it on: then nothing was turned off.)
     if (!isComputerUseEnabled()) await getComputerUseGateway()?.shutdown('disabled');
+    // Most runtimes are handed their tools when they start: the switch
+    // reaches a session with its next turn.
+    flushComputerUseRunners();
     return computerUseSettingsView();
   });
   ipcMainHandle('set-computer-use-driver-path', async (_event, driverPath: string) => {
@@ -5894,6 +5935,8 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
     // Another binary is another driver: what stood on the old one (calls,
     // approval cards, grants) ends, and the next call starts the new one.
     await getComputerUseGateway()?.shutdown('driver-changed');
+    // A driver that is there now, or no longer: the tools follow.
+    flushComputerUseRunners();
     return computerUseSettingsView();
   });
   ipcMainHandle('open-computer-use-permission-settings', async (_event, pane: string) => {
@@ -13475,6 +13518,7 @@ function handleSessionStop(mainWindow: BrowserWindow, sessionId: string): void {
 function handleSessionDelete(mainWindow: BrowserWindow, sessionId: string): void {
   finishBrowserUseTurn(browserManager, sessionId);
   getComputerUseGateway()?.forgetSession(sessionId, 'deleted');
+  forgetComputerUseMcpSession(sessionId);
   const session = sessions.getSession(sessionId);
   if (session?.session_origin === 'claude_remote') {
     broadcast(mainWindow, {
@@ -13994,6 +14038,7 @@ export function cleanup(): void {
   disposeSessionHttpServer();
   disposeTerminalRuntime();
   getComputerUseGateway()?.shutdownSync();
+  disposeComputerUseMcpBridge();
   // 停止所有运行中的 runner
   for (const [, entry] of runnerHandles) {
     entry.handle.abort();

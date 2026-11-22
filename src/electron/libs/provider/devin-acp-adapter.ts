@@ -2,6 +2,8 @@ import { splitJoinedAnswer } from '../../../shared/question-answers';
 import { getWorkflowSessionPolicy } from '../workflow/session-hooks';
 import { getSessionReaderHttpConfig, SESSION_MCP_SERVER_NAME } from '../session-http-server';
 import { createGrokAcpHttpMcpServer } from './grok-acp-mcp';
+import { createComputerUseAcpEntry, gatewayApprovalOption } from '../computer-use/provider-mcp';
+import type { ComputerUseMcpDescriptor } from '../computer-use/mcp-bridge';
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import { EventEmitter } from 'events';
 import { readFileSync } from 'fs';
@@ -211,6 +213,11 @@ interface DevinConnection {
  */
 interface SessionBinding {
   session?: ActiveDevinSession;
+  /**
+   * The Computer use entry this process was handed for its session, if any:
+   * what shows that a tool it calls `aegis-computer-use` is the gateway's.
+   */
+  computerUse?: ComputerUseMcpDescriptor;
   commands?: DevinSessionUpdate;
   usage?: DevinSessionUpdate;
   currentMode?: string;
@@ -671,9 +678,18 @@ export class DevinAcpAdapter implements ProviderAdapter {
     // Aegis's session tools (read_session, start_workflow) for chat sessions,
     // passed for this session only (Devin's ACP accepts http MCP servers);
     // workflow members get none.
-    const mcpServers = getWorkflowSessionPolicy(threadId)
+    const mcpServers: unknown[] = getWorkflowSessionPolicy(threadId)
       ? []
       : [createGrokAcpHttpMcpServer(SESSION_MCP_SERVER_NAME, await step(getSessionReaderHttpConfig({ sessionId: threadId })))];
+    // Computer use, when it is on: the gateway's tools, bound to this
+    // session for as long as this process lives.
+    if (!getWorkflowSessionPolicy(threadId)) {
+      const computerUse = await step(createComputerUseAcpEntry(threadId, proc));
+      if (computerUse) {
+        mcpServers.push(computerUse.server);
+        binding.computerUse = computerUse.entry;
+      }
+    }
 
     let sessionRecord: Record<string, unknown> | null = null;
     let providerSessionId = '';
@@ -1290,7 +1306,7 @@ export class DevinAcpAdapter implements ProviderAdapter {
   private handleRequest(binding: SessionBinding, rpc: AcpJsonRpcClient, request: AcpJsonRpcIncomingRequest): void {
     const session = binding.session;
     if (request.method === 'session/request_permission' && session && this.sessions.get(session.threadId) === session) {
-      this.handlePermissionRequest(session, rpc, request);
+      this.handlePermissionRequest(session, rpc, request, binding.computerUse);
       return;
     }
     if (request.method === 'session/request_permission') {
@@ -1315,7 +1331,8 @@ export class DevinAcpAdapter implements ProviderAdapter {
   private handlePermissionRequest(
     session: ActiveDevinSession,
     rpc: AcpJsonRpcClient,
-    request: AcpJsonRpcIncomingRequest
+    request: AcpJsonRpcIncomingRequest,
+    computerUse?: ComputerUseMcpDescriptor
   ): void {
     const params = getRecord(request.params);
     const toolCall = getRecord(params?.toolCall) || {};
@@ -1335,6 +1352,19 @@ export class DevinAcpAdapter implements ProviderAdapter {
         };
       })
       .filter((option): option is AcpPermissionOption => Boolean(option));
+    // Devin asks before every MCP tool call, reads included. A call to the
+    // Computer use gateway is decided there (lease, Plan, grant, its own
+    // card), so this layer is answered here and no second card is shown.
+    // The rule Devin would save names the tool: mcp__<server>__<tool>.
+    const gatewayOption = gatewayApprovalOption(
+      computerUse,
+      [getString(getRecord(toolCall._meta)?.['cognition.ai/permissionRule']), known?.name],
+      options
+    );
+    if (gatewayOption) {
+      rpc.respond(request.id, { outcome: { outcome: 'selected', optionId: gatewayOption } });
+      return;
+    }
     // Devin's request names only the tool call id; the title and arguments
     // come from the tool_call that preceded it.
     const title = getString(toolCall.title) || known?.title || (editableCommand ? `Run ${editableCommand}` : 'Devin permission request');

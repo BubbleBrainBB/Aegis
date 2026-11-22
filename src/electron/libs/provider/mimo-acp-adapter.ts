@@ -1,6 +1,8 @@
 import { getWorkflowSessionPolicy } from '../workflow/session-hooks';
 import { getSessionReaderHttpConfig, SESSION_MCP_SERVER_NAME } from '../session-http-server';
 import { createGrokAcpHttpMcpServer } from './grok-acp-mcp';
+import { createComputerUseAcpEntry, gatewayApprovalOption } from '../computer-use/provider-mcp';
+import type { ComputerUseMcpDescriptor } from '../computer-use/mcp-bridge';
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import { EventEmitter } from 'events';
 import { readFileSync } from 'fs';
@@ -127,6 +129,11 @@ interface MimoConnection {
 /** See DevinAcpAdapter: pre-bind notifications are startup state or load replay. */
 interface SessionBinding {
   session?: ActiveMimoSession;
+  /**
+   * The Computer use entry this process was handed for its session, if any:
+   * what shows that a tool it calls `aegis-computer-use` is the gateway's.
+   */
+  computerUse?: ComputerUseMcpDescriptor;
   commands?: MimoSessionUpdate;
   usage?: MimoSessionUpdate;
   currentMode?: string;
@@ -470,9 +477,18 @@ export class MimoAcpAdapter implements ProviderAdapter {
 
     // Aegis's session tools for chat sessions (MiMo's ACP accepts http MCP
     // servers); workflow members get none.
-    const mcpServers = getWorkflowSessionPolicy(threadId)
+    const mcpServers: unknown[] = getWorkflowSessionPolicy(threadId)
       ? []
       : [createGrokAcpHttpMcpServer(SESSION_MCP_SERVER_NAME, await step(getSessionReaderHttpConfig({ sessionId: threadId })))];
+    // Computer use, when it is on: the gateway's tools, bound to this
+    // session for as long as this process lives.
+    if (!getWorkflowSessionPolicy(threadId)) {
+      const computerUse = await step(createComputerUseAcpEntry(threadId, proc));
+      if (computerUse) {
+        mcpServers.push(computerUse.server);
+        binding.computerUse = computerUse.entry;
+      }
+    }
 
     let sessionRecord: Record<string, unknown> | null = null;
     let providerSessionId = '';
@@ -1026,7 +1042,7 @@ export class MimoAcpAdapter implements ProviderAdapter {
     const session = binding.session;
     if (request.method === 'session/request_permission') {
       if (session && this.sessions.get(session.threadId) === session) {
-        this.handlePermissionRequest(session, rpc, request);
+        this.handlePermissionRequest(session, rpc, request, binding.computerUse);
       } else {
         rpc.respond(request.id, { outcome: { outcome: 'cancelled' } });
       }
@@ -1047,7 +1063,8 @@ export class MimoAcpAdapter implements ProviderAdapter {
   private handlePermissionRequest(
     session: ActiveMimoSession,
     rpc: AcpJsonRpcClient,
-    request: AcpJsonRpcIncomingRequest
+    request: AcpJsonRpcIncomingRequest,
+    computerUse?: ComputerUseMcpDescriptor
   ): void {
     const params = getRecord(request.params);
     const toolCall = getRecord(params?.toolCall) || {};
@@ -1074,6 +1091,14 @@ export class MimoAcpAdapter implements ProviderAdapter {
     const command = getString(knownInput?.command) || getString(metadata.command);
     const filePath = getString(knownInput?.file_path) || getString(metadata.filepath) || getString(metadata.filePath);
     const toolName = known?.name || mimoToolName({ title: permission, kind: toolCall.kind });
+    // A call to the Computer use gateway is decided there (lease, Plan,
+    // grant, its own card); MiMo's own question about it gets no second card.
+    // (With Aegis's permission config MiMo does not ask about MCP tools at all.)
+    const gatewayOption = gatewayApprovalOption(computerUse, [known?.name, permission], options);
+    if (gatewayOption) {
+      rpc.respond(request.id, { outcome: { outcome: 'selected', optionId: gatewayOption } });
+      return;
+    }
     // A request that beats the call's arguments carries only the permission
     // key (`bash`); the tool's display name reads better than the raw key.
     const title = command

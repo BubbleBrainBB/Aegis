@@ -656,3 +656,35 @@ export function computerUseGatewayTool(toolName: string | null | undefined): str
   if (!parsed || parsed.server !== AEGIS_COMPUTER_USE_SERVER_NAME) return null;
   return (COMPUTER_USE_GATEWAY_TOOLS as readonly string[]).includes(parsed.tool) ? parsed.tool : null;
 }
+
+/**
+ * The gateway tool a provider's own spelling of an MCP tool name stands for,
+ * or null. Providers join the server and the tool differently:
+ * `mcp__aegis-computer-use__click` (Claude, Qoder, DeepSeek),
+ * `aegis-computer-use__click` (Grok), `aegis-computer-use_click` (OpenCode,
+ * MiMo), and `.`, `/` or `:` elsewhere. The server's name has to be there:
+ * a bare `click` is some other server's.
+ */
+export function computerUseToolOfProviderName(toolName: string | null | undefined): string | null {
+  const name = (toolName || '').trim();
+  if (!name) return null;
+  const exact = computerUseGatewayTool(name);
+  if (exact) return exact;
+  const lower = name.toLowerCase();
+  for (const tool of COMPUTER_USE_GATEWAY_TOOLS) {
+    if (!lower.endsWith(tool)) continue;
+    const prefix = lower.slice(0, -tool.length);
+    if (/^(?:mcp__)?aegis-computer-use(?:__|[_./:])$/.test(prefix)) return tool;
+  }
+  return null;
+}
+
+/**
+ * A provider's name for a gateway tool as the transcript keeps it:
+ * `mcp__aegis-computer-use__<tool>`, which is what the tool cards, the labels
+ * and the Environment strip read. Any other name comes back unchanged.
+ */
+export function canonicalComputerUseToolName(toolName: string): string {
+  const tool = computerUseToolOfProviderName(toolName);
+  return tool ? computerUseToolName(tool) : toolName;
+}

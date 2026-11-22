@@ -45,6 +45,9 @@ import { isFollowUpSession } from './follow-up/registry';
 import { isStartSessionToolName } from '../../shared/follow-up';
 import { BROWSER_USE_SERVER_NAME, createBrowserUseMcpServer } from './browser-use-mcp';
 import { setBrowserUseSessionFullAccess } from './browser-use-consent';
+import { AEGIS_COMPUTER_USE_SERVER_NAME } from '../../shared/computer-use';
+import { createComputerUseSessionEntry, releaseComputerUseSessionEntry } from './computer-use/provider-mcp';
+import type { ComputerUseMcpDescriptor } from './computer-use/mcp-bridge';
 import { isBrowserUseEnabled } from './browser-use-permissions';
 import { browserManager } from '../browserManager';
 import { ClaudeBackgroundTasks, type BackgroundTaskEvent } from './claude-background-tasks';
@@ -827,6 +830,9 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
   enqueuePrompt(prompt, attachments, currentModel, initialPromptId);
 
   // 异步执行
+  /** The Computer use entry this runner's CLI was handed, if any. */
+  let computerUseEntry: ComputerUseMcpDescriptor | null = null;
+
   (async () => {
     try {
       const sdk = await loadClaudeAgentSdk();
@@ -911,6 +917,22 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
           // Seed the navigation-consent shortcut from the session's starting mode.
           setBrowserUseSessionFullAccess(session.id, permission.mode === 'bypassPermissions');
         }
+        // Computer use, when it is on: the gateway's tools over its loopback
+        // MCP server, bound to this session. A server the user configured
+        // under the name is never handed over, so a tool called
+        // mcp__aegis-computer-use__… is always the gateway's. The gateway
+        // asks with its own card; canUseTool lets MCP tools through.
+        delete (mcpServers as Record<string, unknown>)[AEGIS_COMPUTER_USE_SERVER_NAME];
+        computerUseEntry = await createComputerUseSessionEntry(session.id, { images: 'inline' });
+        if (computerUseEntry) {
+          (mcpServers as Record<string, unknown>)[AEGIS_COMPUTER_USE_SERVER_NAME] = {
+            type: 'http',
+            url: computerUseEntry.url,
+            headers: computerUseEntry.headers,
+          };
+        }
+      } else {
+        delete (mcpServers as Record<string, unknown>)[AEGIS_COMPUTER_USE_SERVER_NAME];
       }
 
       const result = sdk.query({
@@ -1569,6 +1591,8 @@ export function runClaude(options: RunnerOptions): RunnerHandle {
     } finally {
       releaseClaudeGoalController(session.id, goalController);
       inputQueue.close();
+      // The CLI is gone: its Computer use entry names nobody from here on.
+      releaseComputerUseSessionEntry(session.id, computerUseEntry);
       // Background tasks end with the process.
       for (const event of backgroundTasks.end()) emitBackgroundTaskEvent(event);
       // Prompts sent into a busy turn that the CLI never took: they go back

@@ -8,10 +8,12 @@ import { computerUseLease } from '../codex-computer-use';
 import { computerUseGrants } from '../codex-computer-use-grants';
 import { resolveCuaDriver } from './driver-binary';
 import { CuaDriverHost, type ComputerUseDriver } from './driver-host';
+import { ComputerUseMcpBridge } from './mcp-bridge';
 import { ComputerUseGateway, type ComputerUseGatewayHost } from './service';
 import { isComputerUseEnabled } from './settings';
 
 let gateway: ComputerUseGateway | null = null;
+let bridge: ComputerUseMcpBridge | null = null;
 
 export function getComputerUseDriverStatus(): ComputerUseDriverStatus {
   return resolveCuaDriver();
@@ -43,11 +45,24 @@ export function initializeComputerUseGateway(
     driver,
     { lease: computerUseLease, grants: computerUseGrants }
   );
+  // The way in for providers that take their tools over MCP. It leads to
+  // this gateway and nowhere else, and listens only once a runtime is bound.
+  bridge?.dispose();
+  bridge = new ComputerUseMcpBridge({ gateway: () => gateway, userDataDir: host.userDataDir });
   return gateway;
 }
 
 export function getComputerUseGateway(): ComputerUseGateway | null {
   return gateway;
+}
+
+export function getComputerUseMcpBridge(): ComputerUseMcpBridge | null {
+  return bridge;
+}
+
+/** At app quit: the loopback server and every capability handed out. */
+export function disposeComputerUseMcpBridge(): void {
+  bridge?.dispose();
 }
 
 /** Whether agents are offered the tools right now: the switch is on and the pinned driver is there. */
@@ -58,4 +73,6 @@ export function isComputerUseAvailableNow(): boolean {
 /** For tests. */
 export function resetComputerUseGatewayForTests(): void {
   gateway = null;
+  bridge?.dispose();
+  bridge = null;
 }

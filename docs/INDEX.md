@@ -20,6 +20,7 @@
 - [Claude Goal](claude-goal-integration.md)、[Codex Goal](codex-goal-integration.md)。
 - [Kimi server](kimi-server-adapter-plan.md)及[修复计划](kimi-server-fixes-plan.md)。
 - [Qoder SDK](qoder-sdk-adapter-plan.md)、[DeepSeek Harness 升级](deepseek-harness-upgrade.md)。
+- [Computer use 各 Provider 接入](computer-use-providers.md)：所有 agent 经同一个网关（锁、审批卡、输入校验、驱动）；各 harness 的接入方式、支持程度与验证情况，Kimi 未接入及原因。驱动版本见 [native/cua-driver/README.md](../native/cua-driver/README.md)。
 - [Claude runtime 健康计划](plans/2026-03-11-claude-runtime-health.md)。
 
 ## 远程与历史

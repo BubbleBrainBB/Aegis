@@ -5,6 +5,9 @@ import { getSessionProjectSources } from '../session-store';
 import { getSessionReaderHttpConfig, SESSION_MCP_SERVER_NAME } from '../session-http-server';
 import { BROWSER_USE_SERVER_NAME } from '../browser-use';
 import { createQoderBrowserUseMcpServer } from '../browser-use-mcp';
+import { AEGIS_COMPUTER_USE_SERVER_NAME } from '../../../shared/computer-use';
+import { createComputerUseSessionEntry, isGatewayToolCall, releaseComputerUseSessionEntry } from '../computer-use/provider-mcp';
+import type { ComputerUseMcpDescriptor } from '../computer-use/mcp-bridge';
 import { isBrowserUseEnabled } from '../browser-use-permissions';
 import { browserManager } from '../../browserManager';
 import { EventEmitter } from 'events';
@@ -172,6 +175,8 @@ type PendingPermission = {
 };
 
 type ActiveQoderSession = {
+  /** The Computer use entry this query was handed, if any; released with the session. */
+  computerUse?: ComputerUseMcpDescriptor | null;
   threadId: string;
   /** show_widget calls drawn while being written: tool_use block index → call id. */
   widgetDrafts?: { tracker: WidgetDraftTracker; blocks: Map<number, string> };
@@ -541,6 +546,10 @@ export class QoderSdkAdapter implements ProviderAdapter {
 
     const promptQueue = new QoderPromptQueue();
     const requestedModel = this.requestedModelId(input.model);
+    // Computer use, when it is on: the gateway's tools over its loopback MCP
+    // server, bound to this session. Like the session tools, it is passed
+    // for this query only; nothing is written to ~/.qoder/mcp.json.
+    const computerUse = await createComputerUseSessionEntry(input.threadId);
     const query = sdk.query({
       prompt: promptQueue,
       options: {
@@ -556,6 +565,9 @@ export class QoderSdkAdapter implements ProviderAdapter {
                   tool: sdk.tool,
                 }),
               }
+            : {}),
+          ...(computerUse
+            ? { [AEGIS_COMPUTER_USE_SERVER_NAME]: { type: 'http' as const, url: computerUse.url, headers: computerUse.headers } }
             : {}),
         },
       },
@@ -588,6 +600,7 @@ export class QoderSdkAdapter implements ProviderAdapter {
       turnSeq: 0,
       pendingPermissions: new Map(),
       denyAsks: input.qoderPermissionMode === 'dontAsk',
+      computerUse,
     };
     // Never orphan a previous session for the same thread — an undisposed
     // predecessor would leak its qodercli child process.
@@ -630,6 +643,7 @@ export class QoderSdkAdapter implements ProviderAdapter {
       // double-bind): no binding survives.
       session.closed = true;
       this.sessions.delete(input.threadId);
+      releaseComputerUseSessionEntry(input.threadId, computerUse);
       promptQueue.close();
       try {
         await query.close();
@@ -805,6 +819,15 @@ export class QoderSdkAdapter implements ProviderAdapter {
     }
     if (session.denyAsks) {
       return Promise.resolve({ behavior: 'deny', message: DONT_ASK_DENIAL });
+    }
+    // qodercli asks before every MCP tool call, reads included. A call to
+    // the Computer use gateway is decided there (lease, Plan, grant, its own
+    // card with the app and the element on it), so this layer lets it
+    // through and no second card is shown. Only for the server this query
+    // was handed and has reached: without that entry, the same name is some
+    // other server's tool and gets the ordinary card.
+    if (isGatewayToolCall(session.computerUse, toolName)) {
+      return Promise.resolve({ behavior: 'allow', updatedInput: input });
     }
 
     const requestId = options.toolUseID || uuidv4();
@@ -1736,6 +1759,7 @@ export class QoderSdkAdapter implements ProviderAdapter {
     if (this.sessions.get(session.threadId) === session) {
       this.sessions.delete(session.threadId);
     }
+    releaseComputerUseSessionEntry(session.threadId, session.computerUse);
     if (session.providerSessionId && this.sessionOwners.get(session.providerSessionId) === session.threadId) {
       this.sessionOwners.delete(session.providerSessionId);
     }

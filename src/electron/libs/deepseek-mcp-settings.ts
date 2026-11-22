@@ -15,6 +15,8 @@ import { dirname, join } from 'path';
 import { stringify } from 'yaml';
 import type { McpServerConfig } from '../../shared/types';
 import { BROWSER_USE_SERVER_NAME } from './browser-use';
+import { AEGIS_COMPUTER_USE_SERVER_NAME } from '../../shared/computer-use';
+import { COMPUTER_USE_MCP_TOOL_TIMEOUT_MS } from './computer-use/mcp-bridge';
 
 const DEEPSEEK_MCP_CONFIG_PATH = join(homedir(), '.aegis', 'deepseek-mcp.json');
 const SERVER_NAME_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
@@ -178,6 +180,11 @@ function buildMcpPluginEntries(
           headers: stringRecord(server.headers),
           ...(displayName === BROWSER_USE_SERVER_NAME
             ? { toolCallTimeoutMs: BROWSER_USE_TOOL_TIMEOUT_MS }
+            : {}),
+          // A Computer use call can wait on a person reading the approval
+          // card; the client's 60 s default would end it under their hands.
+          ...(displayName === AEGIS_COMPUTER_USE_SERVER_NAME
+            ? { toolCallTimeoutMs: COMPUTER_USE_MCP_TOOL_TIMEOUT_MS }
             : {}),
         };
       } else if (transport === 'stdio') {

@@ -7,6 +7,8 @@ import { isBrowserUseEnabled } from '../browser-use-permissions';
 import { setBrowserUseSessionFullAccess } from '../browser-use-consent';
 import { browserManager } from '../../browserManager';
 import { createGrokAcpHttpMcpServer } from './grok-acp-mcp';
+import { createComputerUseAcpEntry, gatewayApprovalOption } from '../computer-use/provider-mcp';
+import type { ComputerUseMcpDescriptor } from '../computer-use/mcp-bridge';
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import { EventEmitter } from 'events';
 import { readdirSync, readFileSync, statSync } from 'fs';
@@ -171,6 +173,11 @@ interface MinimaxConnection {
 /** Startup state that arrives before the session is bound, applied once it is. */
 interface SessionBinding {
   session?: ActiveMinimaxSession;
+  /**
+   * The Computer use entry this process was handed for its session, if any:
+   * what shows that a tool it calls `aegis-computer-use` is the gateway's.
+   */
+  computerUse?: ComputerUseMcpDescriptor;
   commands?: MinimaxSessionUpdate;
   usage?: MinimaxSessionUpdate;
 }
@@ -760,6 +767,13 @@ export class MinimaxAcpAdapter implements ProviderAdapter {
         disposeMcp = descriptor.dispose;
         await step(Promise.resolve());
         mcpServers.push(createGrokAcpHttpMcpServer(BROWSER_USE_SERVER_NAME, descriptor));
+      }
+      // Computer use, when it is on: the gateway's tools, bound to this
+      // session for as long as this process lives.
+      const computerUse = await step(createComputerUseAcpEntry(threadId, proc));
+      if (computerUse) {
+        mcpServers.push(computerUse.server);
+        binding.computerUse = computerUse.entry;
       }
     }
 
@@ -1462,7 +1476,7 @@ export class MinimaxAcpAdapter implements ProviderAdapter {
     const session = binding.session;
     const live = Boolean(session && this.sessions.get(session.threadId) === session);
     if (request.method === 'session/request_permission') {
-      if (live && session) this.handlePermissionRequest(session, rpc, request);
+      if (live && session) this.handlePermissionRequest(session, rpc, request, binding.computerUse);
       else rpc.respond(request.id, { outcome: { outcome: 'cancelled' } });
       return;
     }
@@ -1481,7 +1495,8 @@ export class MinimaxAcpAdapter implements ProviderAdapter {
   private handlePermissionRequest(
     session: ActiveMinimaxSession,
     rpc: AcpJsonRpcClient,
-    request: AcpJsonRpcIncomingRequest
+    request: AcpJsonRpcIncomingRequest,
+    computerUse?: ComputerUseMcpDescriptor
   ): void {
     const params = getRecord(request.params);
     const toolCall = getRecord(params?.toolCall) || {};
@@ -1500,6 +1515,14 @@ export class MinimaxAcpAdapter implements ProviderAdapter {
       .filter((option): option is AcpPermissionOption => Boolean(option));
     // The request's toolCall is self-contained (its id is not the tool call's).
     const toolName = minimaxToolName(toolCall);
+    // A call to the Computer use gateway is decided there (lease, Plan,
+    // grant, its own card); mcode's own question about it gets no second
+    // card. (mcode 0.6.12 runs MCP tools without asking, in Ask mode too.)
+    const gatewayOption = gatewayApprovalOption(computerUse, [getString(toolCall.name), getString(toolCall.title)], options);
+    if (gatewayOption) {
+      rpc.respond(request.id, { outcome: { outcome: 'selected', optionId: gatewayOption } });
+      return;
+    }
     const rawInput = getRecord(toolCall.rawInput);
     const command = toolName === 'Bash' ? getString(rawInput?.command) : '';
     const title = getString(toolCall.title) || command || 'MiniMax Code permission request';
