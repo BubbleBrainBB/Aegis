@@ -603,9 +603,11 @@ body {
   pointer-events: none;
 }
 
-/* The line between the rail and the panel starts under the title-bar row. */
+/* The line between the rail and the panel starts under the title-bar row.
+   Both sides are the same colour, so it is half a point: one device pixel
+   on a Retina display, and still one pixel on a 1x display. */
 .aegis-sidebar-panel {
-  border-left: 1px solid var(--panel-soft-divider);
+  border-left: 0.5px solid var(--panel-soft-divider);
 }
 
 .aegis-window-shell--rounded .aegis-window-left-surface {
