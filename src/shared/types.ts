@@ -2614,6 +2614,41 @@ export interface QoderPlanUsageReport {
   orgResourcePackage: QoderPlanQuotaBucket | null;
 }
 
+/**
+ * Outcome of a DeepSeek balance query. `unsupported` is a third-party endpoint
+ * without the balance API; `unavailable` is a failed query to the official one.
+ */
+export type DeepseekBalanceStatus = 'ok' | 'no-key' | 'unsupported' | 'unauthorized' | 'unavailable';
+
+/** One currency's balance, amounts as the decimal strings the API returns. */
+export interface DeepseekBalanceInfo {
+  /** ISO code as reported by the API ('CNY' or 'USD'). */
+  currency: string;
+  /** Granted plus topped-up balance. */
+  totalBalance: string;
+  /** Unexpired granted balance, or null when the endpoint omits it. */
+  grantedBalance: string | null;
+  /** Topped-up balance, or null when the endpoint omits it. */
+  toppedUpBalance: string | null;
+  /**
+   * The API reports no total to measure against, so the share left (0-100) is
+   * taken against `referenceBalance`: the balance when Aegis last saw it rise
+   * (a top-up or grant). Null until the main process has tracked it.
+   */
+  remainingPercent: number | null;
+  referenceBalance: string | null;
+}
+
+/** The DeepSeek API account balance behind the Harness key. Never carries the key. */
+export interface DeepseekBalanceReport {
+  source: 'deepseek-api';
+  fetchedAt: number;
+  status: DeepseekBalanceStatus;
+  /** False when the account has no balance left for API calls (`is_available`). */
+  isAvailable: boolean;
+  balances: DeepseekBalanceInfo[];
+}
+
 /** Lightweight index entry for the chat outline rail: one per user prompt. */
 export interface SessionUserPromptSummary {
   /** Epoch ms; matches the message's createdAt for history navigation. */

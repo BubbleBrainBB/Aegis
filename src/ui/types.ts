@@ -86,6 +86,7 @@ export type {
   ClaudePlanModelWindow,
   GrokPlanUsageReport,
   QoderPlanUsageReport,
+  DeepseekBalanceReport,
   SessionUserPromptSummary,
   ChatSessionSearchResult,
   SessionHistoryPayload,

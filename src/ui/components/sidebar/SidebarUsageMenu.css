@@ -149,6 +149,19 @@
 .usage-window-pct { color: var(--text-primary); }
 .usage-window-reset { color: var(--text-muted); }
 
+/* A balance line is a window line with the amount where a reset would be. */
+.usage-balance-value {
+  /* End-aligned as an item, so an unusually long amount grows into the gap, not past the row. */
+  justify-self: end;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+
+.usage-balance[data-usage-balance='unavailable'] .usage-balance-value {
+  color: var(--error);
+}
+
 /* Token ledger. */
 .usage-ledger-value {
   font-variant-numeric: tabular-nums;
