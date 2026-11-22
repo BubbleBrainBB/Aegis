@@ -6,7 +6,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -25,7 +25,13 @@ import {
   resolveComputerUseArtifact,
 } from '../../src/electron/libs/codex-computer-use';
 import { ComputerUseGrantRegistry, type ComputerUseGrantTarget } from '../../src/electron/libs/codex-computer-use-grants';
-import { CUA_DRIVER_VERSION, readCuaDriverVersion, resolveCuaDriver } from '../../src/electron/libs/computer-use/driver-binary';
+import {
+  CUA_DRIVER_RESOURCES_FOLDER,
+  CUA_DRIVER_VERSION,
+  cuaDriverCandidates,
+  readCuaDriverVersion,
+  resolveCuaDriver,
+} from '../../src/electron/libs/computer-use/driver-binary';
 import {
   buildCuaDriverEnv,
   COMPUTER_USE_CANCELLED_MESSAGE,
@@ -1482,10 +1488,13 @@ function testDriverSetup() {
   if (!existsSync(join(__dirname, '..', '..', 'native', 'cua-driver', 'dist', 'cua-driver'))) {
     assert.equal(missing.state, 'missing');
     assert.match(missing.message || '', /fetch:cua-driver/);
-    // An installed app has no npm scripts: it is told where the driver is downloaded.
+    // An installed app has no npm scripts. Its driver ships inside it, so a
+    // missing one is a damaged copy: reinstall, or fetch the pinned release by hand.
     const installed = resolveCuaDriver({ ...lookup, env: { AEGIS_CUA_DRIVER_PATH: join(dir, 'absent') }, readVersion: () => null, sourceCheckout: false });
     assert.equal(installed.state, 'missing');
+    assert.equal(installed.source, null);
     assert.doesNotMatch(installed.message || '', /npm run/);
+    assert.match(installed.message || '', /missing from this copy of Aegis\. Reinstall Aegis/);
     assert.ok((installed.message || '').includes(`https://github.com/trycua/cua/releases/tag/cua-driver-rs-v${CUA_DRIVER_VERSION}`));
     assert.ok((installed.message || '').includes(/export const ASSET = `([^`]+)`/.exec(fetchScript)![1].replace('${VERSION}', CUA_DRIVER_VERSION)));
     assert.ok((/export const URL = `([^`]+)`/.exec(fetchScript)?.[1] ?? '').startsWith('https://github.com/trycua/cua/releases/download/cua-driver-rs-v${VERSION}/'));
@@ -1495,7 +1504,53 @@ function testDriverSetup() {
   assert.match(resolveCuaDriver({ ...lookup, readVersion: () => '0.56.9' }).message || '', new RegExp(`runs ${CUA_DRIVER_VERSION.replace(/\./g, '\\.')} only`));
   assert.equal(resolveCuaDriver({ ...lookup, readVersion: () => null }).state, 'version-mismatch');
   const ready = resolveCuaDriver({ ...lookup, readVersion: () => CUA_DRIVER_VERSION });
-  assert.deepEqual([ready.state, ready.path, ready.message], ['ready', binary, null]);
+  assert.deepEqual([ready.state, ready.path, ready.message, ready.source], ['ready', binary, null, 'environment']);
+
+  // Where the driver is looked for: the copy the app ships with, then the
+  // environment variable, then the path from Settings.
+  const resources = join(dir, 'Resources');
+  const shipped = join(resources, CUA_DRIVER_RESOURCES_FOLDER, 'cua-driver');
+  const saved = join(dir, 'saved-cua-driver');
+  mkdirSync(join(resources, CUA_DRIVER_RESOURCES_FOLDER), { recursive: true });
+  writeFileSync(saved, '');
+  const places = { ...lookup, configuredPath: saved, resourcesPath: resources };
+  assert.deepEqual(
+    cuaDriverCandidates({ AEGIS_CUA_DRIVER_PATH: binary }, saved, resources).slice(0, 3),
+    [{ path: shipped, source: 'bundled' }, { path: binary, source: 'environment' }, { path: saved, source: 'settings' }]
+  );
+  assert.equal(cuaDriverCandidates({}, '', null)[0].source, 'checkout', 'outside an app there is no shipped copy to look for');
+  // No shipped copy on disk (a development run): the variable, then Settings.
+  const dev = resolveCuaDriver({ ...places, readVersion: () => CUA_DRIVER_VERSION });
+  assert.deepEqual([dev.source, dev.path], ['environment', binary]);
+  const fromSettings = resolveCuaDriver({ ...places, env: {}, readVersion: () => CUA_DRIVER_VERSION });
+  assert.deepEqual([fromSettings.source, fromSettings.path], ['settings', saved]);
+  // An installed app runs its own copy, whatever the variable or a saved path says.
+  writeFileSync(shipped, '');
+  const own = resolveCuaDriver({ ...places, readVersion: () => CUA_DRIVER_VERSION });
+  assert.deepEqual([own.state, own.source, own.path], ['ready', 'bundled', shipped]);
+  // A shipped copy that does not answer as the pinned version does not hide a good one behind it...
+  const damaged = resolveCuaDriver({ ...places, env: {}, readVersion: (file) => (file === shipped ? null : CUA_DRIVER_VERSION) });
+  assert.deepEqual([damaged.state, damaged.source, damaged.path], ['ready', 'settings', saved]);
+  // ...and with no good one anywhere, it is the one reported.
+  const allBad = resolveCuaDriver({ ...places, readVersion: () => null });
+  assert.deepEqual([allBad.state, allBad.source, allBad.path], ['version-mismatch', 'bundled', shipped]);
+
+  // The macOS package carries what the lookup expects: the fetched driver and
+  // its cursor overlay under that resources folder, fetched before packaging
+  // and checked in the packaged app.
+  const builderConfig = readFileSync(join(__dirname, '..', '..', 'electron-builder.json'), 'utf8');
+  const macSection = builderConfig.slice(builderConfig.indexOf('"mac": {'), builderConfig.indexOf('"win": {'));
+  assert.ok(
+    macSection.includes(`{ "from": "native/cua-driver/dist", "to": "${CUA_DRIVER_RESOURCES_FOLDER}", "filter": ["cua-driver", "cua-cursor-theme"] }`),
+    'the driver is an extra resource of the macOS app only'
+  );
+  assert.equal(builderConfig.split('native/cua-driver/dist').length, 2, 'and of no other platform');
+  assert.match(fetchScript, /const FILES = \['cua-driver', 'cua-cursor-theme'\];/);
+  const releaseWorkflow = readFileSync(join(__dirname, '..', '..', '.github', 'workflows', 'release.yml'), 'utf8');
+  const fetchStep = releaseWorkflow.indexOf("if: runner.os == 'macOS'\n        run: npm run fetch:cua-driver");
+  assert.ok(fetchStep > 0, 'the release fetches the driver on macOS');
+  assert.ok(fetchStep < releaseWorkflow.indexOf('name: Package (electron-builder, signed + notarized)'), 'before it packages');
+  assert.ok(releaseWorkflow.includes(`binary="$app/Contents/Resources/${CUA_DRIVER_RESOURCES_FOLDER}/$name"`), 'and checks it in the packaged app');
   assert.equal(resolveCuaDriver({ ...lookup, platform: 'win32' }).state, 'unsupported-platform');
   rmSync(dir, { recursive: true, force: true });
 }

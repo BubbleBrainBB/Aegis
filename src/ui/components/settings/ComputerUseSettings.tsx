@@ -68,6 +68,9 @@ export function ComputerUseSettings() {
 
   const unsupported = view.driver.state === 'unsupported-platform';
   const driverReady = view.driver.state === 'ready';
+  // The driver the app ships with needs no path: the field is for a source
+  // checkout, and for an installed copy whose own driver is missing or damaged.
+  const builtIn = driverReady && view.driver.source === 'bundled';
   const pathChanged = pathDraft.trim() !== view.driverPath;
 
   return (
@@ -102,9 +105,11 @@ export function ComputerUseSettings() {
             align="start"
             label="Driver"
             description={
-              driverReady
-                ? `cua-driver ${view.driver.version} · ${view.driver.path}`
-                : view.driver.message ?? undefined
+              builtIn
+                ? `cua-driver ${view.driver.version}, included with Aegis.`
+                : driverReady
+                  ? `cua-driver ${view.driver.version} · ${view.driver.path}`
+                  : view.driver.message ?? undefined
             }
           >
             <span
@@ -114,37 +119,39 @@ export function ComputerUseSettings() {
               {driverReady ? 'Ready' : view.driver.state === 'missing' ? 'Not found' : 'Wrong version'}
             </span>
           </SettingsRow>
-          <div className="settings-row flex items-center gap-2 px-4 py-3" data-settings-label="Driver path">
-            <input
-              className="settings-control min-w-0 flex-1"
-              aria-label="cua-driver path"
-              placeholder={`Path to cua-driver ${view.driver.pinnedVersion} (optional)`}
-              value={pathDraft}
-              onChange={(event) => setPathDraft(event.target.value)}
-              disabled={busy}
-              spellCheck={false}
-            />
-            {driverReady ? null : (
+          {builtIn ? null : (
+            <div className="settings-row flex items-center gap-2 px-4 py-3" data-settings-label="Driver path">
+              <input
+                className="settings-control min-w-0 flex-1"
+                aria-label="cua-driver path"
+                placeholder={`Path to cua-driver ${view.driver.pinnedVersion} (optional)`}
+                value={pathDraft}
+                onChange={(event) => setPathDraft(event.target.value)}
+                disabled={busy}
+                spellCheck={false}
+              />
+              {driverReady ? null : (
+                <button
+                  type="button"
+                  className="settings-button"
+                  data-computer-use-driver-download
+                  onClick={() => void window.electron.openExternalUrl(cuaDriverReleaseUrl(view.driver.pinnedVersion))}
+                >
+                  Download page
+                </button>
+              )}
               <button
                 type="button"
                 className="settings-button"
-                data-computer-use-driver-download
-                onClick={() => void window.electron.openExternalUrl(cuaDriverReleaseUrl(view.driver.pinnedVersion))}
+                disabled={busy || !pathChanged}
+                onClick={() =>
+                  void apply(() => window.electron.setComputerUseDriverPath(pathDraft), 'Failed to save the driver path.')
+                }
               >
-                Download page
+                Save
               </button>
-            )}
-            <button
-              type="button"
-              className="settings-button"
-              disabled={busy || !pathChanged}
-              onClick={() =>
-                void apply(() => window.electron.setComputerUseDriverPath(pathDraft), 'Failed to save the driver path.')
-              }
-            >
-              Save
-            </button>
-          </div>
+            </div>
+          )}
           {view.permissions ? (
             <>
               <PermissionRow

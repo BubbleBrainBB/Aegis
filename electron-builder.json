@@ -84,10 +84,15 @@
     "gatekeeperAssess": false,
     "entitlements": "build/entitlements.mac.plist",
     "entitlementsInherit": "build/entitlements.mac.plist",
-    // The iOS Simulator pane's native helper (npm run build:ios-sim-helper,
-    // universal). Signed with the app like any nested code.
+    // Both are signed with the app like any nested code.
+    // - The iOS Simulator pane's native helper (npm run build:ios-sim-helper,
+    //   universal).
+    // - Computer use's driver and the cursor overlay it draws (npm run
+    //   fetch:cua-driver: the pinned cua-driver release, universal, checked
+    //   against its SHA-256). driver-binary.ts looks for it here first.
     "extraResources": [
-      { "from": "native/ios-sim-helper/dist", "to": "ios-sim-helper", "filter": ["**/*"] }
+      { "from": "native/ios-sim-helper/dist", "to": "ios-sim-helper", "filter": ["**/*"] },
+      { "from": "native/cua-driver/dist", "to": "cua-driver", "filter": ["cua-driver", "cua-cursor-theme"] }
     ],
     "extendInfo": {
       "NSAppleEventsUsageDescription": "Aegis agents can control other apps when you ask them to."

@@ -610,8 +610,16 @@ export function cuaDriverAssetName(version: string): string {
   return `cua-driver-rs-${version}-darwin-universal-binary.tar.gz`;
 }
 
+/**
+ * Where the driver binary was found: shipped inside the app, named by
+ * AEGIS_CUA_DRIVER_PATH, set in Settings, or fetched into a source checkout.
+ */
+export type ComputerUseDriverSource = 'bundled' | 'environment' | 'settings' | 'checkout';
+
 export interface ComputerUseDriverStatus {
   state: ComputerUseDriverState;
+  /** Where the binary was found; null when none was. */
+  source: ComputerUseDriverSource | null;
   /** The binary Aegis would run; null when none was found. */
   path: string | null;
   /** What that binary reports as its version. */

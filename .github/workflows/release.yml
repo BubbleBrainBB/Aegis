@@ -83,6 +83,12 @@ jobs:
           brew install xcodegen
           npm run build:ios-sim-helper
 
+      # Computer use's driver ships inside the macOS app. The script downloads
+      # the one pinned cua-driver release, checks its SHA-256 and runs it once.
+      - name: Fetch cua-driver
+        if: runner.os == 'macOS'
+        run: npm run fetch:cua-driver
+
       - name: Build (Vite + TS)
         run: npm run build
         env:
@@ -140,6 +146,24 @@ jobs:
             codesign --verify --strict --verbose=2 "$helper"
             "$helper" --version
             if arch -x86_64 /usr/bin/true 2>/dev/null; then arch -x86_64 "$helper" --version; fi
+            # Computer use's driver and its cursor overlay: there, universal,
+            # signed with the app, and answering as the pinned version when
+            # started from inside the signed app.
+            driver_version="$(node -p "/export const VERSION = '([^']+)'/.exec(require('fs').readFileSync('scripts/fetch-cua-driver.mjs', 'utf8'))[1]")"
+            app_team="$(codesign -dv "$app" 2>&1 | sed -n 's/^TeamIdentifier=//p')"
+            for name in cua-driver cua-cursor-theme; do
+              binary="$app/Contents/Resources/cua-driver/$name"
+              test -x "$binary"
+              lipo -archs "$binary" | grep -q arm64
+              lipo -archs "$binary" | grep -q x86_64
+              codesign --verify --strict --verbose=2 "$binary"
+              test "$(codesign -dv "$binary" 2>&1 | sed -n 's/^TeamIdentifier=//p')" = "$app_team"
+            done
+            driver="$app/Contents/Resources/cua-driver/cua-driver"
+            env -i PATH=/usr/bin:/bin HOME="$HOME" CUA_DRIVER_RS_TELEMETRY_ENABLED=false CUA_TELEMETRY_ENABLED=false CUA_DRIVER_RS_UPDATE_CHECK=false "$driver" --version | grep -F "cua-driver $driver_version"
+            if arch -x86_64 /usr/bin/true 2>/dev/null; then
+              env -i PATH=/usr/bin:/bin HOME="$HOME" CUA_DRIVER_RS_TELEMETRY_ENABLED=false CUA_TELEMETRY_ENABLED=false CUA_DRIVER_RS_UPDATE_CHECK=false arch -x86_64 "$driver" --version | grep -F "cua-driver $driver_version"
+            fi
           done
 
       - name: Upload build artifacts
