@@ -161,6 +161,39 @@ export function hasDeepseekCredentials(): boolean {
   return Boolean(resolveDeepseekApiKey());
 }
 
+/** The public Messages API root the Harness talks to when nothing overrides it. */
+export const DEEPSEEK_OFFICIAL_BASE_URL = 'https://api.deepseek.com/anthropic';
+
+/**
+ * Pure form of resolveDeepseekBaseUrl, following dsh-llm-deepseek's own
+ * order: the profile's `baseURL`, then $DEEPSEEK_BASE_URL, then the public
+ * API. `raw` is the profile's cordis.yml, when one is installed. A `!!js`
+ * baseURL comes back as its source text, which callers reject as a URL.
+ */
+export function parseDeepseekBaseUrl(raw: string | null, envBaseUrl: string | undefined): string {
+  let configured: unknown;
+  if (raw) {
+    const document = parseDocument(raw, {
+      customTags: [{ tag: 'tag:yaml.org,2002:js', resolve: (value: string) => value }],
+    });
+    const rows: unknown = document.errors.length ? null : document.toJS({ maxAliasCount: 100 });
+    const plugin = Array.isArray(rows) ? rows.find((row) => row?.name === '@deepseek-ai/dsh-llm-deepseek') : null;
+    configured = plugin?.config?.baseURL;
+  }
+  if (typeof configured === 'string' && configured.trim()) return configured.trim();
+  return envBaseUrl?.trim() || DEEPSEEK_OFFICIAL_BASE_URL;
+}
+
+/** The endpoint the Harness runtime is configured to send model requests to. */
+export function resolveDeepseekBaseUrl(): string {
+  const profileDir = resolveDeepseekProfileDir();
+  let raw: string | null = null;
+  try {
+    if (profileDir) raw = readFileSync(path.join(profileDir, 'cordis.yml'), 'utf8');
+  } catch { /* Missing profile: the runtime cannot start either; fall back to env/default. */ }
+  return parseDeepseekBaseUrl(raw, process.env.DEEPSEEK_BASE_URL);
+}
+
 /**
  * Child environment for the runtime process. DSH_CWD anchors the sandbox
  * policy and file tools to the thread workspace; DSH_PERMISSION_MODE selects

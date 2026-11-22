@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
+import { invalidatePlanUsage } from '../../hooks/usePlanUsage';
 import type { DeepseekKeyStatus } from '../../types';
 import { ProviderKeyEditor } from './ProviderSettingsPrimitives';
 
@@ -35,6 +36,8 @@ export function DeepseekKeyPanel({ onClose, onChanged }: { onClose: () => void; 
     setBusy(true);
     try {
       setStatus(await window.electron.setDeepseekApiKey(keyDraft));
+      // The balance on the Usage page belongs to the key that was just replaced.
+      invalidatePlanUsage('deepseek');
       toast.success('Saved DeepSeek API key.');
       onChanged();
       onClose();
@@ -49,6 +52,7 @@ export function DeepseekKeyPanel({ onClose, onChanged }: { onClose: () => void; 
     setBusy(true);
     try {
       setStatus(await window.electron.clearDeepseekApiKey());
+      invalidatePlanUsage('deepseek');
       toast.success('Removed the Aegis-stored DeepSeek API key.');
       onChanged();
       onClose();

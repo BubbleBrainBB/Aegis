@@ -204,6 +204,7 @@ import { findMachineQoderCli } from './libs/provider/qoder-sdk-loader';
 import { getCodexRuntimeStatus } from './libs/codex-runtime-status';
 import { getClaudePlanUsage } from './libs/claude-plan-usage';
 import { getGrokPlanUsage } from './libs/grok-plan-usage';
+import { getDeepseekBalance } from './libs/deepseek-balance';
 import { getOpencodeModelConfig, saveOpencodeModelVisibility } from './libs/opencode-settings';
 import { getOpencodeRuntimeStatus } from './libs/opencode-runtime-status';
 import { getOpenCodeServeManager } from './libs/provider/opencode-serve-manager';
@@ -6891,6 +6892,11 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
 
   ipcMainHandle('get-grok-plan-usage', async () => {
     return getGrokPlanUsage();
+  });
+
+  // The query runs here with the Harness's own key; only the balance crosses to the renderer.
+  ipcMainHandle('get-deepseek-balance', async () => {
+    return getDeepseekBalance();
   });
 
   ipcMainHandle('get-qoder-plan-usage', async () => {

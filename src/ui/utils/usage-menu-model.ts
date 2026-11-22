@@ -1,6 +1,6 @@
 import type {
   ClaudePlanUsageReport, ClaudePlanUsageWindow, ClaudeUsageReport, CodexRateLimitReport,
-  CodexRateLimitWindow, GrokPlanUsageReport, QoderPlanUsageReport,
+  CodexRateLimitWindow, DeepseekBalanceReport, GrokPlanUsageReport, QoderPlanUsageReport,
 } from '../types';
 
 /** One plan limit window: how much is left and when it resets. */
@@ -12,10 +12,30 @@ export interface UsageWindow {
   resetsAt: number | null;
 }
 
+/** A prepaid balance: an amount of money rather than a share of a window. */
+export interface UsageBalance {
+  /** The line's label: "Balance", or the currency when the account holds several. */
+  label: string;
+  /** The amount alone, e.g. "110.00"; its currency is the plan's tier or this line's label. */
+  amount: string;
+  /** The amount with its currency, e.g. "110.00 CNY". */
+  value: string;
+  /** What the balance is made of, for the row's tooltip; null when the provider does not say. */
+  detail: string | null;
+  /** False when the provider says the balance cannot pay for calls. */
+  available: boolean;
+  /** Percent left of `reference`, 0-100; null when nothing is known to measure against. */
+  remaining: number | null;
+  /** What `remaining` is a share of: the amount when the balance last rose, e.g. "200.00 CNY". */
+  reference: string | null;
+}
+
 /** A provider's plan as the usage menu shows it. */
 export interface UsagePlan {
   tier: string | null;
   windows: UsageWindow[];
+  /** Set instead of windows for a provider billed from a balance (DeepSeek Harness). */
+  balances?: UsageBalance[];
 }
 
 export type UsageTone = 'ok' | 'watch' | 'low';
@@ -112,6 +132,36 @@ export function qoderPlan(report: QoderPlanUsageReport | null): UsagePlan | null
   const used = report?.totalUsagePercentage ?? report?.userQuota?.percentage;
   if (!report || typeof used !== 'number') return null;
   return plan(report.userType, [{ label: 'Quota', remaining: clampPercent(100 - used), resetsAt: timestampMs(report.expiresAt) }]);
+}
+
+/**
+ * The DeepSeek API account balance, one line per currency; null when there is
+ * none to show. One currency rides the tier badge beside the agent's name, so
+ * the line's last column holds the bare amount and its bar lines up with the rest.
+ */
+export function deepseekPlan(report: DeepseekBalanceReport | null): UsagePlan | null {
+  if (report?.status !== 'ok' || !report.balances.length) return null;
+  const single = report.balances.length === 1;
+  return {
+    tier: single ? report.balances[0].currency : null,
+    windows: [],
+    balances: report.balances.map((balance) => {
+      const parts = [
+        balance.grantedBalance !== null ? `granted ${balance.grantedBalance}` : null,
+        balance.toppedUpBalance !== null ? `topped up ${balance.toppedUpBalance}` : null,
+      ].filter(Boolean);
+      return {
+        label: single ? 'Balance' : balance.currency,
+        amount: balance.totalBalance,
+        value: `${balance.totalBalance} ${balance.currency}`,
+        detail: parts.length ? parts.join(', ') : null,
+        available: report.isAvailable,
+        remaining: typeof balance.remainingPercent === 'number' ? clampPercent(balance.remainingPercent) : null,
+        // An account first seen empty or overdrawn has no full mark worth quoting.
+        reference: balance.referenceBalance !== null && Number(balance.referenceBalance) > 0 ? `${balance.referenceBalance} ${balance.currency}` : null,
+      };
+    }),
+  };
 }
 
 /** 60% or more left is fine, 25-60% is worth watching, under 25% is close to the limit. */

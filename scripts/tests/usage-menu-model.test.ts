@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import {
-  claudePlan, codexPlan, formatReset, formatTier, formatTokens, grokPlan, qoderPlan, reportTokens, usageTone,
+  claudePlan, codexPlan, deepseekPlan, formatReset, formatTier, formatTokens, grokPlan, qoderPlan, reportTokens, usageTone,
 } from '../../src/ui/utils/usage-menu-model';
-import type { ClaudePlanUsageReport, CodexRateLimitReport, GrokPlanUsageReport, QoderPlanUsageReport, ClaudeUsageReport } from '../../src/ui/types';
+import type { ClaudePlanUsageReport, CodexRateLimitReport, DeepseekBalanceReport, GrokPlanUsageReport, QoderPlanUsageReport, ClaudeUsageReport } from '../../src/ui/types';
 
 // Claude: 5-hour and weekly windows, tier from the subscription; API accounts have no plan.
 const claude = {
@@ -54,6 +54,38 @@ assert.equal(formatReset(now + 14 * 60_000, now), 'in 14m');
 assert.equal(formatReset(now + (2 * 60 + 14) * 60_000, now), 'in 2h 14m');
 assert.equal(formatReset(new Date('2026-10-22T09:00:00').getTime(), now), 'Thu 09:00');
 assert.equal(formatReset(new Date('2026-11-01T00:00:00').getTime(), now), 'Nov 1');
+
+// DeepSeek Harness: the API balance, one line per currency; anything else leaves it to the token ledger.
+const balance = (patch: Partial<DeepseekBalanceReport>): DeepseekBalanceReport => ({
+  source: 'deepseek-api', fetchedAt: 1, status: 'ok', isAvailable: true,
+  balances: [{ currency: 'CNY', totalBalance: '110.00', grantedBalance: '10.00', toppedUpBalance: '100.00', remainingPercent: 54.6, referenceBalance: '200.00' }],
+  ...patch,
+});
+assert.deepEqual(deepseekPlan(balance({})), {
+  tier: 'CNY', windows: [],
+  balances: [{ label: 'Balance', amount: '110.00', value: '110.00 CNY', detail: 'granted 10.00, topped up 100.00', available: true, remaining: 55, reference: '200.00 CNY' }],
+}, 'one currency is the badge; the share left is of the balance when it last rose');
+const overdrawn = deepseekPlan(balance({ isAvailable: false, balances: [{ currency: 'CNY', totalBalance: '-0.16', grantedBalance: '0.00', toppedUpBalance: '-0.16', remainingPercent: 0, referenceBalance: '-0.16' }] }));
+assert.deepEqual(overdrawn?.balances, [{ label: 'Balance', amount: '-0.16', value: '-0.16 CNY', detail: 'granted 0.00, topped up -0.16', available: false, remaining: 0, reference: null }],
+  'an account first seen overdrawn is empty, with no full mark to quote');
+const several = deepseekPlan(balance({
+  isAvailable: false,
+  balances: [
+    { currency: 'CNY', totalBalance: '-0.16', grantedBalance: null, toppedUpBalance: null, remainingPercent: 0, referenceBalance: '-0.16' },
+    { currency: 'USD', totalBalance: '0.00', grantedBalance: '0.00', toppedUpBalance: null, remainingPercent: null, referenceBalance: null },
+  ],
+}));
+assert.equal(several?.tier, null, 'several currencies label their own lines');
+assert.deepEqual(several?.balances, [
+  { label: 'CNY', amount: '-0.16', value: '-0.16 CNY', detail: null, available: false, remaining: 0, reference: null },
+  { label: 'USD', amount: '0.00', value: '0.00 USD', detail: 'granted 0.00', available: false, remaining: null, reference: null },
+], 'an exhausted account keeps its row and is marked');
+for (const status of ['no-key', 'unsupported', 'unauthorized', 'unavailable'] as const) {
+  assert.equal(deepseekPlan(balance({ status, balances: [] })), null, `${status} has no balance row`);
+}
+assert.equal(deepseekPlan(balance({ balances: [] })), null);
+assert.equal(deepseekPlan(null), null);
+assert.equal(deepseekPlan([] as unknown as DeepseekBalanceReport), null, 'a malformed bridge answer is not a balance');
 
 // Tokens use the daily series, as the detail page does.
 const usage = { totals: { sessionCount: 2, totalTokens: 999 }, daily: [{ date: '2026-09-20', totalTokens: 1200000 }] } as ClaudeUsageReport;

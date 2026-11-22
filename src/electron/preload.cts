@@ -549,6 +549,10 @@ contextBridge.exposeInMainWorld('electron', {
     return ipcRenderer.invoke('get-qoder-plan-usage');
   },
 
+  getDeepseekBalance: () => {
+    return ipcRenderer.invoke('get-deepseek-balance');
+  },
+
   getSessionUserPrompts: (sessionId: string) => {
     return ipcRenderer.invoke('get-session-user-prompts', sessionId);
   },

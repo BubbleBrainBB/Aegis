@@ -23,6 +23,11 @@ export function createPlanUsageCache<T extends { fetchedAt: number }>(
 
   return {
     getSnapshot: () => snapshot,
+    /** The account or key behind the report changed: drop it and let the next refresh query at once. */
+    invalidate() {
+      nextRefreshAt = 0;
+      publish({ report: null, loading: true, error: null });
+    },
     subscribe: (listener: () => void) => {
       listeners.add(listener);
       return () => { listeners.delete(listener); };

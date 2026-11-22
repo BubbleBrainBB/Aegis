@@ -6,14 +6,15 @@ import { useAppStore } from '../../store/useAppStore';
 import type { AgentProvider } from '../../types';
 import { PROVIDERS } from '../../utils/provider';
 import {
-  claudePlan, codexPlan, formatReset, formatTokens, grokPlan, qoderPlan, reportTokens, usageTone,
-  type UsagePlan, type UsageWindow,
+  claudePlan, codexPlan, deepseekPlan, formatReset, formatTokens, grokPlan, qoderPlan, reportTokens, usageTone,
+  type UsageBalance, type UsagePlan, type UsageWindow,
 } from '../../utils/usage-menu-model';
 import { ProviderIcon } from '../AgentModelPicker';
 import { AlertTriangle, ChartColumn, ChevronRight } from '../icons';
 import { DropdownMenuItem, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger } from '../ui/dropdown-menu';
 
-const PLAN_PROVIDERS = ['claude', 'codex', 'grok', 'qoder'] as const;
+// DeepSeek Harness has no plan; its row is the API account's balance.
+const PLAN_PROVIDERS = ['claude', 'codex', 'grok', 'qoder', 'deepseek'] as const;
 type PlanProvider = (typeof PLAN_PROVIDERS)[number];
 /** Marks drawn in black or white, following the theme. */
 const MONOCHROME = new Set<AgentProvider>(['claude', 'codex', 'kimi', 'grok', 'pi', 'bubble']);
@@ -45,15 +46,17 @@ export function SidebarUsageMenu() {
   const codex = usePlanUsage('codex', open);
   const grok = usePlanUsage('grok', open);
   const qoder = usePlanUsage('qoder', open);
-  const planSnapshots = { claude, codex, grok, qoder };
+  const deepseek = usePlanUsage('deepseek', open);
+  const planSnapshots = { claude, codex, grok, qoder, deepseek };
   const plans: Record<PlanProvider, UsagePlan | null> = {
     claude: claudePlan(claude.report),
     codex: codexPlan(codex.report),
     grok: grokPlan(grok.report),
     qoder: qoderPlan(qoder.report),
+    deepseek: deepseekPlan(deepseek.report),
   };
-  // A plan provider without plan limits (API key, not signed in) is counted
-  // by its tokens like any other provider.
+  // A plan provider without plan limits (API key, not signed in, no balance to
+  // show) is counted by its tokens like any other provider.
   const planState = (provider: PlanProvider) => plans[provider] ? 'plan'
     : planSnapshots[provider].loading && !planSnapshots[provider].report ? 'loading' : 'tokens';
   const planRows = PLAN_PROVIDERS.filter((provider) => planState(provider) !== 'tokens');
@@ -212,6 +215,11 @@ function PlanRow({ provider, plan, status, now, onSelect, onPrefetch }: {
     ? [
         [providerLabel(provider), plan.tier].filter(Boolean).join(' · '),
         ...plan.windows.map((window) => `${window.label}: ${window.remaining}% left${window.resetsAt ? `, resets ${formatReset(window.resetsAt, now)}` : ''}`),
+        ...(plan.balances ?? []).flatMap((balance) => [
+          `Balance: ${balance.value}${balance.detail ? ` (${balance.detail})` : ''}`,
+          balance.remaining !== null && balance.reference ? `${balance.remaining}% left of ${balance.reference}, the balance after its last top-up` : null,
+          balance.available ? null : 'No balance available for API calls',
+        ]),
         status,
       ].filter(Boolean).join('\n')
     : `${providerLabel(provider)}\nLoading usage…`;
@@ -231,6 +239,7 @@ function PlanRow({ provider, plan, status, now, onSelect, onPrefetch }: {
           : <span className="usage-skeleton usage-skeleton-tier" aria-hidden="true" />}
         <StatusSlot status={status} />
       </span>
+      {plan?.balances?.map((balance) => <BalanceRow key={balance.value} balance={balance} />)}
       {plan ? plan.windows.map((window) => <WindowRow key={window.label} window={window} now={now} />) : (
         <span className="usage-window" aria-hidden="true">
           <span className="usage-skeleton" style={{ width: 34 }} />
@@ -240,6 +249,22 @@ function PlanRow({ provider, plan, status, now, onSelect, onPrefetch }: {
         </span>
       )}
     </DropdownMenuItem>
+  );
+}
+
+/** A balance on a window's line: the share left since its last top-up, then the amount where a reset would be. */
+function BalanceRow({ balance }: { balance: UsageBalance }) {
+  return (
+    <span className="usage-window usage-balance" data-usage-balance={balance.available ? 'available' : 'unavailable'}>
+      <span className="usage-window-label">{balance.label}</span>
+      <span className="usage-meter">
+        {balance.remaining !== null ? (
+          <i data-tone={balance.available ? usageTone(balance.remaining) : 'low'} style={{ width: `${balance.remaining}%` }} />
+        ) : null}
+      </span>
+      <span className="usage-window-pct">{balance.remaining !== null ? `${balance.remaining}%` : ''}</span>
+      <span className="usage-balance-value">{balance.amount}</span>
+    </span>
   );
 }
 

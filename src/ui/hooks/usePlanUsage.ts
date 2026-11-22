@@ -6,7 +6,13 @@ const planUsageCaches = {
   codex: createPlanUsageCache(() => window.electron.getCodexRateLimits()),
   grok: createPlanUsageCache(() => window.electron.getGrokPlanUsage()),
   qoder: createPlanUsageCache(() => window.electron.getQoderPlanUsage()),
+  deepseek: createPlanUsageCache(() => window.electron.getDeepseekBalance()),
 };
+
+/** Forget a provider's saved report, for when its account or key was just changed in Settings. */
+export function invalidatePlanUsage(provider: keyof typeof planUsageCaches) {
+  planUsageCaches[provider].invalidate();
+}
 
 export function usePlanUsage<P extends keyof typeof planUsageCaches>(provider: P, enabled: boolean) {
   const cache = planUsageCaches[provider];

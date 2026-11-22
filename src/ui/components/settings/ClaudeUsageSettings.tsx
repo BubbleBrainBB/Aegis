@@ -27,6 +27,7 @@ import type {
   CodexRateLimitReport,
   CodexRateLimitSnapshot,
   CodexRateLimitWindow,
+  DeepseekBalanceReport,
   GrokPlanUsageReport,
   QoderPlanUsageReport,
   UsageSettingsProvider,
@@ -272,6 +273,8 @@ function AgentUsagePage({ activeProvider, rangeDays, setRangeDays, picker, relab
     usePlanUsage('grok', activeProvider === 'grok');
   const { report: qoderPlanUsage, loading: qoderPlanUsageLoading, error: qoderPlanUsageError } =
     usePlanUsage('qoder', activeProvider === 'qoder');
+  const { report: deepseekBalance, loading: deepseekBalanceLoading, error: deepseekBalanceError } =
+    usePlanUsage('deepseek', activeProvider === 'deepseek');
 
   const activeProviderCard = useMemo<UsageProviderCard>(() => {
     const report = usage.report?.usage ?? null;
@@ -299,13 +302,15 @@ function AgentUsagePage({ activeProvider, rangeDays, setRangeDays, picker, relab
   // does not report token counts (qodercli through 1.1.1 only exposes a
   // context ratio). Hide the token report entirely instead of showing a
   // misleading empty state — the plan-limits panel moves up in its place.
-  // The agent's plan limits as one strip of chips (Claude, Codex, Grok, Qoder).
+  // The agent's plan limits as one strip of chips (Claude, Codex, Grok, Qoder),
+  // or its API account balance (DeepSeek Harness).
   const planLimits =
     activeProvider === 'claude' ? claudePlanLimits(claudePlanUsage, claudePlanUsageLoading, claudePlanUsageError)
       : activeProvider === 'codex' ? codexPlanLimits(codexRateLimits, codexRateLimitsLoading, codexRateLimitsError)
         : activeProvider === 'grok' ? grokPlanLimits(grokPlanUsage, grokPlanUsageLoading, grokPlanUsageError)
           : activeProvider === 'qoder' ? qoderPlanLimits(qoderPlanUsage, qoderPlanUsageLoading, qoderPlanUsageError)
-            : null;
+            : activeProvider === 'deepseek' ? deepseekBalanceLimits(deepseekBalance, deepseekBalanceLoading, deepseekBalanceError)
+              : null;
   const tokenReportHidden = Boolean(
     activeReport && activeReport.totals.totalTokens <= 0 && activeReport.totals.sessionCount > 0 && !hasBilledUsage(activeReport)
   );
@@ -1188,6 +1193,36 @@ function qoderPlanLimits(report: QoderPlanUsageReport | null, loading: boolean, 
   if (r.addOnQuota) chips.push({ key: 'add-on', label: 'Add-on pack', value: formatQoderQuotaValue(r.addOnQuota), detail: formatQoderQuotaSubtitle(r.addOnQuota) });
   if (r.orgResourcePackage) chips.push({ key: 'org', label: 'Org package', value: formatQoderQuotaValue(r.orgResourcePackage), detail: formatQoderQuotaSubtitle(r.orgResourcePackage) });
   return { title, plan: null, chips, loading, error, empty: chips.length ? null : 'No Qoder plan usage data available.' };
+}
+
+const DEEPSEEK_BALANCE_NOTES: Record<Exclude<DeepseekBalanceReport['status'], 'ok'>, string> = {
+  'no-key': 'Add a DeepSeek API key to see the API balance.',
+  unsupported: 'The configured endpoint does not support balance queries.',
+  unauthorized: 'DeepSeek rejected the API key, so the balance is unavailable.',
+  unavailable: 'DeepSeek balance is unavailable right now.',
+};
+
+/** The DeepSeek API account balance: per currency, the total and what it is made of. */
+function deepseekBalanceLimits(report: DeepseekBalanceReport | null, loading: boolean, error: string | null): PlanLimits {
+  const title = 'DeepSeek API balance';
+  const base = planLimitsBase(title, loading, error, Boolean(report), 'DeepSeek balance');
+  if (base) return { ...base, plan: null, chips: [] };
+  const r = report!;
+  if (r.status !== 'ok') return { title, plan: null, chips: [], loading, error, empty: DEEPSEEK_BALANCE_NOTES[r.status] };
+  const chips: PlanLimitChip[] = [];
+  for (const balance of r.balances) {
+    const amount = (value: string) => `${value} ${balance.currency}`;
+    const left = balance.remainingPercent !== null && balance.referenceBalance !== null && Number(balance.referenceBalance) > 0
+      ? ` ${Math.round(balance.remainingPercent)}% left of ${amount(balance.referenceBalance)}, the balance after its last top-up.`
+      : '';
+    chips.push({ key: `total-${balance.currency}`, label: 'Balance', value: amount(balance.totalBalance), detail: `Total ${balance.currency} balance available for API calls, granted and topped up.${left}` });
+    if (balance.grantedBalance !== null) chips.push({ key: `granted-${balance.currency}`, label: 'Granted', value: amount(balance.grantedBalance), detail: 'Granted balance that has not expired.' });
+    if (balance.toppedUpBalance !== null) chips.push({ key: `topped-up-${balance.currency}`, label: 'Topped up', value: amount(balance.toppedUpBalance), detail: 'Balance you topped up.' });
+  }
+  if (!r.isAvailable) {
+    chips.push({ key: 'status', label: 'Status', value: 'Unavailable', detail: 'DeepSeek reports no balance available for API calls on this account.', alert: true });
+  }
+  return { title, plan: null, chips, loading, error, empty: chips.length ? null : 'No DeepSeek balance data available.' };
 }
 
 /** Low is yellow below 20% left, red below 5%; otherwise the theme accent. */

@@ -64,6 +64,22 @@ async function main() {
   await empty;
   assert.equal(cache.getSnapshot().report, null, 'explicit no-data result replaces previous account data');
 
+  // A changed key or account: the saved report goes and the back-off no longer applies.
+  now += 60_000;
+  const restored = cache.refresh();
+  await Promise.resolve();
+  resolve({ ...updated, fetchedAt: now });
+  await restored;
+  assert.equal(cache.getSnapshot().report?.remaining, 50);
+  const callsBefore = calls;
+  cache.invalidate();
+  assert.deepEqual(cache.getSnapshot(), { report: null, loading: true, error: null }, 'the old account is not shown');
+  const requery = cache.refresh();
+  await Promise.resolve();
+  assert.equal(calls, callsBefore + 1, 'invalidating skips the back-off');
+  resolve(null);
+  await requery;
+
   const other = createPlanUsageCache(async () => { throw new Error('Not signed in'); });
   await other.refresh();
   assert.equal(other.getSnapshot().report, null, 'providers never share balances');

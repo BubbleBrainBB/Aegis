@@ -66,6 +66,7 @@
   "verify:deepseek-runtime-exit": 2,
   "verify:deepseek-packaging": 2,
   "verify:deepseek-key-source": 2,
+  "verify:deepseek-balance": 2,
   "verify:devin-acp-adapter": 13,
   "verify:decision-panel": 3,
   "verify:question-answers": 3,
