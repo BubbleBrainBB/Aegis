@@ -3,6 +3,9 @@
 The Computer use gateway (`src/electron/libs/computer-use/`) runs
 [Cua Driver](https://github.com/trycua/cua/tree/main/libs/cua-driver), a single
 Rust binary under the MIT license, as a child process of the main process.
+Every agent that has Computer use reaches the driver through that one
+gateway; which agents do, and how, is in
+[docs/computer-use-providers.md](../../docs/computer-use-providers.md).
 
 ## Pinned version
 

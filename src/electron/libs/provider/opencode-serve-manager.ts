@@ -3,6 +3,10 @@ import { randomBytes } from 'crypto';
 import { createServer } from 'net';
 import { getSessionReaderHttpConfig, registerSessionMetaResolver, SESSION_MCP_SERVER_NAME } from '../session-http-server';
 import { BROWSER_USE_SERVER_NAME } from '../browser-use';
+import { AEGIS_COMPUTER_USE_SERVER_NAME } from '../../../shared/computer-use';
+import { isComputerUseAvailableNow } from '../computer-use';
+import { createComputerUseProviderMcpEntry } from '../computer-use/provider-mcp';
+import type { ComputerUseMcpDescriptor } from '../computer-use/mcp-bridge';
 import {
   createBrowserUseProviderMcpDescriptor,
   type BrowserUseSessionMcpDescriptor,
@@ -58,6 +62,8 @@ type ServerState = {
   events: AbortController;
   /** Browser Use as configured when the server started (its config is fixed). */
   browserUse: BrowserUseSessionMcpDescriptor | null;
+  /** The Computer use entry this server was started with, if any. */
+  computerUse: ComputerUseMcpDescriptor | null;
 };
 
 function findAvailablePort(hostname: string): Promise<number> {
@@ -113,12 +119,13 @@ export class OpenCodeServeManager {
     const running = this.state;
     if (
       running &&
-      Boolean(running.browserUse) !== isBrowserUseEnabled() &&
+      (Boolean(running.browserUse) !== isBrowserUseEnabled() ||
+        Boolean(running.computerUse) !== isComputerUseAvailableNow()) &&
       this.activeExecutions.size === 0 &&
       this.canRestart()
     ) {
-      // The Browser Use setting changed since start and nothing uses this
-      // server: restart it with the current config.
+      // The Browser Use or Computer use setting changed since start and
+      // nothing uses this server: restart it with the current config.
       await this.close();
     }
     return (await this.ensureServer()).client;
@@ -185,6 +192,7 @@ export class OpenCodeServeManager {
     );
     state.events.abort();
     state.browserUse?.dispose();
+    state.computerUse?.dispose();
     state.process.close();
   }
 
@@ -256,6 +264,11 @@ export class OpenCodeServeManager {
             return null;
           })
         : null;
+    // Computer use, when it is on. One server serves every OpenCode session,
+    // so the entry names no session: each call is the session its request
+    // meta names (the same reading Browser Use has), and a call that names
+    // none is refused. There is no falling back to matching transcripts.
+    const computerUse = resolve ? await createComputerUseProviderMcpEntry((meta) => resolve(meta)) : null;
     const serverProcess = await startOpenCodeServerProcess({
       binary: binary.path,
       hostname,
@@ -273,6 +286,10 @@ export class OpenCodeServeManager {
             ...(browserUse
               ? { [BROWSER_USE_SERVER_NAME]: { type: 'remote', url: browserUse.url, headers: browserUse.headers, codemode: false } }
               : {}),
+            // Plain tools as well: each call then carries its session in the request meta.
+            ...(computerUse
+              ? { [AEGIS_COMPUTER_USE_SERVER_NAME]: { type: 'remote', url: computerUse.url, headers: computerUse.headers, codemode: false } }
+              : {}),
           },
         },
       },
@@ -282,13 +299,14 @@ export class OpenCodeServeManager {
     try {
       await client.info();
       const stream = await client.openEventStream(events.signal);
-      const state: ServerState = { client, password, process: serverProcess, events, browserUse };
+      const state: ServerState = { client, password, process: serverProcess, events, browserUse, computerUse };
       void this.pumpEvents(state, stream);
       void serverProcess.exited.then((code) => this.handleServerExit(state, code));
       return state;
     } catch (error) {
       events.abort();
       browserUse?.dispose();
+      computerUse?.dispose();
       serverProcess.close();
       throw error;
     }
@@ -343,6 +361,8 @@ export class OpenCodeServeManager {
 
   private handleServerExit(state: ServerState, code: number | null): void {
     state.events.abort();
+    // The process is gone: its Computer use entry names nobody from here on.
+    state.computerUse?.dispose();
     if (this.state !== state) return;
     this.state = null;
     this.starting = null;

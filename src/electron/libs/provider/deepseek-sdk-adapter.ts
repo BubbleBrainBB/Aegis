@@ -24,6 +24,8 @@ import {
   createBrowserUseSessionMcpDescriptor,
 } from '../browser-use-http-server';
 import { BROWSER_USE_SERVER_NAME, finishBrowserUseTurn } from '../browser-use';
+import { AEGIS_COMPUTER_USE_SERVER_NAME } from '../../../shared/computer-use';
+import { createComputerUseMcpEntry } from '../computer-use/provider-mcp';
 import { isBrowserUseEnabled } from '../browser-use-permissions';
 import { setBrowserUseSessionFullAccess } from '../browser-use-consent';
 import { browserManager } from '../../browserManager';
@@ -792,9 +794,22 @@ export class DeepseekSdkAdapter implements ProviderAdapter {
     }
     const entry = resolveDeepseekRuntimeEntry(profileDir);
     let disposeBrowserDescriptor = () => {};
+    let disposeComputerUseEntry = () => {};
     const servers = getDeepseekMcpServers(cwd);
     servers[SESSION_MCP_SERVER_NAME] = await getSessionReaderHttpConfig({ sessionId: threadId });
     delete servers[BROWSER_USE_SERVER_NAME];
+    // Computer use: the gateway's tools, bound to this session for the life
+    // of this runtime. The name is Aegis's: a server the user configured
+    // under it is never handed to the runtime, with the switch on or off, so
+    // a tool called `mcp__aegis-computer-use__…` is always the gateway's.
+    delete servers[AEGIS_COMPUTER_USE_SERVER_NAME];
+    // dsh-mcp-client hands MCP image blocks to a model that takes images and
+    // says so in words to one that does not, so the screenshot goes inline.
+    const computerUse = await createComputerUseMcpEntry(threadId, { images: 'inline' });
+    if (computerUse) {
+      disposeComputerUseEntry = computerUse.dispose;
+      servers[AEGIS_COMPUTER_USE_SERVER_NAME] = { type: 'http', url: computerUse.url, headers: computerUse.headers };
+    }
     if (isBrowserUseEnabled()) {
       const descriptor = await createBrowserUseSessionMcpDescriptor(threadId);
       disposeBrowserDescriptor = descriptor.dispose;
@@ -811,6 +826,7 @@ export class DeepseekSdkAdapter implements ProviderAdapter {
       runtimeDisposed = true;
       runtimeConfig.dispose();
       disposeBrowserDescriptor();
+      disposeComputerUseEntry();
     };
     try {
       const sdk = await loadDeepseekSdk();

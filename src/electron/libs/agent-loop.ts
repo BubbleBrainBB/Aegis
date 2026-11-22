@@ -13,6 +13,7 @@ import { DevinAcpAdapter } from './provider/devin-acp-adapter';
 import { MimoAcpAdapter } from './provider/mimo-acp-adapter';
 import { MinimaxAcpAdapter } from './provider/minimax-acp-adapter';
 import { AntigravityAcpAdapter } from './provider/antigravity-acp-adapter';
+import { computerUseTranscript } from './computer-use/provider-mcp';
 import { isDev } from '../util';
 
 let providerServiceInitialized = false;
@@ -47,6 +48,15 @@ export function ensureProviderService(): void {
 }
 
 export function runAgentLoop(options: RunnerOptions): RunnerHandle {
+  return runProviderAgent({
+    ...options,
+    // Every provider's transcript passes here, Claude's too: gateway tool
+    // calls get their one name and their saved screenshots (provider-mcp.ts).
+    onMessage: (message) => options.onMessage(computerUseTranscript.annotate(options.session.id, message)),
+  });
+}
+
+function runProviderAgent(options: RunnerOptions): RunnerHandle {
   const provider = options.session.provider || 'claude';
 
   ensureProviderService();

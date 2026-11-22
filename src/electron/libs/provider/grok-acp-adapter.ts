@@ -40,6 +40,8 @@ import {
 } from '../../../shared/generated-media';
 import { getBrowserUseMcpDescriptor } from '../browser-use-http-server';
 import { createGrokAcpHttpMcpServer } from './grok-acp-mcp';
+import { createComputerUseAcpEntry, gatewayApprovalOption } from '../computer-use/provider-mcp';
+import type { ComputerUseMcpDescriptor } from '../computer-use/mcp-bridge';
 import { applyGrokPermissionMode, grokPermissionMeta } from './grok-acp-permissions';
 import { discardAcpSession } from './acp-session-discard';
 
@@ -58,6 +60,11 @@ interface ManagedTerminal {
 }
 
 interface ActiveGrokSession {
+  /**
+   * The Computer use entry this process was handed for its session, if any:
+   * what shows that a tool it calls `aegis-computer-use` is the gateway's.
+   */
+  computerUse?: ComputerUseMcpDescriptor;
   threadId: string;
   providerSessionId: string;
   status: ProviderSessionStatus;
@@ -418,9 +425,13 @@ export class GrokAcpAdapter implements ProviderAdapter {
     // feature is on (ACP session/new mcpServers, http variant), naming this
     // session so its calls are not matched by transcript.
     const browserUseDescriptor = getBrowserUseMcpDescriptor(input.threadId);
+    // Computer use, when it is on: the gateway's tools, bound to this
+    // session for as long as this process lives.
+    const computerUse = await createComputerUseAcpEntry(input.threadId, proc).catch(() => null);
     const mcpServers = [
       createGrokAcpHttpMcpServer(SESSION_MCP_SERVER_NAME, await getSessionReaderHttpConfig({ sessionId: input.threadId })),
       ...(browserUseDescriptor ? [createGrokAcpHttpMcpServer('aegis-browser', browserUseDescriptor)] : []),
+      ...(computerUse ? [computerUse.server] : []),
     ];
     const sessionResult = await rpc
       .request(input.resumeSessionId ? 'session/resume' : 'session/new', {
@@ -478,6 +489,7 @@ export class GrokAcpAdapter implements ProviderAdapter {
       reasoningEffort,
       terminals: new Map(),
       nextBlockIndex: 0,
+      ...(computerUse ? { computerUse: computerUse.entry } : {}),
     };
     // Never orphan a previous session for the same thread — an undisposed
     // predecessor would leak its grok child process.
@@ -924,9 +936,26 @@ export class GrokAcpAdapter implements ProviderAdapter {
         };
       })
       .filter((option): option is AcpPermissionOption => Boolean(option));
+    const title = getString(toolCall?.title) || 'Grok permission request';
+    // A call to the Computer use gateway is decided there (lease, Plan,
+    // grant, its own card); Grok's own question about it gets no second card.
+    // Grok calls MCP tools through `use_tool`, which names the tool in its input.
+    const gatewayOption = gatewayApprovalOption(
+      this.sessions.get(threadId)?.computerUse,
+      [
+        getString(getRecord(toolCall?.rawInput)?.tool_name),
+        extractGrokToolName(toolCall || {}),
+        getString(toolCall?.name),
+        getString(toolCall?.title),
+      ],
+      options
+    );
+    if (gatewayOption) {
+      rpc.respond(request.id, { outcome: { outcome: 'selected', optionId: gatewayOption } });
+      return;
+    }
     const requestId = `grok-permission:${threadId}:${request.id}`;
     this.pendingPermissions.set(requestId, { threadId, rpc, request, options });
-    const title = getString(toolCall?.title) || 'Grok permission request';
     const input: AcpPermissionInput = {
       kind: 'acp-permission',
       provider: 'grok',

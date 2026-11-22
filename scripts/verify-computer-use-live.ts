@@ -6,6 +6,8 @@
 // background, presses 6 × 7 = through the accessibility tree, reads 42 back,
 // and checks on the way that the approval card is asked for, that a grant
 // stops the asking, that Plan mode and a second session are held off, that
+// a session reaching the gateway over the MCP bridge (how the other
+// providers do) reads and acts on the same terms and shares the lease, that
 // Aegis itself is refused, and that the driver's own policy refuses what the
 // gateway never sends. No file is opened, nothing is typed anywhere else, no
 // pointer moves, no window comes to the front. Calculator is closed again
@@ -44,6 +46,9 @@ import {
 import { ComputerUseGrantRegistry } from '../src/electron/libs/codex-computer-use-grants';
 import { resolveCuaDriver } from '../src/electron/libs/computer-use/driver-binary';
 import { COMPUTER_USE_CANCELLED_MESSAGE, CuaDriverHost, cuaDriverSocketPath } from '../src/electron/libs/computer-use/driver-host';
+import { ComputerUseMcpBridge } from '../src/electron/libs/computer-use/mcp-bridge';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import {
   COMPUTER_USE_PLAN_MESSAGE,
   ComputerUseGateway,
@@ -242,6 +247,8 @@ async function main() {
       main: { planMode: false, fullAccess: false, readOnlyWorkflowRole: null, generation: 1 },
       plan: { planMode: true, fullAccess: false, readOnlyWorkflowRole: null, generation: 1 },
       second: { planMode: false, fullAccess: false, readOnlyWorkflowRole: null, generation: 1 },
+      // A session of a provider that reaches the gateway over the MCP bridge.
+      'mcp-agent': { planMode: false, fullAccess: false, readOnlyWorkflowRole: null, generation: 1 },
     };
     let answer: ComputerUseApprovalDecision = { allow: true, untilRevoked: false };
     const gateway = new ComputerUseGateway(
@@ -350,6 +357,58 @@ async function main() {
     assert.equal(nextTurn.isError, false, nextTurn.text);
     assert.match(nextTurn.text, /AXStaticText = "0"/);
     summary.nextTurn = 'the same session read Calculator again in a new turn';
+
+    // ── An agent of another provider, over the MCP bridge ─────────────────
+    // What DeepSeek, the ACP agents, Claude, Qoder and OpenCode get: the
+    // same gateway and the same driver, reached with an entry bound to one
+    // session. The real tree and screenshot come back over MCP, an action
+    // asks with the same card, and the lease is the one "second" stands before.
+    gateway.finishTurn('second');
+    const bridge = new ComputerUseMcpBridge({ gateway: () => gateway, userDataDir: () => userDataDir });
+    const entry = await bridge.bindSession('mcp-agent', { images: 'inline' });
+    const client = new Client({ name: 'live-check', version: '0.0.0' });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(entry.url), { requestInit: { headers: entry.headers } }));
+      type Answer = { content: Array<{ type: string; text?: string; data?: string }>; isError?: boolean };
+      const viaMcp = (name: string, args: Record<string, unknown> = {}) =>
+        client.callTool({ name, arguments: args }, undefined, { timeout: 60_000 }) as Promise<Answer>;
+      const text = (answer: Answer) => answer.content.filter((block) => block.type === 'text').map((block) => block.text).join('\n');
+      assert.equal((await client.listTools()).tools.length, 9);
+      const mcpLook = await viaMcp('get_app_state', { app: CALCULATOR });
+      assert.equal(mcpLook.isError ?? false, false, text(mcpLook));
+      assert.match(text(mcpLook), /AXStaticText = "0"/, 'the real tree, over MCP');
+      const shot = mcpLook.content.find((block) => block.type === 'image');
+      assert.ok(shot?.data && Buffer.from(shot.data, 'base64').length > 1000, 'the real screenshot, as an image block');
+      const savedTo = /Screenshot also saved to (\S+\.(?:jpg|png))\./.exec(text(mcpLook))?.[1];
+      assert.ok(savedTo && savedTo.includes(path.join('computer-use-artifacts', 'mcp-agent')), 'and as a file of that session');
+      const mcpCards = cards.length;
+      const seven = await viaMcp('click', { app: CALCULATOR, element_index: buttonIndex(text(mcpLook), 'Seven') });
+      assert.equal(seven.isError ?? false, false, text(seven));
+      assert.equal(cards.length, mcpCards + 1, 'the same card asks, for the session the entry names');
+      assert.equal(cards[cards.length - 1].toolName, 'click');
+      assert.match(text(seven), /AXStaticText = "7"/, 'Calculator shows 7');
+      assert.equal(lease.currentOwner()?.threadId, 'mcp-agent', 'the lease is the bridge session\'s');
+      // The session on the other transport gets nothing meanwhile, and the other way round.
+      assert.equal((await call('second', 'get_app_state', { app: CALCULATOR })).text, COMPUTER_USE_LEASE_MESSAGE);
+      gateway.finishTurn('mcp-agent');
+      const direct = await call('second', 'get_app_state', { app: CALCULATOR });
+      // With a digit entered the button is "Clear"; with nothing, "All Clear".
+      const clearId = /\[id=Clear\b/.test(direct.text) ? 'Clear' : 'AllClear';
+      const clearedAgain = await call('second', 'click', { app: CALCULATOR, element_index: buttonIndex(direct.text, clearId) });
+      assert.equal(clearedAgain.isError, false, clearedAgain.text);
+      assert.match(clearedAgain.text, /AXStaticText = "0"/, 'Calculator is back at 0');
+      assert.equal(lease.currentOwner()?.threadId, 'second');
+      const shutOut = await viaMcp('list_apps');
+      assert.equal(shutOut.isError, true);
+      assert.equal(text(shutOut), COMPUTER_USE_LEASE_MESSAGE);
+      // The runtime goes away: its entry speaks for nobody.
+      entry.dispose();
+      await assert.rejects(viaMcp('list_apps'));
+      summary.mcpBridge = 'an entry-bound MCP client read Calculator, pressed 7 behind the card, and shared the lease with a direct session both ways';
+    } finally {
+      await client.close().catch(() => undefined);
+      bridge.dispose();
+    }
 
     // ── Cancelling a call in flight stops the driver process ──────────────
     // A drag that takes six seconds, across Calculator's display where a drag

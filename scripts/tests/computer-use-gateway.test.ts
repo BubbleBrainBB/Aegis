@@ -10,8 +10,10 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  canonicalComputerUseToolName,
   computerUseGatewayTool,
   computerUseToolName,
+  computerUseToolOfProviderName,
   COMPUTER_USE_GATEWAY_TOOLS,
   type ComputerUseLiveFrame,
 } from '../../src/shared/computer-use';
@@ -56,6 +58,21 @@ import {
   isBubbleComputerUseApproval,
 } from '../../src/electron/libs/bubble-computer-use-tool';
 import { isComputerUseAvailableNow } from '../../src/electron/libs/computer-use';
+import {
+  COMPUTER_USE_MCP_CALL_DEADLINE_MS,
+  COMPUTER_USE_MCP_DEADLINE_MESSAGE,
+  COMPUTER_USE_MCP_RESOLVER_HEADER,
+  COMPUTER_USE_MCP_SESSION_HEADER,
+  COMPUTER_USE_MCP_TOOL_TIMEOUT_MS,
+  COMPUTER_USE_MCP_UNBOUND_MESSAGE,
+  ComputerUseMcpBridge,
+  type ComputerUseMcpDescriptor,
+} from '../../src/electron/libs/computer-use/mcp-bridge';
+import { ComputerUseTranscript, gatewayApprovalOption, isGatewayToolCall } from '../../src/electron/libs/computer-use/provider-mcp';
+import { isComputerUsePlanMode } from '../../src/electron/libs/computer-use/session-modes';
+import type { StreamMessage } from '../../src/shared/types';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import {
   getComputerUseSettings,
   isComputerUseEnabled,
@@ -1771,6 +1788,620 @@ function testBubbleTools() {
   assert.equal(isBubbleComputerUseApproval(click, bubbleComputerUseToolNames([lookalike])), false);
 }
 
+// ── The MCP bridge: the same gateway, for providers that take tools over MCP ──
+
+type McpContent = Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
+type McpAnswer = { content: McpContent; isError?: boolean };
+
+/** A provider runtime's MCP client, as the adapters configure it: the URL and headers of its entry. */
+async function mcpClient(descriptor: Pick<ComputerUseMcpDescriptor, 'url' | 'headers'>) {
+  const client = new Client({ name: 'provider-runtime', version: '0.0.0' });
+  await client.connect(
+    new StreamableHTTPClientTransport(new URL(descriptor.url), { requestInit: { headers: descriptor.headers } })
+  );
+  return {
+    client,
+    call: (name: string, args: Record<string, unknown> = {}, options: { signal?: AbortSignal; meta?: Record<string, unknown> } = {}) =>
+      client.callTool(
+        { name, arguments: args, ...(options.meta ? { _meta: options.meta } : {}) },
+        undefined,
+        { signal: options.signal, timeout: 30_000 }
+      ) as Promise<McpAnswer>,
+  };
+}
+
+const textOf = (answer: McpAnswer) => answer.content.filter((block) => block.type === 'text').map((block) => block.text).join('\n');
+
+/** The loopback server answers a session's runtime, and nobody else. */
+async function testMcpBridgeTransport() {
+  const h = harness({ answer: () => ALLOW });
+  const bridge = new ComputerUseMcpBridge({ gateway: () => h.gateway, userDataDir: () => h.userDataDir });
+  const inline = await bridge.bindSession('deepseek-1', { images: 'inline' });
+  const file = await bridge.bindSession('kimi-1');
+  assert.match(inline.url, /^http:\/\/127\.0\.0\.1:\d+\/mcp$/, 'loopback only');
+  assert.equal(inline.url, file.url, 'one server for every runtime');
+  assert.notEqual(inline.headers[COMPUTER_USE_MCP_SESSION_HEADER], file.headers[COMPUTER_USE_MCP_SESSION_HEADER]);
+  // An MCP client's HTTP request gets no response headers while a call
+  // waits; Node's fetch gives up on that after five minutes. The bridge
+  // answers before then, and the provider's own per-call timeout is longer still.
+  assert.ok(COMPUTER_USE_MCP_CALL_DEADLINE_MS < 5 * 60_000);
+  assert.ok(COMPUTER_USE_MCP_TOOL_TIMEOUT_MS > COMPUTER_USE_MCP_CALL_DEADLINE_MS, 'the bridge’s answer is the one that arrives');
+
+  const post = (headers: Record<string, string>, target = inline.url, method = 'POST') =>
+    fetch(target, {
+      method,
+      headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...headers },
+      ...(method === 'POST' ? { body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }) } : {}),
+    });
+  const capability = inline.headers[COMPUTER_USE_MCP_SESSION_HEADER];
+  assert.equal((await post({ [COMPUTER_USE_MCP_SESSION_HEADER]: capability })).status, 401, 'no token');
+  assert.equal((await post({ Authorization: 'Bearer nope', [COMPUTER_USE_MCP_SESSION_HEADER]: capability })).status, 401);
+  assert.equal((await post({ Authorization: inline.headers.Authorization })).status, 403, 'the token alone names no session');
+  assert.equal((await post({ Authorization: inline.headers.Authorization, [COMPUTER_USE_MCP_SESSION_HEADER]: 'deepseek-1' })).status, 403,
+    'a session id is not a capability');
+  assert.equal((await post({ Authorization: inline.headers.Authorization, [COMPUTER_USE_MCP_RESOLVER_HEADER]: 'made-up' })).status, 403);
+  assert.equal((await post(inline.headers, inline.url.replace('/mcp', '/other'))).status, 404);
+  assert.equal((await post(inline.headers, inline.url, 'GET')).status, 405);
+  assert.equal(h.driver.calls.length, 0, 'nothing refused at the door reaches the driver');
+
+  const deepseek = await mcpClient(inline);
+  const listed = await deepseek.client.listTools();
+  assert.deepEqual(listed.tools.map((tool) => tool.name), [...COMPUTER_USE_GATEWAY_TOOLS], 'the gateway’s nine tools, under their own names');
+  assert.deepEqual(
+    listed.tools.filter((tool) => tool.annotations?.readOnlyHint).map((tool) => tool.name),
+    ['list_apps', 'get_app_state']
+  );
+  for (const tool of listed.tools) {
+    const definition = COMPUTER_USE_TOOL_DEFINITIONS.find((item) => item.name === tool.name)!;
+    assert.deepEqual(tool.inputSchema, definition.parameters, `${tool.name}: the schema the gateway validates against`);
+  }
+
+  // A look: the tree, and the screenshot as an image for a client that takes images.
+  const look = await deepseek.call('get_app_state', { app: 'Calculator' });
+  assert.equal(look.isError ?? false, false, textOf(look));
+  assert.match(textOf(look), /App: Calculator \[com\.apple\.calculator\]/);
+  assert.match(textOf(look), /\[20\] AXButton \(Equals\)/);
+  const image = look.content.find((block) => block.type === 'image');
+  assert.equal(image?.mimeType, 'image/jpeg');
+  assert.equal(Buffer.from(image!.data!, 'base64').toString(), 'shot-1');
+  const savedPath = /Screenshot also saved to (\S+\.jpg)\./.exec(textOf(look))?.[1];
+  assert.ok(savedPath && existsSync(savedPath), 'the screenshot is a file too');
+  assert.ok(savedPath.startsWith(join(h.userDataDir, 'computer-use-artifacts', 'deepseek-1')), 'under the session’s own folder');
+  assert.equal(readFileSync(savedPath).toString(), 'shot-1');
+
+  // An action goes through the card of the session the capability names.
+  const click = await deepseek.call('click', { app: 'Calculator', element_index: '20' });
+  assert.equal(click.isError ?? false, false, textOf(click));
+  assert.equal(h.cards.length, 1);
+  assert.equal(h.cards[0].kind, 'computer-use');
+  assert.equal(h.cards[0].toolName, 'click');
+  assert.equal(h.cards[0].app, 'Calculator');
+  assert.equal(h.lease.currentOwner()?.threadId, 'deepseek-1', 'the lease is the session’s, whatever transport it came by');
+  assert.match(h.lease.currentOwner()!.toolUseId, /^mcp-/, 'held under an id the bridge made for this one call');
+  assert.ok(h.frames.every((frame) => frame.threadId === 'deepseek-1'), 'the HUD frames are the session’s');
+  assert.ok(h.frames.some((frame) => frame.tool === 'click' && frame.mutating));
+
+  // Whatever the arguments say, a runtime cannot speak for another session.
+  await deepseek.call('list_apps', { sessionId: 'kimi-1', session: 'kimi-1', threadId: 'kimi-1' });
+  assert.ok(h.driver.of('list_apps').every((call) => String(call.args.session).startsWith('aegis-deepseek1-')));
+
+  // A client that is not known to take images gets the path, not the bytes.
+  h.gateway.finishTurn('deepseek-1');
+  const kimi = await mcpClient(file);
+  const plain = await kimi.call('get_app_state', { app: 'Calculator' });
+  assert.equal(plain.isError ?? false, false, textOf(plain));
+  assert.equal(plain.content.some((block) => block.type === 'image'), false);
+  const plainPath = /Screenshot saved to (\S+\.jpg)\. Open that image file/.exec(textOf(plain))?.[1];
+  assert.ok(plainPath && existsSync(plainPath));
+  assert.ok(plainPath.includes(join('computer-use-artifacts', 'kimi-1')));
+
+  // Errors come back as tool errors the model can read, not as transport failures.
+  const unknown = await kimi.call('select_text', { app: 'Calculator' });
+  assert.equal(unknown.isError, true);
+  assert.match(textOf(unknown), /Unknown Computer use tool/);
+  const denied = await kimi.call('get_app_state', { app: 'Aegis' });
+  assert.equal(textOf(denied), COMPUTER_USE_DENIED_TARGET_MESSAGE);
+
+  // The runtime ended: its capability names nobody from then on.
+  file.dispose();
+  await assert.rejects(kimi.call('list_apps'), /403|capability/i);
+  assert.equal((await post(file.headers)).status, 403);
+  assert.equal((await deepseek.call('list_apps')).isError ?? false, false, 'another runtime’s capability is untouched');
+
+  // The whole bridge going away ends every capability.
+  bridge.dispose();
+  await assert.rejects(deepseek.call('list_apps'));
+  await deepseek.client.close().catch(() => undefined);
+  await kimi.client.close().catch(() => undefined);
+
+  // Before the gateway exists there is nothing to call, and it says so.
+  const early = new ComputerUseMcpBridge({ gateway: () => null, userDataDir: () => h.userDataDir });
+  const nothing = await early.callTool('s1', 'list_apps', {});
+  assert.equal(nothing.isError, true);
+  assert.match(nothing.content[0].type === 'text' ? nothing.content[0].text : '', /not available/);
+  early.dispose();
+  h.dispose();
+}
+
+/**
+ * One desktop, agents of different providers: a session on the MCP bridge
+ * (DeepSeek, an ACP agent), a session with host tools (Bubble) and Codex's
+ * own client all stand before the same lease.
+ */
+async function testCrossAgentLease() {
+  const h = harness({
+    answer: () => ALLOW,
+    facts: { 'minimax-full': { fullAccess: true }, 'kimi-plan': { planMode: true }, reviewer: { readOnlyWorkflowRole: 'reviewer' } },
+  });
+  const bridge = new ComputerUseMcpBridge({ gateway: () => h.gateway, userDataDir: () => h.userDataDir });
+  const runtime = async (sessionId: string) => mcpClient(await bridge.bindSession(sessionId));
+  const deepseek = await runtime('deepseek-1');
+  const minimax = await runtime('minimax-full');
+  const kimiPlan = await runtime('kimi-plan');
+  const member = await runtime('reviewer');
+  // Bubble's host tools hand their calls to the gateway like this (bubble-computer-use-tool.ts).
+  const bubble = (tool: string, args: Record<string, unknown> = {}) => h.call('bubble-1', tool, args);
+  const CLICK = { app: 'Calculator', element_index: '20' };
+
+  // While nobody acts, everybody may look.
+  assert.equal((await deepseek.call('get_app_state', { app: 'Calculator' })).isError ?? false, false);
+  assert.equal((await bubble('get_app_state', { app: 'Calculator' })).isError, false);
+  assert.equal((await minimax.call('get_app_state', { app: 'Calculator' })).isError ?? false, false);
+  assert.equal(h.lease.currentOwner(), null);
+
+  // DeepSeek acts: the desktop is DeepSeek's.
+  assert.equal((await deepseek.call('click', CLICK)).isError ?? false, false);
+  assert.equal(h.lease.currentOwner()?.threadId, 'deepseek-1');
+  const sent = h.driver.calls.length;
+  const cards = h.cards.length;
+  // Bubble gets nothing: not a click, not a look, not a list.
+  for (const [tool, args] of [['click', CLICK], ['get_app_state', { app: 'Calculator' }], ['list_apps', {}]] as const) {
+    assert.equal((await bubble(tool, args)).text, COMPUTER_USE_LEASE_MESSAGE, `bubble ${tool}`);
+  }
+  // Nor does another MCP runtime, in Full Access or not: Full Access skips the card, never the lease.
+  for (const [tool, args] of [['click', CLICK], ['get_app_state', { app: 'Calculator' }], ['list_apps', {}]] as const) {
+    const refused = await minimax.call(tool, args);
+    assert.equal(refused.isError, true);
+    assert.equal(textOf(refused), COMPUTER_USE_LEASE_MESSAGE, `minimax ${tool}`);
+  }
+  assert.equal(h.driver.calls.length, sent, 'nothing of the others reaches the driver');
+  assert.equal(h.cards.length, cards, 'and nobody is asked about a desktop that is taken');
+  // DeepSeek itself carries on.
+  assert.equal((await deepseek.call('click', CLICK)).isError ?? false, false);
+
+  // DeepSeek's turn ends: the desktop is free, and the next to act has it.
+  h.gateway.finishTurn('deepseek-1');
+  assert.equal(h.lease.currentOwner(), null);
+  assert.equal((await bubble('click', CLICK)).isError, false);
+  assert.equal(h.lease.currentOwner()?.threadId, 'bubble-1');
+  assert.equal(textOf(await deepseek.call('list_apps')), COMPUTER_USE_LEASE_MESSAGE, 'now DeepSeek waits for Bubble');
+  assert.equal(textOf(await minimax.call('click', CLICK)), COMPUTER_USE_LEASE_MESSAGE);
+  h.gateway.finishTurn('bubble-1');
+
+  // Full Access over MCP: no card, and still the lease.
+  const before = h.cards.length;
+  assert.equal((await minimax.call('click', CLICK)).isError ?? false, false);
+  assert.equal(h.cards.length, before, 'Full Access runs without the card');
+  assert.equal(h.lease.currentOwner()?.threadId, 'minimax-full');
+  assert.equal((await bubble('list_apps')).text, COMPUTER_USE_LEASE_MESSAGE);
+  h.gateway.finishTurn('minimax-full');
+
+  // Codex's own Computer use holds the same lease: an MCP runtime is shut out by it too.
+  assert.equal(h.lease.tryAcquire('codex-thread', 'codex:1'), true);
+  assert.equal(textOf(await deepseek.call('list_apps')), COMPUTER_USE_LEASE_MESSAGE);
+  assert.equal(textOf(await minimax.call('click', CLICK)), COMPUTER_USE_LEASE_MESSAGE);
+  h.lease.release('codex-thread', 'codex:1');
+  // And the other way round: while an MCP session holds it, Codex cannot take it.
+  assert.equal((await deepseek.call('get_app_state', { app: 'Calculator' })).isError ?? false, false);
+  assert.equal((await deepseek.call('click', CLICK)).isError ?? false, false);
+  assert.equal(h.lease.tryAcquire('codex-thread', 'codex:2'), false);
+  assert.equal(h.lease.heldByAnother('codex-thread'), true);
+  h.gateway.finishTurn('deepseek-1');
+
+  // Plan and read-only members are the gateway's rules, so they hold over MCP as they do for Bubble.
+  assert.equal((await kimiPlan.call('get_app_state', { app: 'Calculator' })).isError ?? false, false, 'Plan may look');
+  assert.equal(textOf(await kimiPlan.call('click', CLICK)), COMPUTER_USE_PLAN_MESSAGE);
+  assert.equal(h.lease.currentOwner(), null, 'Plan never takes the desktop');
+  assert.match(textOf(await member.call('list_apps')), /workflow reviewer is read-only/);
+  assert.deepEqual(h.refused, ['reviewer:list_apps']);
+
+  // Two agents act at the same moment: exactly one gets the desktop.
+  h.gateway.finishTurn('kimi-plan');
+  await bubble('get_app_state', { app: 'Calculator' });
+  await deepseek.call('get_app_state', { app: 'Calculator' });
+  const [viaMcp, viaHost] = await Promise.all([deepseek.call('click', CLICK), bubble('click', CLICK)]);
+  const won = [viaMcp.isError ?? false, viaHost.isError].filter((failed) => !failed).length;
+  assert.equal(won, 1, 'one of two simultaneous actions runs');
+  assert.equal([textOf(viaMcp), viaHost.text].filter((text) => text === COMPUTER_USE_LEASE_MESSAGE).length, 1, 'the other is told the desktop is taken');
+  h.gateway.finishTurn('deepseek-1');
+  h.gateway.finishTurn('bubble-1');
+  assert.equal(h.lease.currentOwner(), null);
+
+  bridge.dispose();
+  for (const each of [deepseek, minimax, kimiPlan, member]) await each.client.close().catch(() => undefined);
+  h.dispose();
+}
+
+/** The desktop is held from the approval card on, and a runtime that goes away gives it back. */
+async function testCrossAgentLeaseWhileACardIsOpen() {
+  const h = harness();
+  const bridge = new ComputerUseMcpBridge({ gateway: () => h.gateway, userDataDir: () => h.userDataDir });
+  const deepseek = await mcpClient(await bridge.bindSession('deepseek-1'));
+  const devin = await mcpClient(await bridge.bindSession('devin-1'));
+  const CLICK = { app: 'Calculator', element_index: '20' };
+  await deepseek.call('get_app_state', { app: 'Calculator' });
+  await devin.call('get_app_state', { app: 'Calculator' });
+
+  // DeepSeek's click waits on its card. The desktop is already DeepSeek's.
+  const disconnect = new AbortController();
+  const waiting = deepseek.call('click', CLICK, { signal: disconnect.signal });
+  const card = await h.card();
+  assert.equal(card.input.toolName, 'click');
+  assert.equal(h.lease.currentOwner()?.threadId, 'deepseek-1');
+  assert.equal(textOf(await devin.call('click', CLICK)), COMPUTER_USE_LEASE_MESSAGE, 'another agent cannot act under an open card');
+  assert.equal(textOf(await devin.call('get_app_state', { app: 'Calculator' })), COMPUTER_USE_LEASE_MESSAGE, 'or look');
+  assert.equal((await h.call('bubble-1', 'list_apps')).text, COMPUTER_USE_LEASE_MESSAGE);
+  assert.equal(h.cards.length, 1, 'no second card for a desktop that is taken');
+
+  // The provider gives up on the call (its own timeout, a stop): its MCP
+  // client says "cancelled" on another request than the call's own. The
+  // card is taken down and the desktop is free.
+  disconnect.abort();
+  await assert.rejects(waiting);
+  await until(() => card.signal.aborted, 'the card of a call nobody waits for is taken down');
+  await until(() => h.lease.currentOwner() === null, 'and its hold on the desktop goes back');
+  assert.equal(h.driver.of('click').length, 0, 'the click never ran');
+  // An answer that comes anyway allows nothing.
+  card.answer(ALLOW);
+  await settle();
+  assert.equal(h.driver.of('click').length, 0);
+
+  // The other agent can have the desktop now.
+  h.setAnswer(() => ALLOW);
+  assert.equal((await devin.call('click', CLICK)).isError ?? false, false);
+  assert.equal(h.lease.currentOwner()?.threadId, 'devin-1');
+
+  // The runtime dies with a call on its card (a crash, a kill): the
+  // connection closes, and that ends the call too.
+  h.gateway.finishTurn('devin-1');
+  h.setAnswer(undefined);
+  await deepseek.call('get_app_state', { app: 'Calculator' });
+  const dying = deepseek.call('click', CLICK);
+  dying.catch(() => undefined);
+  const orphan = await h.card();
+  assert.equal(h.lease.currentOwner()?.threadId, 'deepseek-1');
+  await deepseek.client.close();
+  await until(() => orphan.signal.aborted, 'the card of a runtime that died is taken down');
+  await until(() => h.lease.currentOwner() === null, 'and the desktop it held is free');
+  assert.equal(h.driver.of('click').length, 1, 'only the other agent’s click ever ran');
+
+  // The session ends while its runtime waits on a card: its capability goes
+  // with the runtime (the adapter disposes it), and the call with it.
+  const kimiEntry = await bridge.bindSession('kimi-1');
+  const kimi = await mcpClient(kimiEntry);
+  await kimi.call('get_app_state', { app: 'Calculator' });
+  const released = kimi.call('click', CLICK);
+  const third = await h.card();
+  kimiEntry.dispose();
+  assert.equal((await released).isError, true);
+  assert.equal(third.signal.aborted, true);
+  await until(() => h.lease.currentOwner() === null, 'a disposed runtime holds nothing');
+  await kimi.client.close().catch(() => undefined);
+
+  // A card nobody answers: the bridge does not hold the provider's request
+  // open for longer than an MCP client waits. It says so in words, and the
+  // card and the desktop go the way of any call that ended.
+  const impatient = new ComputerUseMcpBridge({ gateway: () => h.gateway, userDataDir: () => h.userDataDir, callDeadlineMs: 40 });
+  const mimo = await mcpClient(await impatient.bindSession('mimo-1'));
+  await mimo.call('get_app_state', { app: 'Calculator' });
+  const unanswered = mimo.call('click', CLICK);
+  const fourth = await h.card();
+  const late = await unanswered;
+  assert.equal(late.isError, true);
+  assert.equal(textOf(late), COMPUTER_USE_MCP_DEADLINE_MESSAGE);
+  assert.equal(fourth.signal.aborted, true, 'the unanswered card is taken down');
+  await until(() => h.lease.currentOwner() === null, 'an unanswered call holds nothing');
+  assert.equal(h.driver.of('click').length, 1);
+  // A call that finishes in time is not touched by the deadline.
+  h.setAnswer(() => ALLOW);
+  assert.equal((await mimo.call('click', CLICK)).isError ?? false, false);
+  h.gateway.finishTurn('mimo-1');
+  h.setAnswer(undefined);
+  impatient.dispose();
+  await mimo.client.close().catch(() => undefined);
+
+  // A runtime whose session is stopped mid-card: Stop ends the call, whoever asked.
+  const devinAgain = devin;
+  await devinAgain.call('get_app_state', { app: 'Calculator' });
+  const stopped = devinAgain.call('click', CLICK);
+  const second = await h.card();
+  h.gateway.forgetSession('devin-1', 'stop');
+  const answer = await stopped;
+  assert.equal(answer.isError, true);
+  assert.equal(second.signal.aborted, true);
+  await settle();
+  assert.equal(h.lease.currentOwner(), null);
+
+  bridge.dispose();
+  await deepseek.client.close().catch(() => undefined);
+  await devin.client.close().catch(() => undefined);
+  h.dispose();
+}
+
+/** A runtime that serves many sessions says which one calls, per request, or is refused. */
+async function testMcpBridgeResolver() {
+  const h = harness({ answer: () => ALLOW });
+  const bridge = new ComputerUseMcpBridge({ gateway: () => h.gateway, userDataDir: () => h.userDataDir });
+  const known: Record<string, string> = { 'oc-a': 'opencode-a', 'oc-b': 'opencode-b' };
+  const descriptor = await bridge.bindResolver(async (meta) => {
+    if (meta?.boom) throw new Error('lookup failed');
+    return known[String(meta?.providerSession ?? '')] ?? null;
+  });
+  assert.ok(descriptor.headers[COMPUTER_USE_MCP_RESOLVER_HEADER]);
+  assert.equal(descriptor.headers[COMPUTER_USE_MCP_SESSION_HEADER], undefined);
+  const opencode = await mcpClient(descriptor);
+
+  const a = await opencode.call('get_app_state', { app: 'Calculator' }, { meta: { providerSession: 'oc-a' } });
+  assert.equal(a.isError ?? false, false, textOf(a));
+  assert.equal((await opencode.call('click', { app: 'Calculator', element_index: '20' }, { meta: { providerSession: 'oc-a' } })).isError ?? false, false);
+  assert.equal(h.lease.currentOwner()?.threadId, 'opencode-a');
+  // The same runtime, another of its sessions: another session before the lease.
+  assert.equal(textOf(await opencode.call('list_apps', {}, { meta: { providerSession: 'oc-b' } })), COMPUTER_USE_LEASE_MESSAGE);
+
+  // A request that names no session, an unknown one, or whose lookup fails: not run, not guessed.
+  const sent = h.driver.calls.length;
+  for (const meta of [undefined, { providerSession: 'oc-zzz' }, { boom: true }]) {
+    const lost = await opencode.call('list_apps', {}, { meta });
+    assert.equal(lost.isError, true);
+    assert.equal(textOf(lost), COMPUTER_USE_MCP_UNBOUND_MESSAGE);
+  }
+  assert.equal(h.driver.calls.length, sent);
+
+  bridge.dispose();
+  await opencode.client.close().catch(() => undefined);
+  h.dispose();
+}
+
+/** Screenshots of calls made over MCP reach the transcript, with the result of the call that took them. */
+async function testMcpTranscriptMedia() {
+  const h = harness({ answer: () => ALLOW });
+  const bridge = new ComputerUseMcpBridge({ gateway: () => h.gateway, userDataDir: () => h.userDataDir });
+  const transcript = new ComputerUseTranscript(() => bridge);
+  const use = (id: string, name: string, input: Record<string, unknown>): StreamMessage => ({
+    type: 'assistant', uuid: `use-${id}`, message: { content: [{ type: 'tool_use', id, name, input }] },
+  } as StreamMessage);
+  const result = (id: string, extra: Record<string, unknown> = {}): StreamMessage => ({
+    type: 'user', uuid: `result-${id}`, message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'ok', ...extra }] },
+  } as StreamMessage);
+  const refsOf = (message: StreamMessage) =>
+    ((message as { message: { content: Array<{ mediaRefs?: unknown[] }> } }).message.content[0].mediaRefs ?? []) as Array<{ sha256: string; sessionId: string }>;
+
+  // Two looks and a click by one session; their results come back in another order.
+  await bridge.callTool('ds', 'get_app_state', { app: 'Calculator' });
+  await bridge.callTool('ds', 'click', { element_index: '20', app: 'Calculator' });
+  await bridge.callTool('ds', 'get_app_state', { app: 'com.apple.calculator' });
+  const first = use('t1', 'mcp__aegis-computer-use__get_app_state', { app: 'Calculator' });
+  assert.equal(transcript.annotate('ds', first), first, 'a tool call is passed on as it is');
+  transcript.annotate('ds', use('t2', 'mcp__aegis-computer-use__click', { app: 'Calculator', element_index: '20' }));
+  transcript.annotate('ds', use('t3', 'mcp__aegis-computer-use__get_app_state', { app: 'com.apple.calculator' }));
+  // Other tools, and Codex's own Computer use server, are not the gateway's.
+  transcript.annotate('ds', use('t4', 'mcp__computer-use__get_app_state', { app: 'Calculator' }));
+  transcript.annotate('ds', use('t5', 'Bash', { command: 'ls' }));
+
+  const original = result('t3');
+  const third = transcript.annotate('ds', original);
+  assert.notEqual(third, original, 'the message that is stored is a new one');
+  assert.equal(refsOf(original).length, 0, 'the provider’s own message is not changed');
+  assert.equal(refsOf(third).length, 1);
+  assert.equal(refsOf(third)[0].sessionId, 'ds');
+  const shots = (sha: string) => readFileSync(join(h.userDataDir, 'computer-use-artifacts', 'ds', `${sha}.jpg`)).toString();
+  assert.equal(shots(refsOf(third)[0].sha256), 'shot-3', 'matched by its arguments, not by its place in line');
+  assert.equal(shots(refsOf(transcript.annotate('ds', result('t1')))[0].sha256), 'shot-1');
+  assert.equal(shots(refsOf(transcript.annotate('ds', result('t2')))[0].sha256), 'shot-2', 'an action returns the window it left');
+  // The same result sent again (an adapter updating it) keeps its screenshots.
+  assert.deepEqual(refsOf(transcript.annotate('ds', result('t1'))), refsOf(transcript.annotate('ds', result('t1'))));
+  assert.equal(refsOf(transcript.annotate('ds', result('t1'))).length, 1);
+  assert.equal(refsOf(transcript.annotate('ds', result('t4'))).length, 0);
+  assert.equal(refsOf(transcript.annotate('ds', result('t5'))).length, 0);
+
+  // Each screenshot is filed once, and only with its own session.
+  assert.deepEqual(bridge.claimMedia('ds', 'get_app_state', { app: 'Calculator' }), []);
+  await bridge.callTool('ds', 'get_app_state', { app: 'Calculator' });
+  transcript.annotate('other', use('o1', 'mcp__aegis-computer-use__get_app_state', { app: 'Calculator' }));
+  assert.equal(refsOf(transcript.annotate('other', result('o1'))).length, 0, 'another session’s result gets none of it');
+  assert.equal(bridge.claimMedia('ds', 'get_app_state', { app: 'Calculator' }).length, 1);
+
+  // A result that carries its screenshots already (Bubble files its own) is left alone.
+  await bridge.callTool('ds', 'get_app_state', { app: 'Calculator' });
+  transcript.annotate('ds', use('t6', 'mcp__aegis-computer-use__get_app_state', { app: 'Calculator' }));
+  const own = result('t6', { mediaRefs: [{ sessionId: 'ds', sha256: 'a'.repeat(64), mimeType: 'image/png', sizeBytes: 1 }] });
+  assert.equal(transcript.annotate('ds', own), own);
+
+  // Arguments the provider spelled differently: the oldest call of that tool is meant.
+  transcript.annotate('ds', use('t7', 'mcp__aegis-computer-use__get_app_state', { app: 'calculator ' }));
+  assert.equal(refsOf(transcript.annotate('ds', result('t7'))).length, 1);
+
+  // The end of the turn forgets what was never answered.
+  transcript.annotate('ds', use('t8', 'mcp__aegis-computer-use__get_app_state', { app: 'Calculator' }));
+  await bridge.callTool('ds', 'get_app_state', { app: 'Calculator' });
+  transcript.annotate('ds', { type: 'result', subtype: 'success' } as StreamMessage);
+  assert.equal(refsOf(transcript.annotate('ds', result('t8'))).length, 0);
+  bridge.forgetSession('ds');
+  assert.deepEqual(bridge.claimMedia('ds', 'get_app_state', { app: 'Calculator' }), []);
+
+  // Messages that are not a transcript of tool calls pass through untouched.
+  const prompt = { type: 'user_prompt', prompt: 'hi' } as StreamMessage;
+  assert.equal(transcript.annotate('ds', prompt), prompt);
+
+  // A provider's own spelling of the tool becomes the one name the app knows it by.
+  const nameOf = (message: StreamMessage) => (message as { message: { content: Array<{ name?: string }> } }).message.content[0].name;
+  h.gateway.finishTurn('ds');
+  assert.equal((await bridge.callTool('grok', 'get_app_state', { app: 'Calculator' })).isError, false);
+  const spelled = use('g1', 'aegis-computer-use__get_app_state', { app: 'Calculator' });
+  const renamed = transcript.annotate('grok', spelled);
+  assert.equal(nameOf(renamed), 'mcp__aegis-computer-use__get_app_state');
+  assert.equal(nameOf(spelled), 'aegis-computer-use__get_app_state', 'the provider’s own message is not changed');
+  assert.equal(refsOf(transcript.annotate('grok', result('g1'))).length, 1, 'and its screenshot is filed all the same');
+  assert.equal(nameOf(transcript.annotate('grok', use('g2', 'aegis-computer-use_click', {}))), 'mcp__aegis-computer-use__click');
+  const foreign = use('g3', 'mcp__chrome-devtools__click', {});
+  assert.equal(transcript.annotate('grok', foreign), foreign, 'another server’s tool is left alone');
+
+  // Native tools (Pi): the call was made under the agent's own tool call id.
+  const taken: string[] = [];
+  const nativeTranscript = new ComputerUseTranscript(
+    () => bridge,
+    (sessionId, toolUseId) => {
+      taken.push(`${sessionId}:${toolUseId}`);
+      return toolUseId === 'p1' ? [{ sessionId, sha256: 'b'.repeat(64), mimeType: 'image/jpeg', sizeBytes: 3 }] : [];
+    }
+  );
+  nativeTranscript.annotate('pi', use('p1', 'mcp__aegis-computer-use__get_app_state', { app: 'Calculator' }));
+  nativeTranscript.annotate('pi', use('p2', 'mcp__aegis-computer-use__list_apps', {}));
+  assert.equal(refsOf(nativeTranscript.annotate('pi', result('p1')))[0].sha256, 'b'.repeat(64));
+  assert.equal(refsOf(nativeTranscript.annotate('pi', result('p2'))).length, 0);
+  assert.deepEqual(taken, ['pi:p1', 'pi:p2']);
+  bridge.dispose();
+  h.dispose();
+}
+
+/** Providers spell MCP tool names differently; the server's name is what makes a tool the gateway's. */
+function testProviderToolNames() {
+  const spellings: Array<[string, string]> = [
+    ['mcp__aegis-computer-use__click', 'click'], // Claude, Qoder, DeepSeek, MiniMax, Devin
+    ['aegis-computer-use__get_app_state', 'get_app_state'], // Grok
+    ['aegis-computer-use_type_text', 'type_text'], // MiMo, OpenCode
+    ['aegis-computer-use.press_key', 'press_key'],
+    ['aegis-computer-use/scroll', 'scroll'],
+    ['aegis-computer-use:drag', 'drag'],
+    ['MCP__Aegis-Computer-Use__Perform_Secondary_Action', 'perform_secondary_action'],
+    [' aegis-computer-use__set_value ', 'set_value'],
+  ];
+  for (const [name, tool] of spellings) {
+    assert.equal(computerUseToolOfProviderName(name), tool, name);
+    assert.equal(canonicalComputerUseToolName(name), `mcp__aegis-computer-use__${tool}`, name);
+  }
+  const others = [
+    'click', // no server: some other server's click
+    'mcp__computer-use__click', // Codex's own client
+    'mcp__chrome-devtools__click',
+    'aegis-browser__click',
+    'my-aegis-computer-use__click',
+    'aegis-computer-use-2__click',
+    'aegis-computer-use__select_text', // not a gateway tool
+    'aegis-computer-use__kill_app',
+    'aegis-computer-useclick',
+    '',
+  ];
+  for (const name of others) {
+    assert.equal(computerUseToolOfProviderName(name), null, `"${name}" is not the gateway's`);
+    assert.equal(canonicalComputerUseToolName(name), name, 'another tool keeps its name');
+  }
+  assert.equal(computerUseToolOfProviderName(null), null);
+  // Every gateway tool, in every joined spelling, comes back as itself.
+  for (const tool of COMPUTER_USE_GATEWAY_TOOLS) {
+    for (const join of ['__', '_', '.', '/', ':']) assert.equal(computerUseToolOfProviderName(`aegis-computer-use${join}${tool}`), tool);
+  }
+}
+
+/**
+ * A provider's own approval for a gateway tool is answered by its adapter
+ * only for the runtime that was handed the gateway's entry and has reached
+ * the server with it, and never with more than "once".
+ */
+async function testProviderApprovalLayer() {
+  const h = harness({ answer: () => ALLOW });
+  const bridge = new ComputerUseMcpBridge({ gateway: () => h.gateway, userDataDir: () => h.userDataDir });
+  const entry = await bridge.bindSession('devin-1');
+  const OPTIONS = [
+    { optionId: 'allow_always', kind: 'allow_always' },
+    { optionId: 'allow_server_always', kind: 'allow_always' },
+    { optionId: 'allow_once', kind: 'allow_once' },
+    { optionId: 'switch_bypass', kind: 'allow_always' },
+    { optionId: 'reject_once', kind: 'reject_once' },
+  ];
+  const CLICK = ['mcp__aegis-computer-use__click'];
+
+  // Handed the entry, but it has not reached the server: nothing shows yet
+  // that the server it calls by that name is this one.
+  assert.equal(entry.connected(), false);
+  assert.equal(gatewayApprovalOption(entry, CLICK, OPTIONS), null);
+  assert.equal(isGatewayToolCall(entry, CLICK[0]), false);
+  // No entry at all (the switch is off, a read-only member): the same name is somebody's MCP server.
+  assert.equal(gatewayApprovalOption(null, CLICK, OPTIONS), null);
+  assert.equal(gatewayApprovalOption(undefined, CLICK, OPTIONS), null);
+  assert.equal(isGatewayToolCall(null, CLICK[0]), false);
+
+  // A request with a wrong capability does not make the entry "reached".
+  const client = await mcpClient(entry);
+  await assert.rejects(mcpClient({ url: entry.url, headers: { ...entry.headers, [COMPUTER_USE_MCP_SESSION_HEADER]: 'guess' } }));
+  assert.equal(entry.connected(), true, 'its own first request did');
+  const other = await bridge.bindSession('devin-2');
+  assert.equal(other.connected(), false, 'one runtime reaching the server says nothing about another');
+
+  // Now its own approval for a gateway tool is answered: once, never wider.
+  assert.equal(gatewayApprovalOption(entry, CLICK, OPTIONS), 'allow_once');
+  assert.equal(isGatewayToolCall(entry, CLICK[0]), true);
+  // Whichever of the names the request carries says it (Devin's rule, Grok's use_tool input, a title).
+  assert.equal(gatewayApprovalOption(entry, [null, '', 'use_tool', 'aegis-computer-use__get_app_state'], OPTIONS), 'allow_once');
+  assert.equal(gatewayApprovalOption(entry, ['aegis-computer-use_type_text'], OPTIONS), 'allow_once');
+  // Another server's tool, a bare name, and a tool the gateway does not have keep the provider's card.
+  for (const name of ['mcp__other-server__click', 'click', 'mcp__computer-use__click', 'mcp__aegis-computer-use__select_text', 'Bash']) {
+    assert.equal(gatewayApprovalOption(entry, [name], OPTIONS), null, name);
+    assert.equal(isGatewayToolCall(entry, name), false, name);
+  }
+  assert.equal(gatewayApprovalOption(entry, [], OPTIONS), null);
+  // A provider that offers nothing narrower than "always" is not answered for.
+  assert.equal(gatewayApprovalOption(entry, CLICK, OPTIONS.filter((option) => option.kind !== 'allow_once')), null);
+  assert.equal(gatewayApprovalOption(entry, CLICK, []), null);
+
+  // The runtime is gone: its entry answers for nothing.
+  entry.dispose();
+  assert.equal(entry.connected(), false);
+  assert.equal(gatewayApprovalOption(entry, CLICK, OPTIONS), null);
+  assert.equal(isGatewayToolCall(entry, CLICK[0]), false);
+
+  bridge.dispose();
+  await client.client.close().catch(() => undefined);
+  h.dispose();
+}
+
+/** "Plan" as each provider says it; the gateway holds one rule for all. */
+function testPlanModePerProvider() {
+  const plan: Array<[string, Record<string, string>]> = [
+    ['bubble', { bubblePermissionMode: 'plan' }],
+    ['claude', { claudeExecutionMode: 'plan' }],
+    ['claude', { claudeAccessMode: 'plan' }],
+    ['codex', { codexExecutionMode: 'plan' }],
+    ['opencode', { opencodePermissionMode: 'plan' }],
+    ['kimi', { kimiPermissionMode: 'plan' }],
+    ['grok', { grokPermissionMode: 'plan' }],
+    ['devin', { devinPermissionMode: 'plan' }],
+    ['mimo', { mimoPermissionMode: 'plan' }],
+    ['minimax', { minimaxPermissionMode: 'plan' }],
+    ['qoder', { qoderPermissionMode: 'plan' }],
+  ];
+  for (const [provider, modes] of plan) {
+    assert.equal(isComputerUsePlanMode({ provider, ...modes }), true, `${provider} ${JSON.stringify(modes)}`);
+    // Another provider's field says nothing about this session.
+    const other = provider === 'kimi' ? 'grok' : 'kimi';
+    assert.equal(isComputerUsePlanMode({ provider: other, ...modes, [`${other}PermissionMode`]: 'default' }), false, `${provider} field on ${other}`);
+  }
+  const acting: Array<[string, Record<string, string>]> = [
+    ['bubble', { bubblePermissionMode: 'bypassPermissions' }],
+    ['codex', { codexExecutionMode: 'execute' }],
+    ['kimi', { kimiPermissionMode: 'yolo' }],
+    ['devin', { devinPermissionMode: 'bypass' }],
+    ['mimo', { mimoPermissionMode: 'build' }],
+    ['minimax', { minimaxPermissionMode: 'bypassPermissions' }],
+    // DeepSeek and Pi have no Plan mode.
+    ['deepseek', { deepseekPermissionMode: 'workspace-write' }],
+    ['pi', {}],
+  ];
+  for (const [provider, modes] of acting) assert.equal(isComputerUsePlanMode({ provider, ...modes }), false, provider);
+  assert.equal(isComputerUsePlanMode(null), false);
+  assert.equal(isComputerUsePlanMode({}), false);
+}
+
 async function main() {
   testSettings();
   await testSwitchAndSession();
@@ -1796,6 +2427,14 @@ async function main() {
   await testDriverHostProcesses();
   testVersionProbeEnvironment();
   testBubbleTools();
+  await testMcpBridgeTransport();
+  await testCrossAgentLease();
+  await testCrossAgentLeaseWhileACardIsOpen();
+  await testMcpBridgeResolver();
+  await testMcpTranscriptMedia();
+  testProviderToolNames();
+  await testProviderApprovalLayer();
+  testPlanModePerProvider();
   console.log('computer use gateway tests passed');
 }
 

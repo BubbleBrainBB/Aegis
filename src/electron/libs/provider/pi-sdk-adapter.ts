@@ -1,6 +1,7 @@
 import { CompactionTracker } from './compaction-tracker';
 import { addAgentCost, costFields, emptyCostDetails } from '../agent-cost';
 import { createPiSessionReader, createPiShowWidget, createPiStartWorkflow, createPiWidgetGuide } from '../session-native-tool';
+import { createPiComputerUseTools, piComputerUseToolNames } from '../computer-use/provider-mcp';
 import { createPiDesignTools } from '../../design/tools';
 import { createPiReportStatus } from '../turn-report-tool';
 import { REPORT_STATUS_TOOL } from '../../../shared/turn-report';
@@ -360,8 +361,10 @@ export class PiSdkAdapter implements ProviderAdapter {
       sessionManager,
       // Workflow members do not get the workflow entry (no nested workflows)
       // or status reports (their workflow reads their turns).
-      tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls', 'read_session', SHOW_WIDGET_TOOL, WIDGET_GUIDE_TOOL, ...DESIGN_TOOL_NAMES, ...(offersWorkflows ? [START_WORKFLOW_TOOL, REPORT_STATUS_TOOL, START_SESSION_TOOL] : [])],
-      customTools: [createPiSessionReader(), createPiShowWidget(), createPiWidgetGuide(), ...createPiDesignTools(input.threadId), ...(offersWorkflows ? [createPiStartSession(input.threadId), createPiStartWorkflow(input.threadId), createPiReportStatus(input.threadId)] : [])],
+      // Computer use, when it is on: the gateway's tools as custom tools
+      // bound to this session (Pi takes no MCP servers). Chat sessions only.
+      tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls', 'read_session', SHOW_WIDGET_TOOL, WIDGET_GUIDE_TOOL, ...DESIGN_TOOL_NAMES, ...(offersWorkflows ? [START_WORKFLOW_TOOL, REPORT_STATUS_TOOL, START_SESSION_TOOL, ...piComputerUseToolNames(input.threadId)] : [])],
+      customTools: [createPiSessionReader(), createPiShowWidget(), createPiWidgetGuide(), ...createPiDesignTools(input.threadId), ...(offersWorkflows ? [createPiStartSession(input.threadId), createPiStartWorkflow(input.threadId), createPiReportStatus(input.threadId), ...createPiComputerUseTools(input.threadId)] : [])],
       ...(selectedModel ? { model: selectedModel } : {}),
     });
 

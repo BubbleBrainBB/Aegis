@@ -1,11 +1,13 @@
-// The Computer use gateway: desktop actions through cua-driver, for the
-// providers that get them this way. Today that is Bubble. Codex keeps its own
-// Computer use client (codex-computer-use.ts); the two share the lease and
-// the grant registry, so "one session at a time" holds across both.
+// The Computer use gateway: desktop actions through cua-driver, for every
+// provider that gets them this way (docs/computer-use-providers.md has the
+// list). Codex keeps its own Computer use client (codex-computer-use.ts); the
+// two share the lease and the grant registry, so "one session at a time"
+// holds across all of them.
 //
-// A provider gets nine tools (tools.ts) over its own channel (Bubble: host
-// tools). Each call lands here, bound to its Aegis session, and goes through
-// the same steps before anything reaches cua-driver:
+// A provider gets nine tools (tools.ts) over its own channel: Bubble as host
+// tools, Pi as custom tools, the rest over the gateway's MCP bridge
+// (mcp-bridge.ts). Each call lands here, bound to its Aegis session, and goes
+// through the same steps before anything reaches cua-driver:
 //   1. the switch, the platform and the driver binary
 //   2. the session: unknown → refused; a read-only workflow member → refused;
 //      Plan mode → observation only

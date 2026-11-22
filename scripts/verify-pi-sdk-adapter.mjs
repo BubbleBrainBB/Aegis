@@ -27,8 +27,9 @@ assert.ok(
 const adapter = read('src/electron/libs/provider/pi-sdk-adapter.ts');
 assert.ok(
   adapter.includes("readonly provider: ProviderKind = 'pi'") &&
-    adapter.includes("tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls', 'read_session', SHOW_WIDGET_TOOL, WIDGET_GUIDE_TOOL, ...DESIGN_TOOL_NAMES, ...(offersWorkflows ? [START_WORKFLOW_TOOL, REPORT_STATUS_TOOL, START_SESSION_TOOL] : [])]") &&
-    adapter.includes('customTools: [createPiSessionReader(), createPiShowWidget(), createPiWidgetGuide(), ...createPiDesignTools(input.threadId), ...(offersWorkflows ? [createPiStartSession(input.threadId), createPiStartWorkflow(input.threadId), createPiReportStatus(input.threadId)] : [])]') &&
+    // Computer use rides the same allowlist: its tools are listed and registered together, for chat sessions only.
+    adapter.includes("tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls', 'read_session', SHOW_WIDGET_TOOL, WIDGET_GUIDE_TOOL, ...DESIGN_TOOL_NAMES, ...(offersWorkflows ? [START_WORKFLOW_TOOL, REPORT_STATUS_TOOL, START_SESSION_TOOL, ...piComputerUseToolNames(input.threadId)] : [])]") &&
+    adapter.includes('customTools: [createPiSessionReader(), createPiShowWidget(), createPiWidgetGuide(), ...createPiDesignTools(input.threadId), ...(offersWorkflows ? [createPiStartSession(input.threadId), createPiStartWorkflow(input.threadId), createPiReportStatus(input.threadId), ...createPiComputerUseTools(input.threadId)] : [])]') &&
     adapter.includes('const offersWorkflows = !getWorkflowSessionPolicy(input.threadId);') &&
     adapter.includes('modelRuntime') &&
     adapter.includes('agentDir: resolvePiAgentDir()'),
