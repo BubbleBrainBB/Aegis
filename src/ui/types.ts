@@ -107,6 +107,9 @@ export type {
   MinimaxModelConfig,
   MinimaxRuntimeStatus,
   MinimaxThinkingEfforts,
+  AntigravityModelConfig,
+  AntigravityRuntimeStatus,
+  AntigravityThoughtLevels,
   DeepseekKeyStatus,
   BrowserUsePermissionSettings,
   ChromeCookieDomain,
@@ -121,6 +124,7 @@ export type {
   DevinPermissionMode,
   MimoPermissionMode,
   MinimaxPermissionMode,
+  AntigravityPermissionMode,
   PiModelConfig,
   BubbleModelConfig,
   BubbleProvidersConfig,
@@ -395,6 +399,7 @@ export interface SessionView {
   devinPermissionMode?: import('../shared/types').DevinPermissionMode;
   mimoPermissionMode?: import('../shared/types').MimoPermissionMode;
   minimaxPermissionMode?: import('../shared/types').MinimaxPermissionMode;
+  antigravityPermissionMode?: import('../shared/types').AntigravityPermissionMode;
   opencodePermissionMode?: import('../shared/types').OpenCodePermissionMode;
   pinned?: boolean;
   folderPath?: string | null;

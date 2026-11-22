@@ -47,7 +47,8 @@ app.whenReady().then(async()=>{
  ipcMain.on('renderer-state:set',()=>{});
  ipcMain.handle('get-devin-thought-levels',()=>({model:null,levels:[],defaultLevel:null}));
  ipcMain.handle('get-minimax-thinking-efforts',()=>({model:null,levels:[],defaultLevel:null}));
- for(const provider of ['claude','codex','kimi','grok','opencode','pi','bubble','deepseek','devin','mimo','minimax'])ipcMain.handle('get-'+provider+'-model-config',()=>({defaultModel:'gpt-5.6-sol',options:['gpt-5.6-sol'],availableModels:[{name:'gpt-5.6-sol',enabled:true,isDefault:true}]}));
+ ipcMain.handle('get-antigravity-thought-levels',()=>({model:null,levels:[],defaultLevel:null}));
+ for(const provider of ['claude','codex','kimi','grok','opencode','pi','bubble','deepseek','devin','mimo','minimax','antigravity'])ipcMain.handle('get-'+provider+'-model-config',()=>({defaultModel:'gpt-5.6-sol',options:['gpt-5.6-sol'],availableModels:[{name:'gpt-5.6-sol',enabled:true,isDefault:true}]}));
  // The Qoder catalog: ids as values, the picker's names as display names.
  ipcMain.handle('get-qoder-model-config',()=>({defaultModel:'auto',options:['auto','fast','qmodel_latest','ring_a','ring_b'],models:[
   {value:'auto',displayName:'Auto',isDefault:true,isEnabled:true,contextWindow:200000},

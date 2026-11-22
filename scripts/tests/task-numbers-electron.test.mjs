@@ -63,7 +63,8 @@ app.whenReady().then(async()=>{
  ipcMain.on('renderer-state:set',()=>{});
  ipcMain.handle('get-devin-thought-levels',()=>({model:null,levels:[],defaultLevel:null}));
  ipcMain.handle('get-minimax-thinking-efforts',()=>({model:null,levels:[],defaultLevel:null}));
- for(const provider of ['claude','codex','kimi','grok','opencode','pi','bubble','qoder','deepseek','devin','mimo','minimax'])ipcMain.handle('get-'+provider+'-model-config',()=>({defaultModel:'gpt-5.6-sol',options:['gpt-5.6-sol'],availableModels:[{name:'gpt-5.6-sol',enabled:true,isDefault:true}]}));
+ ipcMain.handle('get-antigravity-thought-levels',()=>({model:null,levels:[],defaultLevel:null}));
+ for(const provider of ['claude','codex','kimi','grok','opencode','pi','bubble','qoder','deepseek','devin','mimo','minimax','antigravity'])ipcMain.handle('get-'+provider+'-model-config',()=>({defaultModel:'gpt-5.6-sol',options:['gpt-5.6-sol'],availableModels:[{name:'gpt-5.6-sol',enabled:true,isDefault:true}]}));
  for(const [channel,value] of [['get-git-branches',{branches:[],currentBranch:null}],['get-agent-runtime-directory',null],['codex-list-plugins',{plugins:[]}],['get-project-tree',[]],['set-theme',null],['get-recent-cwds',[]],['get-session-user-prompts',[]],['codex-list-skills',{skills:[]}],['get-bubble-providers-config',{providers:[]}],['get-provider-composer-capabilities',{}]])ipcMain.handle(channel,()=>value);
  let sent=[];let started=0;ipcMain.on('client-event',(_e,json)=>{const event=JSON.parse(json);if(event.type==='session.start')started++;if(event.type==='session.continue'){sent.push(event.payload.prompt);win.webContents.send('server-event',JSON.stringify({type:'stream.user_prompt',payload:{sessionId:event.payload.sessionId,prompt:event.payload.prompt,createdAt:Date.now()}}));}});
  const js=code=>win.webContents.executeJavaScript(code,true);

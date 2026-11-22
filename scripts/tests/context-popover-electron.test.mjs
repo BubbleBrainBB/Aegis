@@ -28,9 +28,9 @@ window.electron={...window.preferenceBridge,
  getSessionGoal:async id=>({sessionId:id,supported:false,goal:null,revision:0}),onSessionGoalChanged:()=>()=>{},
  getProjectGitSummary:async()=>({isGitRepository:false}),getProjectTree:async()=>null,
 };
-for(const p of ['Claude','Codex','Kimi','Grok','Opencode','Pi','Bubble','Qoder','Deepseek','Devin','Mimo','Minimax'])window.electron['get'+p+'ModelConfig']=async()=>({defaultModel:null,options:[],availableModels:[]});
+for(const p of ['Claude','Codex','Kimi','Grok','Opencode','Pi','Bubble','Qoder','Deepseek','Devin','Mimo','Minimax','Antigravity'])window.electron['get'+p+'ModelConfig']=async()=>({defaultModel:null,options:[],availableModels:[]});
 window.electron.getDevinThoughtLevels=async()=>({model:null,levels:[],defaultLevel:null});
-window.electron.getMinimaxThinkingEfforts=async()=>({model:null,levels:[],defaultLevel:null});
+window.electron.getMinimaxThinkingEfforts=async()=>({model:null,levels:[],defaultLevel:null});window.electron.getAntigravityThoughtLevels=async()=>({model:null,levels:[],defaultLevel:null});
 const store=useAppStore.getState();const id=store.createDraftSession('/tmp');
 useAppStore.setState(s=>({sessions:{...s.sessions,[id]:{...s.sessions[id],isDraft:false,provider:'claude',status:'idle',model:'claude-opus-5-5',messages:[],
  claudeContextUsage:{model:'claude-opus-5-5',totalTokens:451400,maxTokens:1000000,percentage:45,

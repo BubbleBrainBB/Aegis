@@ -29,6 +29,8 @@ export interface PermissionModeOption<M extends string> {
   label: string;
   /** One line under the label in the menu: what the mode lets the agent do. */
   description?: string;
+  /** The description is the agent's own sentence: wrap it instead of cutting it short. */
+  wrapDescription?: boolean;
   tone?: 'full-access' | 'danger';
   hidden?: boolean;
 }

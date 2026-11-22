@@ -1,6 +1,7 @@
 // The main bot in the app: its one conversation, and the service wired to
 // this Mac's sessions and to the Macs it controls.
 
+import { isHumanDrivenOnlyProvider } from '../../../shared/human-driven-providers';
 import { existsSync, mkdirSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { MAIN_BOT_NAME, MAIN_BOT_ROLE, type MainBotTaskState } from '../../../shared/main-bot';
@@ -299,7 +300,10 @@ async function agentsOf(deviceId: string | null, model?: string): Promise<MainBo
     const agents = report.entries.map((entry): MainBotAgent => ({
       provider: entry.provider,
       label: PROVIDER_LABELS[entry.provider] ?? entry.title,
-      unavailable: entry.state === 'ready' ? null : entry.state === 'login_required' ? NOT_SIGNED_IN : 'not installed or not working',
+      // An agent only a person may drive is never given a task by the bot.
+      unavailable: isHumanDrivenOnlyProvider(entry.provider)
+        ? 'it only takes messages the person types to it in Aegis'
+        : entry.state === 'ready' ? null : entry.state === 'login_required' ? NOT_SIGNED_IN : 'not installed or not working',
     }));
     listed = localAgents = { at: Date.now(), agents };
   }

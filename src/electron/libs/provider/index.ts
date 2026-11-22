@@ -13,3 +13,4 @@ export { DevinAcpAdapter } from './devin-acp-adapter';
 export { MimoAcpAdapter } from './mimo-acp-adapter';
 export { PiSdkAdapter } from './pi-sdk-adapter';
 export { BubbleSdkAdapter } from './bubble-sdk-adapter';
+export { AntigravityAcpAdapter } from './antigravity-acp-adapter';

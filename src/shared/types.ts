@@ -60,7 +60,7 @@ export interface McpServerStatus {
   /** Codex: the server needs a fresh OAuth login (mcpServer/oauth/login). */
   failureReason?: 'reauthenticationRequired';
   /** Which agent reported this status. Used to avoid cross-agent name collisions. */
-  tool?: 'claude' | 'codex' | 'opencode' | 'kimi' | 'grok' | 'pi' | 'qoder' | 'bubble' | 'deepseek' | 'devin' | 'mimo' | 'minimax';
+  tool?: 'claude' | 'codex' | 'opencode' | 'kimi' | 'grok' | 'pi' | 'qoder' | 'bubble' | 'deepseek' | 'devin' | 'mimo' | 'minimax' | 'antigravity';
 }
 
 // Claude Skills 摘要
@@ -139,6 +139,12 @@ export type MimoPermissionMode = 'ask' | 'build' | 'plan';
  * session mode. Applied live before every turn.
  */
 export type MinimaxPermissionMode = 'default' | 'auto' | 'bypassPermissions' | 'plan';
+/**
+ * Antigravity ACP session mode, by the id `agy acp` gives it (`default`,
+ * `accept-edits`, `auto`, `plan` on agy 1.5). An open set: the modes on offer
+ * come from agy itself, per session.
+ */
+export type AntigravityPermissionMode = string;
 export type OpenCodePermissionMode = 'defaultPermissions' | 'plan' | 'fullAccess';
 // Mirrors Bubble SDK's PermissionMode union (runTurn({ mode })).
 export type BubblePermissionMode = 'default' | 'plan' | 'bypassPermissions';
@@ -526,6 +532,35 @@ export type MinimaxModelConfig = DevinModelConfig;
  */
 export type MinimaxThinkingEfforts = DevinThoughtLevels;
 
+/** `agy` status; the executable override is the user's own setting. */
+export interface AntigravityRuntimeStatus extends GrokRuntimeStatus {
+  /** The executable path the user set (Settings, or ANTIGRAVITY_CLI_PATH); null when agy is detected. */
+  cliPathOverride: string | null;
+  installCommand: string;
+  docsUrl: string;
+}
+/**
+ * What `agy acp` offers this account, read from an ACP session: models (its
+ * `model` config option), session modes and sign-in methods. Nothing in it
+ * is a list Aegis keeps.
+ */
+export interface AntigravityModelConfig extends DevinModelConfig {
+  modes: Array<{ id: string; label: string; description?: string }>;
+  /** The mode a new session starts in. */
+  defaultMode: string | null;
+  authMethods: Array<{ id: string; label: string; description?: string }>;
+  /** agy accepts image prompt blocks. */
+  imagePrompts: boolean;
+  /** Version the ACP agent reported for itself. */
+  agentVersion: string | null;
+}
+/**
+ * Thinking levels Antigravity offers for one model (its `thought_level`
+ * select). Empty `levels` = the model has no thinking control, unless
+ * `failed` says the read itself failed (not to be cached).
+ */
+export type AntigravityThoughtLevels = DevinThoughtLevels;
+
 export type ClaudeRuntimeStatusKind = 'ready' | 'login_required' | 'install_required' | 'error';
 export type ClaudeRuntimeSource = 'global' | 'unknown';
 
@@ -686,7 +721,7 @@ export interface WorkspaceChannel {
 }
 
 // Agent 提供商 / runtime
-export type AgentProvider = 'claude' | 'codex' | 'opencode' | 'kimi' | 'grok' | 'pi' | 'qoder' | 'bubble' | 'deepseek' | 'devin' | 'mimo' | 'minimax';
+export type AgentProvider = 'claude' | 'codex' | 'opencode' | 'kimi' | 'grok' | 'pi' | 'qoder' | 'bubble' | 'deepseek' | 'devin' | 'mimo' | 'minimax' | 'antigravity';
 export type SessionSource =
   | 'aegis'
   | 'claude_remote'
@@ -700,7 +735,8 @@ export type SessionSource =
   | 'deepseek_local'
   | 'devin_local'
   | 'mimo_local'
-  | 'minimax_local';
+  | 'minimax_local'
+  | 'antigravity_local';
 
 export interface ProviderComposerCapabilities {
   provider: AgentProvider;
@@ -1186,6 +1222,10 @@ export interface SessionStartPayload {
   minimaxPermissionMode?: MinimaxPermissionMode;
   /** MiniMax Code ACP `thinkingEffort` value; open set, valid values vary per model. */
   minimaxThinkingEffort?: string;
+  /** Antigravity ACP session mode id, as agy offers it. */
+  antigravityPermissionMode?: AntigravityPermissionMode;
+  /** Antigravity ACP `thought_level` value; open set, valid values vary per model. */
+  antigravityThoughtLevel?: string;
   codexSkills?: ProviderInputReference[];
   codexMentions?: ProviderInputReference[];
   opencodePermissionMode?: OpenCodePermissionMode;
@@ -1337,6 +1377,10 @@ export interface SessionContinuePayload {
   minimaxPermissionMode?: MinimaxPermissionMode;
   /** MiniMax Code ACP `thinkingEffort` value; open set, valid values vary per model. */
   minimaxThinkingEffort?: string;
+  /** Antigravity ACP session mode id, as agy offers it. */
+  antigravityPermissionMode?: AntigravityPermissionMode;
+  /** Antigravity ACP `thought_level` value; open set, valid values vary per model. */
+  antigravityThoughtLevel?: string;
   codexSkills?: ProviderInputReference[];
   codexMentions?: ProviderInputReference[];
   opencodePermissionMode?: OpenCodePermissionMode;
@@ -1652,6 +1696,10 @@ export interface SessionInfo {
   minimaxPermissionMode?: MinimaxPermissionMode;
   /** MiniMax Code ACP `thinkingEffort` value; open set, valid values vary per model. */
   minimaxThinkingEffort?: string;
+  /** Antigravity ACP session mode id, as agy offers it. */
+  antigravityPermissionMode?: AntigravityPermissionMode;
+  /** Antigravity ACP `thought_level` value; open set, valid values vary per model. */
+  antigravityThoughtLevel?: string;
   opencodePermissionMode?: OpenCodePermissionMode;
   qoderPermissionMode?: QoderPermissionMode;
   bubblePermissionMode?: BubblePermissionMode;
@@ -1742,6 +1790,10 @@ export interface SessionStatusPayload {
   minimaxPermissionMode?: MinimaxPermissionMode;
   /** MiniMax Code ACP `thinkingEffort` value; open set, valid values vary per model. */
   minimaxThinkingEffort?: string;
+  /** Antigravity ACP session mode id, as agy offers it. */
+  antigravityPermissionMode?: AntigravityPermissionMode;
+  /** Antigravity ACP `thought_level` value; open set, valid values vary per model. */
+  antigravityThoughtLevel?: string;
   opencodePermissionMode?: OpenCodePermissionMode;
   qoderPermissionMode?: QoderPermissionMode;
   bubblePermissionMode?: BubblePermissionMode;
@@ -1885,7 +1937,7 @@ export interface AcpPermissionOption {
 
 export interface AcpPermissionInput {
   kind: 'acp-permission';
-  provider: 'kimi' | 'grok' | 'opencode' | 'bubble' | 'deepseek' | 'devin' | 'mimo' | 'minimax';
+  provider: 'kimi' | 'grok' | 'opencode' | 'bubble' | 'deepseek' | 'devin' | 'mimo' | 'minimax' | 'antigravity';
   question: string;
   title: string;
   toolName: string;
@@ -2146,7 +2198,7 @@ export type StreamMessage =
       subtype: 'token_usage';
       uuid: string;
       session_id: string;
-      provider: 'codex' | 'kimi' | 'grok' | 'deepseek' | 'bubble' | 'devin' | 'mimo' | 'minimax';
+      provider: 'codex' | 'kimi' | 'grok' | 'deepseek' | 'bubble' | 'devin' | 'mimo' | 'minimax' | 'antigravity';
       model?: string;
       usage: CodexContextUsage;
       /**

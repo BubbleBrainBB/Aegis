@@ -25,6 +25,15 @@ import { resolveMimoReasoningEffort, savePreferredMimoReasoningEffort } from '..
 import { formatMinimaxModelLabel, useMinimaxModelConfig } from './useMinimaxModelConfig';
 import { useMinimaxThinkingEfforts } from './useMinimaxThinkingEfforts';
 import { resolveMinimaxThinkingEffort, savePreferredMinimaxThinkingEffort } from '../utils/minimax-reasoning';
+import { formatAntigravityModelLabel, useAntigravityModelConfig } from './useAntigravityModelConfig';
+import { useAntigravityThoughtLevels } from './useAntigravityThoughtLevels';
+import { resolveAntigravityThoughtLevel, savePreferredAntigravityThoughtLevel } from '../utils/antigravity-reasoning';
+import {
+  buildAntigravityPermissionModeOptions,
+  loadPreferredAntigravityPermissionMode,
+  resolveAntigravityPermissionMode,
+  savePreferredAntigravityPermissionMode,
+} from '../utils/antigravity-permission';
 import { loadPreferredProvider, PREFERRED_PROVIDER_EVENT, savePreferredProvider } from '../utils/provider';
 import {
   canonicalizeClaudeModel,
@@ -59,6 +68,7 @@ import {
   DevinPermissionMode,
   MimoPermissionMode,
   MinimaxPermissionMode,
+  AntigravityPermissionMode,
   BubblePermissionMode,
 } from '../../shared/types';
 import {
@@ -153,6 +163,7 @@ const DEEPSEEK_MODEL_STORAGE_KEY = 'cowork.preferredDeepseekModel';
 const DEVIN_MODEL_STORAGE_KEY = 'cowork.preferredDevinModel';
 const MIMO_MODEL_STORAGE_KEY = 'cowork.preferredMimoModel';
 const MINIMAX_MODEL_STORAGE_KEY = 'cowork.preferredMinimaxModel';
+const ANTIGRAVITY_MODEL_STORAGE_KEY = 'cowork.preferredAntigravityModel';
 
 export interface ComposerModelOption {
   key: string;
@@ -253,6 +264,21 @@ function savePreferredMinimaxModel(model: string | null): void {
     return;
   }
   rendererStateStorage.setItem(MINIMAX_MODEL_STORAGE_KEY, model);
+}
+
+function loadPreferredAntigravityModel(): string | null {
+  if (typeof window === 'undefined') return null;
+  const raw = rendererStateStorage.getItem(ANTIGRAVITY_MODEL_STORAGE_KEY);
+  return raw?.trim() || null;
+}
+
+function savePreferredAntigravityModel(model: string | null): void {
+  if (typeof window === 'undefined') return;
+  if (!model) {
+    rendererStateStorage.removeItem(ANTIGRAVITY_MODEL_STORAGE_KEY);
+    return;
+  }
+  rendererStateStorage.setItem(ANTIGRAVITY_MODEL_STORAGE_KEY, model);
 }
 
 function loadPreferredGrokModel(): string | null {
@@ -568,6 +594,40 @@ function buildMinimaxModelOptions(config: ReturnType<typeof useMinimaxModelConfi
   return [defaultOption, ...explicitOptions];
 }
 
+// Antigravity's catalog is its ACP session's model select: the models agy
+// offers this account, under agy's own names; nothing is hardcoded here.
+function buildAntigravityModelOptions(config: ReturnType<typeof useAntigravityModelConfig>): ComposerModelOption[] {
+  const defaultModel = config.availableModels.find((entry) => entry.id === config.defaultModel);
+  const defaultOption: ComposerModelOption = {
+    key: 'antigravity:default',
+    value: '',
+    label: 'Default',
+    description: defaultModel ? `Use ${defaultModel.label}` : 'Use the Antigravity default model',
+  };
+  const explicitOptions = config.options.map((id) => {
+    const model = config.availableModels.find((entry) => entry.id === id);
+    return {
+      key: `antigravity:${id}`,
+      value: id,
+      label: model?.label || id,
+      details: id,
+    };
+  });
+  return [defaultOption, ...explicitOptions];
+}
+
+function resolveConfiguredAntigravityModel(
+  requestedModel: string | null | undefined,
+  config: ReturnType<typeof useAntigravityModelConfig>
+): string | null {
+  return resolveListedOrPendingModel(
+    requestedModel,
+    loadPreferredAntigravityModel(),
+    config.defaultModel,
+    buildAntigravityModelOptions(config).map((option) => option.value)
+  );
+}
+
 function resolveConfiguredMinimaxModel(
   requestedModel: string | null | undefined,
   config: ReturnType<typeof useMinimaxModelConfig>
@@ -767,6 +827,7 @@ export function useComposerAgentSelection(input?: {
   const devinModelConfig = useDevinModelConfig();
   const mimoModelConfig = useMimoModelConfig();
   const minimaxModelConfig = useMinimaxModelConfig();
+  const antigravityModelConfig = useAntigravityModelConfig();
   const [provider, setProviderState] = useState<AgentProvider>(() => input?.provider || loadPreferredProvider());
   const [model, setModelState] = useState<string | null>(() => {
     const initialProvider = input?.provider || loadPreferredProvider();
@@ -788,6 +849,7 @@ export function useComposerAgentSelection(input?: {
     if (initialProvider === 'devin') return loadPreferredDevinModel();
     if (initialProvider === 'mimo') return loadPreferredMimoModel();
     if (initialProvider === 'minimax') return loadPreferredMinimaxModel();
+    if (initialProvider === 'antigravity') return loadPreferredAntigravityModel();
     if (initialProvider === 'claude') return loadPreferredClaudeModel();
     return null;
   });
@@ -832,8 +894,9 @@ export function useComposerAgentSelection(input?: {
       devin: buildDevinModelOptions(devinModelConfig),
       mimo: buildMimoModelOptions(mimoModelConfig),
       minimax: buildMinimaxModelOptions(minimaxModelConfig),
+      antigravity: buildAntigravityModelOptions(antigravityModelConfig),
     };
-  }, [claudeModelConfig, codexModelConfig, opencodeModelConfig, kimiModelConfig, grokModelConfig, piModelConfig, bubbleModelConfig, qoderModelConfig, deepseekModelConfig, devinModelConfig, mimoModelConfig, minimaxModelConfig]);
+  }, [claudeModelConfig, codexModelConfig, opencodeModelConfig, kimiModelConfig, grokModelConfig, piModelConfig, bubbleModelConfig, qoderModelConfig, deepseekModelConfig, devinModelConfig, mimoModelConfig, minimaxModelConfig, antigravityModelConfig]);
 
   const modelOptions = useMemo<ComposerModelOption[]>(() => {
     if (provider === 'claude') {
@@ -902,8 +965,12 @@ export function useComposerAgentSelection(input?: {
       return buildMinimaxModelOptions(minimaxModelConfig);
     }
 
+    if (provider === 'antigravity') {
+      return buildAntigravityModelOptions(antigravityModelConfig);
+    }
+
     return [];
-  }, [claudeModelConfig, codexModelConfig, opencodeModelConfig, kimiModelConfig, grokModelConfig, piModelConfig, bubbleModelConfig, qoderModelConfig, deepseekModelConfig, devinModelConfig, mimoModelConfig, minimaxModelConfig, provider]);
+  }, [claudeModelConfig, codexModelConfig, opencodeModelConfig, kimiModelConfig, grokModelConfig, piModelConfig, bubbleModelConfig, qoderModelConfig, deepseekModelConfig, devinModelConfig, mimoModelConfig, minimaxModelConfig, antigravityModelConfig, provider]);
 
   const resolveModelForProvider = useCallback(
     (
@@ -989,11 +1056,17 @@ export function useComposerAgentSelection(input?: {
         };
       }
 
+      if (nextProvider === 'antigravity') {
+        return {
+          model: resolveConfiguredAntigravityModel(normalizedRequestedModel, antigravityModelConfig),
+        };
+      }
+
       return {
         model: null,
       };
     },
-    [claudeModelConfig, codexModelConfig, opencodeModelConfig, kimiModelConfig, grokModelConfig, piModelConfig, bubbleModelConfig, qoderModelConfig, deepseekModelConfig, devinModelConfig, mimoModelConfig, minimaxModelConfig]
+    [claudeModelConfig, codexModelConfig, opencodeModelConfig, kimiModelConfig, grokModelConfig, piModelConfig, bubbleModelConfig, qoderModelConfig, deepseekModelConfig, devinModelConfig, mimoModelConfig, minimaxModelConfig, antigravityModelConfig]
   );
 
   const decorateAgentSelection = useCallback(
@@ -1106,6 +1179,24 @@ export function useComposerAgentSelection(input?: {
       setMinimaxThinkingEffortRevision((revision) => revision + 1);
     },
     [minimaxEffortsModel]
+  );
+
+  // Antigravity thinking levels follow the model in its submenu and are read
+  // from agy per model, over ACP.
+  const antigravityLevelsModel = modelValueByProvider.antigravity ?? null;
+  const antigravityThoughtLevels = useAntigravityThoughtLevels(antigravityLevelsModel, antigravityModelConfig.options.length > 0);
+  const [antigravityThoughtLevelRevision, setAntigravityThoughtLevelRevision] = useState(0);
+  const antigravityThoughtLevel = useMemo(
+    () => resolveAntigravityThoughtLevel(antigravityLevelsModel, antigravityThoughtLevels),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [antigravityLevelsModel, antigravityThoughtLevels, antigravityThoughtLevelRevision]
+  );
+  const setAntigravityThoughtLevel = useCallback(
+    (level: string) => {
+      savePreferredAntigravityThoughtLevel(antigravityLevelsModel, level);
+      setAntigravityThoughtLevelRevision((revision) => revision + 1);
+    },
+    [antigravityLevelsModel]
   );
 
   // Apply session switches during render so the first painted frame already
@@ -1277,6 +1368,8 @@ export function useComposerAgentSelection(input?: {
         savePreferredMimoModel(nextModel);
       } else if (targetProvider === 'minimax') {
         savePreferredMinimaxModel(nextModel);
+      } else if (targetProvider === 'antigravity') {
+        savePreferredAntigravityModel(nextModel);
       }
 
       input?.onSelectionChange?.(nextSelection);
@@ -1357,7 +1450,9 @@ export function useComposerAgentSelection(input?: {
           ? formatGrokModelLabel(model, grokModelConfig)
           : provider === 'minimax'
             ? formatMinimaxModelLabel(model, minimaxModelConfig)
-            : model
+            : provider === 'antigravity'
+              ? formatAntigravityModelLabel(model, antigravityModelConfig)
+              : model
       : provider === 'grok'
         ? formatGrokModelLabel(
             resolveConfiguredGrokModel(null, grokModelConfig) || '',
@@ -1639,6 +1734,16 @@ export function useComposerAgentSelection(input?: {
   const [minimaxPermissionMode, setMinimaxPermissionModeState] = useState<MinimaxPermissionMode>(() =>
     loadPreferredMinimaxPermissionMode()
   );
+  // Antigravity: the mode is an ACP session mode, and the modes on offer are
+  // whatever agy lists. A saved mode it no longer offers falls back to its own.
+  const [preferredAntigravityPermissionMode, setAntigravityPermissionModeState] = useState<AntigravityPermissionMode>(() =>
+    loadPreferredAntigravityPermissionMode()
+  );
+  const antigravityPermissionModeOptions = useMemo(
+    () => buildAntigravityPermissionModeOptions(antigravityModelConfig),
+    [antigravityModelConfig]
+  );
+  const antigravityPermissionMode = resolveAntigravityPermissionMode(preferredAntigravityPermissionMode, antigravityModelConfig);
   const [deepseekAgentPreset, setDeepseekAgentPresetState] = useState<DeepseekAgentPreset>(() =>
     input?.deepseekAgentPreset || loadPreferredDeepseekAgentPreset()
   );
@@ -1742,6 +1847,11 @@ export function useComposerAgentSelection(input?: {
   const setMinimaxPermissionMode = useCallback((mode: MinimaxPermissionMode) => {
     setMinimaxPermissionModeState(mode);
     savePreferredMinimaxPermissionMode(mode);
+  }, []);
+
+  const setAntigravityPermissionMode = useCallback((mode: AntigravityPermissionMode) => {
+    setAntigravityPermissionModeState(mode);
+    savePreferredAntigravityPermissionMode(mode);
   }, []);
 
   const setDeepseekAgentPreset = useCallback((preset: DeepseekAgentPreset) => {
@@ -1932,6 +2042,12 @@ export function useComposerAgentSelection(input?: {
     minimaxThinkingEffort,
     minimaxThinkingEfforts,
     setMinimaxThinkingEffort,
+    antigravityPermissionMode,
+    antigravityPermissionModeOptions,
+    setAntigravityPermissionMode,
+    antigravityThoughtLevel,
+    antigravityThoughtLevels,
+    setAntigravityThoughtLevel,
     bubblePermissionMode,
     setBubblePermissionMode,
     bubbleExecutionMode,

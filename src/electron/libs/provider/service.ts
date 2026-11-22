@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events';
+import { isHumanDrivenOnlyProvider } from '../../../shared/human-driven-providers';
 import type {
   ProviderAdapter,
   ProviderKind,
@@ -29,7 +30,7 @@ import type {
 } from '../../../shared/types';
 
 function isProviderKind(provider: string): provider is ProviderKind {
-  return provider === 'claude' || provider === 'codex' || provider === 'opencode' || provider === 'kimi' || provider === 'grok' || provider === 'pi' || provider === 'qoder' || provider === 'bubble' || provider === 'deepseek' || provider === 'devin' || provider === 'mimo' || provider === 'minimax';
+  return provider === 'claude' || provider === 'codex' || provider === 'opencode' || provider === 'kimi' || provider === 'grok' || provider === 'pi' || provider === 'qoder' || provider === 'bubble' || provider === 'deepseek' || provider === 'devin' || provider === 'mimo' || provider === 'minimax' || provider === 'antigravity';
 }
 
 class ProviderServiceImpl implements ProviderService {
@@ -333,6 +334,12 @@ class ProviderServiceImpl implements ProviderService {
       throw new Error(`No adapter registered for provider "${provider}"`);
     }
     options.signal?.throwIfAborted();
+    // A one-shot is a prompt the app wrote (a title, a bootstrap): an agent
+    // that only a person may drive never gets one, also not through the
+    // startSession fallback below.
+    if (isHumanDrivenOnlyProvider(provider)) {
+      throw new Error(`${adapter.displayName} only takes messages a person types; one-shot prompts are not sent to it.`);
+    }
 
     if (adapter.runOneShot) {
       return adapter.runOneShot(input);

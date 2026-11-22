@@ -1,18 +1,19 @@
 import { Fragment, useCallback, useEffect, useState } from 'react';
-import { toast } from 'sonner';
 import { AgentProviderLogo } from '../AgentProviderLogo';
 import { ExternalLink, Loader2 } from '../icons';
 import type { AgentProvider, AgentRuntimeDirectoryReport, AgentRuntimeEntry } from '../../types';
 import { DeepseekKeyPanel } from './DeepseekProviderSettings';
+import { AgentCommandField as CommandField } from './AgentCommandField';
+import { AntigravitySettingsPanel } from './AntigravitySettingsPanel';
 
-type OpenPanel = { provider: AgentProvider; kind: 'key' | 'sign-in' | 'install-error' };
+type OpenPanel = { provider: AgentProvider; kind: 'key' | 'sign-in' | 'install-error' | 'antigravity' };
 
 const ATTENTION_STATES = new Set<AgentRuntimeEntry['state']>(['login_required', 'not_installed', 'error']);
 
 /**
  * Status grid for every agent runtime, shown first on the Providers tab. Each
- * cell carries the one action that agent needs: install it, sign in, or (for
- * DeepSeek Harness) edit its API key. Panels open full-width under the row of
+ * cell carries the one action that agent needs: install it, sign in, (for
+ * DeepSeek Harness) edit its API key, or (for Antigravity) open its setup. Panels open full-width under the row of
  * the cell that opened them.
  */
 export function AgentRuntimeSettings() {
@@ -32,6 +33,9 @@ export function AgentRuntimeSettings() {
   useEffect(() => {
     void load(false);
   }, [load]);
+
+  // The panel already re-read agy; the grid only needs the result.
+  const reloadAfterAntigravity = useCallback(() => void load(false), [load]);
 
   const togglePanel = (next: OpenPanel) =>
     setPanel((current) => (current?.provider === next.provider && current.kind === next.kind ? null : next));
@@ -66,6 +70,11 @@ export function AgentRuntimeSettings() {
         ? <ReadyStatus />
         : <button type="button" className="agent-cell-button" onClick={() => togglePanel({ provider: 'deepseek', kind: 'key' })}>Add key</button>;
     }
+    // Antigravity's setup (install, sign-in, executable, terms of use) is one panel.
+    if (entry.provider === 'antigravity' && entry.state !== 'ready') {
+      const label = entry.state === 'login_required' ? 'Sign in' : entry.state === 'not_installed' ? 'Set up' : 'Details';
+      return <button type="button" className={`agent-cell-button${entry.state === 'login_required' ? ' is-primary' : ''}`} aria-expanded={panel?.provider === 'antigravity'} onClick={() => togglePanel({ provider: 'antigravity', kind: 'antigravity' })}>{label}</button>;
+    }
     if (entry.state === 'ready') return <ReadyStatus />;
     if (installing === entry.provider) {
       return <span className="agent-cell-status"><Loader2 className="h-3.5 w-3.5 animate-spin" />Installing…</span>;
@@ -90,6 +99,9 @@ export function AgentRuntimeSettings() {
     if (panel.kind === 'key') {
       return <DeepseekKeyPanel onClose={() => setPanel(null)} onChanged={() => void load(true)} />;
     }
+    if (panel.kind === 'antigravity') {
+      return <AntigravitySettingsPanel onChanged={reloadAfterAntigravity} />;
+    }
     if (panel.kind === 'sign-in' && entry.loginCommand) {
       return <div className="agent-panel"><CommandField command={entry.loginCommand} label={`${entry.title} sign-in command`} /></div>;
     }
@@ -112,9 +124,13 @@ export function AgentRuntimeSettings() {
         {entries.map((entry, index) => (
           <Fragment key={entry.provider}>
             <div
-              className={`agent-cell${index % 2 === 1 ? ' is-right' : ''}${ATTENTION_STATES.has(entry.state) ? ' is-attention' : ''}${entry.provider === 'deepseek' ? ' is-clickable' : ''}`}
+              className={`agent-cell${index % 2 === 1 ? ' is-right' : ''}${ATTENTION_STATES.has(entry.state) ? ' is-attention' : ''}${entry.provider === 'deepseek' || entry.provider === 'antigravity' ? ' is-clickable' : ''}`}
               data-settings-id={`Agents:${entry.title}`}
-              onClick={entry.provider === 'deepseek' ? () => togglePanel({ provider: 'deepseek', kind: 'key' }) : undefined}
+              onClick={entry.provider === 'deepseek'
+                ? () => togglePanel({ provider: 'deepseek', kind: 'key' })
+                : entry.provider === 'antigravity'
+                  ? () => togglePanel({ provider: 'antigravity', kind: 'antigravity' })
+                  : undefined}
             >
               <span className="agent-cell-logo"><AgentProviderLogo provider={entry.provider} className="h-5 w-5" /></span>
               <span className="agent-cell-name">{entry.title}</span>
@@ -134,23 +150,4 @@ function ReadyStatus() {
 
 function revealBubbleProviders() {
   document.querySelector('[data-settings-label="Bubble model providers"]')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-}
-
-function CommandField({ command, label }: { command: string; label: string }) {
-  const [copied, setCopied] = useState(false);
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(command);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
-    } catch {
-      toast.error('Failed to copy.');
-    }
-  };
-  return (
-    <div className="agent-command">
-      <code>{command}</code>
-      <button type="button" className="provider-secondary-button" onClick={() => void copy()} aria-label={`Copy ${label}`}>{copied ? 'Copied' : 'Copy'}</button>
-    </div>
-  );
 }

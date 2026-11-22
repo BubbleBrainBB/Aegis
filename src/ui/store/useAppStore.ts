@@ -378,8 +378,8 @@ function shouldPreserveStreamingStateForMessage(
   if (provider === 'deepseek') {
     return !isGrokStreamCommit(message);
   }
-  // Devin, MiMo and MiniMax Code (ACP) narrate between tool calls the same way.
-  if (provider === 'devin' || provider === 'mimo' || provider === 'minimax') {
+  // Devin, MiMo, MiniMax Code and Antigravity (ACP) narrate between tool calls the same way.
+  if (provider === 'devin' || provider === 'mimo' || provider === 'minimax' || provider === 'antigravity') {
     return !isGrokStreamCommit(message);
   }
 

@@ -34,7 +34,7 @@ const AGENTS={
  devin:{yearCost:0,costMode:'unavailable',models:[['swe-2-high',1]],tokens:4.1e6,billing:{agentMessages:312,credits:0}},
  qoder:{yearCost:0,costMode:'unavailable',models:[['Auto',1]],tokens:0,billing:{agentMessages:0,credits:12.4}},
 };
-const PROVIDERS=['claude','codex','opencode','kimi','grok','pi','qoder','bubble','deepseek','devin','mimo','minimax'];
+const PROVIDERS=['claude','codex','opencode','kimi','grok','pi','qoder','bubble','deepseek','devin','mimo','minimax','antigravity'];
 function report(provider,days){
  const agent=AGENTS[provider];
  const daily=[];for(let ago=days-1;ago>=0;ago--)daily.push({date:dateKey(ago),totalTokens:0,byModel:{},byModelCostUsd:{}});
@@ -154,7 +154,7 @@ app.whenReady().then(async()=>{
   // "All agents" is the page Usage opens on. Agents answer one by one; nothing is drawn until all have.
   assert.equal(await js('qa.store.getState().usageSettingsProvider'),'all');
   await js('qa.hold("bubble",365);qa.watch();qa.mount()');
-  await until('qa.calls.filter(c=>c.endsWith(":365")).length===12');await wait(200);
+  await until('qa.calls.filter(c=>c.endsWith(":365")).length===13');await wait(200);
   assert.equal(await js('document.querySelector("[aria-label=\\"Usage provider\\"]").dataset.preferenceValue'),'all');
   assert.equal(await text('[aria-label="Usage provider"]'),'All agents');
   assert.equal(await js('document.querySelectorAll("[data-usage-agent]").length'),0,'no list from part of the agents');
@@ -248,7 +248,7 @@ app.whenReady().then(async()=>{
 
   // Another range keeps the page on screen while its reports load, then swaps; short ranges draw days.
   await js('qa.hold(null,30);qa.watch()');await range('30 days');
-  await until('qa.calls.filter(c=>c.endsWith(":30")).length===12');await wait(150);
+  await until('qa.calls.filter(c=>c.endsWith(":30")).length===13');await wait(150);
   assert.equal(await js('document.querySelectorAll("[data-usage-cost-point]").length'),365,'the year stays until the range has loaded');
   assert((await text('[data-usage-report-status]')).includes('Refreshing'));
   await js('qa.release()');await until('document.querySelectorAll("[data-usage-cost-point]").length===30');
@@ -278,7 +278,7 @@ app.whenReady().then(async()=>{
   await js('document.querySelector("[aria-label=\\"Usage provider\\"]").click()');
   await until('!!document.querySelector("[data-preference-option=\\"all\\"]")');
   const options=await js('[...document.querySelectorAll("[data-preference-option]")].map(option=>option.dataset.preferenceOption)');
-  assert.equal(options[0],'all');assert.equal(options.length,13);
+  assert.equal(options[0],'all');assert.equal(options.length,14);
   assert.equal(await js('document.querySelector("[data-preference-option=\\"all\\"]").nextElementSibling.getAttribute("role")'),'separator','a line sets All agents apart');
   await shot('picker');
   await js('document.querySelector("[data-preference-option=\\"all\\"]").click()');
