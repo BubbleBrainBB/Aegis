@@ -45,7 +45,7 @@ app.commandLine.appendSwitch('force-prefers-no-reduced-motion');
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
 app.setPath('userData',path.join(__dirname,'profile'));
 const MONOCHROME=['claude','codex','kimi','grok'];
-const COLORED=['devin','minimax'];
+const COLORED=['devin','minimax','antigravity'];
 const GLYPH='img,span[style*="mask"],svg.h-4';
 app.whenReady().then(async()=>{
  const win=new BrowserWindow({webPreferences:{backgroundThrottling:false},width:1000,height:820,show:true});const errors=[];

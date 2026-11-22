@@ -3,7 +3,7 @@ import claudeLogo from '../../assets/claude-color.svg';
 import deepseekLogo from '../../assets/deepseek-color.svg';
 import grokLogo from '../../assets/grok.svg';
 import minimaxLogo from '../../assets/minimax-color.svg';
-import antigravityLogo from '../../assets/antigravity.svg';
+import antigravityLogo from '../../assets/antigravity-color.svg';
 import moonshotLogo from '../../assets/moonshot.svg';
 import openaiLogo from '../../assets/openai.svg';
 import piLogo from '../../assets/pi-logo-auto.svg';
@@ -78,7 +78,7 @@ const USAGE_PROVIDERS: Array<{ id: AgentProvider; title: string; logoSrc?: strin
 function usageProviderLogo(provider: AgentProvider): ReactNode {
   const logoSrc = USAGE_PROVIDERS.find((entry) => entry.id === provider)?.logoSrc;
   return logoSrc ? (
-    <img src={logoSrc} alt="" className={`h-3.5 w-3.5 flex-shrink-0 ${[claudeLogo, openaiLogo, grokLogo, moonshotLogo, mimoLogo, antigravityLogo].includes(logoSrc) ? 'provider-monochrome-logo' : ''}`} aria-hidden="true" />
+    <img src={logoSrc} alt="" className={`h-3.5 w-3.5 flex-shrink-0 ${[claudeLogo, openaiLogo, grokLogo, moonshotLogo, mimoLogo].includes(logoSrc) ? 'provider-monochrome-logo' : ''}`} aria-hidden="true" />
   ) : (
     <OpenCodeLogo className="h-3.5 w-3.5 flex-shrink-0" />
   );

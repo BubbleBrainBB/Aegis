@@ -7,13 +7,13 @@ import bubbleLogo from '../assets/bubble-logo-auto.svg';
 import qoderLogo from '../assets/qoder.svg';
 import devinLogo from '../assets/devin-color.svg';
 import minimaxLogo from '../assets/minimax-color.svg';
+import antigravityLogo from '../assets/antigravity-color.svg';
 import { OpenCodeLogo } from './OpenCodeLogo';
 import { DeepseekLogo } from './DeepseekLogo';
 import { MimoLogo } from './MimoLogo';
-import { AntigravityLogo } from './AntigravityLogo';
 import type { AgentProvider } from '../types';
 
-const PROVIDER_LOGO_SRC: Record<Exclude<AgentProvider, 'opencode' | 'deepseek' | 'mimo' | 'bubble' | 'antigravity'>, string> = {
+const PROVIDER_LOGO_SRC: Record<Exclude<AgentProvider, 'opencode' | 'deepseek' | 'mimo' | 'bubble'>, string> = {
   claude: claudeLogo,
   codex: openaiLogo,
   kimi: moonshotLogo,
@@ -22,6 +22,7 @@ const PROVIDER_LOGO_SRC: Record<Exclude<AgentProvider, 'opencode' | 'deepseek' |
   qoder: qoderLogo,
   devin: devinLogo,
   minimax: minimaxLogo,
+  antigravity: antigravityLogo,
 };
 
 // Black single-colour marks; `.provider-monochrome-logo` flips them in dark mode.
@@ -36,8 +37,6 @@ export function AgentProviderLogo({ provider, className }: { provider: AgentProv
       return <DeepseekLogo className={className} />;
     case 'mimo':
       return <MimoLogo className={className} />;
-    case 'antigravity':
-      return <AntigravityLogo className={`${className} text-[var(--text-primary)]`} />;
     case 'bubble':
       // The SVG themes itself by the OS colour scheme, not the app theme, so
       // paint it as a mask in currentColor instead.
