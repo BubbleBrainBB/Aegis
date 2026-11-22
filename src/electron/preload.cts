@@ -788,6 +788,22 @@ contextBridge.exposeInMainWorld('electron', {
     return ipcRenderer.invoke('set-browser-use-enabled', enabled);
   },
 
+  getComputerUseSettings: () => {
+    return ipcRenderer.invoke('get-computer-use-settings');
+  },
+
+  setComputerUseEnabled: (enabled: boolean) => {
+    return ipcRenderer.invoke('set-computer-use-enabled', enabled);
+  },
+
+  setComputerUseDriverPath: (driverPath: string) => {
+    return ipcRenderer.invoke('set-computer-use-driver-path', driverPath);
+  },
+
+  openComputerUsePermissionSettings: (pane: 'accessibility' | 'screen-recording') => {
+    return ipcRenderer.invoke('open-computer-use-permission-settings', pane);
+  },
+
   setBrowserUseOriginPolicy: (origin: string, policy: 'allow' | 'block' | 'ask' | null) => {
     return ipcRenderer.invoke('set-browser-use-origin-policy', origin, policy);
   },

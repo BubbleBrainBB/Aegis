@@ -12,6 +12,35 @@ import type { McpToolApprovalElicitation } from './codex-computer-use-elicitatio
 
 export interface ComputerUseGrant extends ComputerUseGrantView {}
 
+/** What a grant covers, whichever backend asked for it. */
+export interface ComputerUseGrantTarget {
+  threadId: string;
+  /** The provider's own thread, where one session holds several (Codex subagents); null otherwise. */
+  providerThreadId: string | null;
+  /** The runtime the grant belongs to: a grant from a replaced runtime no longer matches. */
+  generation: number;
+  server: string | null;
+  tool: string | null;
+  app: string | null;
+  riskLevel: string | null;
+}
+
+function grantTargetFromElicitation(input: {
+  threadId: string;
+  generation: number;
+  elicitation: McpToolApprovalElicitation;
+}): ComputerUseGrantTarget {
+  return {
+    threadId: input.threadId,
+    providerThreadId: input.elicitation.providerThreadId,
+    generation: input.generation,
+    server: input.elicitation.server,
+    tool: input.elicitation.toolName,
+    app: input.elicitation.canonicalApp,
+    riskLevel: input.elicitation.riskLevel,
+  };
+}
+
 function grantKey(input: {
   threadId: string;
   providerThreadId: string | null;
@@ -44,36 +73,65 @@ export class ComputerUseGrantRegistry extends EventEmitter {
     return elicitation.grantEligible;
   }
 
+  /**
+   * Grant one (session, server, tool, app) target up to a risk level. Any
+   * backend uses this: Codex converts its elicitation, the Computer use
+   * gateway passes what it resolved itself.
+   */
+  createGrant(target: ComputerUseGrantTarget): ComputerUseGrantView | null {
+    const app = canonicalizeComputerUseApp(target.app);
+    const tool = target.tool?.trim() || null;
+    const server = target.server?.trim() || null;
+    if (!app || !tool || !server) return null;
+    const grant: ComputerUseGrant = {
+      key: grantKey({
+        threadId: target.threadId,
+        providerThreadId: target.providerThreadId,
+        server,
+        tool,
+        app,
+      }),
+      threadId: target.threadId,
+      providerThreadId: target.providerThreadId,
+      generation: target.generation,
+      server,
+      tool,
+      app,
+      maxRisk: computerUseRiskRank(target.riskLevel),
+      createdAt: Date.now(),
+    };
+    this.grants.set(grant.key, grant);
+    this.emitChange(target.threadId, 'granted');
+    return grant;
+  }
+
+  /** The grant that covers this target, if one does. */
+  matchGrant(target: ComputerUseGrantTarget): ComputerUseGrantView | null {
+    const app = canonicalizeComputerUseApp(target.app);
+    const tool = target.tool?.trim() || null;
+    const server = target.server?.trim() || null;
+    if (!app || !tool || !server) return null;
+    const key = grantKey({
+      threadId: target.threadId,
+      providerThreadId: target.providerThreadId,
+      server,
+      tool,
+      app,
+    });
+    const grant = this.grants.get(key);
+    if (!grant) return null;
+    if (grant.generation !== target.generation) return null;
+    if (computerUseRiskRank(target.riskLevel) > grant.maxRisk) return null;
+    return grant;
+  }
+
   createFromElicitation(input: {
     threadId: string;
     generation: number;
     elicitation: McpToolApprovalElicitation;
   }): ComputerUseGrantView | null {
     if (!this.isCreatable(input.elicitation)) return null;
-    const app = canonicalizeComputerUseApp(input.elicitation.canonicalApp);
-    const tool = input.elicitation.toolName?.trim() || null;
-    const server = input.elicitation.server?.trim() || null;
-    if (!app || !tool || !server) return null;
-    const grant: ComputerUseGrant = {
-      key: grantKey({
-        threadId: input.threadId,
-        providerThreadId: input.elicitation.providerThreadId,
-        server,
-        tool,
-        app,
-      }),
-      threadId: input.threadId,
-      providerThreadId: input.elicitation.providerThreadId,
-      generation: input.generation,
-      server,
-      tool,
-      app,
-      maxRisk: computerUseRiskRank(input.elicitation.riskLevel),
-      createdAt: Date.now(),
-    };
-    this.grants.set(grant.key, grant);
-    this.emitChange(input.threadId, 'granted');
-    return grant;
+    return this.createGrant(grantTargetFromElicitation(input));
   }
 
   match(input: {
@@ -82,22 +140,7 @@ export class ComputerUseGrantRegistry extends EventEmitter {
     elicitation: McpToolApprovalElicitation;
   }): ComputerUseGrantView | null {
     if (!input.elicitation.grantEligible) return null;
-    const app = canonicalizeComputerUseApp(input.elicitation.canonicalApp);
-    const tool = input.elicitation.toolName?.trim() || null;
-    const server = input.elicitation.server?.trim() || null;
-    if (!app || !tool || !server) return null;
-    const key = grantKey({
-      threadId: input.threadId,
-      providerThreadId: input.elicitation.providerThreadId,
-      server,
-      tool,
-      app,
-    });
-    const grant = this.grants.get(key);
-    if (!grant) return null;
-    if (grant.generation !== input.generation) return null;
-    if (computerUseRiskRank(input.elicitation.riskLevel) > grant.maxRisk) return null;
-    return grant;
+    return this.matchGrant(grantTargetFromElicitation(input));
   }
 
   revoke(threadId: string, key?: string): ComputerUseGrantView[] {

@@ -321,6 +321,10 @@ declare global {
     clearDeepseekApiKey: () => Promise<DeepseekKeyStatus>;
     getBrowserUsePermissions: () => Promise<BrowserUsePermissionSettings>;
     setBrowserUseEnabled: (enabled: boolean) => Promise<BrowserUsePermissionSettings>;
+    getComputerUseSettings: () => Promise<import('./shared/computer-use').ComputerUseSettingsView>;
+    setComputerUseEnabled: (enabled: boolean) => Promise<import('./shared/computer-use').ComputerUseSettingsView>;
+    setComputerUseDriverPath: (driverPath: string) => Promise<import('./shared/computer-use').ComputerUseSettingsView>;
+    openComputerUsePermissionSettings: (pane: 'accessibility' | 'screen-recording') => Promise<{ ok: boolean }>;
     setBrowserUseOriginPolicy: (
       origin: string,
       policy: 'allow' | 'block' | 'ask' | null

@@ -53,7 +53,7 @@ import { setDesignFollowUp } from './design/project/tools';
 import { initializeToolCallerAttribution } from './libs/tool-caller-attribution';
 import { PROVIDER_LABELS } from './feishu/agent-settings';
 import { disposeSessionHttpServer, primeSessionToken, releaseKimiWidgetEntrySync, writeKimiWidgetEntry } from './libs/session-http-server';
-import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, shell, systemPreferences } from 'electron';
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from 'http';
 import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, watch, writeFileSync, type FSWatcher, promises as fsPromises } from 'fs';
 import { execFile } from 'child_process';
@@ -102,6 +102,17 @@ import { loadClaudeSettings, getClaudeSettings, getClaudeModelConfigWithCatalog,
 import { getCodexMcpServers, saveCodexMcpServers } from './libs/codex-mcp-settings';
 import { resolveComputerUseArtifact } from './libs/codex-computer-use';
 import { computerUseGrants } from './libs/codex-computer-use-grants';
+import {
+  getComputerUseDriverStatus,
+  getComputerUseGateway,
+  initializeComputerUseGateway,
+} from './libs/computer-use';
+import {
+  getComputerUseSettings,
+  isComputerUsePlatformSupported,
+  setComputerUseDriverPath,
+  setComputerUseEnabled,
+} from './libs/computer-use/settings';
 import {
   attachComputerUsePreviewHost,
   closeComputerUsePreviewWindow,
@@ -4085,6 +4096,15 @@ function sendSessionReply(win: BrowserWindow, event: ServerEvent): void {
   if (!win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.send('server-event', JSON.stringify(event));
 }
 
+type HostPermissionRequest = {
+  toolName: string;
+  input: import('../shared/types').PermissionRequestInput;
+  label: string;
+  timeoutMs: number;
+  idPrefix: string;
+  signal?: AbortSignal;
+};
+
 /**
  * Ask the user through the session's permission card for something a host
  * tool does (browser navigation, a simulator device). Resolves true when
@@ -4093,17 +4113,19 @@ function sendSessionReply(win: BrowserWindow, event: ServerEvent): void {
 function requestHostPermission(
   mainWindow: BrowserWindow,
   sessionId: string,
-  request: {
-    toolName: string;
-    input: import('../shared/types').PermissionRequestInput;
-    label: string;
-    timeoutMs: number;
-    idPrefix: string;
-    signal?: AbortSignal;
-  }
+  request: HostPermissionRequest
 ): Promise<boolean> {
+  return requestHostPermissionResult(mainWindow, sessionId, request).then((result) => result.behavior === 'allow');
+}
+
+/** The same card, with the user's whole answer (Computer use reads the "until revoked" choice from it). */
+function requestHostPermissionResult(
+  mainWindow: BrowserWindow,
+  sessionId: string,
+  request: HostPermissionRequest
+): Promise<PermissionResult> {
   const { signal } = request;
-  return new Promise<boolean>((resolve, reject) => {
+  return new Promise<PermissionResult>((resolve, reject) => {
     const toolUseId = `${request.idPrefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const state = getSessionState(sessionId);
     let settled = false;
@@ -4137,7 +4159,7 @@ function requestHostPermission(
     }, request.timeoutMs);
     timer.unref?.();
     state.pendingPermissions.set(toolUseId, {
-      resolve: (result) => finish(() => resolve(result.behavior === 'allow')),
+      resolve: (result) => finish(() => resolve(result)),
       reject: (error) => finish(() => reject(error)),
     });
     signal?.addEventListener('abort', onAbort, { once: true });
@@ -5723,10 +5745,7 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
     const provider = sessions.getSession(sessionId)?.provider;
     return provider ? PROVIDER_LABELS[provider] : undefined;
   });
-  initializeBrowserUseConsent({
-    getSessionHistory: (sessionId) => sessions.getSessionHistory(sessionId),
-    listRunningSessionIds: () => [...runnerHandles.keys()],
-    isSessionFullAccess: (sessionId) => {
+  const isSessionFullAccess = (sessionId: string): boolean => {
       const row = sessions.getSession(sessionId);
       if (!row) return false;
       if (row.provider === 'claude') {
@@ -5755,7 +5774,11 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
         return runner.bubblePermissionMode === 'bypassPermissions';
       }
       return false;
-    },
+  };
+  initializeBrowserUseConsent({
+    getSessionHistory: (sessionId) => sessions.getSessionHistory(sessionId),
+    listRunningSessionIds: () => [...runnerHandles.keys()],
+    isSessionFullAccess,
     requestPermission: (sessionId, question, url, signal) =>
       requestHostPermission(mainWindow, sessionId, {
         toolName: 'browser_use',
@@ -5770,6 +5793,83 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
         idPrefix: 'browser-use-nav',
         signal,
       }),
+  });
+  // Computer use: every agent's desktop actions pass through this gateway,
+  // which asks here for what it needs to know about a session and for the
+  // COMPUTER USE card. It starts no process until a tool is called.
+  initializeComputerUseGateway(
+    {
+      getSession: (sessionId) => {
+        const row = sessions.getSession(sessionId);
+        const runner = runnerHandles.get(sessionId);
+        // Only a session with a live runner can be calling a tool.
+        if (!row || !runner) return null;
+        const workflowPolicy = getWorkflowSessionPolicy(sessionId);
+        return {
+          // Bubble is the one provider with these tools so far; each provider
+          // added later brings its own way of saying "Plan".
+          planMode: runner.provider === 'bubble' && runner.bubblePermissionMode === 'plan',
+          fullAccess: isSessionFullAccess(sessionId),
+          readOnlyWorkflowRole: workflowPolicy?.readOnly ? workflowPolicy.role : null,
+        };
+      },
+      requestApproval: async (sessionId, input, signal) => {
+        const result = await requestHostPermissionResult(mainWindow, sessionId, {
+          toolName: input.toolName,
+          input,
+          label: 'Computer use approval',
+          // A person reads what the agent is about to do; not a 20 s decision.
+          timeoutMs: 10 * 60_000,
+          idPrefix: 'computer-use',
+          signal,
+        });
+        return {
+          allow: result.behavior === 'allow',
+          untilRevoked: result.behavior === 'allow' && result.computerUseGrant === 'until-revoked',
+        };
+      },
+      emitLive: (sessionId, frame) => {
+        rememberComputerUseLive(sessionId, frame);
+        broadcast(mainWindow, { type: 'computerUse.live', payload: { sessionId, frame } });
+      },
+      userDataDir: () => app.getPath('userData'),
+      ownProcessIds: () => [process.pid, ...app.getAppMetrics().map((metric) => metric.pid)],
+      onRefused: (sessionId, toolName) => recordDeniedTool(sessionId, toolName),
+    },
+    // What macOS calls this app: the packaged id, or Electron's in development.
+    { hostBundleId: app.isPackaged ? 'com.aegis.desktop' : 'com.github.Electron' }
+  );
+  const computerUseSettingsView = (): import('../shared/computer-use').ComputerUseSettingsView => {
+    const settings = getComputerUseSettings();
+    return {
+      enabled: settings.enabled,
+      driverPath: settings.driverPath,
+      driver: getComputerUseDriverStatus(),
+      permissions: isComputerUsePlatformSupported()
+        ? {
+            accessibility: systemPreferences.isTrustedAccessibilityClient(false),
+            screenRecording: systemPreferences.getMediaAccessStatus('screen') === 'granted',
+          }
+        : null,
+    };
+  };
+  ipcMainHandle('get-computer-use-settings', async () => computerUseSettingsView());
+  ipcMainHandle('set-computer-use-enabled', async (_event, enabled: boolean) => {
+    setComputerUseEnabled(enabled === true);
+    // Off means off: the driver stops and standing grants go.
+    if (enabled !== true) await getComputerUseGateway()?.shutdown('disabled');
+    return computerUseSettingsView();
+  });
+  ipcMainHandle('set-computer-use-driver-path', async (_event, driverPath: string) => {
+    setComputerUseDriverPath(typeof driverPath === 'string' ? driverPath : '');
+    // The next call starts whatever binary the path now names.
+    await getComputerUseGateway()?.shutdown('driver-changed');
+    return computerUseSettingsView();
+  });
+  ipcMainHandle('open-computer-use-permission-settings', async (_event, pane: string) => {
+    const anchor = pane === 'screen-recording' ? 'Privacy_ScreenCapture' : 'Privacy_Accessibility';
+    await shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${anchor}`);
+    return { ok: true };
   });
   // iOS Simulator pane: frames and input over its own channels; the agent
   // tool opens the pane and asks once per device through the permission card.
@@ -12265,6 +12365,8 @@ function startRunner(
           );
           // The turn is over: the agent's browser tabs go back to the panel.
           finishBrowserUseTurn(browserManager, session.id);
+          // And the desktop is free for another session.
+          getComputerUseGateway()?.finishTurn(session.id);
           // Design comments the turn worked on are answered or reopened.
           settleDesignTurn(session.id, PROVIDER_LABELS[provider]);
           if (provider === 'claude') {
@@ -12442,6 +12544,7 @@ function startRunner(
         turnDone?.('error', message);
         settleWorkflowTurn(session.id, 'error', message);
         finishBrowserUseTurn(browserManager, session.id);
+        getComputerUseGateway()?.finishTurn(session.id);
         settleDesignTurn(session.id, PROVIDER_LABELS[provider]);
         // dispose, not abort: the session already errored, so a stopSession
         // here would emit a spurious stop_settled — but plain detach leaks
@@ -13117,6 +13220,7 @@ function stopComputerUseSession(mainWindow: BrowserWindow, sessionId: string): v
 function handleSessionStop(mainWindow: BrowserWindow, sessionId: string): void {
   finishComputerUseUi(mainWindow, sessionId);
   finishBrowserUseTurn(browserManager, sessionId);
+  getComputerUseGateway()?.forgetSession(sessionId, 'stop');
   // Stop-cascade: stopping the parent also stops every delegated agent
   // running under it (their runners are separate entries keyed by their
   // hidden execution session ids).
@@ -13315,6 +13419,7 @@ function handleSessionStop(mainWindow: BrowserWindow, sessionId: string): void {
 // 删除会话
 function handleSessionDelete(mainWindow: BrowserWindow, sessionId: string): void {
   finishBrowserUseTurn(browserManager, sessionId);
+  getComputerUseGateway()?.forgetSession(sessionId, 'deleted');
   const session = sessions.getSession(sessionId);
   if (session?.session_origin === 'claude_remote') {
     broadcast(mainWindow, {
@@ -13833,6 +13938,7 @@ export function cleanup(): void {
   disposeDelegateHttpServer();
   disposeSessionHttpServer();
   disposeTerminalRuntime();
+  getComputerUseGateway()?.shutdownSync();
   // 停止所有运行中的 runner
   for (const [, entry] of runnerHandles) {
     entry.handle.abort();

@@ -2,6 +2,9 @@ import { questionAnswerValues, resolveQuestionAnswer } from '../../../shared/que
 import { CompactionTracker } from './compaction-tracker';
 import { addAgentCost, costFields, emptyCostDetails } from '../agent-cost';
 import { assertBubbleSessionReader, bubbleHostTools, bubbleRoleOptions } from '../bubble-session-reader';
+import { isBubbleComputerUseApproval } from '../bubble-computer-use-tool';
+import { getComputerUseGateway } from '../computer-use';
+import { computerUseGatewayTool } from '../../../shared/computer-use';
 import { isProjectFileApproval } from './project-access';
 import { WidgetDraftTracker } from '../widget-draft';
 import { EventEmitter } from 'events';
@@ -1727,10 +1730,21 @@ export class BubbleSdkAdapter implements ProviderAdapter {
             tool_use_id: toolCallId,
             content: getString(result?.content),
             is_error: result?.isError === true,
+            ...this.computerUseMedia(session, toolCallId),
           },
         ],
       },
     });
+  }
+
+  /** The screenshots a Computer use call saved, so the transcript keeps them for the Environment strip. */
+  private computerUseMedia(
+    session: ActiveBubbleSession,
+    toolCallId: string
+  ): { mediaRefs?: import('../../../shared/computer-use').ComputerUseMediaRef[] } {
+    if (!computerUseGatewayTool(session.toolNames.get(toolCallId))) return {};
+    const mediaRefs = getComputerUseGateway()?.takeMediaRefs(session.threadId, toolCallId) || [];
+    return mediaRefs.length > 0 ? { mediaRefs } : {};
   }
 
   private flushAssistant(session: ActiveBubbleSession, phase?: 'commentary' | 'final_answer'): void {
@@ -1822,6 +1836,10 @@ export class BubbleSdkAdapter implements ProviderAdapter {
       return Promise.resolve({ action: 'reject', feedback: 'Session is no longer active.' });
     }
     if (isProjectFileApproval(session.threadId, session.cwd, session.permissionMode, request)) {
+      return Promise.resolve({ action: 'approve' });
+    }
+    // Computer use asks through its own card, in the gateway.
+    if (isBubbleComputerUseApproval(request)) {
       return Promise.resolve({ action: 'approve' });
     }
     const requestId = uuidv4();

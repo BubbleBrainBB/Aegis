@@ -578,3 +578,43 @@ export function formatComputerUseLabel(
       return progressive ? 'Using the computer' : `${prefix}${done ? 'Used the computer' : 'use the computer'}`;
   }
 }
+
+// ── The Computer use gateway (cua-driver behind the main process) ─────────
+
+/** Whether the pinned cua-driver binary is there to run. */
+export type ComputerUseDriverState = 'ready' | 'missing' | 'version-mismatch' | 'unsupported-platform';
+
+export interface ComputerUseDriverStatus {
+  state: ComputerUseDriverState;
+  /** The binary Aegis would run; null when none was found. */
+  path: string | null;
+  /** What that binary reports as its version. */
+  version: string | null;
+  /** The one version Aegis runs. */
+  pinnedVersion: string;
+  /** Why it is not ready, in words for the settings page. */
+  message: string | null;
+}
+
+/** What Settings shows for Computer use. */
+export interface ComputerUseSettingsView {
+  /** The master switch. Off (the default): no tools are offered and no driver process runs. */
+  enabled: boolean;
+  /** A cua-driver binary the user pointed at; empty for the default places. */
+  driverPath: string;
+  driver: ComputerUseDriverStatus;
+  /** The two macOS grants, as Aegis itself holds them; null off macOS. */
+  permissions: { accessibility: boolean; screenRecording: boolean } | null;
+}
+
+/** A gateway tool under the name agents and the transcript know it by. */
+export function computerUseToolName(tool: string): string {
+  return `mcp__${AEGIS_COMPUTER_USE_SERVER_NAME}__${tool}`;
+}
+
+/** The gateway tool a transcript tool name stands for, or null. */
+export function computerUseGatewayTool(toolName: string | null | undefined): string | null {
+  const parsed = toolName ? parseMcpToolName(toolName) : null;
+  if (!parsed || parsed.server !== AEGIS_COMPUTER_USE_SERVER_NAME) return null;
+  return (COMPUTER_USE_TOOLS as readonly string[]).includes(parsed.tool) ? parsed.tool : null;
+}
