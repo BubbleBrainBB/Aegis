@@ -20,7 +20,8 @@ gateway of its own. `verify:computer-use-providers` pins that.
 | The gateway's **MCP bridge**: a loopback MCP server whose every request is bound to one session | DeepSeek, MiniMax, MiMo, Devin, Grok, Qoder, Claude, OpenCode | `computer-use/mcp-bridge.ts`, `computer-use/provider-mcp.ts` |
 
 Codex keeps its own Computer use client (`codex-computer-use.ts`) and shares
-only the lease and the grant registry, as before.
+only the lease and the grant registry, as before. Kimi and Antigravity get
+none; the reasons are below.
 
 ### The MCP bridge
 
@@ -118,6 +119,7 @@ the bridge.
 | OpenCode | bridge, the server's inline config | resolver: `_meta['ai.opencode/sessionID']`, as Browser Use | none expected (asks are limited to edit/shell/webfetch) | file path | yes | card always | CI for the entry and the resolver only. **Not live**: no model on the test machine had usable credentials. |
 | Codex | its own client | — | — | — | — | — | unchanged |
 | **Kimi** | **none** | — | — | — | — | — | not supported for now, see below |
+| **Antigravity** | **none** | — | — | — | — | — | not supported, see below |
 
 Notes:
 
@@ -159,6 +161,16 @@ session id in its MCP request metadata (then `bindResolver` fits, as for
 OpenCode), or moving Kimi to its ACP runtime, which takes `mcpServers` per
 session but lacks steer, usage and subagents (see
 `docs/kimi-server-adapter-plan.md`).
+
+### Antigravity: not supported
+
+`agy acp` (1.5.14) advertises no MCP capability, so it takes no HTTP MCP
+server, and its adapter starts every session with `mcpServers: []`. It has no
+tool channel of Aegis's own either: under the terms of a personal Google
+sign-in only a person may drive it (`src/shared/human-driven-providers.ts`),
+and none of Aegis's tools are handed to it. So there is nothing to bind a
+Computer use call to, and an Antigravity session has no Computer use tools.
+If `agy` gains MCP over ACP, it follows the path of the other ACP agents.
 
 ## Tests and probes
 

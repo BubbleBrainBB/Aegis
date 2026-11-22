@@ -377,6 +377,10 @@ function testAdapterSources(): void {
   for (const file of ['src/electron/libs/provider/kimi-server-adapter.ts', 'src/electron/libs/provider/kimi-server-manager.ts', 'src/electron/libs/kimi-mcp-settings.ts']) {
     assert.ok(!/computer-use/i.test(read(file)), `${file}: no Computer use entry for Kimi`);
   }
+  // Antigravity's ACP takes no MCP servers, and none of Aegis's tools go to it.
+  const antigravity = read('src/electron/libs/provider/antigravity-acp-adapter.ts');
+  assert.ok(!/computer-use/i.test(antigravity), 'Antigravity: no Computer use entry');
+  assert.ok(antigravity.includes("rpc.request('session/new', { cwd, mcpServers: [] })"), 'Antigravity: sessions start without MCP servers');
   // No provider reaches the driver except through the gateway.
   for (const file of ['runner.ts', 'provider/qoder-sdk-adapter.ts', 'provider/opencode-serve-manager.ts', 'provider/pi-sdk-adapter.ts', 'provider/deepseek-sdk-adapter.ts',
     'provider/minimax-acp-adapter.ts', 'provider/mimo-acp-adapter.ts', 'provider/devin-acp-adapter.ts', 'provider/grok-acp-adapter.ts', 'computer-use/mcp-bridge.ts', 'computer-use/provider-mcp.ts']) {

@@ -2,7 +2,8 @@
 // of them (Plan mode looks, it does not act) and has to be told when a
 // session is in it; each provider says so with its own field and value.
 //
-// A provider that is missing here has no Plan mode in Aegis (DeepSeek, Pi).
+// A provider that is missing here has no Plan mode in Aegis (DeepSeek, Pi)
+// or is given no Computer use at all (Kimi, Antigravity).
 // The gateway's rule is on top of whatever the provider's own runtime does
 // with its tools in Plan: it holds even where that runtime would let an MCP
 // tool through.
