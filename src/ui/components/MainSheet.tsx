@@ -3,9 +3,10 @@ import { TitlebarControls } from './Sidebar';
 import { useSidebarCollapsed } from '../store/sidebar-collapse';
 
 /**
- * A main-column view, Codex-style: two tones only. The view's title and
- * actions sit in the title-bar row on the window chrome; the view itself is
- * on the light sheet below, which continues the sidebar panel's surface.
+ * A main-column view, Codex-style: the view's title and actions sit in the
+ * column's title-bar row, a hairline under it, and the view itself below on
+ * the same surface. (Glass and dot-matrix themes still draw the view as a
+ * rounded sheet under the row: see `.aegis-sheet` in index.css.)
  */
 export function MainSheet({
   header,
@@ -14,7 +15,7 @@ export function MainSheet({
   children,
 }: {
   header?: ReactNode;
-  /** A docked right pane continues the sheet on this side. */
+  /** A docked right pane continues the view on this side. */
   joinedRight?: boolean;
   sheetClassName?: string;
   children: ReactNode;
@@ -44,8 +45,9 @@ export function MainTitlebarRow({ children }: { children?: ReactNode }) {
 
   return (
     <div
-      className={`drag-region relative flex h-10 flex-shrink-0 items-center gap-2 pr-2 ${
-        sidebarCollapsed ? 'pl-10' : 'pl-3'
+      // Collapsed, the 52px rail plus this padding clears the traffic lights.
+      className={`aegis-titlebar-row drag-region relative flex h-10 flex-shrink-0 items-center gap-2 pr-2 ${
+        sidebarCollapsed ? 'pl-8' : 'pl-3'
       }`}
       data-main-titlebar
     >

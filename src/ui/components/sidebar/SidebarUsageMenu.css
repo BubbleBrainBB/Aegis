@@ -248,3 +248,11 @@
   .usage-skeleton { animation: none; opacity: 0.7; }
   .usage-refresh-line i { animation: none; left: 0; width: 100%; opacity: 0.5; }
 }
+
+/* The rail's usage ring: the share left of the open task's tightest plan
+   limit. Nearly nothing left leaves no arc to colour, so the track warns too. */
+.usage-ring-track { stroke: var(--border); }
+.usage-ring-left { stroke: currentColor; transition: stroke-dashoffset 300ms ease; }
+.usage-ring-button[data-usage-tone='low'] .usage-ring-track { stroke: color-mix(in srgb, var(--error) 30%, transparent); }
+.usage-ring-button[data-usage-tone='watch'] .usage-ring-left { stroke: var(--warning); }
+.usage-ring-button[data-usage-tone='low'] .usage-ring-left { stroke: var(--error); }

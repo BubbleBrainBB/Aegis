@@ -15,6 +15,9 @@ import {
   HomeFilled,
   ListChecks,
   MessageCircle,
+  MoreHorizontal,
+  Pin,
+  PinFilled,
   Script,
   Search,
   SquarePen,
@@ -38,6 +41,9 @@ import { SidebarProfileMenu } from './sidebar/SidebarProfileMenu';
 import { SidebarActiveTasks } from './sidebar/SidebarActiveTasks';
 import { SettingsNavPanel } from './settings/Settings';
 import { SidebarUpdateButton } from './sidebar/SidebarUpdateButton';
+import { SidebarUsageButton } from './sidebar/SidebarUsageMenu';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu';
+import { isPinnableRailSection, useRailPinsStore, type PinnableRailSection } from '../store/useRailPinsStore';
 import { useSessionOrganization } from '../store/useSessionOrganizationStore';
 import { useSidebarViewStore } from '../store/useSidebarViewStore';
 import { useWorkflowRunningSessions, useWorkflowWaitingSessions } from '../store/useWorkflowStore';
@@ -457,7 +463,10 @@ export function Sidebar() {
         />
       )}
 
-      <div className="aegis-sidebar relative flex h-full min-h-0 flex-shrink-0 flex-col self-stretch select-none">
+      <div
+        className="aegis-sidebar relative flex h-full min-h-0 flex-shrink-0 flex-col self-stretch select-none"
+        data-collapsed={sidebarCollapsed}
+      >
         {/* Title bar row over the rail and panel: traffic lights, then the
             toggle and history. Collapsed, the main column's row hosts them. */}
         <div
@@ -474,7 +483,7 @@ export function Sidebar() {
         />
 
         <div
-          className="relative flex h-full min-h-0 flex-shrink-0 self-stretch overflow-hidden pb-1 transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]"
+          className="aegis-sidebar-panel-slot relative flex h-full min-h-0 flex-shrink-0 self-stretch overflow-hidden transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]"
           style={{ width: sidebarCollapsed ? 0 : sidebarWidth }}
         >
           <div
@@ -552,7 +561,7 @@ export function Sidebar() {
 
           {!sidebarCollapsed ? (
             <div
-              className="group absolute right-0 top-0 bottom-1 w-3 translate-x-1/2 cursor-col-resize no-drag"
+              className="group absolute right-0 top-0 bottom-0 z-[2] w-3 translate-x-1/2 cursor-col-resize no-drag"
               onMouseDown={handleSidebarResizeStart}
             >
               <div className="absolute left-1/2 top-0 bottom-0 w-px -translate-x-1/2 bg-transparent group-hover:bg-[var(--border)]" />
@@ -576,12 +585,25 @@ export function Sidebar() {
   );
 }
 
+type RailWorkspace = 'chat' | 'design' | 'automations' | 'prs' | 'skills';
+
 const RAIL_BUTTON_CLASS =
-  'no-drag relative inline-flex h-[30px] w-[30px] items-center justify-center rounded-[9px] transition-[background-color,color,transform] duration-150 ease-[cubic-bezier(0.22,1,0.36,1)] active:scale-95';
+  'no-drag relative inline-flex h-9 w-9 items-center justify-center rounded-[10px] outline-none transition-[background-color,color,transform] duration-150 ease-[cubic-bezier(0.22,1,0.36,1)] active:scale-95 focus-visible:ring-2 focus-visible:ring-[var(--accent)]';
+const RAIL_BUTTON_ACTIVE = 'bg-[var(--sidebar-item-active)] text-[var(--text-primary)]';
+const RAIL_BUTTON_IDLE =
+  'text-[var(--text-muted)] hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)]';
+const RAIL_ICON = { className: 'h-[18px] w-[18px]', strokeWidth: 1.6 };
+
+/** The sections the More menu lists; pinned ones also show under the rail's divider. */
+const PINNABLE_SECTIONS: Record<PinnableRailSection, { label: string; icon: typeof GitPullRequest }> = {
+  prs: { label: 'Pull Requests', icon: GitPullRequest },
+};
 
 /**
  * The always-visible icon rail on the window's left edge. It switches the
  * app's top-level sections; the panel beside it shows the current one.
+ * Above the divider are the fixed sections and the More menu; below it, the
+ * sections the user pinned from that menu.
  */
 function SidebarRail({
   activeWorkspace,
@@ -595,8 +617,10 @@ function SidebarRail({
   onSelect: (workspace: 'chat' | 'tasks' | 'design' | 'automations' | 'prs' | 'skills') => void;
   onOpenSettings: () => void;
 }) {
+  const pinned = useRailPinsStore((state) => state.pinned);
+  const togglePinned = useRailPinsStore((state) => state.togglePinned);
   const item = (
-    workspace: 'chat' | 'design' | 'automations' | 'prs' | 'skills',
+    workspace: RailWorkspace,
     label: string,
     icon: ReactNode,
     activeIcon?: ReactNode,
@@ -606,6 +630,7 @@ function SidebarRail({
     const active = activeWorkspace === workspace || (workspace === 'chat' && activeWorkspace === 'tasks');
     return (
       <button
+        key={workspace}
         type="button"
         onClick={(event) => {
           onSelect(workspace);
@@ -614,43 +639,96 @@ function SidebarRail({
         aria-label={label}
         aria-current={active ? 'page' : undefined}
         title={label}
-        className={`${RAIL_BUTTON_CLASS} ${
-          active
-            ? 'bg-[var(--sidebar-item-active)] text-[var(--text-primary)]'
-            : 'text-[var(--text-muted)] hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)]'
-        }`}
+        className={`${RAIL_BUTTON_CLASS} ${active ? RAIL_BUTTON_ACTIVE : RAIL_BUTTON_IDLE}`}
       >
         {active && activeIcon ? activeIcon : icon}
         {dot ? (
           <span
             role="img"
             aria-label="A task is running"
-            className="absolute right-[3px] top-[3px] h-[7px] w-[7px] rounded-full bg-[var(--text-primary)] ring-2 ring-[var(--app-chrome-bg)]"
+            className="absolute right-[5px] top-[5px] h-[7px] w-[7px] rounded-full bg-[var(--text-primary)] ring-2 ring-[var(--app-rail-surface)]"
           />
         ) : null}
       </button>
     );
   };
+  // A section that is open but not pinned is reached through More, so More shows as current.
+  const inMore = isPinnableRailSection(activeWorkspace) && !pinned.includes(activeWorkspace);
 
   return (
     <nav
       aria-label="Sections"
-      className="flex h-full w-11 flex-shrink-0 flex-col items-center gap-1.5 pb-3"
+      className="flex h-full w-[52px] flex-shrink-0 flex-col items-center gap-2 pb-1 pt-1"
     >
-      {item(
-        'chat',
-        'Home',
-        <Home className="h-[17px] w-[17px]" strokeWidth={1.6} />,
-        <HomeFilled className="h-[17px] w-[17px]" />,
-        showRunningDot
-      )}
-      {item('design', 'Design', <Palette className="h-[17px] w-[17px]" strokeWidth={1.6} />)}
-      {item('skills', 'Skill Library', <Script className="h-[17px] w-[17px]" strokeWidth={1.6} />)}
-      {item('automations', 'Automations', <Clock className="h-[17px] w-[17px]" strokeWidth={1.6} />)}
-      <div aria-hidden="true" className="my-1 h-px w-[22px] bg-[var(--panel-soft-divider)]" />
-      {item('prs', 'Pull Requests', <GitPullRequest className="h-[17px] w-[17px]" strokeWidth={1.6} />)}
+      {item('chat', 'Home', <Home {...RAIL_ICON} />, <HomeFilled className={RAIL_ICON.className} />, showRunningDot)}
+      {item('design', 'Design', <Palette {...RAIL_ICON} />)}
+      {item('skills', 'Skill Library', <Script {...RAIL_ICON} />)}
+      {item('automations', 'Automations', <Clock {...RAIL_ICON} />)}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            aria-label="More sections"
+            title="More"
+            data-rail-more
+            className={`${RAIL_BUTTON_CLASS} data-[popup-open]:bg-[var(--sidebar-item-hover)] data-[popup-open]:text-[var(--text-primary)] ${
+              inMore ? RAIL_BUTTON_ACTIVE : RAIL_BUTTON_IDLE
+            }`}
+          >
+            <MoreHorizontal {...RAIL_ICON} />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent side="right" align="start" sideOffset={8} className="min-w-[216px]">
+          {(Object.keys(PINNABLE_SECTIONS) as PinnableRailSection[]).map((section) => {
+            const { label, icon: Icon } = PINNABLE_SECTIONS[section];
+            const isPinned = pinned.includes(section);
+            const pinLabel = isPinned ? `Unpin ${label} from the rail` : `Pin ${label} to the rail`;
+            return (
+              <DropdownMenuItem
+                key={section}
+                data-rail-section={section}
+                onSelect={() => onSelect(section)}
+                className="group/pin gap-2 py-1.5 pl-2 pr-1 text-[13px] text-[var(--text-secondary)]"
+              >
+                <Icon className="h-4 w-4 flex-shrink-0 text-[var(--text-muted)]" strokeWidth={1.6} />
+                <span className="min-w-0 flex-1 truncate">{label}</span>
+                {/* Pinning keeps the menu open and does not leave the current view. */}
+                <button
+                  type="button"
+                  aria-label={pinLabel}
+                  aria-pressed={isPinned}
+                  title={pinLabel}
+                  data-rail-pin={section}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    togglePinned(section);
+                  }}
+                  className={`flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md transition-[background-color,color,opacity] hover:bg-[var(--sidebar-item-active)] hover:text-[var(--text-primary)] ${
+                    isPinned
+                      ? 'text-[var(--text-secondary)]'
+                      : 'text-[var(--text-muted)] opacity-0 focus-visible:opacity-100 group-hover/pin:opacity-100 group-data-[highlighted]/pin:opacity-100'
+                  }`}
+                >
+                  {isPinned ? <PinFilled className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" strokeWidth={1.6} />}
+                </button>
+              </DropdownMenuItem>
+            );
+          })}
+        </DropdownMenuContent>
+      </DropdownMenu>
+      {pinned.length ? (
+        <>
+          <div aria-hidden="true" className="h-px w-6 bg-[var(--panel-soft-divider)]" data-rail-divider />
+          {pinned.map((section) => {
+            const { label, icon: Icon } = PINNABLE_SECTIONS[section];
+            return item(section, label, <Icon {...RAIL_ICON} />);
+          })}
+        </>
+      ) : null}
       <div className="flex-1" />
       <SidebarUpdateButton />
+      <SidebarUsageButton />
       <SidebarProfileMenu variant="rail" onOpenSettings={onOpenSettings} />
     </nav>
   );

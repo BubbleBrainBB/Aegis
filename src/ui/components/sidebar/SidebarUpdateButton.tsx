@@ -3,7 +3,7 @@ import { useAppStore } from '../../store/useAppStore';
 import { AlertTriangle, Download, RefreshCw } from '../icons';
 
 const BUTTON_CLASS =
-  'no-drag relative inline-flex h-[30px] w-[30px] items-center justify-center rounded-[9px] outline-none transition-[background-color,color,transform] duration-150 ease-[cubic-bezier(0.22,1,0.36,1)] active:scale-95 focus-visible:ring-2 focus-visible:ring-[var(--accent)]';
+  'no-drag relative inline-flex h-9 w-9 items-center justify-center rounded-[10px] outline-none transition-[background-color,color,transform] duration-150 ease-[cubic-bezier(0.22,1,0.36,1)] active:scale-95 focus-visible:ring-2 focus-visible:ring-[var(--accent)]';
 const RING_RADIUS = 12;
 const RING_LENGTH = 2 * Math.PI * RING_RADIUS;
 
@@ -34,7 +34,7 @@ export function SidebarUpdateButton() {
     const label = progress >= 100 ? `Preparing Aegis${version}` : `Downloading Aegis${version} · ${progress}%`;
     return (
       <span role="progressbar" aria-label={label} aria-valuenow={progress} aria-valuemin={0} aria-valuemax={100} title={label} className={`${BUTTON_CLASS} text-[var(--accent)]`}>
-        <svg viewBox="0 0 30 30" className="absolute inset-0 h-[30px] w-[30px] -rotate-90" aria-hidden="true">
+        <svg viewBox="0 0 30 30" className="absolute inset-[3px] h-[30px] w-[30px] -rotate-90" aria-hidden="true">
           <circle cx="15" cy="15" r={RING_RADIUS} fill="none" stroke="var(--panel-soft-divider)" strokeWidth="2" />
           <circle
             cx="15"
@@ -56,11 +56,11 @@ export function SidebarUpdateButton() {
 
   const action =
     status.phase === 'available'
-      ? { label: `Download and install Aegis${version}`, icon: <Download className="h-[17px] w-[17px]" strokeWidth={1.6} />, run: () => window.electron.downloadUpdate() }
+      ? { label: `Download and install Aegis${version}`, icon: <Download className="h-[18px] w-[18px]" strokeWidth={1.6} />, run: () => window.electron.downloadUpdate() }
       : status.phase === 'downloaded'
-        ? { label: `Restart to update to Aegis${version}`, icon: <RefreshCw className="h-[17px] w-[17px]" strokeWidth={1.6} />, run: () => window.electron.installUpdate() }
+        ? { label: `Restart to update to Aegis${version}`, icon: <RefreshCw className="h-[18px] w-[18px]" strokeWidth={1.6} />, run: () => window.electron.installUpdate() }
         : status.phase === 'error'
-          ? { label: `Update failed${status.error ? `: ${status.error}` : ''}. Click to retry.`, icon: <AlertTriangle className="h-[17px] w-[17px]" strokeWidth={1.6} />, run: () => window.electron.downloadUpdate() }
+          ? { label: `Update failed${status.error ? `: ${status.error}` : ''}. Click to retry.`, icon: <AlertTriangle className="h-[18px] w-[18px]" strokeWidth={1.6} />, run: () => window.electron.downloadUpdate() }
           : null;
   if (!action) return null;
 

@@ -170,6 +170,7 @@ export function ResizableRightPane({
       data-right-utility-workspace
       data-active-panel={activePanel ?? 'none'}
       data-resizing={isResizing || undefined}
+      data-fullscreen={fullscreen || undefined}
       aria-hidden={hidden || !isPresent}
       inert={hidden || !isPresent}
       className={`relative flex h-full min-w-0 flex-col overflow-visible ${fullscreen ? 'flex-1' : 'flex-shrink-0'}`}
@@ -215,7 +216,7 @@ export function ResizableRightPane({
       )}
       <div className="absolute inset-0 overflow-hidden">
         <motion.div
-          className="absolute inset-y-0 left-0 flex min-h-0 flex-col overflow-hidden [contain:layout_paint]"
+          className="aegis-pane-body absolute inset-y-0 left-0 flex min-h-0 flex-col overflow-hidden [contain:layout_paint]"
           style={{ width: contentWidth }}
         >
           {children}

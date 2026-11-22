@@ -531,14 +531,20 @@ body {
   background-color: var(--bg-primary);
 }
 
+/* One surface, Codex-style: the window is the content colour from edge to
+   edge and its columns (sidebar, view, right pane) are divided by hairlines
+   that run the window's full height. Each column owns its piece of the
+   title-bar row; a hairline under that row carries across the view and the
+   right pane. Only an open sidebar tints its column (rail + panel), a few
+   steps toward the chrome colour. */
 .aegis-window-shell {
-  background-color: var(--app-chrome-bg);
+  background-color: var(--bg-primary);
 }
 
-/* The sidebar panel is a hair off the main sheet, so the two read as one
-   light surface below the title-bar row (see .aegis-sheet). */
 :root {
-  --app-sidebar-panel: color-mix(in srgb, var(--bg-primary) 88%, var(--app-sidebar-surface));
+  --app-sidebar-panel: color-mix(in srgb, var(--bg-primary) 45%, var(--app-sidebar-surface));
+  /* What the icon rail sits on while the sidebar is collapsed. */
+  --app-rail-surface: var(--bg-primary);
 }
 
 /* Settings' raised workspace card. */
@@ -549,67 +555,209 @@ body {
   box-shadow: 0 1px 4px rgba(15, 18, 25, 0.06);
 }
 
-/* Codex-style two tones: the title-bar row and icon rail sit on the window
-   chrome; everything below is one light sheet (sidebar panel + view + right
-   pane, divided by hairlines). Pieces joined to a neighbour drop that side's
-   edge and corners so they read as a single surface. */
-.aegis-main-host {
-  padding: 0 4px 4px 0;
-}
-
 .aegis-sheet {
-  border: 1px solid var(--panel-soft-divider);
-  border-radius: 12px;
   background-color: var(--bg-primary);
 }
 
-.aegis-sheet--join-left {
+.aegis-sheet--pane {
+  background-color: var(--utility-pane-surface);
+  backdrop-filter: var(--utility-pane-backdrop);
+  -webkit-backdrop-filter: var(--utility-pane-backdrop);
+}
+
+/* The hairline under a column's title-bar row. */
+.aegis-titlebar-row {
+  box-shadow: inset 0 -1px 0 var(--panel-soft-divider);
+}
+
+/* The docked right pane's left edge, from the window's top to its bottom. */
+.aegis-pane-body {
+  border-left: 1px solid var(--panel-soft-divider);
+}
+
+[data-right-utility-workspace][data-fullscreen] .aegis-pane-body {
+  border-left-width: 0;
+}
+
+/* A skin paints only below the title-bar row. */
+.aegis-main-host > .aegis-skin-layer {
+  inset: 40px 0 0;
+}
+
+.aegis-sidebar {
+  transition: background-color 200ms ease;
+}
+
+.aegis-sidebar[data-collapsed='false'] {
+  background-color: var(--app-sidebar-panel);
+}
+
+/* The open sidebar's edge with the view. */
+.aegis-sidebar[data-collapsed='false']::after {
+  content: '';
+  position: absolute;
+  inset: 0 0 0 auto;
+  z-index: 1;
+  width: 1px;
+  background-color: var(--panel-soft-divider);
+  pointer-events: none;
+}
+
+/* The line between the rail and the panel starts under the title-bar row. */
+.aegis-sidebar-panel {
+  border-left: 1px solid var(--panel-soft-divider);
+}
+
+.aegis-window-shell--rounded .aegis-window-left-surface {
+  background-color: var(--app-sidebar-surface);
+}
+
+/* The chat composer. Light: the content colour, lifted by a hairline and a
+   soft shadow. Dark: a shadow does not show, so the composer is a raised
+   solid face with a brighter edge instead. */
+:root {
+  --composer-surface: var(--bg-primary);
+  --composer-border: color-mix(in srgb, var(--border) 72%, transparent);
+  --composer-border-focus: color-mix(in srgb, var(--border) 92%, transparent);
+  --composer-shadow: 0 4px 16px rgba(15, 23, 42, 0.05);
+  --composer-shadow-focus: 0 6px 20px rgba(15, 23, 42, 0.08);
+}
+
+.dark {
+  --composer-surface: color-mix(in srgb, var(--text-primary) 12%, var(--bg-primary));
+  --composer-border: color-mix(in srgb, var(--text-primary) 17%, var(--bg-primary));
+  --composer-border-focus: color-mix(in srgb, var(--text-primary) 24%, var(--bg-primary));
+  --composer-shadow: none;
+  --composer-shadow-focus: none;
+}
+
+.aegis-composer-surface {
+  border-color: var(--composer-border);
+  background-color: var(--composer-surface);
+  box-shadow: var(--composer-shadow);
+}
+
+.aegis-composer-surface:focus-within {
+  border-color: var(--composer-border-focus);
+  box-shadow: var(--composer-shadow-focus);
+}
+
+/* The right pane's new-tab page: the search box is the page's centre of
+   gravity, the tools are cards under it. */
+.aegis-launcher-search {
+  border: 1px solid var(--composer-border);
+  background-color: var(--composer-surface);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03), 0 4px 16px rgba(15, 23, 42, 0.05);
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+  cursor: text;
+}
+
+.aegis-launcher-search:focus-within {
+  border-color: var(--composer-border-focus);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 6px 20px rgba(15, 23, 42, 0.08);
+}
+
+.dark .aegis-launcher-search,
+.dark .aegis-launcher-search:focus-within {
+  box-shadow: none;
+}
+
+.aegis-launcher-card {
+  background-color: var(--sidebar-item-hover);
+}
+
+.aegis-launcher-card:hover:not(:disabled) {
+  background-color: var(--sidebar-item-active);
+}
+
+.aegis-launcher-card:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+/* Sheet materials. Glass and the dot-matrix field need something to show
+   through, so they keep two layers: the title-bar row and the icon rail sit
+   on the window material, and everything below is one rounded sheet (sidebar
+   panel + view + right pane). Pieces joined to a neighbour drop that side's
+   edge and corners so they read as a single surface. */
+html:is([data-window-material='glass'], [data-window-material='field']) {
+  --app-sidebar-panel: color-mix(in srgb, var(--bg-primary) 88%, var(--app-sidebar-surface));
+  --app-rail-surface: var(--app-chrome-bg);
+}
+
+html:is([data-window-material='glass'], [data-window-material='field']) .aegis-window-shell {
+  background-color: var(--app-chrome-bg);
+}
+
+html:is([data-window-material='glass'], [data-window-material='field']) .aegis-main-host {
+  padding: 0 4px 4px 0;
+}
+
+html:is([data-window-material='glass'], [data-window-material='field']) .aegis-sheet {
+  border: 1px solid var(--panel-soft-divider);
+  border-radius: 12px;
+}
+
+html:is([data-window-material='glass'], [data-window-material='field']) .aegis-sheet--join-left {
   border-left-width: 0;
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
 }
 
-.aegis-sheet--join-right {
+html:is([data-window-material='glass'], [data-window-material='field']) .aegis-sheet--join-right {
   border-right-width: 0;
   border-top-right-radius: 0;
   border-bottom-right-radius: 0;
 }
 
 /* The right pane's sheet keeps its left edge as the divider with the view. */
-.aegis-sheet--pane {
+html:is([data-window-material='glass'], [data-window-material='field']) .aegis-sheet--pane {
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
-  background-color: var(--utility-pane-surface);
-  backdrop-filter: var(--utility-pane-backdrop);
-  -webkit-backdrop-filter: var(--utility-pane-backdrop);
 }
 
-.aegis-sheet--pane-fullscreen {
+html:is([data-window-material='glass'], [data-window-material='field']) .aegis-sheet--pane-fullscreen {
   border-top-left-radius: 12px;
   border-bottom-left-radius: 12px;
 }
 
-.aegis-sheet--pane-fullscreen.aegis-sheet--join-left {
+html:is([data-window-material='glass'], [data-window-material='field']) .aegis-sheet--pane-fullscreen.aegis-sheet--join-left {
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
 }
 
+html:is([data-window-material='glass'], [data-window-material='field']) .aegis-titlebar-row {
+  box-shadow: none;
+}
+
+html:is([data-window-material='glass'], [data-window-material='field']) .aegis-pane-body {
+  border-left-width: 0;
+}
+
 /* A skin paints only the sheet area, not the title-bar row. */
-.aegis-main-host > .aegis-skin-layer {
+html:is([data-window-material='glass'], [data-window-material='field']) .aegis-main-host > .aegis-skin-layer {
   inset: 40px 4px 4px 0;
   border-radius: 0 12px 12px 0;
 }
 
-.aegis-sidebar-panel {
+html:is([data-window-material='glass'], [data-window-material='field']) .aegis-sidebar[data-collapsed='false'] {
+  background-color: transparent;
+}
+
+html:is([data-window-material='glass'], [data-window-material='field']) .aegis-sidebar[data-collapsed='false']::after {
+  content: none;
+}
+
+html:is([data-window-material='glass'], [data-window-material='field']) .aegis-sidebar-panel-slot {
+  padding-bottom: 4px;
+}
+
+html:is([data-window-material='glass'], [data-window-material='field']) .aegis-sidebar-panel {
   border: 1px solid var(--panel-soft-divider);
   border-radius: 12px 0 0 12px;
   background-color: var(--app-sidebar-panel);
   backdrop-filter: var(--app-sidebar-backdrop-filter);
   -webkit-backdrop-filter: var(--app-sidebar-backdrop-filter);
-}
-
-.aegis-window-shell--rounded .aegis-window-left-surface {
-  background-color: var(--app-sidebar-surface);
 }
 
 /* Glass: the window itself is macOS vibrancy. The page lets it through, the
@@ -3748,7 +3896,8 @@ button.aegis-mdx-metadata-key:hover {
 
 .dark .aegis-new-thread-landing {
   --new-thread-composer-shadow: inset 0 0 1px #ffffff33;
-  --new-thread-composer-background: var(--bg-secondary);
+  /* The same raised face as the chat composer. */
+  --new-thread-composer-background: var(--composer-surface);
 }
 
 .aegis-new-thread-hero {

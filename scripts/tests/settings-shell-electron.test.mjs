@@ -74,10 +74,11 @@ app.whenReady().then(async()=>{
   await click(back);await until('qa.app.getState().activeWorkspace==="tasks"','back to My Tasks');
   assert.equal(await js('document.querySelector('+JSON.stringify(forward)+').disabled'),false,'Forward is available before Settings');
 
-  // Settings: the rail stays with nothing current; the sidebar panel holds the nav; the page is on the main sheet.
+  // Settings: the rail stays with nothing current; the sidebar panel holds the nav; the page is the main column,
+  // on the window's one surface: flush with the sidebar and with the window's right and bottom edges.
   await openSettings();
   const shell=await js('(()=>{const panel=document.querySelector(".aegis-sidebar-panel").getBoundingClientRect(),sheet=document.querySelector(".aegis-sheet").getBoundingClientRect();return {rail:!!document.querySelector("nav[aria-label=Sections]"),current:document.querySelector("nav[aria-label=Sections] [aria-current=page]")?.getAttribute("aria-label")??null,active:!!document.querySelector("[data-active-heading]"),inSheet:!!document.querySelector(".aegis-sheet .aegis-settings main h1"),joined:Math.round(sheet.left-panel.right),right:Math.round(innerWidth-sheet.right),bottom:Math.round(innerHeight-sheet.bottom),sidebarBottom:Math.round(innerHeight-panel.bottom)}})()');
-  assert.deepEqual(shell,{rail:true,current:null,active:false,inSheet:true,joined:0,right:4,bottom:4,sidebarBottom:4});
+  assert.deepEqual(shell,{rail:true,current:null,active:false,inSheet:true,joined:0,right:0,bottom:0,sidebarBottom:0});
   await shot('settings-general');
 
   // Forward is off in Settings: nothing moves behind the page. Back leaves for the view you came from.

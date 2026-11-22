@@ -42,6 +42,7 @@ import {
   Target,
   ChevronDown,
   RefreshCw,
+  Search,
   Upload,
   Users,
   Workflow,
@@ -1200,9 +1201,9 @@ export function App() {
     >
       {/* Themes with a backdrop paint it here, under every panel; it rests while an answer is being written. */}
       <DotFieldBackdrop />
-      {/* Codex-style chrome: every column starts with a title-bar row on the
-          window chrome; below it the sidebar panel, the main view and the
-          right pane form one rounded sheet. */}
+      {/* Codex-style shell: every column starts with its own piece of the
+          title-bar row; the sidebar, the main view and the right pane share
+          one surface, divided by full-height hairlines. */}
       <div className="flex min-h-0 min-w-0 flex-1">
       <Sidebar />
 
@@ -1764,16 +1765,15 @@ function RightUtilityWorkspace({
       activePanel={activePanel}
       onWidthChange={onWidthChange}
     >
-      {/* The tab strip sits in the title-bar row on the chrome; the panels
-          are the pane's piece of the sheet below it. Fullscreen, it takes the
-          main view's title-bar row, so the tabs sit where they do over the
-          chat tab. */}
+      {/* The tab strip is the pane's piece of the title-bar row; the panels
+          sit below it. Fullscreen, it takes the main view's title-bar row, so
+          the tabs sit where they do over the chat tab. */}
       {fullscreen ? (
         <MainTitlebarRow>
           <RightUtilityTabStrip className={fullscreenTabStripClass(sidebarCollapsed)} {...stripProps} />
         </MainTitlebarRow>
       ) : (
-        <RightUtilityTabStrip {...stripProps} />
+        <RightUtilityTabStrip className="aegis-titlebar-row" {...stripProps} />
       )}
 
       <div
@@ -1853,6 +1853,15 @@ function fullscreenTabStripClass(sidebarCollapsed: boolean): string {
   return `min-w-0 flex-1 -mr-2 ${sidebarCollapsed ? '' : '-ml-3'}`;
 }
 
+/**
+ * A tab in the pane's strip. The current one is filled like the rail's
+ * current section; a minimum width keeps a short label from making a stub.
+ */
+const UTILITY_TAB_CLASS = 'flex h-[30px] min-w-[128px] items-center rounded-[9px] text-[13px] transition-colors';
+const UTILITY_TAB_ACTIVE = 'bg-[var(--sidebar-item-active)] text-[var(--text-primary)]';
+const UTILITY_TAB_IDLE =
+  'bg-transparent text-[var(--text-muted)] hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)]';
+
 type FullscreenChatTab = {
   label: string;
   active: boolean;
@@ -1921,10 +1930,8 @@ function RightUtilityTabStrip({
               data-utility-tab-kind="chat"
               aria-pressed={chatTab.active}
               onClick={chatTab.onSelect}
-              className={`flex h-7 max-w-[220px] items-center gap-1.5 rounded-[8px] px-2.5 text-left text-xs transition-colors ${
-                chatTab.active
-                  ? 'bg-[var(--bg-primary)] text-[var(--text-primary)] shadow-[0_0_0_1px_var(--panel-soft-divider)]'
-                  : 'bg-transparent text-[var(--text-muted)] hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)]'
+              className={`${UTILITY_TAB_CLASS} max-w-[220px] gap-1.5 px-2.5 text-left ${
+                chatTab.active ? UTILITY_TAB_ACTIVE : UTILITY_TAB_IDLE
               }`}
               title={chatTab.label}
             >
@@ -1948,11 +1955,7 @@ function RightUtilityTabStrip({
           return (
             <div key={tab.id} className="flex flex-shrink-0 items-center pr-0.5">
               <div
-                className={`group flex h-7 max-w-[190px] items-center rounded-[8px] text-xs transition-colors ${
-                  active
-                    ? 'bg-[var(--bg-primary)] text-[var(--text-primary)] shadow-[0_0_0_1px_var(--panel-soft-divider)]'
-                    : 'bg-transparent text-[var(--text-muted)] hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)]'
-                }`}
+                className={`group ${UTILITY_TAB_CLASS} max-w-[200px] ${active ? UTILITY_TAB_ACTIVE : UTILITY_TAB_IDLE}`}
               >
                 <button
                   type="button"
@@ -2014,7 +2017,7 @@ function RightUtilityTabStrip({
         <button
           type="button"
           onClick={onOpenLauncher}
-          className="ml-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] text-[var(--text-muted)] transition-colors hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+          className="ml-1 inline-flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-[9px] text-[var(--text-muted)] transition-colors hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
           aria-label="New tab"
           title="New tab"
         >
@@ -2178,8 +2181,10 @@ function getPanelLauncherItems({
 }
 
 /**
- * The right pane's new-tab page, Codex-style: an address bar that opens the
- * in-app browser, then the pane's tools as a two-column grid.
+ * The right pane's new-tab page, Codex-style: a centred column in the upper
+ * third of the pane with a search box that opens the in-app browser, then the
+ * pane's tools as a row of cards (four across at the pane's default width,
+ * two in a narrow pane).
  */
 function RightPanelLauncherContent({
   hidden,
@@ -2219,33 +2224,38 @@ function RightPanelLauncherContent({
 
   return (
     <div
-      className={`absolute inset-0 min-h-0 min-w-0 ${hidden ? 'hidden' : 'flex flex-col'}`}
+      className={`absolute inset-0 min-h-0 min-w-0 overflow-y-auto ${hidden ? 'hidden' : 'flex flex-col'}`}
       aria-hidden={hidden}
+      data-launcher-page
     >
-      <form
-        className="flex h-[46px] flex-shrink-0 items-center px-3"
-        onSubmit={(event) => {
-          event.preventDefault();
-          const typed = address.trim();
-          if (!typed || !browserAvailable) return;
-          onOpenUrl(typed);
-          setAddress('');
-        }}
-      >
-        <input
-          type="text"
-          value={address}
-          onChange={(event) => setAddress(event.target.value)}
-          disabled={!browserAvailable}
-          placeholder="Search or enter a URL"
-          aria-label="Search or enter a URL"
-          spellCheck={false}
-          className="h-[30px] min-w-0 flex-1 rounded-full border-0 bg-[var(--sidebar-item-hover)] px-4 text-center text-[12.5px] text-[var(--text-primary)] outline-none placeholder:text-[var(--text-muted)] focus:bg-[var(--sidebar-item-active)] focus:text-left disabled:opacity-50"
-        />
-      </form>
-      <div className="min-h-0 flex-1 overflow-y-auto px-7 pb-6 pt-4">
-        <div className="mb-2.5 text-[12px] text-[var(--text-muted)]">Tools</div>
-        <div className="grid grid-cols-2 gap-2">
+      {/* Twice the space below as above puts the column in the upper third. */}
+      <div className="min-h-6 flex-1" aria-hidden="true" />
+      <div className="mx-auto w-full max-w-[628px] flex-shrink-0 px-6">
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            const typed = address.trim();
+            if (!typed || !browserAvailable) return;
+            onOpenUrl(typed);
+            setAddress('');
+          }}
+        >
+          <label className="aegis-launcher-search flex h-11 items-center gap-2.5 rounded-full pl-4 pr-4">
+            <Search className="h-4 w-4 flex-shrink-0 text-[var(--text-muted)]" strokeWidth={1.6} aria-hidden="true" />
+            <input
+              type="text"
+              value={address}
+              onChange={(event) => setAddress(event.target.value)}
+              disabled={!browserAvailable}
+              placeholder="Search or enter a URL"
+              aria-label="Search or enter a URL"
+              spellCheck={false}
+              className="h-full min-w-0 flex-1 border-0 bg-transparent text-[13.5px] text-[var(--text-primary)] outline-none placeholder:text-[var(--text-muted)] disabled:opacity-50"
+            />
+          </label>
+        </form>
+        <div className="mb-2.5 mt-7 px-0.5 text-[13px] text-[var(--text-secondary)]">Tools</div>
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(128px,1fr))] gap-2">
           {items.map((item) => {
             const Icon = item.icon;
             const disabled = item.disabled === true;
@@ -2256,15 +2266,17 @@ function RightPanelLauncherContent({
                 disabled={disabled}
                 onClick={item.onSelect}
                 title={disabled ? item.disabledReason : item.label}
-                className="flex h-[38px] min-w-0 items-center gap-2.5 rounded-[9px] bg-[var(--sidebar-item-hover)] px-3 text-left text-[13px] text-[var(--text-secondary)] transition-colors hover:bg-[var(--sidebar-item-active)] hover:text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-[var(--sidebar-item-hover)]"
+                data-launcher-item={item.id}
+                className="aegis-launcher-card flex h-[88px] min-w-0 flex-col items-start justify-between rounded-[14px] px-4 pb-3.5 pt-4 text-left text-[13px] text-[var(--text-primary)] transition-colors disabled:cursor-not-allowed disabled:opacity-45"
               >
-                <Icon className="h-[15px] w-[15px] shrink-0 text-[var(--text-muted)]" strokeWidth={1.6} />
-                <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                <Icon className="h-[18px] w-[18px] shrink-0 text-[var(--text-secondary)]" strokeWidth={1.6} />
+                <span className="w-full min-w-0 truncate">{item.label}</span>
               </button>
             );
           })}
         </div>
       </div>
+      <div className="min-h-6 flex-[2]" aria-hidden="true" />
     </div>
   );
 }
