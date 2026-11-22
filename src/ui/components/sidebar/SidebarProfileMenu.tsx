@@ -42,7 +42,7 @@ export function SidebarProfileMenu({
             type="button"
             aria-label={`Profile menu: ${displayName}`}
             title={displayName}
-            className="no-drag flex h-8 w-8 items-center justify-center rounded-full outline-none transition-transform duration-150 active:scale-95 focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+            className="no-drag flex h-9 w-9 items-center justify-center rounded-full outline-none transition-transform duration-150 active:scale-95 focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
           >
             {avatar()}
           </button>

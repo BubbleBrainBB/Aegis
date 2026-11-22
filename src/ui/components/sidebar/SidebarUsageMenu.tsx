@@ -11,7 +11,10 @@ import {
 } from '../../utils/usage-menu-model';
 import { ProviderIcon } from '../AgentModelPicker';
 import { AlertTriangle, ChartColumn, ChevronRight } from '../icons';
-import { DropdownMenuItem, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger } from '../ui/dropdown-menu';
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent,
+  DropdownMenuSubTrigger, DropdownMenuTrigger,
+} from '../ui/dropdown-menu';
 
 // DeepSeek Harness has no plan; its row is the API account's balance.
 const PLAN_PROVIDERS = ['claude', 'codex', 'grok', 'qoder', 'deepseek'] as const;
@@ -34,8 +37,110 @@ function staleStatus(error: string | null, fetchedAt: number | undefined): strin
   return saved ? `Update failed · Saved ${saved}` : 'Could not update usage';
 }
 
+const USAGE_MENU_CLASS = 'usage-menu relative flex max-h-[min(580px,var(--available-height))] w-[336px] max-w-[calc(100vw-16px)] flex-col';
+
+/** The profile menu's Usage entry: the usage menu as its submenu. */
 export function SidebarUsageMenu() {
   const [open, setOpen] = useState(false);
+  return (
+    <DropdownMenuSub open={open} onOpenChange={setOpen}>
+      <DropdownMenuSubTrigger openOnHover delay={120} closeDelay={200} className="gap-2 px-2 py-2 text-[var(--text-secondary)]">
+        <ChartColumn className="h-4 w-4 text-[var(--text-muted)]" />
+        <span>Usage</span>
+        <ChevronRight className="ml-auto h-3.5 w-3.5 text-[var(--text-muted)]" />
+      </DropdownMenuSubTrigger>
+      <DropdownMenuSubContent side="right" align="end" sideOffset={8} className={USAGE_MENU_CLASS}>
+        <UsageMenuBody open={open} />
+      </DropdownMenuSubContent>
+    </DropdownMenuSub>
+  );
+}
+
+const RING_RADIUS = 9;
+const RING_LENGTH = 2 * Math.PI * RING_RADIUS;
+
+/**
+ * The usage ring at the foot of the icon rail, above the profile avatar: it
+ * opens the usage menu. The ring is the open task's agent: the share left of
+ * its tightest plan limit, from what the menu last loaded. Loading a plan
+ * starts that agent's CLI, so the ring never loads one itself: it is a plain
+ * track until the menu has been opened, and for an agent without plan limits.
+ */
+export function SidebarUsageButton() {
+  const [open, setOpen] = useState(false);
+  const provider = useAppStore((state) => {
+    const session = state.activeSessionId ? state.sessions[state.activeSessionId] : null;
+    return state.activeWorkspace === 'chat' && !state.showNewSession ? session?.provider ?? null : null;
+  });
+  const claude = usePlanUsage('claude', false);
+  const codex = usePlanUsage('codex', false);
+  const grok = usePlanUsage('grok', false);
+  const qoder = usePlanUsage('qoder', false);
+  const deepseek = usePlanUsage('deepseek', false);
+  const plans: Record<PlanProvider, UsagePlan | null> = {
+    claude: claudePlan(claude.report),
+    codex: codexPlan(codex.report),
+    grok: grokPlan(grok.report),
+    qoder: qoderPlan(qoder.report),
+    deepseek: deepseekPlan(deepseek.report),
+  };
+  const planProvider = PLAN_PROVIDERS.find((entry) => entry === provider);
+  const tightest = planProvider ? tightestLimit(plans[planProvider]) : null;
+  const label = planProvider && tightest
+    ? `Usage · ${providerLabel(planProvider)} ${tightest.label}: ${tightest.remaining}% left`
+    : 'Usage';
+
+  return (
+    <DropdownMenu open={open} onOpenChange={setOpen}>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label={label}
+          title={label}
+          data-rail-usage
+          data-usage-tone={tightest ? usageTone(tightest.remaining) : undefined}
+          className="usage-ring-button no-drag relative inline-flex h-9 w-9 items-center justify-center rounded-[10px] text-[var(--text-muted)] outline-none transition-[background-color,color,transform] duration-150 ease-[cubic-bezier(0.22,1,0.36,1)] hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--accent)] active:scale-95 data-[popup-open]:bg-[var(--sidebar-item-hover)] data-[popup-open]:text-[var(--text-primary)]"
+        >
+          <svg viewBox="0 0 24 24" className="h-6 w-6 -rotate-90" aria-hidden="true">
+            <circle className="usage-ring-track" cx="12" cy="12" r={RING_RADIUS} fill="none" strokeWidth="2" />
+            {tightest && tightest.remaining > 0 ? (
+              <circle
+                className="usage-ring-left"
+                cx="12"
+                cy="12"
+                r={RING_RADIUS}
+                fill="none"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeDasharray={RING_LENGTH}
+                strokeDashoffset={RING_LENGTH * (1 - tightest.remaining / 100)}
+              />
+            ) : null}
+            <circle cx="12" cy="12" r="2.25" fill="currentColor" opacity="0.55" />
+          </svg>
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent side="right" align="end" sideOffset={8} className={USAGE_MENU_CLASS}>
+        <UsageMenuBody open={open} />
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/** A plan's window or balance with the least left; null when the plan is not loaded or has neither. */
+function tightestLimit(plan: UsagePlan | null): { label: string; remaining: number } | null {
+  const limits = [
+    ...(plan?.windows ?? []).map((window) => ({ label: window.label, remaining: window.remaining })),
+    ...(plan?.balances ?? []).flatMap((balance) => balance.remaining === null ? [] : [{ label: balance.label, remaining: balance.remaining }]),
+  ];
+  return limits.reduce<{ label: string; remaining: number } | null>(
+    (tightest, limit) => (!tightest || limit.remaining < tightest.remaining ? limit : tightest),
+    null,
+  );
+}
+
+/** What the usage menu shows, in whichever menu hosts it. Loads only while `open`. */
+function UsageMenuBody({ open }: { open: boolean }) {
   const selectedProvider = useAppStore((state) => state.usageSettingsProvider);
   // The page "Usage details" opens on: one agent's year, or every agent's for the overview.
   useAgentUsageReports(
@@ -92,13 +197,7 @@ export function SidebarUsageMenu() {
   const now = Date.now();
 
   return (
-    <DropdownMenuSub open={open} onOpenChange={setOpen}>
-      <DropdownMenuSubTrigger openOnHover delay={120} closeDelay={200} className="gap-2 px-2 py-2 text-[var(--text-secondary)]">
-        <ChartColumn className="h-4 w-4 text-[var(--text-muted)]" />
-        <span>Usage</span>
-        <ChevronRight className="ml-auto h-3.5 w-3.5 text-[var(--text-muted)]" />
-      </DropdownMenuSubTrigger>
-      <DropdownMenuSubContent side="right" align="end" sideOffset={8} className="usage-menu relative flex max-h-[min(580px,var(--available-height))] w-[336px] max-w-[calc(100vw-16px)] flex-col">
+    <>
         {/* Last values stay put while they update; this line is the only sign. */}
         {refreshing ? <div className="usage-refresh-line" role="status" aria-label="Updating usage"><i /></div> : null}
         <div className="min-h-0 overflow-y-auto overscroll-contain">
@@ -178,8 +277,7 @@ export function SidebarUsageMenu() {
         <DropdownMenuItem onSelect={() => openUsage()} className="shrink-0 gap-2 px-2.5 text-[13px] text-[var(--text-secondary)]">
           Usage details <ChevronRight className="ml-auto h-3.5 w-3.5 text-[var(--text-muted)]" />
         </DropdownMenuItem>
-      </DropdownMenuSubContent>
-    </DropdownMenuSub>
+    </>
   );
 }
 

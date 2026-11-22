@@ -1652,10 +1652,10 @@ export function PromptInput({
   // The landing shares the home composer's themed surface and utility rail.
   const composerOuterClass = isLandingSurface
     ? 'group relative aegis-new-thread-composer-tray'
-    : 'group relative rounded-[28px] bg-transparent transition-shadow duration-200';
+    : 'group relative rounded-[24px] bg-transparent transition-shadow duration-200';
   const composerInnerClass = isLandingSurface
     ? 'aegis-new-thread-composer-surface'
-    : 'rounded-[26px] border border-[color-mix(in_srgb,var(--border)_72%,transparent)] bg-[var(--bg-primary)] shadow-[0_18px_44px_rgba(15,23,42,0.08)] transition-[border-color,box-shadow] duration-200 focus-within:border-[color-mix(in_srgb,var(--border)_92%,transparent)] focus-within:shadow-[0_20px_52px_rgba(15,23,42,0.12)]';
+    : 'aegis-composer-surface rounded-[22px] border transition-[border-color,box-shadow] duration-200';
 
   return (
     <div className="bg-transparent" data-composer-empty={!prompt && attachments.length === 0}>
