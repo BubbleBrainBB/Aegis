@@ -9,6 +9,7 @@ import { execFileSync } from 'child_process';
 import { existsSync, statSync } from 'fs';
 import path from 'path';
 import type { ComputerUseDriverStatus } from '../../../shared/computer-use';
+import { baseCuaDriverEnv } from './driver-env';
 import { getComputerUseSettings, isComputerUsePlatformSupported } from './settings';
 
 /** The one cua-driver release Aegis runs. Change it together with scripts/fetch-cua-driver.mjs. */
@@ -38,8 +39,12 @@ export function cuaDriverCandidates(
 
 const versionByFile = new Map<string, string | null>();
 
-/** What `<binary> --version` says, cached until the file changes. */
-export function readCuaDriverVersion(binaryPath: string): string | null {
+/**
+ * What `<binary> --version` says, cached until the file changes. The probe
+ * runs the binary too, so it gets the same built environment as the driver:
+ * nothing of Aegis's own environment reaches it.
+ */
+export function readCuaDriverVersion(binaryPath: string, base: NodeJS.ProcessEnv = process.env): string | null {
   let key: string;
   try {
     const stat = statSync(binaryPath);
@@ -53,8 +58,7 @@ export function readCuaDriverVersion(binaryPath: string): string | null {
     const output = execFileSync(binaryPath, ['--version'], {
       encoding: 'utf8',
       timeout: 10_000,
-      // `--version` neither needs nor gets a say on telemetry or updates.
-      env: { ...process.env, CUA_DRIVER_RS_TELEMETRY_ENABLED: 'false', CUA_DRIVER_RS_UPDATE_CHECK: 'false' },
+      env: baseCuaDriverEnv(base),
       stdio: ['ignore', 'pipe', 'ignore'],
     });
     version = /cua-driver\s+(\d+\.\d+\.\d+\S*)/.exec(output)?.[1] ?? null;

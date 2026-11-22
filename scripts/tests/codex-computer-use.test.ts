@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   appendComputerUseLiveFrame,
   classifyComputerUseAction,
+  COMPUTER_USE_GATEWAY_TOOLS,
+  COMPUTER_USE_TOOLS,
   computerUsePreviewWindowPolicy,
   environmentHasComputerUseSection,
   extractComputerUseAppName,
@@ -206,6 +208,14 @@ function testOverridesAndLease() {
     hasNodeRepl: true,
   }).join(' ');
   assert.equal(mutating.includes('"click"'), true);
+  // Codex's own client has select_text (its tools/list says so) and keeps it;
+  // the cua-driver gateway, which cannot do it, does not offer it.
+  assert.equal(mutating.includes('"select_text"'), true);
+  assert.equal((COMPUTER_USE_GATEWAY_TOOLS as readonly string[]).includes('select_text'), false);
+  assert.deepEqual(
+    COMPUTER_USE_TOOLS.filter((tool) => !(COMPUTER_USE_GATEWAY_TOOLS as readonly string[]).includes(tool)),
+    ['select_text']
+  );
   assert.equal(mutating.includes('disabled_tools=["js_add_node_module_dir"]'), true);
 
   // The lease is held per action. A session that has acted keeps the desktop
@@ -220,6 +230,8 @@ function testOverridesAndLease() {
   assert.equal(lease.holds('thread-a', 'call-1'), true, 'the first action still holds the desktop');
   assert.equal(lease.holds('thread-a', 'call-3'), false);
   assert.deepEqual(lease.currentOwner(), { threadId: 'thread-a', toolUseId: 'call-1' });
+  assert.deepEqual(lease.actionsOf('thread-a'), ['call-1']);
+  assert.deepEqual(lease.actionsOf('thread-b'), []);
   assert.equal(lease.heldByAnother('thread-b'), true);
   assert.equal(lease.heldByAnother('thread-a'), false);
   assert.equal(lease.tryAcquire('thread-b', 'call-4'), false, 'dropping one action does not free the desktop');
@@ -289,6 +301,39 @@ function testMediaSidecar() {
       assert.equal(readFileSync(join(outside, `${sha}.jpg`), 'utf8'), 'not the image');
     } finally {
       rmSync(outside, { recursive: true, force: true });
+    }
+
+    // The artifact folder itself: when it is a link (to a folder outside the
+    // profile, or anywhere), nothing is read or written through it, whatever
+    // the session folder under it looks like.
+    const profile = mkdtempSync(join(tmpdir(), 'aegis-cu-profile-'));
+    const elsewhere = mkdtempSync(join(tmpdir(), 'aegis-cu-elsewhere-'));
+    try {
+      symlinkSync(elsewhere, join(profile, 'computer-use-artifacts'));
+      assert.deepEqual(persistComputerUseMedia({ userDataDir: profile, sessionId: 'session-1', payload }).mediaRefs, []);
+      assert.deepEqual(readdirSync(elsewhere), [], 'a linked artifact folder is never written through');
+      // Even with a real session folder and the right file waiting behind the link.
+      mkdirSync(join(elsewhere, 'session-1'));
+      writeFileSync(join(elsewhere, 'session-1', `${sha}.jpg`), saved);
+      assert.equal(resolveComputerUseArtifact(profile, 'session-1', sha), null, 'nor read through');
+      assert.deepEqual(persistComputerUseMedia({ userDataDir: profile, sessionId: 'session-2', payload }).mediaRefs, []);
+      assert.deepEqual(readdirSync(elsewhere), ['session-1']);
+      // A file where the folder should be is not a folder either.
+      rmSync(join(profile, 'computer-use-artifacts'));
+      writeFileSync(join(profile, 'computer-use-artifacts'), '');
+      assert.deepEqual(persistComputerUseMedia({ userDataDir: profile, sessionId: 'session-1', payload }).mediaRefs, []);
+      // Put right again, it works: the check is made each time, nothing is remembered.
+      rmSync(join(profile, 'computer-use-artifacts'));
+      const again = persistComputerUseMedia({ userDataDir: profile, sessionId: 'session-1', payload });
+      assert.equal(again.mediaRefs.length, 1);
+      assert.ok(resolveComputerUseArtifact(profile, 'session-1', sha));
+      // The profile folder itself may be reached through a link (as /tmp is on macOS): it is where the app keeps its data.
+      const viaLink = join(elsewhere, 'profile-link');
+      symlinkSync(profile, viaLink);
+      assert.ok(resolveComputerUseArtifact(viaLink, 'session-1', sha));
+    } finally {
+      rmSync(profile, { recursive: true, force: true });
+      rmSync(elsewhere, { recursive: true, force: true });
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });

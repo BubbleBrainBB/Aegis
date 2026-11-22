@@ -69,3 +69,12 @@ Measured on 0.57.0, and relied on in `driver-host.ts`:
 - A call in flight cannot be cancelled over the stdio proxy. Stopping a turn
   mid-call stops the driver process; the next call starts a new one.
 - A session name ended with `end_session` cannot be used again.
+- A window can be listed before the app has laid it out (another size, no
+  accessibility tree), on a cold start about one time in fifteen.
+
+A driver pair ends in one way whatever ends it (a cancelled or timed-out
+call, a process that died, a stop): both processes are told to go, killed
+after two seconds if they stay, and waited for. Nothing is reported as
+stopped, cancelled or timed out before they are gone, no new driver starts
+before then, and the desktop is not handed to another session before then.
+The `--version` probe gets the same built environment as the driver.

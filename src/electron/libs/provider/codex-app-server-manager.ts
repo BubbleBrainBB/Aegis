@@ -650,6 +650,8 @@ export class CodexAppServerManager extends EventEmitter {
    */
   disposeSessionResources(threadId: string): void {
     const session = this.sessions.get(threadId);
+    // With a turn still going, what Computer use was doing for it may be too.
+    const turnOver = !session?.activeTurnId;
     if (session) {
       const pendingInterrupt = this.pendingInterrupts.get(session.providerThreadId);
       if (pendingInterrupt) {
@@ -664,7 +666,7 @@ export class CodexAppServerManager extends EventEmitter {
         this.lastActiveThreadId = this.findMostRecentFallbackThreadId();
       }
     }
-    this.declineApprovalsForThread(threadId);
+    this.declineApprovalsForThread(threadId, turnOver);
   }
 
   /**
@@ -700,13 +702,16 @@ export class CodexAppServerManager extends EventEmitter {
 
     // The JSON-RPC ids of these approvals can never be answered now; tell the
     // UI to drop the cards instead of leaving them pointing at dead requests.
+    // The desktop goes back when the process is gone. On an exit or a failed
+    // spawn it already is; on a stop it has only just been told to go.
+    const processGone = reason !== 'stopped';
     for (const [requestId, approval] of pendingApprovals) {
-      computerUseLease.releaseThread(approval.threadId);
+      this.handBackDesktop(approval.threadId, processGone);
       computerUseGrants.revokeThread(approval.threadId, 'runtime-gone');
       this.emit('approval_dismissed', { requestId, threadId: approval.threadId });
     }
     for (const session of this.sessions.values()) {
-      computerUseLease.releaseThread(session.threadId);
+      this.handBackDesktop(session.threadId, processGone);
       computerUseGrants.revokeThread(session.threadId, 'runtime-gone');
     }
 
@@ -1627,7 +1632,7 @@ export class CodexAppServerManager extends EventEmitter {
       if (this.lastActiveThreadId === threadId) {
         this.lastActiveThreadId = this.findMostRecentFallbackThreadId();
       }
-      this.declineApprovalsForThread(threadId);
+      this.declineApprovalsForThread(threadId, true);
       this.emit('stop_settled', {
         aegisThreadId: threadId,
         providerThreadId,
@@ -1730,7 +1735,10 @@ export class CodexAppServerManager extends EventEmitter {
       if (this.lastActiveThreadId === settle.aegisThreadId) {
         this.lastActiveThreadId = this.findMostRecentFallbackThreadId();
       }
-      this.declineApprovalsForThread(settle.aegisThreadId);
+      // Confirmed: the turn reported its own end. Unconfirmed: nobody knows
+      // what it is still doing, and the desktop stays this session's until
+      // the process is gone (the adapter stops it next).
+      this.declineApprovalsForThread(settle.aegisThreadId, confirmed);
     }
     this.emit('stop_settled', {
       aegisThreadId: settle.aegisThreadId,
@@ -1936,9 +1944,33 @@ export class CodexAppServerManager extends EventEmitter {
     }
   }
 
-  /** Decline + dismiss every pending approval owned by the given session. */
-  private declineApprovalsForThread(threadId: string): void {
-    computerUseLease.releaseThread(threadId);
+  /**
+   * Hands the desktop back for a session: at once when nothing of its can
+   * still be acting (`ended`), otherwise when this process has exited. Until
+   * then another session that asks for the desktop is refused, as it was a
+   * moment earlier. Only what the session held at this point is handed back:
+   * a turn it starts meanwhile, on another process, keeps its own.
+   */
+  private handBackDesktop(threadId: string, ended: boolean): void {
+    const child = this.child;
+    const alive = Boolean(child && child.exitCode === null && child.signalCode === null);
+    if (ended || !child || !alive) {
+      computerUseLease.releaseThread(threadId);
+      return;
+    }
+    const held = computerUseLease.actionsOf(threadId);
+    if (held.length === 0) return;
+    child.once('exit', () => {
+      for (const toolUseId of held) computerUseLease.release(threadId, toolUseId);
+    });
+  }
+
+  /**
+   * Decline + dismiss every pending approval owned by the given session.
+   * `ended`: whatever the session's turn was doing is known to be over.
+   */
+  private declineApprovalsForThread(threadId: string, ended: boolean): void {
+    this.handBackDesktop(threadId, ended);
     computerUseGrants.revokeThread(threadId, 'stop');
     for (const [requestId, pending] of this.pendingApprovals) {
       if (pending.threadId !== threadId) continue;
@@ -2288,6 +2320,20 @@ export class CodexAppServerManager extends EventEmitter {
 
       if (elicitation?.deniedTarget) {
         console.warn('[Codex AppServer]', COMPUTER_USE_DENIED_TARGET_MESSAGE);
+        this.writeMessage({
+          jsonrpc: '2.0',
+          id: request.id,
+          result: buildMcpElicitationResponse({ allow: false }),
+        });
+        return;
+      }
+
+      // One session has the desktop at a time, for looking as well as acting
+      // (the cua-driver gateway holds its sessions to the same): while
+      // another session holds it, a Computer use call that asks here is
+      // declined whatever it is.
+      if (elicitation && (elicitation.isComputerUse || elicitation.isNodeRepl) && computerUseLease.heldByAnother(threadId)) {
+        console.warn('[Codex AppServer]', COMPUTER_USE_LEASE_MESSAGE);
         this.writeMessage({
           jsonrpc: '2.0',
           id: request.id,

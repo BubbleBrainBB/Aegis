@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join, resolve } from 'path';
 import {
@@ -155,6 +155,11 @@ export class ComputerUseLease {
     return this.owner?.threadId === threadId && this.owner.toolUseIds.includes(toolUseId);
   }
 
+  /** The actions a session holds the desktop for. */
+  actionsOf(threadId: string): string[] {
+    return this.owner?.threadId === threadId ? [...this.owner.toolUseIds] : [];
+  }
+
   /** Whether another session holds the desktop. */
   heldByAnother(threadId: string): boolean {
     return Boolean(this.owner && this.owner.threadId !== threadId);
@@ -291,22 +296,48 @@ export function isPathWithinRoot(root: string, target: string): boolean {
   return targetPath === rootPath || targetPath.startsWith(`${rootPath}/`) || targetPath.startsWith(`${rootPath}\\`);
 }
 
+const ARTIFACTS_FOLDER = 'computer-use-artifacts';
+
+/** A real folder under this exact path: there, a directory, and not a link to one. */
+function isPlainFolder(path: string): boolean {
+  try {
+    const stat = lstatSync(path);
+    return stat.isDirectory() && !stat.isSymbolicLink() && realpathSync(path) === path;
+  } catch {
+    return false;
+  }
+}
+
+function makeFolder(path: string): void {
+  try {
+    mkdirSync(path, { mode: 0o700 });
+  } catch (error) {
+    // Something is already there under that name; what it is gets checked next.
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+  }
+}
+
 /**
  * A session's screenshot folder, as a real path that is known to sit
- * directly inside the one artifact folder of this profile. The trusted root
- * is that fixed folder, not whatever the session's own path resolves to: a
- * session folder that is a link to somewhere else is refused, for reading
- * and for writing.
+ * directly inside the one artifact folder of this profile.
+ *
+ * The profile folder is where the app keeps its data and is taken as it is.
+ * From there down, every step is checked each time, for reading and for
+ * writing: the artifact folder and the session folder must each be a real
+ * directory under exactly that name. A link at either place (to a folder
+ * outside the profile, or anywhere else) is refused, never followed.
  */
 function openComputerUseArtifactDir(userDataDir: string, sessionId: string, create: boolean): string | null {
   if (!SESSION_ID_RE.test(sessionId)) return null;
-  const base = join(userDataDir, 'computer-use-artifacts');
-  const dir = join(base, sessionId);
   try {
-    if (create) mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const realBase = realpathSync(base);
-    const realDir = realpathSync(dir);
-    return realDir === join(realBase, sessionId) ? realDir : null;
+    if (create) mkdirSync(userDataDir, { recursive: true });
+    const profile = realpathSync(userDataDir);
+    const base = join(profile, ARTIFACTS_FOLDER);
+    if (create) makeFolder(base);
+    if (!isPlainFolder(base)) return null;
+    const dir = join(base, sessionId);
+    if (create) makeFolder(dir);
+    return isPlainFolder(dir) ? dir : null;
   } catch {
     return null;
   }

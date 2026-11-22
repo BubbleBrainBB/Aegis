@@ -49,12 +49,15 @@ const sessionHttp = require('../dist-electron/electron/libs/session-http-server.
 const grantsMod = require('../dist-electron/electron/libs/codex-computer-use-grants.js');
 const elicitationMod = require('../dist-electron/electron/libs/codex-computer-use-elicitation.js');
 const { computerUseGrants } = grantsMod.default ?? grantsMod;
+const leaseMod = require('../dist-electron/electron/libs/codex-computer-use.js');
+const { computerUseLease } = leaseMod.default ?? leaseMod;
 const { wrappedComputerUseElicitationFixture } = elicitationMod.default ?? elicitationMod;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FAKE_BIN = join(__dirname, 'fake-codex-app-server.mjs');
 chmodSync(FAKE_BIN, 0o755);
 
+const { EventEmitter } = require('node:events');
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 let passed = 0;
@@ -1891,6 +1894,130 @@ async function testComputerUseGrants() {
   }
 }
 
+/** A child process the test decides the exit of, as the manager sees a live one. */
+function liveChild() {
+  const child = new EventEmitter();
+  child.stdin = { writable: true, write() {} };
+  child.exitCode = null;
+  child.signalCode = null;
+  child.signals = [];
+  child.kill = (signal) => {
+    child.signals.push(signal ?? 'SIGTERM');
+    return true;
+  };
+  child.exit = () => {
+    child.exitCode = 0;
+    child.emit('exit', 0, null);
+  };
+  return child;
+}
+
+async function testComputerUseLease() {
+  console.log('Computer Use lease (shared with the cua-driver gateway)');
+  const freeDesktop = () => computerUseLease.releaseThread(computerUseLease.currentOwner()?.threadId ?? '');
+  const elicit = (manager, id, tool) =>
+    manager.handleStdoutLine(JSON.stringify({
+      jsonrpc: '2.0',
+      id,
+      method: 'mcpServer/elicitation/request',
+      params: wrappedComputerUseElicitationFixture({ threadId: 'p1', tool, app: 'com.apple.finder' }),
+    }));
+
+  // While another session holds the desktop, a Codex Computer use call that
+  // asks is declined whatever it is: looking is held to the lease like acting.
+  {
+    freeDesktop();
+    computerUseGrants.revokeAll('test-reset');
+    const { adapter, manager, outbound, events } = createCapturingAdapter();
+    seedSession(manager, 't1', 'p1', { status: 'running', codexPermissionMode: 'defaultPermissions' });
+    adapter.sessions.set('t1', { threadId: 't1', providerThreadId: 'p1', status: 'running' });
+    assert.equal(computerUseLease.tryAcquire('bubble-session', 'bubble-call'), true);
+    for (const [id, tool] of [[401, 'get_app_state'], [402, 'list_apps'], [403, 'click']]) {
+      elicit(manager, id, tool);
+      await sleep(10);
+      assert.equal(outbound.find((m) => m.id === id)?.result?.action, 'decline', `${tool} is declined`);
+    }
+    assert.equal(events.filter((event) => event.type === 'permission_request').length, 0, 'no card for a desktop that is taken');
+    assert.equal(computerUseLease.currentOwner()?.threadId, 'bubble-session', 'the holder keeps it');
+    // Free again: the same read goes on as it always did.
+    freeDesktop();
+    elicit(manager, 404, 'get_app_state');
+    await sleep(10);
+    assert.notEqual(outbound.find((m) => m.id === 404)?.result?.action, 'decline');
+    assert.equal(computerUseLease.currentOwner(), null, 'a read that is let through takes nothing');
+    ok('a read asked for while another session holds the desktop is declined');
+  }
+
+  // A stop the turn never confirmed: nobody knows what it is still doing, so
+  // the desktop stays this session's until the process is gone.
+  {
+    freeDesktop();
+    const { manager, responders, collect } = createCapturingManager();
+    const child = liveChild();
+    manager.child = child;
+    const settled = collect('stop_settled');
+    seedSession(manager, 't1', 'p1', { status: 'running', activeTurnId: 'turn-1' });
+    assert.equal(computerUseLease.tryAcquire('t1', 'action-1'), true);
+    responders.set('turn/interrupt', () => ({ result: {} }));
+    await manager.stopSession('t1');
+    await sleep(500); // > AEGIS_CODEX_STOP_CONFIRM_TIMEOUT_MS (250ms)
+    assert.equal(settled[0]?.confirmed, false);
+    assert.equal(computerUseLease.currentOwner()?.threadId, 't1', 'not handed back on an unconfirmed stop');
+    assert.equal(computerUseLease.tryAcquire('bubble-session', 'bubble-call'), false);
+    // A turn the same thread starts meanwhile (on another process) keeps what it takes.
+    assert.equal(computerUseLease.tryAcquire('t1', 'action-2'), true);
+    child.exit();
+    assert.deepEqual(computerUseLease.actionsOf('t1'), ['action-2'], "only the stopped turn's hold goes with the process");
+    ok('unconfirmed stop keeps the desktop until the process has exited');
+  }
+
+  // Confirmed by the turn's own terminal: handed back then, process or not.
+  {
+    freeDesktop();
+    const { manager, responders, notify } = createCapturingManager();
+    manager.child = liveChild();
+    seedSession(manager, 't1', 'p1', { status: 'running', activeTurnId: 'turn-1' });
+    computerUseLease.tryAcquire('t1', 'action-1');
+    responders.set('turn/interrupt', () => ({ result: {} }));
+    await manager.stopSession('t1');
+    assert.equal(computerUseLease.currentOwner()?.threadId, 't1', 'held while the interrupt is pending');
+    notify('turn/completed', { threadId: 'p1', turn: { id: 'turn-1', status: 'interrupted', error: null } });
+    await sleep(10);
+    assert.equal(computerUseLease.currentOwner(), null);
+    ok('confirmed stop hands the desktop back at the turn terminal');
+  }
+
+  // Stopping the runtime: told to go is not gone.
+  {
+    freeDesktop();
+    const { manager } = createCapturingManager();
+    const child = liveChild();
+    manager.child = child;
+    seedSession(manager, 't1', 'p1', { status: 'running', activeTurnId: 'turn-1' });
+    computerUseLease.tryAcquire('t1', 'action-1');
+    const stopping = manager.stop();
+    await sleep(10);
+    assert.ok(child.signals.length >= 1, 'the process was told to go');
+    assert.equal(computerUseLease.currentOwner()?.threadId, 't1', 'not handed back before the process exited');
+    child.exit();
+    await stopping;
+    assert.equal(computerUseLease.currentOwner(), null);
+    ok('runtime stop hands the desktop back once the process is gone');
+  }
+
+  // A process that is already gone: nothing to wait for.
+  {
+    freeDesktop();
+    const { manager } = createCapturingManager();
+    seedSession(manager, 't1', 'p1', { status: 'running', activeTurnId: 'turn-1' });
+    computerUseLease.tryAcquire('t1', 'action-1');
+    manager.cleanupGeneration(manager.generation, 'process_exit');
+    assert.equal(computerUseLease.currentOwner(), null);
+    ok('process exit hands the desktop back at once');
+  }
+  freeDesktop();
+}
+
 // ── Design canvas developer message ───────────────────────────────────────
 async function testDesignCanvasInstructions() {
   console.log('Design canvas developer instructions');
@@ -1973,6 +2100,7 @@ async function main() {
   testRichToolOutput();
   await testImageGeneration();
   await testComputerUseGrants();
+  await testComputerUseLease();
   await testProcessLifecycle();
   await testSlashCommands();
   await testEffortOpenVocabulary();

@@ -2,6 +2,10 @@ export const AEGIS_COMPUTER_USE_SERVER_NAME = 'aegis-computer-use';
 export const CODEX_COMPUTER_USE_SERVER_NAME = 'computer-use';
 export const NODE_REPL_SERVER_NAME = 'node_repl';
 
+// The tools of Codex's own Computer use client (SkyComputerUseClient), as its
+// `tools/list` reports them: all ten are that client's and work there,
+// select_text included. The cua-driver gateway offers nine of them, see
+// COMPUTER_USE_GATEWAY_TOOLS. The two lists are per backend on purpose.
 export const COMPUTER_USE_READ_ONLY_TOOLS = ['list_apps', 'get_app_state'] as const;
 export const COMPUTER_USE_MUTATING_TOOLS = [
   'click',
@@ -621,8 +625,9 @@ export interface ComputerUseSettingsView {
 }
 
 /**
- * The tools the gateway offers: Codex's list without select_text, which
- * cua-driver has no way to do.
+ * The tools the cua-driver gateway offers: only what that driver can do.
+ * Codex's client also has select_text; cua-driver has no way to select a
+ * range of text, so the gateway does not offer it (and refuses it by name).
  */
 export const COMPUTER_USE_GATEWAY_TOOLS = [
   'list_apps',

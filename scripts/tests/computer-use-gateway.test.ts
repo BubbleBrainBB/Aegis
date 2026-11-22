@@ -23,7 +23,7 @@ import {
   resolveComputerUseArtifact,
 } from '../../src/electron/libs/codex-computer-use';
 import { ComputerUseGrantRegistry, type ComputerUseGrantTarget } from '../../src/electron/libs/codex-computer-use-grants';
-import { CUA_DRIVER_VERSION, resolveCuaDriver } from '../../src/electron/libs/computer-use/driver-binary';
+import { CUA_DRIVER_VERSION, readCuaDriverVersion, resolveCuaDriver } from '../../src/electron/libs/computer-use/driver-binary';
 import {
   buildCuaDriverEnv,
   COMPUTER_USE_CANCELLED_MESSAGE,
@@ -101,6 +101,10 @@ class ScriptedDriver implements ComputerUseDriver {
   startGate: Gate | null = null;
   /** Held open: the next call of this tool stays in flight until released. */
   hold: { tool: string; gate: Gate; entered: Gate } | null = null;
+  /** Held open: a driver process that was told to go takes this long to be gone. */
+  exitGate: Gate | null = null;
+  /** The window each next listing shows, by id (null: none); after these, window 71. */
+  windowIds: Array<number | null> = [];
   private snapshots = 0;
 
   async start(signal?: AbortSignal): Promise<number> {
@@ -135,10 +139,11 @@ class ScriptedDriver implements ComputerUseDriver {
       held.entered.open();
       await new Promise<void>((resolve, reject) => {
         const onAbort = () => {
-          // What CuaDriverHost does: the driver process is stopped, then the caller hears "cancelled".
+          // What CuaDriverHost does: the driver process is stopped, and the
+          // caller hears "cancelled" once it is gone, not before.
           this.killed += 1;
           this.started = false;
-          reject(new Error(COMPUTER_USE_CANCELLED_MESSAGE));
+          void (this.exitGate?.promise ?? Promise.resolve()).then(() => reject(new Error(COMPUTER_USE_CANCELLED_MESSAGE)));
         };
         options.signal?.addEventListener('abort', onAbort, { once: true });
         void held.gate.promise.then(() => {
@@ -183,12 +188,17 @@ class ScriptedDriver implements ComputerUseDriver {
           this.lateWindow -= 1;
           return ok('windows', { windows: [] });
         }
-        return ok('windows', {
-          windows: [
-            { window_id: 9, pid: args.pid, title: 'menu', layer: 25, is_on_screen: true, z_index: 9, bounds: { width: 10, height: 10 } },
-            { window_id: 71, pid: args.pid, title: 'Calculator', layer: 0, is_on_screen: true, z_index: 3, bounds: { width: 230, height: 408 } },
-          ],
-        });
+        {
+          const windowId = this.windowIds.length > 0 ? this.windowIds.shift()! : 71;
+          return ok('windows', {
+            windows: [
+              { window_id: 9, pid: args.pid, title: 'menu', layer: 25, is_on_screen: true, z_index: 9, bounds: { width: 10, height: 10 } },
+              ...(windowId === null
+                ? []
+                : [{ window_id: windowId, pid: args.pid, title: 'Calculator', layer: 0, is_on_screen: true, z_index: 3, bounds: { width: 230, height: 408 } }]),
+            ],
+          });
+        }
       case 'launch_app':
         return ok('launched', { pid: 600 });
       case 'get_window_state': {
@@ -291,7 +301,9 @@ function harness(overrides: {
       onRefused: (sessionId, tool) => refused.push(`${sessionId}:${tool}`),
     },
     driver,
-    { lease, grants }
+    { lease, grants },
+    // A window that is not readable yet is looked at again almost at once.
+    2
   );
   let n = 0;
   const call = (sessionId: string, tool: string, args: Record<string, unknown> = {}, signal?: AbortSignal) =>
@@ -818,6 +830,7 @@ async function testStopEndsWhatIsOnItsWay() {
   f.gateway.forgetSession('s1', 'stop');
   assert.equal((await dragging).text, COMPUTER_USE_CANCELLED_MESSAGE);
   assert.equal(f.driver.killed, 1, 'the only way to know the action is no longer running');
+  await settle();
   assert.equal(f.lease.currentOwner(), null);
   // The same through the caller's own signal (the provider's abort).
   await f.call('s1', 'get_app_state', { app: 'Calculator' });
@@ -881,6 +894,148 @@ async function testStopEndsWhatIsOnItsWay() {
   await settle();
   assert.equal(t.driver.of('click').length, 0);
   t.dispose();
+}
+
+/**
+ * A window that was listed and then went away (the placeholder of a cold
+ * start) leaves nothing behind: no state for a later click, no screenshot in
+ * the HUD or on disk, no success.
+ */
+async function testWindowThatGoesAway() {
+  // Listed once, read as a placeholder, gone at every later look.
+  const gone = harness({ answer: () => ALLOW });
+  gone.driver.unsettledReads = 1000;
+  gone.driver.windowIds = [71, ...Array(40).fill(null)];
+  const failed = await gone.call('s1', 'get_app_state', { app: 'TextEdit' });
+  assert.equal(failed.isError, true);
+  assert.match(failed.text, /has no window to look at yet/);
+  assert.equal(gone.driver.of('get_window_state').length, 1, 'the placeholder was read once');
+  assert.deepEqual(failed.images, []);
+  assert.equal(gone.frames.filter((frame) => frame.hasFreshMedia).length, 0, 'the placeholder is not shown');
+  assert.deepEqual(gone.gateway.takeMediaRefs('s1', gone.lastToolUseId()), [], 'nor filed with the result');
+  assert.equal(existsSync(join(gone.userDataDir, 'computer-use-artifacts')), false, 'nor saved');
+  const after = await gone.call('s1', 'click', { app: 'com.apple.TextEdit', element_index: '20' });
+  assert.match(after.text, /Call get_app_state/, 'its window id is not kept for a later click');
+  assert.equal(gone.driver.of('click').length, 0);
+  gone.dispose();
+
+  // The same for an app that was already running: read without a tree three
+  // times, then gone at the look that decides whether the bare read is handed back.
+  const late = harness();
+  late.driver.unsettledReads = 1000;
+  late.driver.windowIds = [71, 71, 71, null];
+  const bare = await late.call('s1', 'get_app_state', { app: 'Calculator' });
+  assert.equal(bare.isError, true);
+  assert.match(bare.text, /has no window to look at yet/);
+  assert.equal(late.frames.filter((frame) => frame.hasFreshMedia).length, 0);
+  assert.match((await late.call('s1', 'press_key', { app: 'Calculator', key: 'Return' })).text, /Call get_app_state/);
+  late.dispose();
+
+  // A placeholder that another window takes the place of: the window that
+  // stays is the one later calls act on.
+  const replaced = harness({ facts: { s1: { fullAccess: true } } });
+  replaced.driver.unsettledReads = 1;
+  replaced.driver.windowIds = [71, 72];
+  const settled = await replaced.call('s1', 'get_app_state', { app: 'TextEdit' });
+  assert.equal(settled.isError, false, settled.text);
+  assert.deepEqual(replaced.driver.of('get_window_state').map((call) => call.args.window_id), [71, 72]);
+  assert.equal(replaced.frames.filter((frame) => frame.hasFreshMedia).length, 1);
+  await replaced.call('s1', 'click', { app: 'com.apple.TextEdit', x: 3, y: 4 });
+  assert.equal(replaced.driver.of('click')[0].args.window_id, 72);
+  replaced.dispose();
+}
+
+/**
+ * The desktop is handed back when the session's action is over, not when it
+ * was told to stop: a request that was with the driver is over when the
+ * driver process is gone. Until then nobody else gets the desktop.
+ */
+async function testLeaseHandedBackAfterTheActionEnded() {
+  for (const how of ['stop', 'turn-end', 'switch-off'] as const) {
+    const f = harness({ facts: { s1: { fullAccess: true } } });
+    await f.call('s1', 'get_app_state', { app: 'Calculator' });
+    const held = f.driver.holdNext('drag');
+    f.driver.exitGate = gate();
+    const dragging = f.call('s1', 'drag', { app: 'Calculator', from_x: 1, from_y: 2, to_x: 3, to_y: 4 });
+    await held.entered.promise;
+    let off: Promise<void> | null = null;
+    if (how === 'stop') f.gateway.forgetSession('s1', 'stop');
+    if (how === 'turn-end') f.gateway.finishTurn('s1');
+    if (how === 'switch-off') off = f.gateway.shutdown('disabled');
+    await settle();
+    assert.equal(f.driver.killed, 1, how);
+    // Told to stop, not yet gone: the desktop is still this session's.
+    assert.equal(f.lease.currentOwner()?.threadId, 's1', `${how}: not handed back while the driver is still going`);
+    assert.equal(f.lease.tryAcquire('codex-thread', 'codex-call'), false, `${how}: Codex cannot take it yet`);
+    assert.equal((await f.call('other', 'list_apps')).text, COMPUTER_USE_LEASE_MESSAGE, `${how}: nor may another session look`);
+    f.driver.exitGate.open();
+    assert.equal((await dragging).text, COMPUTER_USE_CANCELLED_MESSAGE);
+    if (off) await off;
+    await settle();
+    assert.equal(f.lease.currentOwner(), null, `${how}: handed back once it is gone`);
+    assert.equal(f.lease.tryAcquire('codex-thread', 'codex-call'), true);
+    f.dispose();
+  }
+
+  // The next turn of the same session, begun while the old action is still
+  // ending, keeps what it takes: only the old turn's holds are handed back.
+  const again = harness({ facts: { s1: { fullAccess: true } } });
+  await again.call('s1', 'get_app_state', { app: 'Calculator' });
+  const held = again.driver.holdNext('drag');
+  again.driver.exitGate = gate();
+  const dragging = again.call('s1', 'drag', { app: 'Calculator', from_x: 1, from_y: 2, to_x: 3, to_y: 4 });
+  await held.entered.promise;
+  again.gateway.finishTurn('s1');
+  await settle();
+  const opening = again.call('s1', 'get_app_state', { app: 'TextEdit' });
+  await settle();
+  again.driver.exitGate.open();
+  await dragging;
+  assert.equal((await opening).isError, false);
+  await settle();
+  assert.equal(again.lease.currentOwner()?.threadId, 's1', 'the new turn opened an app and holds the desktop for it');
+  assert.equal(again.lease.actionsOf('s1').length, 1, "and only for that: the old turn's hold is gone");
+  again.dispose();
+}
+
+/**
+ * Reading the macOS grants is a call to the driver that can take a while (the
+ * first call of a cold driver). What happens meanwhile counts: the request it
+ * was made for is not sent on the strength of a check made before it.
+ */
+async function testRecheckedAfterThePermissionProbe() {
+  // Codex takes the desktop while the probe hangs.
+  const h = harness();
+  const probe = h.driver.holdNext('check_permissions');
+  const looking = h.call('s1', 'list_apps');
+  await probe.entered.promise;
+  assert.equal(h.lease.tryAcquire('codex-thread', 'codex-call'), true);
+  probe.gate.open();
+  assert.equal((await looking).text, COMPUTER_USE_LEASE_MESSAGE);
+  assert.deepEqual(h.driver.calls.map((call) => call.tool), ['check_permissions'], 'the request the probe was for is not sent');
+  h.dispose();
+
+  // The switch goes off while the probe hangs, and nobody says so.
+  const off = harness();
+  const hanging = off.driver.holdNext('check_permissions');
+  const first = off.call('s1', 'get_app_state', { app: 'Calculator' });
+  await hanging.entered.promise;
+  off.setEnabled(false);
+  hanging.gate.open();
+  assert.equal((await first).text, COMPUTER_USE_OFF_MESSAGE);
+  assert.deepEqual(off.driver.calls.map((call) => call.tool), ['check_permissions']);
+  off.dispose();
+
+  // The session's agent is rebuilt while the probe hangs.
+  const rebuilt = harness();
+  const waiting = rebuilt.driver.holdNext('check_permissions');
+  const call = rebuilt.call('s1', 'list_apps');
+  await waiting.entered.promise;
+  rebuilt.facts.s1 = { generation: 2 };
+  waiting.gate.open();
+  assert.equal((await call).text, COMPUTER_USE_TURN_OVER_MESSAGE);
+  assert.equal(rebuilt.driver.of('list_apps').length, 0);
+  rebuilt.dispose();
 }
 
 /** What allowed a call is asked again at the moment the call is sent. */
@@ -1044,6 +1199,10 @@ async function testActionMapping() {
   assert.deepEqual(last('double_click'), { element_token: 's00000001:20', delivery_mode: 'background', ...session });
   await h.call('s1', 'click', { app: 'Calculator', element_index: '20', mouse_button: 'right' });
   assert.equal(last('click')?.button, 'right');
+  // A count written as a digit is the count; the double click of an element is the driver's own call.
+  await h.call('s1', 'click', { app: 'Calculator', element_index: '6', click_count: '2' });
+  assert.equal(h.driver.of('double_click').length, 2);
+  assert.equal(h.driver.of('double_click')[1].args.element_token, 's00000003:6');
   await h.call('s1', 'click', { app: 'Calculator', x: 5, y: 6, click_count: 3 });
   assert.deepEqual(last('click'), { ...window, x: 5, y: 6, button: 'left', count: 3, ...background, ...session });
   await h.call('s1', 'perform_secondary_action', { app: 'Calculator', element_index: '6', action: 'AXShowMenu' });
@@ -1083,7 +1242,14 @@ async function testActionMapping() {
     ['click', { app: 'Calculator', element_index: 'abc' }, /not an index/],
     ['click', { app: 'Calculator', element_index: '20', click_count: 3 }, /click_count can be 1, or 2 with the left button/],
     ['click', { app: 'Calculator', element_index: '20', click_count: 2, mouse_button: 'right' }, /click_count can be 1, or 2/],
-    ['click', { app: 'Calculator', x: 1, y: 2, click_count: 4 }, /click_count must be 1, 2 or 3/],
+    ['click', { app: 'Calculator', x: 1, y: 2, click_count: 4 }, /click_count must be a whole number: 1, 2 or 3/],
+    // Nothing is rounded or guessed: 1.6 is not a double click, a word is not a single one.
+    ['click', { app: 'Calculator', element_index: '20', click_count: 1.6 }, /click_count must be a whole number/],
+    ['click', { app: 'Calculator', element_index: '20', click_count: 'twice' }, /click_count must be a whole number/],
+    ['click', { app: 'Calculator', element_index: '20', click_count: '2.0' }, /click_count must be a whole number/],
+    ['click', { app: 'Calculator', element_index: '20', click_count: 0 }, /click_count must be a whole number/],
+    ['click', { app: 'Calculator', x: 1, y: 2, click_count: 2.5 }, /click_count must be a whole number/],
+    ['click', { app: 'Calculator', element_index: '20', click_count: true }, /click_count must be a whole number/],
     ['scroll', { app: 'Calculator', element_index: '1', direction: 'sideways' }, /direction must be/],
     ['press_key', { app: 'Calculator', key: 'hyper+x' }, /not a modifier/],
     ['press_key', { app: 'Calculator', key: 'asterisk' }, /type other characters with type_text/],
@@ -1214,18 +1380,30 @@ function testDriverSetup() {
  * A stand-in for the cua-driver executable: `serve` holds a socket file and
  * exits when its stdin closes (as the real one does with
  * --parent-liveness-stdio); `mcp` answers MCP over stdio and never answers
- * the tool "slow". Each writes what it was started with next to the socket.
+ * the tool "slow"; `--version` answers with the version in version.txt. Each
+ * writes what it was started with: next to the socket, or next to itself.
  */
 const STAND_IN = `#!/usr/bin/env node
 const fs = require('fs');
 const path = require('path');
 const net = require('net');
 const args = process.argv.slice(2);
+if (args[0] === '--version') {
+  fs.writeFileSync(path.join(path.dirname(process.argv[1]), 'version.env.json'), JSON.stringify(process.env));
+  console.log('cua-driver ' + fs.readFileSync(path.join(path.dirname(process.argv[1]), 'version.txt'), 'utf8').trim());
+  process.exit(0);
+}
 const socket = args[args.indexOf('--socket') + 1];
 fs.writeFileSync(path.join(path.dirname(socket), args[0] + '.started.json'), JSON.stringify({ pid: process.pid, args, env: process.env }));
 if (args[0] === 'serve') {
+  // Two daemons at once is what must never happen: the one before this one is looked for.
+  const pidFile = path.join(path.dirname(socket), 'daemon.pid');
+  try { process.kill(Number(fs.readFileSync(pidFile, 'utf8')), 0); fs.writeFileSync(path.join(path.dirname(socket), 'overlap'), '1'); } catch {}
+  fs.writeFileSync(pidFile, String(process.pid));
   net.createServer(() => {}).listen(socket);
-  const quit = () => { try { fs.unlinkSync(socket); } catch {} process.exit(0); };
+  // With a file named "stubborn" beside the socket, this daemon does not go when told to.
+  const stubborn = () => fs.existsSync(path.join(path.dirname(socket), 'stubborn'));
+  const quit = () => { if (stubborn()) return; try { fs.unlinkSync(socket); } catch {} process.exit(0); };
   process.on('SIGTERM', quit);
   if (args.includes('--parent-liveness-stdio')) { process.stdin.resume(); process.stdin.on('end', quit); }
   process.stderr.write('stand-in daemon listening\\n');
@@ -1279,6 +1457,8 @@ async function testDriverHostProcesses() {
     homeDir,
     hostBundleId: 'com.aegis.desktop',
     env: { ...process.env, CUA_DRIVER_RS_MCP_HTTP_PORT: '8123', CUA_DRIVER_ALLOW_BRIEF_FOREGROUND: '1', AEGIS_SESSION_MCP_TOKEN: 'secret', NODE_OPTIONS: '' },
+    // A driver that will not go is killed after this long (two seconds outside the tests).
+    exitWaitMs: 300,
   });
   const started = (kind: 'serve' | 'mcp') =>
     JSON.parse(readFileSync(join(homeDir, `${kind}.started.json`), 'utf8')) as { pid: number; args: string[]; env: Record<string, string> };
@@ -1352,8 +1532,104 @@ async function testDriverHostProcesses() {
     assert.equal(await host.start(), 3);
     await host.stop();
     await noneLeft();
+
+    // ── A driver that does not go when told to ─────────────────────────────
+    // One way out for every way in: a call that timed out, a call that was
+    // cancelled, a proxy that died, a stop. Each waits for both processes to
+    // be gone (killed after a moment if they stay), and nothing is reported,
+    // and no new driver is started, before that.
+    const stubborn = join(homeDir, 'stubborn');
+    const daemonPid = () => started('serve').pid;
+    const proxyPid = () => started('mcp').pid;
+
+    // A tool call that times out: the caller hears so only once the driver is gone.
+    let instance = await host.start();
+    writeFileSync(stubborn, '');
+    let pid = daemonPid();
+    let began = Date.now();
+    await assert.rejects(host.call('slow', {}, { timeoutMs: 100, instance }), /timed out/);
+    assert.equal(alive(pid), false, 'a timed-out call is reported when the daemon is gone, not while it lingers');
+    assert.ok(Date.now() - began >= 100 + 300, 'it had to be killed: it was given its moment first');
+    assert.equal(host.isRunning(), false);
+    await noneLeft();
+
+    // stop() while such a driver is still on its way out: stopped means gone.
+    rmSync(stubborn, { force: true });
+    instance = await host.start();
+    writeFileSync(stubborn, '');
+    pid = daemonPid();
+    const timingOut = host.call('slow', {}, { timeoutMs: 50, instance }).then(() => 'answered', (error: Error) => error.message);
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    assert.equal(alive(pid), true, 'told to go and still there');
+    assert.equal(host.isRunning(), false, 'no longer handed out');
+    await host.stop();
+    assert.equal(alive(pid), false, 'stop() returned only once it was gone');
+    assert.match(await timingOut, /timed out/);
+
+    // A new driver does not start beside one that is still going.
+    rmSync(stubborn, { force: true });
+    instance = await host.start();
+    writeFileSync(stubborn, '');
+    pid = daemonPid();
+    const cancel = new AbortController();
+    const cancelled = host.call('slow', {}, { signal: cancel.signal, instance }).then(() => 'answered', (error: Error) => error.message);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    cancel.abort();
+    // Asked for at once, while the old daemon ignores being told to go.
+    const next = await host.start();
+    rmSync(stubborn, { force: true });
+    assert.equal(alive(pid), false, 'the old daemon was gone before the new one started');
+    assert.equal(existsSync(join(homeDir, 'overlap')), false, 'no daemon ever started while another was alive');
+    assert.equal(next, instance + 1);
+    assert.notEqual(daemonPid(), pid);
+    assert.equal(await cancelled, COMPUTER_USE_CANCELLED_MESSAGE);
+
+    // The proxy dies by itself: the daemon is taken down with it, the call in
+    // flight fails once both are gone, and stop() has nothing left to wait for.
+    pid = daemonPid();
+    const orphaned = host.call('slow', {}, { instance: next }).then(() => 'answered', (error: Error) => error.message);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    process.kill(proxyPid(), 'SIGKILL');
+    assert.match(await orphaned, /stopped unexpectedly/);
+    assert.equal(alive(pid), false, 'the daemon did not outlive its proxy');
+    assert.equal(host.isRunning(), false);
+    await host.stop();
+    await noneLeft();
   } finally {
     host.stopSync();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** The `--version` probe runs the binary too, and gives it the same built environment. */
+function testVersionProbeEnvironment() {
+  if (process.platform === 'win32') return;
+  const dir = mkdtempSync(join(tmpdir(), 'aegis-cu-version-'));
+  try {
+    const binary = join(dir, 'cua-driver');
+    writeFileSync(binary, STAND_IN);
+    chmodSync(binary, 0o755);
+    writeFileSync(join(dir, 'version.txt'), CUA_DRIVER_VERSION);
+    const version = readCuaDriverVersion(binary, {
+      ...process.env,
+      CUA_DRIVER_RS_MCP_HTTP_PORT: '8123',
+      CUA_DRIVER_ALLOW_BRIEF_FOREGROUND: '1',
+      CUA_DRIVER_RS_TELEMETRY_ENABLED: 'true',
+      AEGIS_SESSION_MCP_TOKEN: 'secret',
+      HTTPS_PROXY: 'http://127.0.0.1:7890',
+    });
+    assert.equal(version, CUA_DRIVER_VERSION);
+    const seen = JSON.parse(readFileSync(join(dir, 'version.env.json'), 'utf8')) as Record<string, string>;
+    for (const name of ['CUA_DRIVER_RS_MCP_HTTP_PORT', 'CUA_DRIVER_ALLOW_BRIEF_FOREGROUND', 'AEGIS_SESSION_MCP_TOKEN', 'HTTPS_PROXY']) {
+      assert.equal(seen[name], undefined, `${name} does not reach the version probe`);
+    }
+    assert.equal(seen.CUA_DRIVER_RS_TELEMETRY_ENABLED, 'false');
+    assert.equal(seen.CUA_DRIVER_RS_UPDATE_CHECK, 'false');
+    assert.equal(seen.PATH, process.env.PATH);
+    // And it is what decides "ready".
+    const status = resolveCuaDriver({ env: { AEGIS_CUA_DRIVER_PATH: binary }, configuredPath: '', platform: 'darwin' });
+    assert.equal(status.state, 'ready');
+  } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -1407,12 +1683,16 @@ async function main() {
   await testLeaseSurvivesADeclinedAction();
   await testSwitchOffEndsWhatWaits();
   await testStopEndsWhatIsOnItsWay();
+  await testWindowThatGoesAway();
+  await testLeaseHandedBackAfterTheActionEnded();
+  await testRecheckedAfterThePermissionProbe();
   await testRecheckedWhenSent();
   await testGrantsAreExact();
   await testActionMapping();
   testKeysAndActions();
   testDriverSetup();
   await testDriverHostProcesses();
+  testVersionProbeEnvironment();
   testBubbleTools();
   console.log('computer use gateway tests passed');
 }

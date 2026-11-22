@@ -28,7 +28,7 @@
 // Screenshots and a summary land in output/computer-use-live/.
 
 import assert from 'node:assert/strict';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import net from 'node:net';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -111,7 +111,17 @@ async function runAsOrphan(homeDir: string): Promise<void> {
   const host = new CuaDriverHost({ resolveBinary: () => status.path!, homeDir, hostBundleId: 'com.aegis.desktop' });
   await host.start();
   console.log('driver-up');
-  setInterval(() => undefined, 1000);
+  // It waits to be killed, but not for ever: it goes by itself when the
+  // script that started it is gone, and in any case after a minute.
+  const parent = process.ppid;
+  const leave = () => {
+    host.stopSync();
+    process.exit(0);
+  };
+  setInterval(() => {
+    if (process.ppid !== parent) leave();
+  }, 500);
+  setTimeout(leave, 60_000);
 }
 
 /** The index of a Calculator button, by the identifier it has in every system language. */
@@ -145,6 +155,8 @@ async function main() {
   const summary: Record<string, unknown> = { driver: { version: status.version, path: status.path } };
   const calculatorsBefore = calculatorPids();
   let opened: number[] = [];
+  /** The child this script starts for the parent-death check; never left behind, whatever fails. */
+  let helper: ChildProcess | null = null;
 
   try {
     // ── The macOS grants, read without asking for anything ────────────────
@@ -380,10 +392,10 @@ async function main() {
 
     // ── A driver whose parent is killed outright exits by itself ──────────
     const orphanHome = path.join(userDataDir, 'orphan');
-    const child = spawn(process.execPath, [...process.execArgv, __filename], {
+    const child = (helper = spawn(process.execPath, [...process.execArgv, __filename], {
       env: { ...process.env, AEGIS_CU_LIVE_ORPHAN_HOME: orphanHome },
       stdio: ['ignore', 'pipe', 'inherit'],
-    });
+    }));
     await new Promise<void>((resolve, reject) => {
       child.stdout.on('data', (chunk: Buffer) => { if (chunk.toString().includes('driver-up')) resolve(); });
       child.once('exit', (code) => reject(new Error(`the child exited early (${code})`)));
@@ -411,6 +423,8 @@ async function main() {
     console.log('computer use live verification passed');
   } finally {
     await driver.stop().catch(() => undefined);
+    // The helper, if a failure above left it running.
+    if (helper && helper.exitCode === null && helper.signalCode === null) helper.kill('SIGKILL');
     // A driver left by a child that was killed (it should have gone by itself).
     for (const pid of driverPids(path.join(userDataDir, 'orphan'))) {
       try {

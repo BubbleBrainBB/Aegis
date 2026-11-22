@@ -71,6 +71,8 @@ function scriptedDriver() {
     running: false,
     instance: 0,
     hold: null,
+    /** Held open: a driver process told to go takes this long to be gone. */
+    exit: null,
     snapshots: 0,
     async start(signal) {
       if (signal?.aborted) throw new Error(CANCELLED);
@@ -86,7 +88,12 @@ function scriptedDriver() {
         driver.hold = null;
         held.entered.open();
         await new Promise((resolve, reject) => {
-          options.signal?.addEventListener('abort', () => { driver.killed += 1; driver.running = false; reject(new Error(CANCELLED)); }, { once: true });
+          // As the real host does: the driver is stopped, and the caller hears "cancelled" once it is gone.
+          options.signal?.addEventListener('abort', () => {
+            driver.killed += 1;
+            driver.running = false;
+            void (driver.exit?.promise ?? Promise.resolve()).then(() => reject(new Error(CANCELLED)));
+          }, { once: true });
           void held.release.promise.then(resolve);
         });
       }
@@ -336,19 +343,26 @@ try {
         text('never said'),
       ], { fullAccess: true });
       const held = f.driver.holdNext('drag');
+      f.driver.exit = gate();
       const started = await f.start('Drag it');
       await held.entered.promise;
       assert.equal(f.driver.killed, 0);
       await f.adapter.stopSession(started.threadId);
       await until(() => f.driver.killed === 1, 'the driver to be stopped');
       assert.equal(f.gatewayCards.length, 0);
+      // What the app does on Stop. The desktop is not handed on while the
+      // driver process is still going: Codex, or another task, is refused.
       f.gateway.forgetSession('stopped', 'stop');
-      assert.equal(computerUseLease.currentOwner(), null);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.equal(computerUseLease.currentOwner()?.threadId, 'stopped');
+      assert.equal(computerUseLease.tryAcquire('codex-thread', 'codex-call'), false);
+      f.driver.exit.open();
+      await until(() => computerUseLease.currentOwner() === null, 'the desktop to be handed back');
     }
   }
 
   console.log(`Bubble Computer use: a same-named MCP tool keeps Bubble's own approval while the switch is off${
-    onMac ? ', the gateway card is the one approval while it is on, a queued turn carries its own tools, the switch going off ends an open card, and Stop ends a request in flight' : ' (the rest runs on macOS only)'
+    onMac ? ', the gateway card is the one approval while it is on, a queued turn carries its own tools, the switch going off ends an open card, and Stop ends a request in flight and hands the desktop back only once the driver is gone' : ' (the rest runs on macOS only)'
   } passed`);
 } finally {
   loader.getBubbleSdk = originalSdk;

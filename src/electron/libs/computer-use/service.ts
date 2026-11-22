@@ -227,6 +227,11 @@ type CallContext = {
   controller: AbortController;
   /** The call took the lease for its action. */
   leased: boolean;
+  /**
+   * Settles when the call is over for good: its promise from the driver has
+   * settled, which for a cancelled call means the driver process is gone.
+   */
+  settled: Promise<void>;
   /** Its action was handed to the driver: the desktop may have changed. */
   dispatched: boolean;
   authorization: Authorization | null;
@@ -326,8 +331,8 @@ export class ComputerUseGateway {
   private permissionsInstance: number | null = null;
   /** Calls on their way through, so that what ends their standing can end them. */
   private readonly active = new Set<CallContext>();
-  /** Sessions this gateway took the lease for, until their turn ends. */
-  private readonly leased = new Set<string>();
+  /** Per session: the actions of its turn this gateway holds the lease for. */
+  private readonly leased = new Map<string, Set<string>>();
   /** Per session: how many turns have ended. */
   private readonly turns = new Map<string, number>();
   /** Ends when the switch goes off or the driver is changed. */
@@ -336,7 +341,9 @@ export class ComputerUseGateway {
   constructor(
     private readonly host: ComputerUseGatewayHost,
     private readonly driver: ComputerUseDriver,
-    private readonly shared: { lease: ComputerUseLease; grants: ComputerUseGrantRegistry }
+    private readonly shared: { lease: ComputerUseLease; grants: ComputerUseGrantRegistry },
+    /** How long apart a window that is not readable yet is looked at again; the tests wait less. */
+    private readonly windowWaitMs = WINDOW_WAIT_MS
   ) {}
 
   async call(call: ComputerUseCall): Promise<ComputerUseToolResult> {
@@ -344,6 +351,7 @@ export class ComputerUseGateway {
     const onAbort = () => controller.abort();
     if (call.signal?.aborted) controller.abort();
     call.signal?.addEventListener('abort', onAbort, { once: true });
+    let settle!: () => void;
     const context: CallContext = {
       call,
       epoch: this.epoch,
@@ -351,6 +359,9 @@ export class ComputerUseGateway {
       generation: -1,
       controller,
       leased: false,
+      settled: new Promise<void>((resolve) => {
+        settle = resolve;
+      }),
       dispatched: false,
       authorization: null,
     };
@@ -364,10 +375,16 @@ export class ComputerUseGateway {
       call.signal?.removeEventListener('abort', onAbort);
       // An action that never reached the driver gives its hold on the desktop
       // back; the session's earlier actions keep theirs until the turn ends.
-      if (context.leased && !context.dispatched) {
-        this.shared.lease.release(call.sessionId, call.toolUseId);
-      }
+      if (context.leased && !context.dispatched) this.releaseAction(call.sessionId, call.toolUseId);
+      settle();
     }
+  }
+
+  private releaseAction(sessionId: string, toolUseId: string): void {
+    this.shared.lease.release(sessionId, toolUseId);
+    const held = this.leased.get(sessionId);
+    held?.delete(toolUseId);
+    if (held?.size === 0) this.leased.delete(sessionId);
   }
 
   /** The screenshots a tool call saved, handed over once. */
@@ -380,15 +397,24 @@ export class ComputerUseGateway {
 
   /**
    * The session's turn ended: calls of it still on their way end (a card
-   * left open is taken down), and the desktop is free for another session.
+   * left open is taken down), and the desktop is handed back. Not before the
+   * session's calls are over, though: a request that was with the driver is
+   * over when the driver process is gone, and until then the desktop is
+   * still this session's. Another session (or Codex) that asks meanwhile is
+   * refused, as it would have been a moment earlier.
    */
   finishTurn(sessionId: string): void {
     this.turns.set(sessionId, (this.turns.get(sessionId) ?? 0) + 1);
-    for (const context of this.active) {
-      if (context.call.sessionId === sessionId) context.controller.abort();
-    }
+    const ending = [...this.active].filter((context) => context.call.sessionId === sessionId);
+    for (const context of ending) context.controller.abort();
+    // The holds of the turn that ended. A turn that starts meanwhile takes its own.
+    const held = [...(this.leased.get(sessionId) ?? [])];
     this.leased.delete(sessionId);
-    this.shared.lease.releaseThread(sessionId);
+    const handBack = () => {
+      for (const toolUseId of held) this.shared.lease.release(sessionId, toolUseId);
+    };
+    if (ending.length === 0) handBack();
+    else void Promise.all(ending.map((context) => context.settled)).then(handBack);
     this.states.delete(sessionId);
     for (const key of [...this.mediaByCall.keys()]) {
       if (key.startsWith(`${sessionId}\0`)) this.mediaByCall.delete(key);
@@ -421,22 +447,33 @@ export class ComputerUseGateway {
    */
   async shutdown(reason: string): Promise<void> {
     this.epoch += 1;
-    for (const context of this.active) context.controller.abort();
-    // By the set of sessions the gateway took the lease for, not by what a
-    // session has looked at: the first call of a session can hold the
-    // desktop on an approval card before any state exists for it.
-    for (const sessionId of this.leased) this.shared.lease.releaseThread(sessionId);
+    const ending = [...this.active];
+    for (const context of ending) context.controller.abort();
+    // By what the gateway took the lease for, not by what a session has
+    // looked at: the first call of a session can hold the desktop on an
+    // approval card before any state exists for it.
+    const held = [...this.leased.entries()].map(([sessionId, toolUseIds]) => [sessionId, [...toolUseIds]] as const);
     this.leased.clear();
     this.states.clear();
     this.mediaByCall.clear();
     this.driverSessions.clear();
     this.permissionsInstance = null;
     this.shared.grants.revokeOwner('gateway', reason);
-    // Behind the calls already queued, so none of them finds the driver gone and starts another.
+    // The calls on their way are over (for one that was with the driver:
+    // the driver process is gone), then the driver is stopped behind
+    // whatever was queued, so that nothing queued finds it gone and starts
+    // another. Only then is the desktop handed back.
+    await Promise.all(ending.map((context) => context.settled));
     const stop = () => this.driver.stop();
     const stopped = this.driverQueue.then(stop, stop);
     this.driverQueue = stopped.catch(() => undefined);
-    await stopped;
+    try {
+      await stopped;
+    } finally {
+      for (const [sessionId, toolUseIds] of held) {
+        for (const toolUseId of toolUseIds) this.shared.lease.release(sessionId, toolUseId);
+      }
+    }
   }
 
   /** At app quit: no waiting; the driver exits with this process anyway. */
@@ -618,14 +655,19 @@ export class ComputerUseGateway {
     // is picked and read until it reads as a window, for longer when this
     // call started the app (a cold start) than when the app was running.
     const attempts = opened ? WINDOW_WAIT_ATTEMPTS : SETTLE_ATTEMPTS;
-    let state: AppState | null = null;
-    let read: DriverToolResult | null = null;
+    // What was read of a window stands only while that window is there: when
+    // it is gone at the next look, its read goes with it (it was the
+    // placeholder, and its id means nothing to a later click).
+    let candidate: { state: AppState; read: DriverToolResult } | null = null;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
-      if (attempt > 0) await delay(WINDOW_WAIT_MS, signal);
+      if (attempt > 0) await delay(this.windowWaitMs, signal);
       // Picked again each time: the window that is there first is not always the one that stays.
       if (attempt > 0 || !window) window = await this.pickWindow(context, pid, instance);
-      if (!window) continue;
-      state = {
+      if (!window) {
+        candidate = null;
+        continue;
+      }
+      const state: AppState = {
         query: appQuery.toLowerCase(),
         name: app.name,
         bundleId: app.bundleId,
@@ -636,16 +678,22 @@ export class ComputerUseGateway {
         tree: '',
         instance,
       };
-      read = await this.readWindow(context, state);
-      if (isSettledWindow(read)) break;
+      candidate = { state, read: await this.readWindow(context, state) };
+      if (isSettledWindow(candidate.read)) break;
     }
-    if (!state || !read) {
-      return fail(`${app.name} is open but has no window to look at yet. Try get_app_state again.`);
+    const noWindow = `${app.name} is open but has no window to look at yet. Try get_app_state again.`;
+    if (!candidate) return fail(noWindow);
+    const settled = isSettledWindow(candidate.read);
+    if (!settled) {
+      // A read without a tree is handed back (with its screenshot) only for a
+      // window that is still there: looked for once more, by its id.
+      const still = await this.pickWindow(context, pid, instance);
+      if (!still || still.windowId !== candidate.state.windowId) return fail(noWindow);
     }
-    const snapshot = this.present(context, state, read);
+    const snapshot = this.present(context, candidate.state, candidate.read);
     if (snapshot.isError) return snapshot;
-    this.statesOf(sessionId).set(stateKey(app), state);
-    return isSettledWindow(read)
+    this.statesOf(sessionId).set(stateKey(app), candidate.state);
+    return settled
       ? snapshot
       : {
           ...snapshot,
@@ -794,9 +842,14 @@ export class ComputerUseGateway {
   ): Promise<ComputerUseToolResult | null> {
     const { call } = context;
     const { sessionId, toolUseId } = call;
+    // Whatever came before this may have waited; the lease is not taken for a call that no longer stands.
+    const gone = this.checkCurrent(context, false);
+    if (gone) return fail(gone);
     if (!this.shared.lease.tryAcquire(sessionId, toolUseId)) return fail(COMPUTER_USE_LEASE_MESSAGE);
     context.leased = true;
-    this.leased.add(sessionId);
+    const held = this.leased.get(sessionId) ?? new Set<string>();
+    held.add(toolUseId);
+    this.leased.set(sessionId, held);
     if (facts.fullAccess) {
       context.authorization = { by: 'full-access' };
       return null;
@@ -911,7 +964,14 @@ export class ComputerUseGateway {
         this.states.delete(sessionId);
         throw new Error(COMPUTER_USE_DRIVER_RESTARTED_MESSAGE);
       }
-      await this.requirePermissions(running, this.driverSession(sessionId), signal);
+      if (this.permissionsInstance !== running) {
+        await this.requirePermissions(running, this.driverSession(sessionId), signal);
+        // Reading the grants is a call to the driver like any other and can
+        // take as long: what was true before it is asked once more. Nothing
+        // waits between this check and the request being written.
+        const afterProbe = this.checkCurrent(context, action);
+        if (afterProbe) throw new Error(afterProbe);
+      }
       if (action) context.dispatched = true;
       const result = await this.driver.call(
         tool,
@@ -1018,6 +1078,17 @@ function actionPhrase(tool: string): string {
   }
 }
 
+/**
+ * A click count as it was given, or null when it is not one. Left out: 1.
+ * Nothing is rounded or guessed: 1.6 is not a double click, and a word is not
+ * a single one.
+ */
+function readClickCount(value: unknown): number | null {
+  if (value === undefined || value === null) return 1;
+  const count = typeof value === 'string' && /^[123]$/.test(value.trim()) ? Number(value) : value;
+  return typeof count === 'number' && Number.isInteger(count) && count >= 1 && count <= 3 ? count : null;
+}
+
 type PlannedCall = {
   tool: string;
   args: Record<string, unknown>;
@@ -1065,8 +1136,8 @@ function planInput(
       const y = asNumber(args.y);
       const button = asString(args.mouse_button) || 'left';
       if (!['left', 'right', 'middle'].includes(button)) return { error: 'mouse_button must be left, right or middle.' };
-      const count = Math.round(asNumber(args.click_count) ?? 1);
-      if (count < 1 || count > 3) return { error: 'click_count must be 1, 2 or 3.' };
+      const count = readClickCount(args.click_count);
+      if (count === null) return { error: 'click_count must be a whole number: 1, 2 or 3.' };
       if (button !== 'left') paramLines.push({ label: 'button', value: button });
       if (count > 1) paramLines.push({ label: 'clicks', value: String(count) });
       if (elementToken) {

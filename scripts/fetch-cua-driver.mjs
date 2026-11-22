@@ -71,7 +71,8 @@ async function main() {
 
   const reported = execFileSync(path.join(dest, 'cua-driver'), ['--version'], {
     encoding: 'utf8',
-    env: { ...process.env, CUA_DRIVER_RS_TELEMETRY_ENABLED: 'false', CUA_DRIVER_RS_UPDATE_CHECK: 'false' },
+    // The binary just downloaded gets a bare environment, not this shell's.
+    env: { PATH: '/usr/bin:/bin', HOME: process.env.HOME ?? '', CUA_DRIVER_RS_TELEMETRY_ENABLED: 'false', CUA_TELEMETRY_ENABLED: 'false', CUA_DRIVER_RS_UPDATE_CHECK: 'false' },
   }).trim();
   if (!reported.includes(VERSION)) throw new Error(`The binary reports "${reported}", expected ${VERSION}.`);
   console.log(`Installed ${reported} in ${dest}`);
