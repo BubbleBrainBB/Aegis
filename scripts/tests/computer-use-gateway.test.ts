@@ -95,6 +95,8 @@ class ScriptedDriver implements ComputerUseDriver {
   accessibility = true;
   /** How many window listings of a freshly opened app (pid 600) come back empty first. */
   lateWindow = 0;
+  /** How many reads of a window come back as of an app still starting: another size, no tree. */
+  unsettledReads = 0;
   /** Held open: a cold start that takes a while. */
   startGate: Gate | null = null;
   /** Held open: the next call of this tool stays in flight until released. */
@@ -192,6 +194,16 @@ class ScriptedDriver implements ComputerUseDriver {
       case 'get_window_state': {
         this.snapshots += 1;
         const id = `s${String(this.snapshots).padStart(8, '0')}`;
+        if (this.unsettledReads > 0) {
+          this.unsettledReads -= 1;
+          return ok(`window_id=71 pid=500 snapshot_id=${id}`, {
+            snapshot_id: id,
+            tree_markdown: '',
+            degraded_reason: 'ax_app_launching',
+            screenshot_width: 936,
+            screenshot_height: 202,
+          }, [{ mimeType: 'image/jpeg', data: Buffer.from(`placeholder-${this.snapshots}`).toString('base64') }]);
+        }
         return ok(`window_id=71 pid=500 snapshot_id=${id}\n${TREE}`, {
           snapshot_id: id,
           tree_markdown: TREE,
@@ -548,6 +560,37 @@ async function testOpeningAnApp() {
   }
   assert.match((await h.call('s1', 'press_key', { app: 'TextEdit', key: 'Return' })).text, /Call get_app_state for "TextEdit" first/);
   h.dispose();
+
+  // A window can be listed before the app has put it up: for a moment it has
+  // another size and no accessibility tree (seen on a cold start of the real
+  // Calculator). The gateway reads until it reads as a window, and only that
+  // read is what the agent, the HUD and the session's files get.
+  const cold = harness({ answer: () => ALLOW });
+  cold.driver.unsettledReads = 3;
+  const settled = await cold.call('s1', 'get_app_state', { app: 'TextEdit' });
+  assert.equal(settled.isError, false, settled.text);
+  assert.match(settled.text, /screenshot 460×816 px/);
+  assert.match(settled.text, /\[20\] AXButton \(Equals\)/);
+  assert.doesNotMatch(settled.text, /may still be loading/);
+  assert.equal(cold.driver.of('get_window_state').length, 4);
+  assert.equal(cold.driver.of('list_windows').length, 4, 'the window is picked again before each read');
+  assert.equal(cold.frames.filter((frame) => frame.hasFreshMedia).length, 1, 'placeholder frames are not shown or saved');
+  assert.equal(cold.gateway.takeMediaRefs('s1', cold.lastToolUseId()).length, 1);
+  // The indexes that work afterwards are those of the read that was returned.
+  await cold.call('s1', 'click', { app: 'com.apple.TextEdit', element_index: '20' });
+  assert.equal(cold.driver.of('click')[0].args.element_token, 's00000004:20');
+  cold.dispose();
+
+  // An app that was already running and whose window never gives a tree (a
+  // canvas): after a short wait the read is returned as it is, and says so.
+  const canvas = harness();
+  canvas.driver.unsettledReads = 100;
+  const bare = await canvas.call('s1', 'get_app_state', { app: 'Calculator' });
+  assert.equal(bare.isError, false);
+  assert.match(bare.text, /gave no accessibility tree/);
+  assert.equal(bare.images.length, 1, 'the screenshot is still there to work from');
+  assert.equal(canvas.driver.of('get_window_state').length, 3);
+  canvas.dispose();
 }
 
 /**

@@ -11,6 +11,15 @@
 // pointer moves, no window comes to the front. Calculator is closed again
 // only when this script was what opened it.
 //
+// It also checks, on the real binary, what the process host relies on:
+// - the driver runs with the environment Aegis builds for it, not the one
+//   this process has, and listens on nothing;
+// - an input call that does not say `delivery_mode: background` is refused;
+// - cancelling a call in flight stops the driver process (a slow drag across
+//   Calculator's display, only when this script opened Calculator), and the
+//   next call starts a new one;
+// - a driver whose parent is killed outright exits by itself.
+//
 // macOS decides Accessibility and Screen Recording by the app at the top of
 // the process chain that started this script (a terminal, or Aegis). When
 // either is missing the script stops before acting and says where to turn
@@ -19,7 +28,8 @@
 // Screenshots and a summary land in output/computer-use-live/.
 
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import net from 'node:net';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -33,7 +43,7 @@ import {
 } from '../src/electron/libs/codex-computer-use';
 import { ComputerUseGrantRegistry } from '../src/electron/libs/codex-computer-use-grants';
 import { resolveCuaDriver } from '../src/electron/libs/computer-use/driver-binary';
-import { CuaDriverHost } from '../src/electron/libs/computer-use/driver-host';
+import { COMPUTER_USE_CANCELLED_MESSAGE, CuaDriverHost, cuaDriverSocketPath } from '../src/electron/libs/computer-use/driver-host';
 import {
   COMPUTER_USE_PLAN_MESSAGE,
   ComputerUseGateway,
@@ -54,12 +64,54 @@ function calculatorPids(): number[] {
   }
 }
 
+/** The driver processes of one home folder, found by the socket they were started on. */
 function driverProcesses(homeDir: string): string[] {
   try {
-    return execFileSync('/usr/bin/pgrep', ['-fl', homeDir], { encoding: 'utf8' }).split('\n').filter((line) => line.includes('cua-driver'));
+    return execFileSync('/usr/bin/pgrep', ['-fl', cuaDriverSocketPath(homeDir)], { encoding: 'utf8' }).split('\n').filter((line) => line.includes('cua-driver'));
   } catch {
     return [];
   }
+}
+
+function driverPids(homeDir: string): number[] {
+  return driverProcesses(homeDir).map((line) => Number(line.trim().split(' ')[0])).filter((pid) => pid > 0);
+}
+
+async function until(condition: () => boolean, ms: number): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (condition()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return condition();
+}
+
+function portOpen(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = net.connect(port, '127.0.0.1');
+    socket.once('connect', () => { socket.destroy(); resolve(true); });
+    socket.once('error', () => resolve(false));
+  });
+}
+
+/** What this process's environment has that must not reach the driver. */
+const LEAKS = {
+  CUA_DRIVER_RS_MCP_HTTP_PORT: '18123',
+  CUA_DRIVER_RS_MCP_HTTP_TOKEN: 'x'.repeat(40),
+  CUA_DRIVER_ALLOW_BRIEF_FOREGROUND: '1',
+  AEGIS_LIVE_VERIFY_SECRET: 'must-not-leak',
+};
+
+/**
+ * This script again, as a child that starts a driver of its own and waits to
+ * be killed: for "the driver exits when the process that started it dies".
+ */
+async function runAsOrphan(homeDir: string): Promise<void> {
+  const status = resolveCuaDriver();
+  const host = new CuaDriverHost({ resolveBinary: () => status.path!, homeDir, hostBundleId: 'com.aegis.desktop' });
+  await host.start();
+  console.log('driver-up');
+  setInterval(() => undefined, 1000);
 }
 
 /** The index of a Calculator button, by the identifier it has in every system language. */
@@ -74,6 +126,7 @@ async function main() {
     console.log('Computer use runs on macOS only for now; nothing to verify here.');
     return;
   }
+  if (process.env.AEGIS_CU_LIVE_ORPHAN_HOME) return runAsOrphan(process.env.AEGIS_CU_LIVE_ORPHAN_HOME);
   const status = resolveCuaDriver();
   if (status.state !== 'ready' || !status.path) {
     console.error(status.message);
@@ -82,7 +135,13 @@ async function main() {
   mkdirSync(OUT_DIR, { recursive: true });
   const userDataDir = mkdtempSync(path.join(tmpdir(), 'aegis-cu-live-'));
   const homeDir = path.join(userDataDir, 'computer-use', 'driver');
-  const driver = new CuaDriverHost({ resolveBinary: () => status.path!, homeDir, hostBundleId: 'com.aegis.desktop' });
+  const driver = new CuaDriverHost({
+    resolveBinary: () => status.path!,
+    homeDir,
+    hostBundleId: 'com.aegis.desktop',
+    // As if Aegis itself had been started with these set.
+    env: { ...process.env, ...LEAKS },
+  });
   const summary: Record<string, unknown> = { driver: { version: status.version, path: status.path } };
   const calculatorsBefore = calculatorPids();
   let opened: number[] = [];
@@ -111,17 +170,56 @@ async function main() {
       return;
     }
 
+    // ── The environment the two driver processes really run with ──────────
+    const firstPids = driverPids(homeDir);
+    assert.equal(firstPids.length, 2, 'the daemon and its MCP proxy');
+    let environmentReadable = 0;
+    for (const pid of firstPids) {
+      const shown = execFileSync('/bin/ps', ['-E', '-ww', '-o', 'command=', '-p', String(pid)], { encoding: 'utf8' });
+      // macOS may not show another process's environment; then only the listener check below speaks.
+      if (!shown.includes('CUA_DRIVER_EMBEDDED=1')) continue;
+      environmentReadable += 1;
+      assert.match(shown, /CUA_DRIVER_RS_TELEMETRY_ENABLED=false/);
+      assert.match(shown, /CUA_DRIVER_RS_UPDATE_CHECK=false/);
+      assert.ok(shown.includes(`CUA_DRIVER_RS_HOME=${homeDir}`));
+      for (const name of [...Object.keys(LEAKS), 'HTTPS_PROXY', 'https_proxy', 'NODE_OPTIONS']) {
+        assert.ok(!shown.includes(`${name}=`), `${name} must not reach the driver (pid ${pid})`);
+      }
+      assert.match(shown, /--parent-liveness-stdio|mcp --embedded/);
+    }
+    assert.equal(await portOpen(Number(LEAKS.CUA_DRIVER_RS_MCP_HTTP_PORT)), false, 'no HTTP listener was switched on from the environment');
+    const listening = firstPids.flatMap((pid) => {
+      try {
+        return execFileSync('/usr/sbin/lsof', ['-nP', '-a', '-p', String(pid), '-iTCP', '-sTCP:LISTEN'], { encoding: 'utf8' }).split('\n').slice(1).filter(Boolean);
+      } catch {
+        return [];
+      }
+    });
+    assert.deepEqual(listening, [], 'the driver listens on no TCP port');
+    summary.environment = {
+      processesWithReadableEnvironment: environmentReadable,
+      leaked: 'none of ' + Object.keys(LEAKS).join(', '),
+      tcpListeners: 0,
+    };
+
     // ── The driver's own policy: what the gateway never sends is refused ──
-    for (const [tool, args] of [
-      ['get_screen_size', {}],
-      ['clipboard_read', {}],
-      ['kill_app', { pid: 0 }],
+    for (const [tool, args, why] of [
+      ['get_screen_size', {}, /not allowed/],
+      ['clipboard_read', {}, /not allowed/],
+      ['kill_app', { pid: 0 }, /not allowed/],
+      // Input must say it is delivered in the background, inside one window. (No such pid: nothing can happen.)
+      ['click', { pid: 999999, window_id: 1, x: 1, y: 1 }, /missing required argument 'delivery_mode'/],
+      ['click', { pid: 999999, window_id: 1, x: 1, y: 1, delivery_mode: 'foreground', scope: 'window' }, /'delivery_mode' is not in the allowed values/],
+      ['click', { x: 1, y: 1, delivery_mode: 'background', scope: 'desktop' }, /'scope' is not in the allowed values/],
+      ['drag', { pid: 999999, window_id: 1, from_x: 1, from_y: 1, to_x: 2, to_y: 2 }, /missing required argument 'delivery_mode'/],
+      ['type_text', { pid: 999999, text: 'x', delivery_mode: 'background' }, /missing required argument 'scope'/],
     ] as const) {
       const refused = await driver.call(tool, args);
       assert.equal(refused.isError, true, `${tool} must be refused by the policy`);
-      assert.match(refused.text, /denied|not allowed|policy/i, `${tool}: ${refused.text}`);
+      assert.match(refused.text, /Permission denied/, `${tool}: ${refused.text}`);
+      assert.match(refused.text, why, `${tool}: ${refused.text}`);
     }
-    summary.policy = 'get_screen_size, clipboard_read and kill_app are refused by the driver';
+    summary.policy = 'unlisted tools and input without delivery_mode: background / scope: window are refused by the driver';
 
     // ── The gateway, with a host that answers the approval card from a script ──
     const lease = new ComputerUseLease();
@@ -241,7 +339,65 @@ async function main() {
     assert.match(nextTurn.text, /AXStaticText = "0"/);
     summary.nextTurn = 'the same session read Calculator again in a new turn';
 
+    // ── Cancelling a call in flight stops the driver process ──────────────
+    // A drag that takes six seconds, across Calculator's display where a drag
+    // does nothing, cancelled after a moment. Only on a Calculator this
+    // script opened.
     gateway.finishTurn('second');
+    if (opened.length > 0) {
+      const listed = await driver.call('list_windows', { pid: opened[0], session: 'cancel' });
+      const target = ((listed.structured?.windows as Array<Record<string, unknown>>) || []).find((item) => item.layer === 0);
+      assert.ok(target, 'Calculator has a window');
+      const windowId = target.window_id as number;
+      await driver.call('get_window_state', { pid: opened[0], window_id: windowId, screenshot_format: 'jpeg', session: 'cancel' });
+      const before = driverPids(homeDir);
+      const stop = new AbortController();
+      const startedAt = Date.now();
+      const dragging = driver.call(
+        'drag',
+        { pid: opened[0], window_id: windowId, from_x: 120, from_y: 150, to_x: 300, to_y: 150, duration_ms: 6000, steps: 60, delivery_mode: 'background', scope: 'window', session: 'cancel' },
+        { signal: stop.signal }
+      );
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      stop.abort();
+      await assert.rejects(dragging, new RegExp(COMPUTER_USE_CANCELLED_MESSAGE));
+      const cancelledAfter = Date.now() - startedAt;
+      assert.ok(cancelledAfter < 4000, `cancelled well before the drag would have ended (${cancelledAfter} ms)`);
+      assert.deepEqual(driverPids(homeDir).filter((pid) => before.includes(pid)), [], 'the driver processes are gone when "cancelled" is heard');
+      assert.equal(driver.isRunning(), false);
+      // The next call starts a new driver, and the app is read through it.
+      const again = await call('second', 'get_app_state', { app: CALCULATOR });
+      assert.equal(again.isError, false, again.text);
+      assert.match(again.text, /AXButton[^\n]*\[id=Equals\b/);
+      const after = driverPids(homeDir);
+      assert.equal(after.length, 2);
+      assert.ok(after.every((pid) => !before.includes(pid)), 'another driver process');
+      summary.cancel = { cancelledAfterMs: cancelledAfter, restarted: true, displayAfter: /AXStaticText = "([^"]*)"/.exec(again.text)?.[1] };
+      gateway.finishTurn('second');
+    } else {
+      summary.cancel = 'skipped: Calculator was already running, and this script only drags in one it opened itself';
+    }
+
+    // ── A driver whose parent is killed outright exits by itself ──────────
+    const orphanHome = path.join(userDataDir, 'orphan');
+    const child = spawn(process.execPath, [...process.execArgv, __filename], {
+      env: { ...process.env, AEGIS_CU_LIVE_ORPHAN_HOME: orphanHome },
+      stdio: ['ignore', 'pipe', 'inherit'],
+    });
+    await new Promise<void>((resolve, reject) => {
+      child.stdout.on('data', (chunk: Buffer) => { if (chunk.toString().includes('driver-up')) resolve(); });
+      child.once('exit', (code) => reject(new Error(`the child exited early (${code})`)));
+      setTimeout(() => reject(new Error('the child never started its driver')), 30_000).unref();
+    });
+    const orphans = driverPids(orphanHome);
+    assert.equal(orphans.length, 2, 'the child has a daemon and a proxy of its own');
+    child.removeAllListeners('exit');
+    const killedAt = Date.now();
+    child.kill('SIGKILL');
+    const gone = await until(() => driverPids(orphanHome).length === 0, 8000);
+    assert.equal(gone, true, `the driver outlived its parent: ${driverProcesses(orphanHome).join(' | ')}`);
+    summary.parentDeath = { driverProcesses: orphans.length, goneAfterMs: Date.now() - killedAt };
+
     gateway.finishTurn('plan');
     await gateway.shutdown('verify-done');
     await new Promise((resolve) => setTimeout(resolve, 500));
@@ -255,6 +411,14 @@ async function main() {
     console.log('computer use live verification passed');
   } finally {
     await driver.stop().catch(() => undefined);
+    // A driver left by a child that was killed (it should have gone by itself).
+    for (const pid of driverPids(path.join(userDataDir, 'orphan'))) {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        // already gone
+      }
+    }
     // Calculator goes away only if this script started it.
     for (const pid of opened) {
       try {

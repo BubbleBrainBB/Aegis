@@ -130,9 +130,24 @@ export function computerUsePermissionsMessage(missing: string[]): string {
 }
 
 const TREE_TEXT_LIMIT = 40_000;
-/** After opening an app: how often, and how long apart, its window is looked for. */
-const WINDOW_WAIT_ATTEMPTS = 10;
+/** After opening an app: how often, and how long apart, its window is looked for and read. */
+const WINDOW_WAIT_ATTEMPTS = 12;
 const WINDOW_WAIT_MS = 400;
+/** For an app that was already running: how often its window is read before an empty tree is taken as it is. */
+const SETTLE_ATTEMPTS = 3;
+
+/**
+ * Whether a read of a window is of a window that is there: the driver read it
+ * without saying it could not reach the app's accessibility (as it does while
+ * an app is still starting), and it has at least one element.
+ */
+function isSettledWindow(result: DriverToolResult): boolean {
+  if (result.isError) return false;
+  const structured = result.structured || {};
+  if (asString(structured.degraded_reason)) return false;
+  const tree = typeof structured.tree_markdown === 'string' ? structured.tree_markdown : result.text;
+  return /\[\d+\]/.test(tree);
+}
 
 function delay(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise<void>((resolve, reject) => {
@@ -566,6 +581,7 @@ export class ComputerUseGateway {
 
     let pid = app.running ? app.pid : 0;
     let window = pid ? await this.pickWindow(context, pid, instance) : null;
+    let opened = false;
     if (!window) {
       // Not running, or running without a window: opening it is an action.
       if (facts.planMode) {
@@ -592,31 +608,49 @@ export class ComputerUseGateway {
       pid = typeof launched.result.structured?.pid === 'number' ? launched.result.structured.pid : pid;
       if (!pid) return fail(`${app.name} did not start.`);
       if (this.host.ownProcessIds().includes(pid)) return fail(COMPUTER_USE_DENIED_TARGET_MESSAGE);
-      // A cold start takes a moment to put its window up.
-      for (let attempt = 0; attempt < WINDOW_WAIT_ATTEMPTS && !window; attempt += 1) {
-        if (attempt > 0) await delay(WINDOW_WAIT_MS, signal);
-        window = await this.pickWindow(context, pid, instance);
-      }
-      if (!window) return fail(`${app.name} is open but has no window to look at yet. Try get_app_state again.`);
+      opened = true;
     } else {
       this.emitPending(call, 'get_app_state', app.name);
     }
 
-    const state: AppState = {
-      query: appQuery.toLowerCase(),
-      name: app.name,
-      bundleId: app.bundleId,
-      pid,
-      windowId: window.windowId,
-      windowTitle: window.title,
-      snapshotId: null,
-      tree: '',
-      instance,
-    };
-    const snapshot = await this.snapshot(context, state);
+    // A window can be listed before the app has finished putting it up: for
+    // a moment it has another size and no accessibility tree. So the window
+    // is picked and read until it reads as a window, for longer when this
+    // call started the app (a cold start) than when the app was running.
+    const attempts = opened ? WINDOW_WAIT_ATTEMPTS : SETTLE_ATTEMPTS;
+    let state: AppState | null = null;
+    let read: DriverToolResult | null = null;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      if (attempt > 0) await delay(WINDOW_WAIT_MS, signal);
+      // Picked again each time: the window that is there first is not always the one that stays.
+      if (attempt > 0 || !window) window = await this.pickWindow(context, pid, instance);
+      if (!window) continue;
+      state = {
+        query: appQuery.toLowerCase(),
+        name: app.name,
+        bundleId: app.bundleId,
+        pid,
+        windowId: window.windowId,
+        windowTitle: window.title,
+        snapshotId: null,
+        tree: '',
+        instance,
+      };
+      read = await this.readWindow(context, state);
+      if (isSettledWindow(read)) break;
+    }
+    if (!state || !read) {
+      return fail(`${app.name} is open but has no window to look at yet. Try get_app_state again.`);
+    }
+    const snapshot = this.present(context, state, read);
     if (snapshot.isError) return snapshot;
     this.statesOf(sessionId).set(stateKey(app), state);
-    return snapshot;
+    return isSettledWindow(read)
+      ? snapshot
+      : {
+          ...snapshot,
+          text: `${snapshot.text}\n\n(The window gave no accessibility tree. It may still be loading: call get_app_state again. If it stays empty, work from the screenshot with x and y.)`,
+        };
   }
 
   private async pickWindow(
@@ -649,6 +683,10 @@ export class ComputerUseGateway {
 
   /** Reads the window: the tree for the agent, the screenshot for the agent, the HUD and the session's files. */
   private async snapshot(context: CallContext, state: AppState, preface = ''): Promise<ComputerUseToolResult> {
+    return this.present(context, state, await this.readWindow(context, state), preface);
+  }
+
+  private async readWindow(context: CallContext, state: AppState): Promise<DriverToolResult> {
     const { result } = await this.drive(
       context,
       false,
@@ -656,6 +694,16 @@ export class ComputerUseGateway {
       { pid: state.pid, window_id: state.windowId, screenshot_format: 'jpeg' },
       state.instance
     );
+    return result;
+  }
+
+  /** What a read of the window becomes: the state later actions use, the saved screenshot, the text for the agent. */
+  private present(
+    context: CallContext,
+    state: AppState,
+    result: DriverToolResult,
+    preface = ''
+  ): ComputerUseToolResult {
     if (result.isError) {
       return fail([preface, result.text || `Could not read ${state.name}.`].filter(Boolean).join('\n\n'));
     }
