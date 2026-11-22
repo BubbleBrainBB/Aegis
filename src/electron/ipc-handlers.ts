@@ -53,7 +53,7 @@ import { setDesignFollowUp } from './design/project/tools';
 import { initializeToolCallerAttribution } from './libs/tool-caller-attribution';
 import { PROVIDER_LABELS } from './feishu/agent-settings';
 import { disposeSessionHttpServer, primeSessionToken, releaseKimiWidgetEntrySync, writeKimiWidgetEntry } from './libs/session-http-server';
-import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, shell, systemPreferences } from 'electron';
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from 'http';
 import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, watch, writeFileSync, type FSWatcher, promises as fsPromises } from 'fs';
 import { execFile } from 'child_process';
@@ -100,8 +100,21 @@ import {
 import { isSameClaudeModelSelection, normalizeClaudeRequestedModel, reconcileClaudeDisplayModel } from './libs/claude-model-selection';
 import { loadClaudeSettings, getClaudeSettings, getClaudeModelConfigWithCatalog, getMcpServers, getGlobalMcpServers, getProjectMcpServers, saveMcpServers, saveProjectMcpServers, type McpServerConfig } from './libs/claude-settings';
 import { getCodexMcpServers, saveCodexMcpServers } from './libs/codex-mcp-settings';
-import { resolveComputerUseArtifact } from './libs/codex-computer-use';
+import { codexProcessFitsComputerUse, computerUseReadsAskAegis, resolveComputerUseArtifact } from './libs/codex-computer-use';
 import { computerUseGrants } from './libs/codex-computer-use-grants';
+import {
+  getComputerUseDriverStatus,
+  getComputerUseGateway,
+  initializeComputerUseGateway,
+} from './libs/computer-use';
+import {
+  getComputerUseSettings,
+  isComputerUseEnabled,
+  isComputerUseForcedOn,
+  isComputerUsePlatformSupported,
+  setComputerUseDriverPath,
+  setComputerUseEnabled,
+} from './libs/computer-use/settings';
 import {
   attachComputerUsePreviewHost,
   closeComputerUsePreviewWindow,
@@ -3672,6 +3685,12 @@ const runnerHandles = new Map<
     staleConfig?: boolean;
     /** The model this Claude runner was last handed (spawn or warm send). */
     claudeModel?: string;
+    /**
+     * Whether this Codex runner's process was started with Computer use
+     * reads that ask Aegis. Fixed for the life of the process: a later send
+     * (a steer too) changes the modes above, never this.
+     */
+    codexComputerUseReadsAsk?: boolean;
     /** Automation runners auto-approve permissions; never reuse them for human turns. */
     autoApprove?: boolean;
     /**
@@ -4071,6 +4090,19 @@ function effectiveRunnerCwd(
   return session.cwd || null;
 }
 
+const runnerGenerations = new WeakMap<object, number>();
+let runnerGenerationCount = 0;
+
+/** A number that names one runner handle: a session whose runner was rebuilt gets another. */
+function runnerGeneration(handle: object): number {
+  let generation = runnerGenerations.get(handle);
+  if (generation === undefined) {
+    generation = ++runnerGenerationCount;
+    runnerGenerations.set(handle, generation);
+  }
+  return generation;
+}
+
 // 获取或创建会话状态
 function getSessionState(sessionId: string): SessionState {
   let state = sessionStates.get(sessionId);
@@ -4086,6 +4118,15 @@ function sendSessionReply(win: BrowserWindow, event: ServerEvent): void {
   if (!win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.send('server-event', JSON.stringify(event));
 }
 
+type HostPermissionRequest = {
+  toolName: string;
+  input: import('../shared/types').PermissionRequestInput;
+  label: string;
+  timeoutMs: number;
+  idPrefix: string;
+  signal?: AbortSignal;
+};
+
 /**
  * Ask the user through the session's permission card for something a host
  * tool does (browser navigation, a simulator device). Resolves true when
@@ -4094,17 +4135,19 @@ function sendSessionReply(win: BrowserWindow, event: ServerEvent): void {
 function requestHostPermission(
   mainWindow: BrowserWindow,
   sessionId: string,
-  request: {
-    toolName: string;
-    input: import('../shared/types').PermissionRequestInput;
-    label: string;
-    timeoutMs: number;
-    idPrefix: string;
-    signal?: AbortSignal;
-  }
+  request: HostPermissionRequest
 ): Promise<boolean> {
+  return requestHostPermissionResult(mainWindow, sessionId, request).then((result) => result.behavior === 'allow');
+}
+
+/** The same card, with the user's whole answer (Computer use reads the "until revoked" choice from it). */
+function requestHostPermissionResult(
+  mainWindow: BrowserWindow,
+  sessionId: string,
+  request: HostPermissionRequest
+): Promise<PermissionResult> {
   const { signal } = request;
-  return new Promise<boolean>((resolve, reject) => {
+  return new Promise<PermissionResult>((resolve, reject) => {
     const toolUseId = `${request.idPrefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const state = getSessionState(sessionId);
     let settled = false;
@@ -4138,7 +4181,7 @@ function requestHostPermission(
     }, request.timeoutMs);
     timer.unref?.();
     state.pendingPermissions.set(toolUseId, {
-      resolve: (result) => finish(() => resolve(result.behavior === 'allow')),
+      resolve: (result) => finish(() => resolve(result)),
       reject: (error) => finish(() => reject(error)),
     });
     signal?.addEventListener('abort', onAbort, { once: true });
@@ -5724,39 +5767,40 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
     const provider = sessions.getSession(sessionId)?.provider;
     return provider ? PROVIDER_LABELS[provider] : undefined;
   });
+  const isSessionFullAccess = (sessionId: string): boolean => {
+    const row = sessions.getSession(sessionId);
+    if (!row) return false;
+    if (row.provider === 'claude') {
+      return row.claude_access_mode === 'fullAccess';
+    }
+    if (row.provider === 'codex') {
+      return row.codex_permission_mode === 'fullAccess';
+    }
+    const runner = runnerHandles.get(sessionId);
+    if (row.provider === 'deepseek' && runner?.provider === 'deepseek') {
+      return runner.deepseekPermissionMode === 'danger-full-access';
+    }
+    if (row.provider === 'devin' && runner?.provider === 'devin') {
+      return runner.devinPermissionMode === 'bypass';
+    }
+    if (row.provider === 'mimo' && runner?.provider === 'mimo') {
+      return runner.mimoPermissionMode === 'build';
+    }
+    if (row.provider === 'minimax' && runner?.provider === 'minimax') {
+      return runner.minimaxPermissionMode === 'bypassPermissions';
+    }
+    if (row.provider === 'qoder' && runner?.provider === 'qoder') {
+      return runner.qoderPermissionMode === 'bypassPermissions';
+    }
+    if (row.provider === 'bubble' && runner?.provider === 'bubble') {
+      return runner.bubblePermissionMode === 'bypassPermissions';
+    }
+    return false;
+  };
   initializeBrowserUseConsent({
     getSessionHistory: (sessionId) => sessions.getSessionHistory(sessionId),
     listRunningSessionIds: () => [...runnerHandles.keys()],
-    isSessionFullAccess: (sessionId) => {
-      const row = sessions.getSession(sessionId);
-      if (!row) return false;
-      if (row.provider === 'claude') {
-        return row.claude_access_mode === 'fullAccess';
-      }
-      if (row.provider === 'codex') {
-        return row.codex_permission_mode === 'fullAccess';
-      }
-      const runner = runnerHandles.get(sessionId);
-      if (row.provider === 'deepseek' && runner?.provider === 'deepseek') {
-        return runner.deepseekPermissionMode === 'danger-full-access';
-      }
-      if (row.provider === 'devin' && runner?.provider === 'devin') {
-        return runner.devinPermissionMode === 'bypass';
-      }
-      if (row.provider === 'mimo' && runner?.provider === 'mimo') {
-        return runner.mimoPermissionMode === 'build';
-      }
-      if (row.provider === 'minimax' && runner?.provider === 'minimax') {
-        return runner.minimaxPermissionMode === 'bypassPermissions';
-      }
-      if (row.provider === 'qoder' && runner?.provider === 'qoder') {
-        return runner.qoderPermissionMode === 'bypassPermissions';
-      }
-      if (row.provider === 'bubble' && runner?.provider === 'bubble') {
-        return runner.bubblePermissionMode === 'bypassPermissions';
-      }
-      return false;
-    },
+    isSessionFullAccess,
     requestPermission: (sessionId, question, url, signal) =>
       requestHostPermission(mainWindow, sessionId, {
         toolName: 'browser_use',
@@ -5771,6 +5815,91 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
         idPrefix: 'browser-use-nav',
         signal,
       }),
+  });
+  // Computer use through cua-driver (Bubble today; Codex keeps its own
+  // client). The gateway asks here for what it needs to know about a session
+  // and for the COMPUTER USE card. It starts no process until a tool is called.
+  initializeComputerUseGateway(
+    {
+      getSession: (sessionId) => {
+        const row = sessions.getSession(sessionId);
+        const runner = runnerHandles.get(sessionId);
+        // Only a session with a live runner can be calling a tool.
+        if (!row || !runner) return null;
+        const workflowPolicy = getWorkflowSessionPolicy(sessionId);
+        return {
+          // Bubble is the one provider with these tools so far; each provider
+          // added later brings its own way of saying "Plan".
+          planMode: runner.provider === 'bubble' && runner.bubblePermissionMode === 'plan',
+          fullAccess: isSessionFullAccess(sessionId),
+          readOnlyWorkflowRole: workflowPolicy?.readOnly ? workflowPolicy.role : null,
+          // A rebuilt runner is another runtime: grants and calls of the old one end with it.
+          generation: runnerGeneration(runner.handle),
+        };
+      },
+      requestApproval: async (sessionId, input, signal) => {
+        const result = await requestHostPermissionResult(mainWindow, sessionId, {
+          toolName: input.toolName,
+          input,
+          label: 'Computer use approval',
+          // A person reads what the agent is about to do; not a 20 s decision.
+          timeoutMs: 10 * 60_000,
+          idPrefix: 'computer-use',
+          signal,
+        });
+        return {
+          allow: result.behavior === 'allow',
+          untilRevoked: result.behavior === 'allow' && result.computerUseGrant === 'until-revoked',
+        };
+      },
+      emitLive: (sessionId, frame) => {
+        rememberComputerUseLive(sessionId, frame);
+        broadcast(mainWindow, { type: 'computerUse.live', payload: { sessionId, frame } });
+      },
+      userDataDir: () => app.getPath('userData'),
+      ownProcessIds: () => [process.pid, ...app.getAppMetrics().map((metric) => metric.pid)],
+      onRefused: (sessionId, toolName) => recordDeniedTool(sessionId, toolName),
+    },
+    // What macOS calls this app: the packaged id, or Electron's in development.
+    { hostBundleId: app.isPackaged ? 'com.aegis.desktop' : 'com.github.Electron' }
+  );
+  const computerUseSettingsView = (): import('../shared/computer-use').ComputerUseSettingsView => {
+    const settings = getComputerUseSettings();
+    return {
+      // What is in effect, not what is stored: the two differ when the
+      // environment turns Computer use on for a development run.
+      enabled: isComputerUseEnabled(),
+      enabledByEnvironment: isComputerUseForcedOn(),
+      driverPath: settings.driverPath,
+      driver: getComputerUseDriverStatus(),
+      permissions: isComputerUsePlatformSupported()
+        ? {
+            accessibility: systemPreferences.isTrustedAccessibilityClient(false),
+            screenRecording: systemPreferences.getMediaAccessStatus('screen') === 'granted',
+          }
+        : null,
+    };
+  };
+  ipcMainHandle('get-computer-use-settings', async () => computerUseSettingsView());
+  ipcMainHandle('set-computer-use-enabled', async (_event, enabled: boolean) => {
+    setComputerUseEnabled(enabled === true);
+    // Off means off: calls on their way and open approval cards end, the
+    // driver stops and the gateway's grants go. (Not when the environment
+    // keeps it on: then nothing was turned off.)
+    if (!isComputerUseEnabled()) await getComputerUseGateway()?.shutdown('disabled');
+    return computerUseSettingsView();
+  });
+  ipcMainHandle('set-computer-use-driver-path', async (_event, driverPath: string) => {
+    setComputerUseDriverPath(typeof driverPath === 'string' ? driverPath : '');
+    // Another binary is another driver: what stood on the old one (calls,
+    // approval cards, grants) ends, and the next call starts the new one.
+    await getComputerUseGateway()?.shutdown('driver-changed');
+    return computerUseSettingsView();
+  });
+  ipcMainHandle('open-computer-use-permission-settings', async (_event, pane: string) => {
+    const anchor = pane === 'screen-recording' ? 'Privacy_ScreenCapture' : 'Privacy_Accessibility';
+    await shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${anchor}`);
+    return { ok: true };
   });
   // iOS Simulator pane: frames and input over its own channels; the agent
   // tool opens the pane and asks once per device through the permission card.
@@ -10889,6 +11018,18 @@ async function handleSessionContinueImpl(
   const codexExecutionModeChanged =
     nextProvider === 'codex' &&
     normalizeCodexExecutionMode(runnerHandles.get(sessionId)?.codexExecutionMode || previousCodexExecutionMode) !== nextCodexExecutionMode;
+  // Whether a Computer use read asks Aegis is fixed when the Codex process
+  // starts, and who answers is decided per turn (Aegis, or Codex's own
+  // reviewer in Auto outside Plan). Compared with what the process was
+  // started with, not with the modes last sent: a steer into a running turn
+  // changes those without changing the process.
+  const codexComputerUseProcessStale =
+    nextProvider === 'codex' &&
+    !codexProcessFitsComputerUse(
+      runnerHandles.get(sessionId)?.codexComputerUseReadsAsk,
+      nextCodexPermissionMode,
+      nextCodexExecutionMode
+    );
   const codexReasoningEffortChanged =
     nextProvider === 'codex' &&
     normalizeCodexReasoningEffort(
@@ -11287,6 +11428,7 @@ async function handleSessionContinueImpl(
       kimiSessionReleased ||
       (((nextProvider === 'codex' && !codexMidTurn) || nextProvider === 'opencode' || (nextProvider === 'kimi' && !kimiMidTurn) || nextProvider === 'grok' || nextProvider === 'pi' || (nextProvider === 'bubble' && !bubbleMidTurn) || (nextProvider === 'deepseek' && !deepseekMidTurn)) && modelChanged) ||
       (nextProvider === 'codex' && !codexMidTurn && codexPermissionModeChanged) ||
+      (nextProvider === 'codex' && !codexMidTurn && codexComputerUseProcessStale) ||
       (nextProvider === 'codex' && !codexMidTurn && codexReasoningEffortChanged) ||
       (nextProvider === 'codex' && !codexMidTurn && codexFastModeChanged) ||
       (nextProvider === 'grok' && grokReasoningEffortChanged) ||
@@ -12271,6 +12413,8 @@ function startRunner(
           );
           // The turn is over: the agent's browser tabs go back to the panel.
           finishBrowserUseTurn(browserManager, session.id);
+          // And the desktop is free for another session.
+          getComputerUseGateway()?.finishTurn(session.id);
           // Design comments the turn worked on are answered or reopened.
           settleDesignTurn(session.id, PROVIDER_LABELS[provider]);
           if (provider === 'claude') {
@@ -12448,6 +12592,7 @@ function startRunner(
         turnDone?.('error', message);
         settleWorkflowTurn(session.id, 'error', message);
         finishBrowserUseTurn(browserManager, session.id);
+        getComputerUseGateway()?.finishTurn(session.id);
         settleDesignTurn(session.id, PROVIDER_LABELS[provider]);
         // dispose, not abort: the session already errored, so a stopSession
         // here would emit a spurious stop_settled — but plain detach leaks
@@ -12671,6 +12816,13 @@ function startRunner(
     claudeModel: provider === 'claude' ? resolvedModelOverride : undefined,
     codexExecutionMode: provider === 'codex' ? normalizeCodexExecutionMode(codexExecutionMode) : undefined,
     codexPermissionMode: provider === 'codex' ? normalizeCodexPermissionMode(codexPermissionMode) : undefined,
+    codexComputerUseReadsAsk:
+      provider === 'codex'
+        ? computerUseReadsAskAegis(
+            normalizeCodexPermissionMode(codexPermissionMode),
+            normalizeCodexExecutionMode(codexExecutionMode)
+          )
+        : undefined,
     codexReasoningEffort:
       provider === 'codex' ? normalizeCodexReasoningEffort(codexReasoningEffort) : undefined,
     codexFastMode:
@@ -13123,6 +13275,7 @@ function stopComputerUseSession(mainWindow: BrowserWindow, sessionId: string): v
 function handleSessionStop(mainWindow: BrowserWindow, sessionId: string): void {
   finishComputerUseUi(mainWindow, sessionId);
   finishBrowserUseTurn(browserManager, sessionId);
+  getComputerUseGateway()?.forgetSession(sessionId, 'stop');
   // Stop-cascade: stopping the parent also stops every delegated agent
   // running under it (their runners are separate entries keyed by their
   // hidden execution session ids).
@@ -13321,6 +13474,7 @@ function handleSessionStop(mainWindow: BrowserWindow, sessionId: string): void {
 // 删除会话
 function handleSessionDelete(mainWindow: BrowserWindow, sessionId: string): void {
   finishBrowserUseTurn(browserManager, sessionId);
+  getComputerUseGateway()?.forgetSession(sessionId, 'deleted');
   const session = sessions.getSession(sessionId);
   if (session?.session_origin === 'claude_remote') {
     broadcast(mainWindow, {
@@ -13839,6 +13993,7 @@ export function cleanup(): void {
   disposeDelegateHttpServer();
   disposeSessionHttpServer();
   disposeTerminalRuntime();
+  getComputerUseGateway()?.shutdownSync();
   // 停止所有运行中的 runner
   for (const [, entry] of runnerHandles) {
     entry.handle.abort();

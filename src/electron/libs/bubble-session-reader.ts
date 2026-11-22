@@ -3,6 +3,9 @@ import { createNativeSessionReader, createNativeShowWidget, createNativeStartWor
 import { createBubbleBrowserUseTool, createBubbleIosSimulatorTool } from './bubble-browser-use-tool';
 import { isIosSimulatorToolAvailableNow } from './ios-simulator/tool';
 import { isBrowserUseEnabled } from './browser-use-permissions';
+import { createBubbleComputerUseTools } from './bubble-computer-use-tool';
+import { isComputerUseAvailableNow } from './computer-use';
+import { getWorkflowSessionPolicy } from './workflow/session-hooks';
 import { createNativeDesignTools } from '../design/tools';
 import { createNativeReportStatus } from './turn-report-tool';
 import { createNativeStartSession } from './follow-up/tool';
@@ -27,6 +30,11 @@ export function bubbleHostTools(sessionId?: string): object[] {
   if (sessionId && isBrowserUseEnabled()) tools.push(createBubbleBrowserUseTool(sessionId));
   // On a Mac with Xcode and AXe: the iOS Simulator.
   if (sessionId && isBrowserUseEnabled() && isIosSimulatorToolAvailableNow()) tools.push(createBubbleIosSimulatorTool(sessionId));
+  // Computer use, when its switch is on and the driver is there. A read-only
+  // workflow member gets none (the gateway refuses it too).
+  if (sessionId && isComputerUseAvailableNow() && !getWorkflowSessionPolicy(sessionId)?.readOnly) {
+    tools.push(...createBubbleComputerUseTools(sessionId));
+  }
   // Design tools act on this session's designs.
   if (sessionId) tools.push(...createNativeDesignTools(sessionId));
   if (sessionId) tools.push(createNativeReportStatus(sessionId));

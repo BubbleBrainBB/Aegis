@@ -11,6 +11,7 @@ import { ClaudeUsageSettingsContent } from './ClaudeUsageSettings';
 import { AgentRuntimeSettings } from './AgentRuntimeSettings';
 import { BubbleProviderSettings } from './BubbleProviderSettings';
 import { BrowserUseSettings } from './BrowserUseSettings';
+import { ComputerUseSettings } from './ComputerUseSettings';
 import { MCP_RUNTIMES, McpSettingsContent } from './McpSettings';
 import { ProviderIcon } from '../AgentModelPicker';
 import { BridgeSettingsContent } from './BridgeSettings';
@@ -316,6 +317,7 @@ export function Settings() {
           {resolvedActiveSettingsTab === 'browser' && (
             <div className="space-y-5">
               <BrowserUseSettings />
+              <ComputerUseSettings />
             </div>
           )}
           {resolvedActiveSettingsTab === 'mcp' && (

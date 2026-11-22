@@ -82,6 +82,8 @@
   "verify:session-goal": 34,
   "verify:codex-mcp-settings": 0,
   "verify:codex-computer-use": 2,
+  "verify:computer-use": 8,
+  "verify:bubble-computer-use": 6,
   "verify:delegate-mcp": 10,
   "verify:browser-use": 7,
   "verify:kimi-server": 25,

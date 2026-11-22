@@ -854,7 +854,8 @@ export class CodexAdapter implements ProviderAdapter {
       const elicitation = parseMcpToolApprovalElicitation(method, params);
       if (elicitation) {
         const app = elicitation.canonicalApp;
-        if (elicitation.deniedTarget || isDeniedComputerUseTarget(app)) {
+        const usesDesktop = elicitation.isComputerUse || elicitation.isNodeRepl;
+        if (elicitation.deniedTarget || (usesDesktop && isDeniedComputerUseTarget(app))) {
           void this.respondToRequest(threadId, requestId, {
             behavior: 'deny',
             message: 'Aegis blocked Computer Use from targeting the Aegis app itself.',
@@ -1925,7 +1926,8 @@ export class CodexAdapter implements ProviderAdapter {
     if (this.stopAllInFlight) return this.stopAllInFlight;
     this.stopAllRequested = true;
     const shutdown = this.enqueueExclusiveShutdown(async () => {
-      computerUseGrants.revokeAll('stop-all');
+      // Codex's own grants; the gateway's belong to sessions this adapter does not run.
+      computerUseGrants.revokeOwner('codex', 'stop-all');
       await this.stopRuntimeProcesses();
       for (const threadId of this.streamingText.keys()) {
         this.clearStreamingState(threadId);
@@ -2254,7 +2256,7 @@ export class CodexAdapter implements ProviderAdapter {
     }
 
     await this.enqueueExclusiveShutdown(async () => {
-      computerUseGrants.revokeAll('auth-recovery');
+      computerUseGrants.revokeOwner('codex', 'auth-recovery');
       await this.stopRuntimeProcesses();
       for (const threadId of this.streamingText.keys()) {
         this.clearStreamingState(threadId);

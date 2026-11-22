@@ -52,3 +52,6 @@ promo/
 native/ios-sim-helper/.idb/
 native/ios-sim-helper/.build/
 native/ios-sim-helper/dist/
+
+# cua-driver binary (scripts/fetch-cua-driver.mjs)
+native/cua-driver/dist/

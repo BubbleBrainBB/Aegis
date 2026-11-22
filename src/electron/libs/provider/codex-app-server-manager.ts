@@ -7,7 +7,7 @@ import { validateGoalAction, type GoalAction, type ThreadGoal } from '../../../s
 import { getSessionProjectSources } from '../session-store';
 import { getSessionReaderCodexArgs, SESSION_CALLER_ENV_VAR, SESSION_TOKEN_ENV_VAR } from '../session-http-server';
 import { BROWSER_USE_CALLER_ENV_VAR, getBrowserUseCodexCallerArgs } from '../browser-use-http-server';
-import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
+import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'child_process';
 import { EventEmitter } from 'events';
 import { existsSync, promises as fsPromises, readFileSync } from 'fs';
 import { homedir } from 'os';
@@ -44,7 +44,11 @@ import { buildCodexMcpConfigOverrideArgs } from '../codex-mcp-settings';
 import {
   COMPUTER_USE_DENIED_TARGET_MESSAGE,
   COMPUTER_USE_LEASE_MESSAGE,
+  codexFullAccessApprovalPolicy,
   computerUseLease,
+  CODEX_COMPUTER_USE_PROCESS_MESSAGE,
+  computerUseReadsAskAegis,
+  injectsComputerUseServer,
   resolveComputerUseSpawnPolicy,
   type ComputerUseSpawnPolicy,
 } from '../codex-computer-use';
@@ -52,9 +56,15 @@ import { computerUseGrants } from '../codex-computer-use-grants';
 import {
   buildMcpElicitationResponse,
   isMcpElicitationMethod,
+  MCP_APPROVAL_META,
   parseMcpToolApprovalElicitation,
 } from '../codex-computer-use-elicitation';
 import { isComputerUseMutatingTool, isDeniedComputerUseTarget } from '../../../shared/computer-use';
+
+/** Whether a child process has not exited yet, by its own record of it. */
+function isProcessAlive(child: Pick<ChildProcess, 'exitCode' | 'signalCode'>): boolean {
+  return child.exitCode === null && child.signalCode === null;
+}
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -155,6 +165,22 @@ interface PendingApproval {
   method: string;
   threadId: string;
   params?: Record<string, unknown>;
+  /** The hold on the desktop taken for this action, given back when it is declined. */
+  desktopHoldId?: string;
+}
+
+/**
+ * One hold this manager took on the desktop for a Computer use action. Its id
+ * is its own (never a JSON-RPC id: those start over with every process, so
+ * two processes of one session would name each other's holds). It is given
+ * back when its turn ends, when the action is declined, or when the process
+ * it was taken under has exited; nothing else ends it.
+ */
+interface DesktopHold {
+  threadId: string;
+  turnId: string | null;
+  /** The process the action runs under; null when there was none to watch. */
+  child: ChildProcess | null;
 }
 
 /** In-flight stop confirmation, keyed by providerThreadId (P0-6). */
@@ -370,6 +396,12 @@ export class CodexAppServerManager extends EventEmitter {
   private static readonly AUTH_REFRESH_REPLAY_WINDOW_MS = 30_000;
   private lastAuthRefreshAnswer: { accessToken: string; at: number } | null = null;
   private computerUsePolicy: ComputerUseSpawnPolicy = 'mutating';
+  /** Whether this process's Computer use read tools ask Aegis before they run (not in Auto mode). */
+  private computerUseReadsAsk = true;
+  /** Whether this process was given Aegis's Computer use server at spawn. */
+  private computerUseInjected = false;
+  private desktopHolds = new Map<string, DesktopHold>();
+  private watchedChildren = new WeakSet<object>();
 
   /**
    * The Aegis session this app-server serves (one per thread runtime). Its
@@ -414,7 +446,11 @@ export class CodexAppServerManager extends EventEmitter {
     // Capture launch settings before awaiting the app-tool endpoint. Other
     // managers can start while it binds; they must not alter this launch.
     const launchEnv = { ...process.env };
-    const configArgs = buildCodexMcpConfigOverrideArgs({ computerUsePolicy: this.computerUsePolicy });
+    const configArgs = buildCodexMcpConfigOverrideArgs({
+      computerUsePolicy: this.computerUsePolicy,
+      computerUseReadsAsk: this.computerUseReadsAsk,
+    });
+    this.computerUseInjected = injectsComputerUseServer(configArgs);
     const reader = await getSessionReaderCodexArgs(this.callerSessionId);
     const browser = this.callerSessionId ? await getBrowserUseCodexCallerArgs(this.callerSessionId) : { args: [], env: {} };
     const readerArgs = [...reader.args, ...browser.args];
@@ -650,6 +686,8 @@ export class CodexAppServerManager extends EventEmitter {
    */
   disposeSessionResources(threadId: string): void {
     const session = this.sessions.get(threadId);
+    // With a turn still going, what Computer use was doing for it may be too.
+    const turnOver = !session?.activeTurnId;
     if (session) {
       const pendingInterrupt = this.pendingInterrupts.get(session.providerThreadId);
       if (pendingInterrupt) {
@@ -664,7 +702,7 @@ export class CodexAppServerManager extends EventEmitter {
         this.lastActiveThreadId = this.findMostRecentFallbackThreadId();
       }
     }
-    this.declineApprovalsForThread(threadId);
+    this.declineApprovalsForThread(threadId, turnOver);
   }
 
   /**
@@ -700,13 +738,16 @@ export class CodexAppServerManager extends EventEmitter {
 
     // The JSON-RPC ids of these approvals can never be answered now; tell the
     // UI to drop the cards instead of leaving them pointing at dead requests.
+    // The desktop goes back when the process is gone, whatever this cleanup
+    // was called for: after an exit it already is, after a stop or an error
+    // it may still be running and is waited for.
     for (const [requestId, approval] of pendingApprovals) {
-      computerUseLease.releaseThread(approval.threadId);
+      this.handBackDesktop(approval.threadId, false);
       computerUseGrants.revokeThread(approval.threadId, 'runtime-gone');
       this.emit('approval_dismissed', { requestId, threadId: approval.threadId });
     }
     for (const session of this.sessions.values()) {
-      computerUseLease.releaseThread(session.threadId);
+      this.handBackDesktop(session.threadId, false);
       computerUseGrants.revokeThread(session.threadId, 'runtime-gone');
     }
 
@@ -1128,6 +1169,13 @@ export class CodexAppServerManager extends EventEmitter {
       options.codexPermissionMode,
       options.codexExecutionMode
     );
+    // Where Codex's own reviewer answers approvals (Auto, outside Plan), a
+    // read that asked would cost a review each time and still not be checked
+    // here. Everywhere else it asks Aegis.
+    this.computerUseReadsAsk = computerUseReadsAskAegis(
+      this.normalizeCodexPermissionMode(options.codexPermissionMode),
+      this.normalizeCodexExecutionMode(options.codexExecutionMode)
+    );
     await this.ensureSpawned(cwd);
 
     let response: Record<string, unknown>;
@@ -1337,6 +1385,7 @@ export class CodexAppServerManager extends EventEmitter {
     // a turn that is being killed loses the message (P0-6).
     const steerTurnId =
       session.status === 'running' && session.activeTurnId ? session.activeTurnId : null;
+    if (!steerTurnId) this.assertProcessServesTurn(threadId, session, options);
     this.lastActiveThreadId = threadId;
     session.status = 'running';
     session.model = options.model || session.model;
@@ -1425,6 +1474,15 @@ export class CodexAppServerManager extends EventEmitter {
       } catch (error) {
         if (isDev()) {
           console.log('[Codex AppServer] turn/steer fell back to turn/start:', error);
+        }
+        // The turn it was meant for is over: this starts one, in the modes
+        // the message carries, and those need a process that fits them.
+        try {
+          this.assertProcessServesTurn(threadId, session, options);
+        } catch (mismatch) {
+          session.status = 'ready';
+          session.activeTurnId = undefined;
+          throw mismatch;
         }
       }
     }
@@ -1627,7 +1685,7 @@ export class CodexAppServerManager extends EventEmitter {
       if (this.lastActiveThreadId === threadId) {
         this.lastActiveThreadId = this.findMostRecentFallbackThreadId();
       }
-      this.declineApprovalsForThread(threadId);
+      this.declineApprovalsForThread(threadId, true);
       this.emit('stop_settled', {
         aegisThreadId: threadId,
         providerThreadId,
@@ -1730,7 +1788,10 @@ export class CodexAppServerManager extends EventEmitter {
       if (this.lastActiveThreadId === settle.aegisThreadId) {
         this.lastActiveThreadId = this.findMostRecentFallbackThreadId();
       }
-      this.declineApprovalsForThread(settle.aegisThreadId);
+      // Confirmed: the turn reported its own end. Unconfirmed: nobody knows
+      // what it is still doing, and the desktop stays this session's until
+      // the process is gone (the adapter stops it next).
+      this.declineApprovalsForThread(settle.aegisThreadId, confirmed);
     }
     this.emit('stop_settled', {
       aegisThreadId: settle.aegisThreadId,
@@ -1738,6 +1799,26 @@ export class CodexAppServerManager extends EventEmitter {
       generation: settle.generation,
       confirmed,
     });
+  }
+
+  /**
+   * A turn Aegis answers for must run on a process whose Computer use reads
+   * ask Aegis: they cannot be made to once the process is running, so on one
+   * started for Codex's own reviewer (Auto) they would look at the desktop
+   * unchecked while another session holds it. Such a turn is not started;
+   * the session's next process is started for its modes.
+   */
+  private assertProcessServesTurn(
+    threadId: string,
+    session: CodexSession,
+    options: CodexRunOptions
+  ): void {
+    if (!this.computerUseInjected || this.computerUseReadsAsk || isWorkflowReadOnly(threadId)) return;
+    const turnAsksAegis = computerUseReadsAskAegis(
+      this.normalizeCodexPermissionMode(options.codexPermissionMode || session.codexPermissionMode),
+      this.normalizeCodexExecutionMode(options.codexExecutionMode || session.codexExecutionMode)
+    );
+    if (turnAsksAegis) throw new Error(CODEX_COMPUTER_USE_PROCESS_MESSAGE);
   }
 
   private resolveComputerUsePolicy(
@@ -1790,7 +1871,7 @@ export class CodexAppServerManager extends EventEmitter {
 
     if (this.normalizeCodexPermissionMode(mode) === 'fullAccess') {
       return {
-        approvalPolicy: 'never',
+        approvalPolicy: codexFullAccessApprovalPolicy(this.computerUseInjected),
         approvalsReviewer: 'user',
         sandbox: 'danger-full-access',
       };
@@ -1836,7 +1917,7 @@ export class CodexAppServerManager extends EventEmitter {
 
     if (this.normalizeCodexPermissionMode(mode) === 'fullAccess') {
       return {
-        approvalPolicy: 'never',
+        approvalPolicy: codexFullAccessApprovalPolicy(this.computerUseInjected),
         approvalsReviewer: 'user',
         sandboxPolicy: { type: 'dangerFullAccess' },
       };
@@ -1931,14 +2012,57 @@ export class CodexAppServerManager extends EventEmitter {
     });
 
     this.pendingApprovals.delete(requestId);
-    if (result.behavior !== 'allow') {
-      computerUseLease.release(pending.threadId, String(pending.jsonRpcId));
+    if (result.behavior !== 'allow' && pending.desktopHoldId) {
+      this.releaseDesktopHolds((_hold, holdId) => holdId === pending.desktopHoldId);
     }
   }
 
-  /** Decline + dismiss every pending approval owned by the given session. */
-  private declineApprovalsForThread(threadId: string): void {
-    computerUseLease.releaseThread(threadId);
+  /**
+   * Takes the desktop for one action of a session. Null: another session has
+   * it. The hold is watched for the exit of the process it was taken under.
+   */
+  private holdDesktop(threadId: string, turnId: string | null): string | null {
+    const holdId = `codex:${uuidv4()}`;
+    if (!computerUseLease.tryAcquire(threadId, holdId)) return null;
+    const child = this.child;
+    const watchable = Boolean(child && isProcessAlive(child) && typeof child.once === 'function');
+    this.desktopHolds.set(holdId, { threadId, turnId, child: watchable ? child : null });
+    if (child && watchable && !this.watchedChildren.has(child)) {
+      this.watchedChildren.add(child);
+      // The one release that needs no reasoning: the process is gone.
+      child.once('exit', () => this.releaseDesktopHolds((hold) => hold.child === child));
+    }
+    return holdId;
+  }
+
+  private releaseDesktopHolds(match: (hold: DesktopHold, holdId: string) => boolean): void {
+    for (const [holdId, hold] of this.desktopHolds) {
+      if (!match(hold, holdId)) continue;
+      this.desktopHolds.delete(holdId);
+      computerUseLease.release(hold.threadId, holdId);
+    }
+  }
+
+  /**
+   * Hands the desktop back for a session: at once when nothing of its can
+   * still be acting (`ended`: its turn reported its own end, or it had
+   * none), otherwise when the process each hold was taken under has exited.
+   * Until then another session that asks for the desktop is refused, as it
+   * was a moment earlier. Only this manager's own holds are touched: a turn
+   * the session runs on another process keeps what it took there.
+   */
+  private handBackDesktop(threadId: string, ended: boolean): void {
+    this.releaseDesktopHolds(
+      (hold) => hold.threadId === threadId && (ended || !hold.child || !isProcessAlive(hold.child))
+    );
+  }
+
+  /**
+   * Decline + dismiss every pending approval owned by the given session.
+   * `ended`: whatever the session's turn was doing is known to be over.
+   */
+  private declineApprovalsForThread(threadId: string, ended: boolean): void {
+    this.handBackDesktop(threadId, ended);
     computerUseGrants.revokeThread(threadId, 'stop');
     for (const [requestId, pending] of this.pendingApprovals) {
       if (pending.threadId !== threadId) continue;
@@ -2296,43 +2420,75 @@ export class CodexAppServerManager extends EventEmitter {
         return;
       }
 
-      const mutating = Boolean(
-        elicitation?.action?.mutating ||
-          (elicitation?.toolName && isComputerUseMutatingTool(elicitation.toolName)) ||
-          elicitation?.isNodeRepl
-      );
+      const answerElicitation = (allow: boolean) =>
+        this.writeMessage({
+          jsonrpc: '2.0',
+          id: request.id,
+          result: buildMcpElicitationResponse({ allow }),
+        });
+      const isComputerUseCall = Boolean(elicitation && (elicitation.isComputerUse || elicitation.isNodeRepl));
+
+      // One session has the desktop at a time, for looking as well as acting
+      // (the cua-driver gateway holds its sessions to the same): while
+      // another session holds it, a Computer use call is declined whatever
+      // it is. The read tools ask here too (see buildComputerUseMcpOverrideArgs).
+      if (isComputerUseCall && computerUseLease.heldByAnother(threadId)) {
+        console.warn('[Codex AppServer]', COMPUTER_USE_LEASE_MESSAGE);
+        answerElicitation(false);
+        return;
+      }
+
+      // Only a Computer use call can act on the desktop. Another server's
+      // tool is not one because of its name (a browser server has a `click`
+      // too): it neither waits for the desktop nor takes it.
+      const mutating =
+        isComputerUseCall &&
+        Boolean(
+          elicitation?.action?.mutating ||
+            (elicitation?.toolName && isComputerUseMutatingTool(elicitation.toolName)) ||
+            elicitation?.isNodeRepl
+        );
       const ownerSession = this.sessions.get(threadId);
       const livePolicy = this.resolveComputerUsePolicy(
         ownerSession?.codexPermissionMode,
         ownerSession?.codexExecutionMode
       );
-      if (mutating && elicitation && livePolicy === 'read-only') {
-        this.writeMessage({
-          jsonrpc: '2.0',
-          id: request.id,
-          result: buildMcpElicitationResponse({ allow: false }),
-        });
+      // Looking: nobody else has the desktop, so it goes ahead, with no card
+      // and without taking the desktop. (A tool whose name could not be
+      // read counts as one that acts, and does not come this way.)
+      if (elicitation && isComputerUseCall && !mutating) {
+        answerElicitation(true);
         return;
       }
+      if (mutating && elicitation && livePolicy === 'read-only') {
+        answerElicitation(false);
+        return;
+      }
+      let desktopHoldId: string | undefined;
       if (mutating && elicitation) {
         const app = elicitation.canonicalApp || this.readString(elicitation.toolParams, 'app');
         if (isDeniedComputerUseTarget(app)) {
-          this.writeMessage({
-            jsonrpc: '2.0',
-            id: request.id,
-            result: buildMcpElicitationResponse({ allow: false }),
-          });
+          answerElicitation(false);
           return;
         }
-        if (!computerUseLease.tryAcquire(threadId, String(request.id))) {
+        const holdId = this.holdDesktop(threadId, elicitation.turnId);
+        if (!holdId) {
           console.warn('[Codex AppServer]', COMPUTER_USE_LEASE_MESSAGE);
-          this.writeMessage({
-            jsonrpc: '2.0',
-            id: request.id,
-            result: buildMcpElicitationResponse({ allow: false }),
-          });
+          answerElicitation(false);
           return;
         }
+        desktopHoldId = holdId;
+      }
+      // Full Access asks nobody. Tool approvals only reach Aegis there so
+      // that the checks above are made (see codexFullAccessApprovalPolicy):
+      // what passed them, and any other server's tool call, goes ahead.
+      if (
+        elicitation?.approvalKind === MCP_APPROVAL_META.kindMcpToolCall &&
+        livePolicy !== 'read-only' &&
+        this.normalizeCodexPermissionMode(ownerSession?.codexPermissionMode) === 'fullAccess'
+      ) {
+        answerElicitation(true);
+        return;
       }
 
       const requestId = uuidv4();
@@ -2341,6 +2497,7 @@ export class CodexAppServerManager extends EventEmitter {
         method: request.method,
         threadId,
         params: request.params,
+        ...(desktopHoldId ? { desktopHoldId } : {}),
       });
 
       this.emit(isApproval || isElicitation ? 'approval_request' : 'user_input_request', {
@@ -2476,7 +2633,12 @@ export class CodexAppServerManager extends EventEmitter {
             session.status = 'ready';
             session.activeTurnId = undefined;
           }
-          computerUseLease.releaseThread(threadId);
+          // The turn reported its own end: what it held the desktop for is
+          // over. A hold taken for another turn is not this terminal's to end.
+          const endedTurnId = this.readString(turn, 'id');
+          this.releaseDesktopHolds(
+            (hold) => hold.threadId === threadId && (!hold.turnId || !endedTurnId || hold.turnId === endedTurnId)
+          );
           this.emit('turn_completed', {
             threadId,
             turnId: this.readString(turn, 'id'),

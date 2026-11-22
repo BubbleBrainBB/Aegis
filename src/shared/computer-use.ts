@@ -2,6 +2,10 @@ export const AEGIS_COMPUTER_USE_SERVER_NAME = 'aegis-computer-use';
 export const CODEX_COMPUTER_USE_SERVER_NAME = 'computer-use';
 export const NODE_REPL_SERVER_NAME = 'node_repl';
 
+// The tools of Codex's own Computer use client (SkyComputerUseClient), as its
+// `tools/list` reports them: all ten are that client's and work there,
+// select_text included. The cua-driver gateway offers nine of them, see
+// COMPUTER_USE_GATEWAY_TOOLS. The two lists are per backend on purpose.
 export const COMPUTER_USE_READ_ONLY_TOOLS = ['list_apps', 'get_app_state'] as const;
 export const COMPUTER_USE_MUTATING_TOOLS = [
   'click',
@@ -30,6 +34,9 @@ export interface ComputerUseMediaRef {
   sizeBytes: number;
 }
 
+/** Which Computer use backend a grant belongs to: Codex's own client, or the cua-driver gateway. */
+export type ComputerUseGrantOwner = 'codex' | 'gateway';
+
 export interface ComputerUseGrantView {
   key: string;
   threadId: string;
@@ -37,7 +44,12 @@ export interface ComputerUseGrantView {
   generation: number;
   server: string;
   tool: string;
+  /** The app's name, for showing. */
   app: string;
+  /** What the grant is matched on when the backend knows it: the bundle identifier. Absent: the name. */
+  appId?: string;
+  /** Absent on grants made before backends were told apart: Codex's. */
+  owner?: ComputerUseGrantOwner;
   maxRisk: number;
   createdAt: number;
 }
@@ -444,6 +456,10 @@ export function classifyComputerUseAction(input: {
   const server = input.server || parsed?.server || null;
   const tool = input.tool || parsed?.tool || null;
   if (!isComputerUseServerName(server) && !isNodeReplServerName(server)) {
+    // A tool is its server's, whatever it is called: a browser server's
+    // `click` is a click in that browser, not on the desktop. Only a name
+    // that comes with no server at all is read by what it is called.
+    if ((server || '').trim()) return null;
     if (tool && isComputerUseServerName(input.toolName)) {
       // fall through for bare computer-use tool names
     } else if (!tool || !isComputerUseActionKind(tool)) {
@@ -577,4 +593,66 @@ export function formatComputerUseLabel(
     default:
       return progressive ? 'Using the computer' : `${prefix}${done ? 'Used the computer' : 'use the computer'}`;
   }
+}
+
+// ── The Computer use gateway (cua-driver behind the main process) ─────────
+
+/** Whether the pinned cua-driver binary is there to run. */
+export type ComputerUseDriverState = 'ready' | 'missing' | 'version-mismatch' | 'unsupported-platform';
+
+export interface ComputerUseDriverStatus {
+  state: ComputerUseDriverState;
+  /** The binary Aegis would run; null when none was found. */
+  path: string | null;
+  /** What that binary reports as its version. */
+  version: string | null;
+  /** The one version Aegis runs. */
+  pinnedVersion: string;
+  /** Why it is not ready, in words for the settings page. */
+  message: string | null;
+}
+
+/** What Settings shows for Computer use. */
+export interface ComputerUseSettingsView {
+  /**
+   * Whether Computer use is on right now. Off (the default): no tools are
+   * offered and no driver process runs.
+   */
+  enabled: boolean;
+  /** On because the environment says so (AEGIS_COMPUTER_USE_ENABLED=1); the switch cannot turn that off. */
+  enabledByEnvironment: boolean;
+  /** A cua-driver binary the user pointed at; empty for the default places. */
+  driverPath: string;
+  driver: ComputerUseDriverStatus;
+  /** The two macOS grants, as Aegis itself holds them; null off macOS. */
+  permissions: { accessibility: boolean; screenRecording: boolean } | null;
+}
+
+/**
+ * The tools the cua-driver gateway offers: only what that driver can do.
+ * Codex's client also has select_text; cua-driver has no way to select a
+ * range of text, so the gateway does not offer it (and refuses it by name).
+ */
+export const COMPUTER_USE_GATEWAY_TOOLS = [
+  'list_apps',
+  'get_app_state',
+  'click',
+  'perform_secondary_action',
+  'set_value',
+  'scroll',
+  'drag',
+  'press_key',
+  'type_text',
+] as const;
+
+/** A gateway tool under the name agents and the transcript know it by. */
+export function computerUseToolName(tool: string): string {
+  return `mcp__${AEGIS_COMPUTER_USE_SERVER_NAME}__${tool}`;
+}
+
+/** The gateway tool a transcript tool name stands for, or null. */
+export function computerUseGatewayTool(toolName: string | null | undefined): string | null {
+  const parsed = toolName ? parseMcpToolName(toolName) : null;
+  if (!parsed || parsed.server !== AEGIS_COMPUTER_USE_SERVER_NAME) return null;
+  return (COMPUTER_USE_GATEWAY_TOOLS as readonly string[]).includes(parsed.tool) ? parsed.tool : null;
 }
