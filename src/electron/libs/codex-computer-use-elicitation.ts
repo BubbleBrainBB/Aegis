@@ -245,7 +245,9 @@ export function parseMcpToolApprovalElicitation(
     action,
     isComputerUse: isComputerUse || isComputerUseServerName(server),
     isNodeRepl,
-    deniedTarget: isDeniedComputerUseTarget(app),
+    // Only for a call that uses the desktop: another server's `app` argument is not Aegis's to judge.
+    deniedTarget:
+      (isComputerUse || isComputerUseServerName(server) || isNodeRepl) && isDeniedComputerUseTarget(app),
     providerThreadId:
       asString(envelope.threadId) ||
       asString(envelope.conversationId) ||

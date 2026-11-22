@@ -46,6 +46,7 @@ import {
   COMPUTER_USE_LEASE_MESSAGE,
   codexFullAccessApprovalPolicy,
   computerUseLease,
+  CODEX_COMPUTER_USE_PROCESS_MESSAGE,
   computerUseReadsAskAegis,
   injectsComputerUseServer,
   resolveComputerUseSpawnPolicy,
@@ -1168,9 +1169,13 @@ export class CodexAppServerManager extends EventEmitter {
       options.codexPermissionMode,
       options.codexExecutionMode
     );
-    // In Auto mode approvals go to Codex's own reviewer, not to Aegis: a read
-    // that asked would cost a review each time and still not be checked here.
-    this.computerUseReadsAsk = computerUseReadsAskAegis(this.normalizeCodexPermissionMode(options.codexPermissionMode));
+    // Where Codex's own reviewer answers approvals (Auto, outside Plan), a
+    // read that asked would cost a review each time and still not be checked
+    // here. Everywhere else it asks Aegis.
+    this.computerUseReadsAsk = computerUseReadsAskAegis(
+      this.normalizeCodexPermissionMode(options.codexPermissionMode),
+      this.normalizeCodexExecutionMode(options.codexExecutionMode)
+    );
     await this.ensureSpawned(cwd);
 
     let response: Record<string, unknown>;
@@ -1380,6 +1385,7 @@ export class CodexAppServerManager extends EventEmitter {
     // a turn that is being killed loses the message (P0-6).
     const steerTurnId =
       session.status === 'running' && session.activeTurnId ? session.activeTurnId : null;
+    if (!steerTurnId) this.assertProcessServesTurn(threadId, session, options);
     this.lastActiveThreadId = threadId;
     session.status = 'running';
     session.model = options.model || session.model;
@@ -1468,6 +1474,15 @@ export class CodexAppServerManager extends EventEmitter {
       } catch (error) {
         if (isDev()) {
           console.log('[Codex AppServer] turn/steer fell back to turn/start:', error);
+        }
+        // The turn it was meant for is over: this starts one, in the modes
+        // the message carries, and those need a process that fits them.
+        try {
+          this.assertProcessServesTurn(threadId, session, options);
+        } catch (mismatch) {
+          session.status = 'ready';
+          session.activeTurnId = undefined;
+          throw mismatch;
         }
       }
     }
@@ -1784,6 +1799,26 @@ export class CodexAppServerManager extends EventEmitter {
       generation: settle.generation,
       confirmed,
     });
+  }
+
+  /**
+   * A turn Aegis answers for must run on a process whose Computer use reads
+   * ask Aegis: they cannot be made to once the process is running, so on one
+   * started for Codex's own reviewer (Auto) they would look at the desktop
+   * unchecked while another session holds it. Such a turn is not started;
+   * the session's next process is started for its modes.
+   */
+  private assertProcessServesTurn(
+    threadId: string,
+    session: CodexSession,
+    options: CodexRunOptions
+  ): void {
+    if (!this.computerUseInjected || this.computerUseReadsAsk || isWorkflowReadOnly(threadId)) return;
+    const turnAsksAegis = computerUseReadsAskAegis(
+      this.normalizeCodexPermissionMode(options.codexPermissionMode || session.codexPermissionMode),
+      this.normalizeCodexExecutionMode(options.codexExecutionMode || session.codexExecutionMode)
+    );
+    if (turnAsksAegis) throw new Error(CODEX_COMPUTER_USE_PROCESS_MESSAGE);
   }
 
   private resolveComputerUsePolicy(
@@ -2403,11 +2438,16 @@ export class CodexAppServerManager extends EventEmitter {
         return;
       }
 
-      const mutating = Boolean(
-        elicitation?.action?.mutating ||
-          (elicitation?.toolName && isComputerUseMutatingTool(elicitation.toolName)) ||
-          elicitation?.isNodeRepl
-      );
+      // Only a Computer use call can act on the desktop. Another server's
+      // tool is not one because of its name (a browser server has a `click`
+      // too): it neither waits for the desktop nor takes it.
+      const mutating =
+        isComputerUseCall &&
+        Boolean(
+          elicitation?.action?.mutating ||
+            (elicitation?.toolName && isComputerUseMutatingTool(elicitation.toolName)) ||
+            elicitation?.isNodeRepl
+        );
       const ownerSession = this.sessions.get(threadId);
       const livePolicy = this.resolveComputerUsePolicy(
         ownerSession?.codexPermissionMode,

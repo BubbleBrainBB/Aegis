@@ -23,7 +23,9 @@ import {
 } from '../../src/shared/computer-use';
 import {
   buildComputerUseMcpOverrideArgs,
+  codexApprovalsReviewer,
   codexFullAccessApprovalPolicy,
+  codexProcessFitsComputerUse,
   computerUseReadsAskAegis,
   ComputerUseLease,
   injectsComputerUseServer,
@@ -71,6 +73,19 @@ function testClassification() {
 
   assert.equal(classifyToolUse('mcp__aegis-computer-use__get_app_state', { app: 'Finder' }), 'computer_use');
   assert.equal(classifyToolUse('mcp__pencil__get_screenshot', {}), 'mcp_tool_call');
+
+  // A tool is its server's, whatever it is called: another server's `click`
+  // (a browser's, say) is not a click on the desktop.
+  for (const tool of ['click', 'type_text', 'scroll', 'drag', 'press_key', 'set_value', 'list_apps', 'get_app_state']) {
+    assert.equal(classifyComputerUseAction({ server: 'chrome-devtools', tool }), null, `chrome-devtools.${tool}`);
+    assert.equal(classifyComputerUseAction({ toolName: `mcp__chrome-devtools__${tool}` }), null);
+    assert.equal(classifyComputerUseAction({ server: 'chrome-devtools', tool, toolName: `mcp__chrome-devtools__${tool}` }), null);
+    assert.equal(classifyToolUse(`mcp__chrome-devtools__${tool}`, { app: 'Finder' }), 'mcp_tool_call');
+    assert.equal(classifyComputerUseAction({ server: 'aegis-computer-use', tool })?.kind, tool, 'the Computer use server\'s own stays one');
+    assert.equal(classifyComputerUseAction({ server: 'computer-use', tool })?.kind, tool);
+  }
+  // A name that comes with no server at all is still read by what it is called.
+  assert.equal(classifyComputerUseAction({ tool: 'click' })?.mutating, true);
   assert.equal(
     formatReadableToolSummary(
       deriveReadableToolDisplay(
@@ -231,6 +246,23 @@ function testRealApprovalRequestShape() {
   assert.equal(other?.approvalKind, 'mcp_tool_call');
   assert.equal(other?.toolName, 'create_issue');
 
+  // Another server's tool with a Computer use tool's name is that server's
+  // too: not Computer use, not an action on the desktop, not Aegis's to
+  // refuse for the app it names, and nothing a Computer use grant covers.
+  for (const tool of ['click', 'type_text', 'get_app_state']) {
+    const sameName = parseMcpToolApprovalElicitation(
+      'mcpServer/elicitation/request',
+      codexToolApprovalElicitationFixture({ threadId: 'p1', server: 'chrome-devtools', tool, params: { uid: '1_2', app: 'com.aegis.desktop' } })
+    );
+    assert.equal(sameName?.toolName, tool);
+    assert.equal(sameName?.server, 'chrome-devtools');
+    assert.equal(sameName?.isComputerUse, false, `chrome-devtools.${tool} is not Computer use`);
+    assert.equal(sameName?.isNodeRepl, false);
+    assert.equal(sameName?.action, null);
+    assert.equal(sameName?.deniedTarget, false);
+    assert.equal(sameName?.grantEligible, false);
+  }
+
   // A name given outright still wins over the sentence.
   const wrapped = parseMcpToolApprovalElicitation(
     'mcpServer/elicitation/request',
@@ -281,8 +313,45 @@ function testOverridesAndLease() {
   assert.equal(mutatingArgs.filter((arg) => arg.includes('default_tools_approval_mode="prompt"')).length, 0);
   assert.ok(mutatingArgs.includes('mcp_servers.aegis-computer-use.default_tools_approval_mode="writes"'));
   // Auto mode: Codex's own reviewer would answer instead of Aegis, so reads do not ask there.
-  assert.equal(computerUseReadsAskAegis('auto'), false);
-  for (const mode of ['defaultPermissions', 'fullAccess', undefined, null]) assert.equal(computerUseReadsAskAegis(mode), true);
+  assert.equal(computerUseReadsAskAegis('auto', 'execute'), false);
+  assert.equal(computerUseReadsAskAegis('auto', undefined), false);
+  for (const mode of ['defaultPermissions', 'fullAccess', undefined, null]) {
+    for (const execution of ['execute', 'plan', undefined]) {
+      assert.equal(computerUseReadsAskAegis(mode, execution), true, `${mode}/${execution}`);
+    }
+  }
+  // Plan is answered by the user whatever the permission mode, Auto included: reads ask Aegis there.
+  assert.equal(codexApprovalsReviewer('auto', 'plan'), 'user');
+  assert.equal(computerUseReadsAskAegis('auto', 'plan'), true);
+  assert.equal(codexApprovalsReviewer('auto', 'execute'), 'auto_review');
+
+  // Whether a read asks is fixed when the process starts; a turn whose
+  // approvals are answered by the other side needs another process.
+  {
+    const startedFor = (permission: string, execution: string) => computerUseReadsAskAegis(permission, execution);
+    const fits = (spawned: boolean | undefined, permission: string, execution: string, installed = true) =>
+      codexProcessFitsComputerUse(spawned, permission, execution, installed);
+    // Auto, then Plan on top of it.
+    const auto = startedFor('auto', 'execute');
+    assert.equal(fits(auto, 'auto', 'execute'), true);
+    assert.equal(fits(auto, 'auto', 'plan'), false, 'Auto process, Plan turn: its reads would not ask');
+    // An Auto turn steered to Default or Full Access: the modes change, the
+    // process does not, and the next turn is the user's to answer.
+    assert.equal(fits(auto, 'defaultPermissions', 'execute'), false);
+    assert.equal(fits(auto, 'fullAccess', 'execute'), false);
+    // The other way round: reads would wait for Codex's reviewer each time.
+    const plan = startedFor('auto', 'plan');
+    assert.equal(fits(plan, 'auto', 'plan'), true);
+    assert.equal(fits(plan, 'auto', 'execute'), false);
+    assert.equal(fits(startedFor('defaultPermissions', 'execute'), 'auto', 'execute'), false);
+    // Nothing changes between the modes Aegis answers for.
+    for (const [permission, execution] of [['defaultPermissions', 'execute'], ['defaultPermissions', 'plan'], ['fullAccess', 'execute'], ['fullAccess', 'plan'], ['auto', 'plan']]) {
+      assert.equal(fits(startedFor('defaultPermissions', 'execute'), permission, execution), true, `${permission}/${execution}`);
+    }
+    // Without the client there are no such tools, and a process nothing is known about is left alone.
+    assert.equal(fits(auto, 'defaultPermissions', 'execute', false), true);
+    assert.equal(fits(undefined, 'defaultPermissions', 'execute'), true);
+  }
   const autoArgs = buildComputerUseMcpOverrideArgs({
     clientPath: '/tmp/SkyComputerUseClient',
     policy: 'mutating',

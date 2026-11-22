@@ -100,7 +100,7 @@ import {
 import { isSameClaudeModelSelection, normalizeClaudeRequestedModel, reconcileClaudeDisplayModel } from './libs/claude-model-selection';
 import { loadClaudeSettings, getClaudeSettings, getClaudeModelConfigWithCatalog, getMcpServers, getGlobalMcpServers, getProjectMcpServers, saveMcpServers, saveProjectMcpServers, type McpServerConfig } from './libs/claude-settings';
 import { getCodexMcpServers, saveCodexMcpServers } from './libs/codex-mcp-settings';
-import { resolveComputerUseArtifact } from './libs/codex-computer-use';
+import { codexProcessFitsComputerUse, computerUseReadsAskAegis, resolveComputerUseArtifact } from './libs/codex-computer-use';
 import { computerUseGrants } from './libs/codex-computer-use-grants';
 import {
   getComputerUseDriverStatus,
@@ -3684,6 +3684,12 @@ const runnerHandles = new Map<
     staleConfig?: boolean;
     /** The model this Claude runner was last handed (spawn or warm send). */
     claudeModel?: string;
+    /**
+     * Whether this Codex runner's process was started with Computer use
+     * reads that ask Aegis. Fixed for the life of the process: a later send
+     * (a steer too) changes the modes above, never this.
+     */
+    codexComputerUseReadsAsk?: boolean;
     /** Automation runners auto-approve permissions; never reuse them for human turns. */
     autoApprove?: boolean;
     /**
@@ -11006,6 +11012,18 @@ async function handleSessionContinueImpl(
   const codexExecutionModeChanged =
     nextProvider === 'codex' &&
     normalizeCodexExecutionMode(runnerHandles.get(sessionId)?.codexExecutionMode || previousCodexExecutionMode) !== nextCodexExecutionMode;
+  // Whether a Computer use read asks Aegis is fixed when the Codex process
+  // starts, and who answers is decided per turn (Aegis, or Codex's own
+  // reviewer in Auto outside Plan). Compared with what the process was
+  // started with, not with the modes last sent: a steer into a running turn
+  // changes those without changing the process.
+  const codexComputerUseProcessStale =
+    nextProvider === 'codex' &&
+    !codexProcessFitsComputerUse(
+      runnerHandles.get(sessionId)?.codexComputerUseReadsAsk,
+      nextCodexPermissionMode,
+      nextCodexExecutionMode
+    );
   const codexReasoningEffortChanged =
     nextProvider === 'codex' &&
     normalizeCodexReasoningEffort(
@@ -11404,6 +11422,7 @@ async function handleSessionContinueImpl(
       kimiSessionReleased ||
       (((nextProvider === 'codex' && !codexMidTurn) || nextProvider === 'opencode' || (nextProvider === 'kimi' && !kimiMidTurn) || nextProvider === 'grok' || nextProvider === 'pi' || (nextProvider === 'bubble' && !bubbleMidTurn) || (nextProvider === 'deepseek' && !deepseekMidTurn)) && modelChanged) ||
       (nextProvider === 'codex' && !codexMidTurn && codexPermissionModeChanged) ||
+      (nextProvider === 'codex' && !codexMidTurn && codexComputerUseProcessStale) ||
       (nextProvider === 'codex' && !codexMidTurn && codexReasoningEffortChanged) ||
       (nextProvider === 'codex' && !codexMidTurn && codexFastModeChanged) ||
       (nextProvider === 'grok' && grokReasoningEffortChanged) ||
@@ -12791,6 +12810,13 @@ function startRunner(
     claudeModel: provider === 'claude' ? resolvedModelOverride : undefined,
     codexExecutionMode: provider === 'codex' ? normalizeCodexExecutionMode(codexExecutionMode) : undefined,
     codexPermissionMode: provider === 'codex' ? normalizeCodexPermissionMode(codexPermissionMode) : undefined,
+    codexComputerUseReadsAsk:
+      provider === 'codex'
+        ? computerUseReadsAskAegis(
+            normalizeCodexPermissionMode(codexPermissionMode),
+            normalizeCodexExecutionMode(codexExecutionMode)
+          )
+        : undefined,
     codexReasoningEffort:
       provider === 'codex' ? normalizeCodexReasoningEffort(codexReasoningEffort) : undefined,
     codexFastMode:

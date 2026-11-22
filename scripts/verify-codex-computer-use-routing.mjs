@@ -6,8 +6,8 @@
 // One session has the desktop at a time, for looking too. Aegis can only hold
 // Codex's own Computer use to that if Codex asks before a read runs, and
 // whether it asks is Codex's behaviour, not Aegis's: this script is where
-// that is checked against the real thing. For Default, Plan and Full Access
-// it starts a thread with exactly the arguments and permission options the
+// that is checked against the real thing. For Default, Plan (on Auto too) and
+// Full Access it starts a thread with exactly the arguments and permission options the
 // manager uses, has the model call the read-only `list_apps` once, and
 // requires the approval request to arrive at the client before the call
 // completes. For Auto it requires the opposite: the read must not ask (there
@@ -65,6 +65,8 @@ const MODES = [
   { name: 'Plan', permission: 'defaultPermissions', execution: 'plan', asks: true },
   { name: 'Full Access', permission: 'fullAccess', execution: 'execute', asks: true },
   { name: 'Auto', permission: 'auto', execution: 'execute', asks: false },
+  // Plan on top of Auto is answered by the user, so its reads ask Aegis again.
+  { name: 'Auto + Plan', permission: 'auto', execution: 'plan', asks: true },
 ];
 // The tools sit behind Codex's tool search, and the model does not always find them at once.
 const PROMPT =
@@ -77,7 +79,7 @@ async function runTurn(mode) {
   const manager = new CodexAppServerManager(binary, 'routing-check');
   const args = buildCodexMcpConfigOverrideArgs({
     computerUsePolicy: manager.resolveComputerUsePolicy(mode.permission, mode.execution),
-    computerUseReadsAsk: computerUseReadsAskAegis(mode.permission),
+    computerUseReadsAsk: computerUseReadsAskAegis(mode.permission, mode.execution),
   });
   manager.computerUseInjected = injectsComputerUseServer(args);
   assert.equal(manager.computerUseInjected, true, 'the Computer use server is injected');

@@ -50,7 +50,7 @@ const grantsMod = require('../dist-electron/electron/libs/codex-computer-use-gra
 const elicitationMod = require('../dist-electron/electron/libs/codex-computer-use-elicitation.js');
 const { computerUseGrants } = grantsMod.default ?? grantsMod;
 const leaseMod = require('../dist-electron/electron/libs/codex-computer-use.js');
-const { computerUseLease } = leaseMod.default ?? leaseMod;
+const { computerUseLease, codexApprovalsReviewer, computerUseReadsAskAegis, CODEX_COMPUTER_USE_PROCESS_MESSAGE } = leaseMod.default ?? leaseMod;
 const { wrappedComputerUseElicitationFixture, codexToolApprovalElicitationFixture } = elicitationMod.default ?? elicitationMod;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1546,6 +1546,33 @@ function testSourcePins() {
   assert.match(ipcSource, /await stoppingEntry\.settlePromise/, 'continue must hold on the stop settle');
   ok('ipc stop-window classification wired (source pin)');
 
+  // Whether a Computer use read asks Aegis is fixed when the Codex process
+  // starts. The runner keeps that apart from the modes last sent (a steer
+  // changes those, not the process) and replaces a process that does not
+  // fit the next turn. The decision itself is codexProcessFitsComputerUse
+  // (codex-computer-use.test); this pins that the runner asks it.
+  assert.match(
+    ipcSource,
+    /codexComputerUseReadsAsk:\s*provider === 'codex'\s*\? computerUseReadsAskAegis\(\s*normalizeCodexPermissionMode\(codexPermissionMode\),\s*normalizeCodexExecutionMode\(codexExecutionMode\)\s*\)/,
+    'recorded when the runner starts, from both modes'
+  );
+  assert.equal(
+    (ipcSource.match(/\.codexComputerUseReadsAsk\s*=[^=]/g) || []).length,
+    0,
+    'and never rewritten by a later send'
+  );
+  assert.match(
+    ipcSource,
+    /!codexProcessFitsComputerUse\(\s*runnerHandles\.get\(sessionId\)\?\.codexComputerUseReadsAsk,\s*nextCodexPermissionMode,\s*nextCodexExecutionMode\s*\)/,
+    'compared with the modes of the turn about to start'
+  );
+  assert.match(
+    ipcSource,
+    /\(nextProvider === 'codex' && !codexMidTurn && codexComputerUseProcessStale\) \|\|/,
+    'a process that does not fit is replaced before the turn (not under a running one)'
+  );
+  ok('ipc replaces a Codex process whose Computer use reads do not fit the next turn (source pin)');
+
   // Effort normalization has ONE owner (src/shared/codex-reasoning). A local
   // `function normalizeCodexReasoningEffort` anywhere below would be a
   // whitelist regrowing — the 2026-07 bug was exactly a stale ipc copy.
@@ -1959,6 +1986,100 @@ async function testComputerUseLease() {
     ok('Full Access lets Computer use approvals reach Aegis; the other modes already do');
   }
 
+  // Whether a read asks Aegis follows who answers the turn's approvals, in
+  // every pair of modes: what the process is started with and what each turn
+  // is sent must say the same.
+  {
+    const { manager, responders } = createCapturingManager();
+    for (const permission of ['defaultPermissions', 'fullAccess', 'auto']) {
+      for (const execution of ['execute', 'plan']) {
+        const reviewer = codexApprovalsReviewer(permission, execution);
+        assert.equal(manager.buildThreadPermissionOptions('/tmp/proj', permission, execution).approvalsReviewer, reviewer, `${permission}/${execution}: thread`);
+        assert.equal(manager.buildTurnPermissionOptions('/tmp/proj', permission, execution).approvalsReviewer, reviewer, `${permission}/${execution}: turn`);
+        assert.equal(computerUseReadsAskAegis(permission, execution), reviewer === 'user', `${permission}/${execution}: reads ask exactly where Aegis answers`);
+      }
+    }
+    assert.equal(codexApprovalsReviewer('auto', 'plan'), 'user', 'Plan on top of Auto is answered by the user');
+    // The process of a session that starts in Auto and Plan is started with reads that ask.
+    let started = 0;
+    responders.set('thread/start', () => ({ result: { thread: { id: `p-modes-${++started}` } } }));
+    manager.computerUseReadsAsk = false;
+    await manager.createSession('t-plan', '/tmp/proj', undefined, { codexPermissionMode: 'auto', codexExecutionMode: 'plan' });
+    assert.equal(manager.computerUseReadsAsk, true, 'Auto + Plan: reads ask Aegis');
+    await manager.createSession('t-auto', '/tmp/proj', undefined, { codexPermissionMode: 'auto', codexExecutionMode: 'execute' });
+    assert.equal(manager.computerUseReadsAsk, false, 'Auto: they do not');
+    await manager.createSession('t-default', '/tmp/proj', undefined, { codexPermissionMode: 'defaultPermissions' });
+    assert.equal(manager.computerUseReadsAsk, true);
+    ok('reads ask Aegis exactly where Aegis answers the turn (Plan on Auto included)');
+  }
+
+  // A process started for Auto (reads do not ask) must not run a turn Aegis
+  // answers for: its looks at the desktop could not be checked.
+  {
+    const autoProcess = (sessionExtra = {}) => {
+      const fixture = createCapturingManager();
+      fixture.manager.computerUseInjected = true;
+      fixture.manager.computerUseReadsAsk = false;
+      seedSession(fixture.manager, 't1', 'p1', { codexPermissionMode: 'auto', codexExecutionMode: 'execute', ...sessionExtra });
+      fixture.responders.set('turn/start', () => ({ result: { turn: { id: 'turn-next' } } }));
+      fixture.responders.set('turn/steer', () => ({ result: {} }));
+      fixture.responders.set('model/list', () => ({ result: { items: [], nextCursor: null } }));
+      const started = () => fixture.outbound.filter((m) => m.method === 'turn/start');
+      return { ...fixture, started };
+    };
+    const refused = { message: CODEX_COMPUTER_USE_PROCESS_MESSAGE };
+
+    // Auto, then Plan.
+    {
+      const { manager, started } = autoProcess();
+      await assert.rejects(manager.sendTurn('t1', 'plan it', undefined, undefined, undefined, { codexPermissionMode: 'auto', codexExecutionMode: 'plan' }), refused);
+      assert.equal(started().length, 0, 'no Plan turn on a process whose reads do not ask');
+      assert.equal(manager.sessions.get('t1').status, 'ready', 'and the session is not left running');
+    }
+    // An Auto turn steered to Default or Full Access; the next turn is the user's to answer.
+    for (const permission of ['defaultPermissions', 'fullAccess']) {
+      const { manager, outbound, notify, started } = autoProcess({ status: 'running', activeTurnId: 'turn-1' });
+      await manager.sendTurn('t1', 'steer', undefined, undefined, undefined, { codexPermissionMode: permission });
+      assert.equal(outbound.filter((m) => m.method === 'turn/steer').length, 1, 'the steer joins the running turn');
+      assert.equal(manager.sessions.get('t1').codexPermissionMode, permission);
+      notify('turn/completed', { threadId: 'p1', turn: { id: 'turn-1', status: 'completed', error: null } });
+      await sleep(10);
+      await assert.rejects(manager.sendTurn('t1', 'next'), refused);
+      await assert.rejects(manager.sendTurn('t1', 'next', undefined, undefined, undefined, { codexPermissionMode: permission }), refused);
+      assert.equal(started().length, 0, `${permission}: the next turn does not start on the Auto process`);
+    }
+    // A steer that finds its turn over starts one: the same rule.
+    {
+      const { manager, responders, started } = autoProcess({ status: 'running', activeTurnId: 'turn-1' });
+      responders.set('turn/steer', () => ({ error: { code: -32600, message: 'no active turn' } }));
+      await assert.rejects(manager.sendTurn('t1', 'late', undefined, undefined, undefined, { codexPermissionMode: 'defaultPermissions' }), refused);
+      assert.equal(started().length, 0);
+      assert.equal(manager.sessions.get('t1').status, 'ready');
+    }
+    // What fits goes ahead: Auto on its own process, any turn on a process
+    // whose reads ask, and a process without the Computer use server.
+    {
+      const { manager, started } = autoProcess();
+      await manager.sendTurn('t1', 'go');
+      assert.equal(started().length, 1);
+      assert.equal(started()[0].params.approvalsReviewer, 'auto_review');
+    }
+    {
+      const { manager, started } = autoProcess({ codexPermissionMode: 'defaultPermissions' });
+      manager.computerUseReadsAsk = true;
+      await manager.sendTurn('t1', 'go');
+      await manager.sendTurn('t1', 'go', undefined, undefined, undefined, { codexPermissionMode: 'auto' });
+      assert.equal(started().length, 1, 'the first starts; the second steers it');
+    }
+    {
+      const { manager, started } = autoProcess();
+      manager.computerUseInjected = false;
+      await manager.sendTurn('t1', 'go', undefined, undefined, undefined, { codexPermissionMode: 'defaultPermissions' });
+      assert.equal(started().length, 1, 'no Computer use server: nothing to hold');
+    }
+    ok('a turn Aegis answers for does not start on a process started for Auto');
+  }
+
   // Default, Plan, Full Access: a look goes through the same check. Nobody
   // else has the desktop: it runs, with no card and without taking the
   // desktop. Another session has it: declined.
@@ -2051,6 +2172,55 @@ async function testComputerUseLease() {
     assert.equal(cards(), 0);
     assert.equal(computerUseLease.currentOwner(), null);
     ok('Full Access: an action runs without a card, after the same checks, and holds the desktop until its turn ends');
+  }
+
+  // Another server's tool that is named like a Computer use tool (a browser
+  // server has a `click` too) is not one: it does not wait for the desktop,
+  // and it does not take it.
+  {
+    const browser = (manager, id, tool, params = { uid: '1_2' }) =>
+      elicit(manager, id, tool, { server: 'chrome-devtools', params });
+    {
+      const { manager, answer, cards } = session('Full Access');
+      // Another session holds the desktop: the browser call is not the desktop's business.
+      assert.equal(computerUseLease.tryAcquire('bubble-session', 'bubble-call'), true);
+      browser(manager, 451, 'click');
+      browser(manager, 452, 'type_text');
+      browser(manager, 453, 'get_app_state');
+      await sleep(10);
+      for (const id of [451, 452, 453]) assert.equal(answer(id), 'accept', `Full Access: chrome-devtools request ${id} runs while another session holds the desktop`);
+      assert.deepEqual(computerUseLease.actionsOf('t1'), [], 'and takes nothing');
+      assert.equal(computerUseLease.currentOwner()?.threadId, 'bubble-session');
+      // Nobody holds it: it still takes nothing, so the desktop stays free for whoever uses it.
+      freeDesktop();
+      browser(manager, 454, 'click');
+      browser(manager, 455, 'click', { uid: '1_2', app: 'com.aegis.desktop' });
+      await sleep(10);
+      assert.equal(answer(454), 'accept');
+      assert.equal(answer(455), 'accept', 'an `app` argument of another server is not Aegis\'s to refuse');
+      assert.equal(computerUseLease.currentOwner(), null, 'a browser click does not take the desktop');
+      assert.equal(computerUseLease.tryAcquire('bubble-session', 'bubble-call'), true, 'Bubble gets it');
+      assert.equal(cards(), 0);
+    }
+    for (const mode of ['Default', 'Plan']) {
+      const { manager, answer, cards } = session(mode);
+      assert.equal(computerUseLease.tryAcquire('bubble-session', 'bubble-call'), true);
+      browser(manager, 461, 'click');
+      await sleep(10);
+      assert.equal(answer(461), undefined, `${mode}: asked about like any other server's tool, not declined for the desktop`);
+      assert.equal(cards(), 1);
+      assert.deepEqual(computerUseLease.actionsOf('t1'), []);
+      assert.equal(computerUseLease.currentOwner()?.threadId, 'bubble-session');
+    }
+    // The Computer use server's own `click` is still held to all of it.
+    {
+      const { manager, answer } = session('Full Access');
+      assert.equal(computerUseLease.tryAcquire('bubble-session', 'bubble-call'), true);
+      elicit(manager, 471, 'click');
+      await sleep(10);
+      assert.equal(answer(471), 'decline');
+    }
+    ok("another server's same-named tool neither waits for the desktop nor takes it");
   }
 
   // A hold is this taking's own. Two processes of one session number their

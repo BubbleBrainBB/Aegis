@@ -854,7 +854,8 @@ export class CodexAdapter implements ProviderAdapter {
       const elicitation = parseMcpToolApprovalElicitation(method, params);
       if (elicitation) {
         const app = elicitation.canonicalApp;
-        if (elicitation.deniedTarget || isDeniedComputerUseTarget(app)) {
+        const usesDesktop = elicitation.isComputerUse || elicitation.isNodeRepl;
+        if (elicitation.deniedTarget || (usesDesktop && isDeniedComputerUseTarget(app))) {
           void this.respondToRequest(threadId, requestId, {
             behavior: 'deny',
             message: 'Aegis blocked Computer Use from targeting the Aegis app itself.',

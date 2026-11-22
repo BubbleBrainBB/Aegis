@@ -100,14 +100,52 @@ export function codexFullAccessApprovalPolicy(
 }
 
 /**
- * Whether Computer use's read tools ask Aegis before they run, for a session
- * in this permission mode. Not in Auto: there Codex's own reviewer answers
- * approvals, so a read that asked would wait for a review each time (seconds,
- * measured on codex-cli 0.166.0) and Aegis would still not be asked.
+ * Who answers a turn's approvals: Aegis ('user') or Codex's own reviewer. The
+ * reviewer answers only in Auto, and not in Plan, which the user answers
+ * whatever the permission mode. (The manager's permission options say the
+ * same; verify-codex-app-server holds the two together.)
  */
-export function computerUseReadsAskAegis(permissionMode: string | null | undefined): boolean {
-  return permissionMode !== 'auto';
+export function codexApprovalsReviewer(
+  permissionMode: string | null | undefined,
+  executionMode: string | null | undefined
+): 'user' | 'auto_review' {
+  return permissionMode === 'auto' && executionMode !== 'plan' ? 'auto_review' : 'user';
 }
+
+/**
+ * Whether Computer use's read tools ask Aegis before they run, for a turn in
+ * these modes: whenever Aegis answers the turn's approvals. Not where Codex's
+ * own reviewer does: a read that asked would wait for a review each time
+ * (seconds, measured on codex-cli 0.166.0) and Aegis would still not be asked.
+ */
+export function computerUseReadsAskAegis(
+  permissionMode: string | null | undefined,
+  executionMode: string | null | undefined
+): boolean {
+  return codexApprovalsReviewer(permissionMode, executionMode) === 'user';
+}
+
+/**
+ * Whether a Codex process whose read tools were started asking (or not) can
+ * run a turn in these modes. Whether a read asks is fixed when the process
+ * starts, and who answers is decided per turn: a process started for the
+ * other answer has to be replaced before the turn. `undefined` is a process
+ * nothing is known about, and without the Computer use client there is no
+ * such tool to hold: both fit any turn.
+ */
+export function codexProcessFitsComputerUse(
+  spawnedReadsAsk: boolean | undefined,
+  permissionMode: string | null | undefined,
+  executionMode: string | null | undefined,
+  clientInstalled: boolean = resolveComputerUseClientPath() !== null
+): boolean {
+  if (spawnedReadsAsk === undefined || !clientInstalled) return true;
+  return spawnedReadsAsk === computerUseReadsAskAegis(permissionMode, executionMode);
+}
+
+/** Said when a turn would run on a process whose looks at the desktop Aegis could not check. */
+export const CODEX_COMPUTER_USE_PROCESS_MESSAGE =
+  'Codex has to restart for this permission mode before it can continue. Send the message again.';
 
 /** Whether these spawn arguments give the process Aegis's Computer use server. */
 export function injectsComputerUseServer(args: readonly string[]): boolean {

@@ -456,6 +456,10 @@ export function classifyComputerUseAction(input: {
   const server = input.server || parsed?.server || null;
   const tool = input.tool || parsed?.tool || null;
   if (!isComputerUseServerName(server) && !isNodeReplServerName(server)) {
+    // A tool is its server's, whatever it is called: a browser server's
+    // `click` is a click in that browser, not on the desktop. Only a name
+    // that comes with no server at all is read by what it is called.
+    if ((server || '').trim()) return null;
     if (tool && isComputerUseServerName(input.toolName)) {
       // fall through for bare computer-use tool names
     } else if (!tool || !isComputerUseActionKind(tool)) {
