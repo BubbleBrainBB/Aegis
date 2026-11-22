@@ -46,13 +46,19 @@ export function isComputerUsePlatformSupported(platform: NodeJS.Platform = proce
   return platform === 'darwin';
 }
 
+/** A development run turned Computer use on from outside, whatever the settings file says. */
+export function isComputerUseForcedOn(): boolean {
+  return isComputerUsePlatformSupported() && process.env.AEGIS_COMPUTER_USE_ENABLED === '1';
+}
+
 /**
- * The master switch. Off by default; AEGIS_COMPUTER_USE_ENABLED=1 turns it on
- * for a development run without touching the settings file.
+ * Whether Computer use is on: the switch in Settings (off by default), or
+ * AEGIS_COMPUTER_USE_ENABLED=1 for a development run. Settings shows this
+ * value, not the stored one, so the page never says "off" while it is on.
  */
 export function isComputerUseEnabled(): boolean {
   if (!isComputerUsePlatformSupported()) return false;
-  if (process.env.AEGIS_COMPUTER_USE_ENABLED === '1') return true;
+  if (isComputerUseForcedOn()) return true;
   return getComputerUseSettings().enabled;
 }
 

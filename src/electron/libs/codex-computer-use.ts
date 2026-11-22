@@ -114,21 +114,34 @@ export function buildComputerUseMcpOverrideArgs(input: {
   return args;
 }
 
+/**
+ * One session uses the desktop at a time. The lease is held per action: each
+ * action a session is allowed to start adds its id, and the desktop stays
+ * that session's while it holds any. Dropping one action (a declined
+ * approval) leaves the others, so a session that has already acted keeps the
+ * desktop until its turn ends (`releaseThread`).
+ */
 export class ComputerUseLease {
-  private owner: { threadId: string; toolUseId: string } | null = null;
+  private owner: { threadId: string; toolUseIds: string[] } | null = null;
 
   tryAcquire(threadId: string, toolUseId: string): boolean {
     if (this.owner && this.owner.threadId !== threadId) {
       return false;
     }
-    this.owner = { threadId, toolUseId };
+    if (!this.owner) this.owner = { threadId, toolUseIds: [] };
+    if (!this.owner.toolUseIds.includes(toolUseId)) this.owner.toolUseIds.push(toolUseId);
     return true;
   }
 
+  /** Drops one action, or with no id every action of the session. */
   release(threadId: string, toolUseId?: string): void {
     if (!this.owner || this.owner.threadId !== threadId) return;
-    if (toolUseId && this.owner.toolUseId !== toolUseId) return;
-    this.owner = null;
+    if (!toolUseId) {
+      this.owner = null;
+      return;
+    }
+    this.owner.toolUseIds = this.owner.toolUseIds.filter((id) => id !== toolUseId);
+    if (this.owner.toolUseIds.length === 0) this.owner = null;
   }
 
   releaseThread(threadId: string): void {
@@ -137,8 +150,20 @@ export class ComputerUseLease {
     }
   }
 
+  /** Whether this session holds the desktop for this action. */
+  holds(threadId: string, toolUseId: string): boolean {
+    return this.owner?.threadId === threadId && this.owner.toolUseIds.includes(toolUseId);
+  }
+
+  /** Whether another session holds the desktop. */
+  heldByAnother(threadId: string): boolean {
+    return Boolean(this.owner && this.owner.threadId !== threadId);
+  }
+
+  /** The session holding the desktop and the action it took it for last. */
   currentOwner(): { threadId: string; toolUseId: string } | null {
-    return this.owner;
+    if (!this.owner) return null;
+    return { threadId: this.owner.threadId, toolUseId: this.owner.toolUseIds[this.owner.toolUseIds.length - 1] };
   }
 }
 
@@ -198,8 +223,8 @@ export function persistComputerUseMedia(input: {
     return { text, mediaRefs: [] };
   }
 
-  const root = resolveComputerUseArtifactRoot(input.userDataDir, input.sessionId);
-  mkdirSync(root, { recursive: true, mode: 0o700 });
+  const root = openComputerUseArtifactDir(input.userDataDir, input.sessionId, true);
+  if (!root) return { text, mediaRefs: [] };
   const mediaRefs: ComputerUseMediaRef[] = [];
   const seen = new Set<string>();
 
@@ -208,9 +233,12 @@ export function persistComputerUseMedia(input: {
     if (seen.has(sha256)) continue;
     seen.add(sha256);
     const extension = image.mimeType.includes('png') ? 'png' : 'jpg';
-    const filePath = join(root, `${sha256}.${extension}`);
-    if (!existsSync(filePath)) {
-      writeFileSync(filePath, image.bytes, { mode: 0o600 });
+    try {
+      // Created, never opened: a file or link already under this name is
+      // left as it is (a read checks its bytes against the hash anyway).
+      writeFileSync(join(root, `${sha256}.${extension}`), image.bytes, { mode: 0o600, flag: 'wx' });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
     }
     mediaRefs.push({
       sessionId: input.sessionId,
@@ -254,7 +282,8 @@ function extractComputerUseText(payload: unknown): string {
 }
 
 const SHA256_RE = /^[a-f0-9]{64}$/;
-const SESSION_ID_RE = /^[A-Za-z0-9._-]+$/;
+/** One path segment that is a name: no separators, and not `.` or `..`. */
+const SESSION_ID_RE = /^(?!\.{1,2}$)[A-Za-z0-9._-]+$/;
 
 export function isPathWithinRoot(root: string, target: string): boolean {
   const rootPath = resolve(root);
@@ -262,25 +291,46 @@ export function isPathWithinRoot(root: string, target: string): boolean {
   return targetPath === rootPath || targetPath.startsWith(`${rootPath}/`) || targetPath.startsWith(`${rootPath}\\`);
 }
 
+/**
+ * A session's screenshot folder, as a real path that is known to sit
+ * directly inside the one artifact folder of this profile. The trusted root
+ * is that fixed folder, not whatever the session's own path resolves to: a
+ * session folder that is a link to somewhere else is refused, for reading
+ * and for writing.
+ */
+function openComputerUseArtifactDir(userDataDir: string, sessionId: string, create: boolean): string | null {
+  if (!SESSION_ID_RE.test(sessionId)) return null;
+  const base = join(userDataDir, 'computer-use-artifacts');
+  const dir = join(base, sessionId);
+  try {
+    if (create) mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const realBase = realpathSync(base);
+    const realDir = realpathSync(dir);
+    return realDir === join(realBase, sessionId) ? realDir : null;
+  } catch {
+    return null;
+  }
+}
+
 export function resolveComputerUseArtifact(
   userDataDir: string,
   sessionId: string,
   sha256: string
 ): { mimeType: string; bytes: Buffer; path: string } | null {
-  if (!SESSION_ID_RE.test(sessionId) || !SHA256_RE.test(sha256)) return null;
-  const root = resolveComputerUseArtifactRoot(userDataDir, sessionId);
+  if (!SHA256_RE.test(sha256)) return null;
+  const root = openComputerUseArtifactDir(userDataDir, sessionId, false);
+  if (!root) return null;
   const candidates = [join(root, `${sha256}.jpg`), join(root, `${sha256}.png`)];
   for (const candidate of candidates) {
     if (!existsSync(candidate)) continue;
-    let realRoot: string;
     let realFile: string;
     try {
-      realRoot = realpathSync(root);
       realFile = realpathSync(candidate);
     } catch {
       return null;
     }
-    if (!isPathWithinRoot(realRoot, realFile)) return null;
+    // The file itself, not a link out of the folder.
+    if (realFile !== candidate) return null;
     const bytes = readFileSync(realFile);
     const digest = createHash('sha256').update(bytes).digest('hex');
     if (digest !== sha256) return null;

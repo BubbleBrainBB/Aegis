@@ -4,7 +4,7 @@ import type { ComputerUseSettingsView } from '../../../shared/computer-use';
 import { SettingsGroup, SettingsRow, SettingsToggle } from './SettingsPrimitives';
 
 /**
- * Computer use: the master switch (off until the user turns it on), the
+ * Computer use: the switch as it is in effect (off until the user turns it on), the
  * driver binary Aegis would run, and the two macOS grants it needs. Off, no
  * agent is offered the tools and no driver process runs.
  */
@@ -78,14 +78,20 @@ export function ComputerUseSettings() {
       <SettingsRow
         variant="card"
         label="Enable Computer use"
-        description={unsupported ? view.driver.message ?? undefined : 'Off by default. While off, nothing is started.'}
+        description={
+          unsupported
+            ? view.driver.message ?? undefined
+            : view.enabledByEnvironment
+              ? 'On for this run: AEGIS_COMPUTER_USE_ENABLED=1 is set. Restart Aegis without it to use this switch.'
+              : 'Off by default. While off, nothing is started.'
+        }
       >
         <SettingsToggle
           checked={view.enabled}
           onChange={(value) =>
             void apply(() => window.electron.setComputerUseEnabled(value), 'Failed to toggle Computer use.')
           }
-          disabled={busy || unsupported}
+          disabled={busy || unsupported || view.enabledByEnvironment}
           ariaLabel="Toggle Computer use"
         />
       </SettingsRow>

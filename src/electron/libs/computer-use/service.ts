@@ -1,19 +1,27 @@
-// The Computer use gateway: the one place every desktop action of an agent
-// passes through, whichever provider the agent runs on.
+// The Computer use gateway: desktop actions through cua-driver, for the
+// providers that get them this way. Today that is Bubble. Codex keeps its own
+// Computer use client (codex-computer-use.ts); the two share the lease and
+// the grant registry, so "one session at a time" holds across both.
 //
-// A provider gets ten tools (tools.ts) over its own channel (Bubble: host
+// A provider gets nine tools (tools.ts) over its own channel (Bubble: host
 // tools). Each call lands here, bound to its Aegis session, and goes through
 // the same steps before anything reaches cua-driver:
 //   1. the switch, the platform and the driver binary
 //   2. the session: unknown → refused; a read-only workflow member → refused;
 //      Plan mode → observation only
-//   3. the target: Aegis itself is never looked at or acted on
-//   4. the lease: one session uses the desktop at a time
+//   3. the lease: one session has the desktop at a time, for looking too
+//   4. the target: Aegis itself is never looked at or acted on
 //   5. approval: a matching grant, or the COMPUTER USE card (not in Full Access)
-//   6. the driver call, held to one window in the background
+//   6. the driver call, in the background and inside one window
 //   7. the screenshot saved for the session, a live frame for the HUD
 // cua-driver has no approval of its own and does not know Aegis sessions, so
 // none of this can be left to it or to a provider's permission pipeline.
+//
+// A call can wait: behind another call, on a cold driver start, on a person
+// reading the approval card. What was true when it arrived is checked again
+// at the moment it is sent (`checkCurrent`), and everything that ends a
+// call's standing ends the call: the switch going off, the driver being
+// changed, the session's turn ending, the session being stopped.
 
 import {
   AEGIS_COMPUTER_USE_SERVER_NAME,
@@ -32,8 +40,14 @@ import {
   persistComputerUseMedia,
   type ComputerUseLease,
 } from '../codex-computer-use';
-import type { ComputerUseGrantRegistry } from '../codex-computer-use-grants';
-import type { ComputerUseDriver, DriverToolResult } from './driver-host';
+import type { ComputerUseGrantRegistry, ComputerUseGrantTarget } from '../codex-computer-use-grants';
+import {
+  COMPUTER_USE_CANCELLED_MESSAGE,
+  COMPUTER_USE_DRIVER_RESTARTED_MESSAGE,
+  type ComputerUseDriver,
+  type DriverToolResult,
+} from './driver-host';
+import { fixedDriverInputArgs } from './policy';
 import {
   computerUseToolDefinition,
   normalizeSecondaryAction,
@@ -48,6 +62,11 @@ export interface ComputerUseSessionFacts {
   fullAccess: boolean;
   /** The role of a read-only workflow member; such a session gets no Computer use. */
   readOnlyWorkflowRole: string | null;
+  /**
+   * Names the agent runtime the session runs on now. It changes when the
+   * runtime is rebuilt: grants and calls of the earlier one end with it.
+   */
+  generation: number;
 }
 
 export interface ComputerUseApprovalDecision {
@@ -62,11 +81,14 @@ export interface ComputerUseGatewayHost {
   driverStatus(): ComputerUseDriverStatus;
   /** null: no such session, and the call is refused. */
   getSession(sessionId: string): ComputerUseSessionFacts | null;
-  /** Shows the COMPUTER USE card in the session and waits for the answer. */
+  /**
+   * Shows the COMPUTER USE card in the session and waits for the answer.
+   * When the signal aborts the card is taken down and the promise rejects.
+   */
   requestApproval(
     sessionId: string,
     input: ComputerUsePermissionInput,
-    signal?: AbortSignal
+    signal: AbortSignal
   ): Promise<ComputerUseApprovalDecision>;
   emitLive(sessionId: string, frame: ComputerUseLiveFrame): void;
   userDataDir(): string;
@@ -86,7 +108,7 @@ export interface ComputerUseCall {
   sessionId: string;
   tool: string;
   args: Record<string, unknown>;
-  /** The agent's tool call id; frames and saved screenshots are filed under it. */
+  /** The agent's tool call id; the lease, frames and saved screenshots are filed under it. */
   toolUseId: string;
   signal?: AbortSignal;
 }
@@ -94,9 +116,11 @@ export interface ComputerUseCall {
 export const COMPUTER_USE_OFF_MESSAGE = 'Computer use is turned off in Settings.';
 export const COMPUTER_USE_PLAN_MESSAGE =
   'Plan mode is read-only: Computer use can look at apps but not act on them. Leave Plan mode to continue.';
-export const COMPUTER_USE_SELECT_TEXT_MESSAGE =
-  'select_text is not supported yet. Click the text field, then use press_key (for example super+a to select everything, or shift+Left / shift+Right) or type_text.';
-
+export const COMPUTER_USE_STALE_MESSAGE =
+  'Computer use was turned off or restarted while this call waited. It was not run.';
+export const COMPUTER_USE_TURN_OVER_MESSAGE = 'This turn ended before the call could run. It was not run.';
+export const COMPUTER_USE_SESSION_GONE_MESSAGE =
+  'Computer use is not available: this conversation is no longer open.';
 
 /** Which macOS grants are missing, and where to turn them on. */
 export function computerUsePermissionsMessage(missing: string[]): string {
@@ -110,18 +134,40 @@ const TREE_TEXT_LIMIT = 40_000;
 const WINDOW_WAIT_ATTEMPTS = 10;
 const WINDOW_WAIT_MS = 400;
 
-function delay(ms: number, signal?: AbortSignal): Promise<void> {
+function delay(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise<void>((resolve, reject) => {
-    if (signal?.aborted) return reject(new Error('Computer use was cancelled.'));
+    if (signal.aborted) return reject(new Error(COMPUTER_USE_CANCELLED_MESSAGE));
     const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
+      signal.removeEventListener('abort', onAbort);
       resolve();
     }, ms);
     const onAbort = () => {
       clearTimeout(timer);
-      reject(new Error('Computer use was cancelled.'));
+      reject(new Error(COMPUTER_USE_CANCELLED_MESSAGE));
     };
-    signal?.addEventListener('abort', onAbort, { once: true });
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/** The promise's answer, unless the signal aborts first: then nothing it later says is heard. */
+function untilAborted<T>(signal: AbortSignal, promise: Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new Error(COMPUTER_USE_CANCELLED_MESSAGE));
+    if (signal.aborted) {
+      promise.catch(() => undefined);
+      return onAbort();
+    }
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      }
+    );
   });
 }
 
@@ -143,6 +189,32 @@ type AppState = {
   windowTitle: string;
   snapshotId: string | null;
   tree: string;
+  /** The driver process that gave the pid, window and snapshot. They mean nothing to another. */
+  instance: number;
+};
+
+/** How an action came to be allowed; checked again when it is sent. */
+type Authorization =
+  | { by: 'full-access' }
+  | { by: 'card' }
+  | { by: 'grant'; target: ComputerUseGrantTarget };
+
+/** One call on its way through the gateway, with what its standing depends on. */
+type CallContext = {
+  call: ComputerUseCall;
+  /** The gateway's lifetime when the call arrived: ends when the switch goes off or the driver is changed. */
+  epoch: number;
+  /** The session's turn when the call arrived. */
+  turn: number;
+  /** The session's agent runtime when the call arrived. */
+  generation: number;
+  /** Aborts with the caller's signal, the session's turn, and the gateway's lifetime. */
+  controller: AbortController;
+  /** The call took the lease for its action. */
+  leased: boolean;
+  /** Its action was handed to the driver: the desktop may have changed. */
+  dispatched: boolean;
+  authorization: Authorization | null;
 };
 
 function fail(text: string): ComputerUseToolResult {
@@ -226,7 +298,7 @@ function describeElement(tree: string, index: string): string | null {
 }
 
 export class ComputerUseGateway {
-  /** Per session: the apps it has looked at this turn. */
+  /** Per session: the apps it has looked at this turn, by exact identity. */
   private readonly states = new Map<string, Map<string, AppState>>();
   /** Screenshots saved for a tool call, until the provider adapter files them with its result. */
   private readonly mediaByCall = new Map<string, ComputerUseMediaRef[]>();
@@ -235,8 +307,16 @@ export class ComputerUseGateway {
   /** Per session: the driver session its current turn runs under. */
   private readonly driverSessions = new Map<string, string>();
   private driverSessionCount = 0;
-  /** Both macOS grants were seen by the running driver. */
-  private permissionsGranted = false;
+  /** The driver process that was seen to hold both macOS grants. */
+  private permissionsInstance: number | null = null;
+  /** Calls on their way through, so that what ends their standing can end them. */
+  private readonly active = new Set<CallContext>();
+  /** Sessions this gateway took the lease for, until their turn ends. */
+  private readonly leased = new Set<string>();
+  /** Per session: how many turns have ended. */
+  private readonly turns = new Map<string, number>();
+  /** Ends when the switch goes off or the driver is changed. */
+  private epoch = 0;
 
   constructor(
     private readonly host: ComputerUseGatewayHost,
@@ -245,10 +325,33 @@ export class ComputerUseGateway {
   ) {}
 
   async call(call: ComputerUseCall): Promise<ComputerUseToolResult> {
+    const controller = new AbortController();
+    const onAbort = () => controller.abort();
+    if (call.signal?.aborted) controller.abort();
+    call.signal?.addEventListener('abort', onAbort, { once: true });
+    const context: CallContext = {
+      call,
+      epoch: this.epoch,
+      turn: this.turns.get(call.sessionId) ?? 0,
+      generation: -1,
+      controller,
+      leased: false,
+      dispatched: false,
+      authorization: null,
+    };
+    this.active.add(context);
     try {
-      return await this.run(call);
+      return await this.run(context);
     } catch (error) {
       return fail(error instanceof Error ? error.message : String(error));
+    } finally {
+      this.active.delete(context);
+      call.signal?.removeEventListener('abort', onAbort);
+      // An action that never reached the driver gives its hold on the desktop
+      // back; the session's earlier actions keep theirs until the turn ends.
+      if (context.leased && !context.dispatched) {
+        this.shared.lease.release(call.sessionId, call.toolUseId);
+      }
     }
   }
 
@@ -260,8 +363,16 @@ export class ComputerUseGateway {
     return refs;
   }
 
-  /** The session's turn ended: the desktop is free for another session. */
+  /**
+   * The session's turn ended: calls of it still on their way end (a card
+   * left open is taken down), and the desktop is free for another session.
+   */
   finishTurn(sessionId: string): void {
+    this.turns.set(sessionId, (this.turns.get(sessionId) ?? 0) + 1);
+    for (const context of this.active) {
+      if (context.call.sessionId === sessionId) context.controller.abort();
+    }
+    this.leased.delete(sessionId);
     this.shared.lease.releaseThread(sessionId);
     this.states.delete(sessionId);
     for (const key of [...this.mediaByCall.keys()]) {
@@ -280,20 +391,32 @@ export class ComputerUseGateway {
     this.driverQueue = this.driverQueue.then(tidy, tidy).catch(() => undefined);
   }
 
-  /** The session was stopped or deleted: its grants go with it. */
+  /** The session was stopped or deleted: its turn ends and the gateway's grants for it go. */
   forgetSession(sessionId: string, reason: string): void {
     this.finishTurn(sessionId);
-    this.shared.grants.revokeThread(sessionId, reason);
+    this.shared.grants.revokeThread(sessionId, reason, 'gateway');
   }
 
-  /** The switch went off, or the app is quitting. */
+  /**
+   * The switch went off, or the driver was changed. Everything that stood on
+   * the gateway as it was ends here: calls on their way (waiting in line, on
+   * the driver, or on an approval card), every hold on the desktop the
+   * gateway took, its grants, and the driver process. Codex's grants and
+   * lease are not the gateway's to end.
+   */
   async shutdown(reason: string): Promise<void> {
-    for (const sessionId of [...this.states.keys()]) this.shared.lease.releaseThread(sessionId);
+    this.epoch += 1;
+    for (const context of this.active) context.controller.abort();
+    // By the set of sessions the gateway took the lease for, not by what a
+    // session has looked at: the first call of a session can hold the
+    // desktop on an approval card before any state exists for it.
+    for (const sessionId of this.leased) this.shared.lease.releaseThread(sessionId);
+    this.leased.clear();
     this.states.clear();
     this.mediaByCall.clear();
     this.driverSessions.clear();
-    this.permissionsGranted = false;
-    this.shared.grants.revokeAll(reason);
+    this.permissionsInstance = null;
+    this.shared.grants.revokeOwner('gateway', reason);
     // Behind the calls already queued, so none of them finds the driver gone and starts another.
     const stop = () => this.driver.stop();
     const stopped = this.driverQueue.then(stop, stop);
@@ -303,28 +426,34 @@ export class ComputerUseGateway {
 
   /** At app quit: no waiting; the driver exits with this process anyway. */
   shutdownSync(): void {
+    this.epoch += 1;
+    for (const context of this.active) context.controller.abort();
     this.driver.stopSync();
   }
 
-  private async run(call: ComputerUseCall): Promise<ComputerUseToolResult> {
+  private async run(context: CallContext): Promise<ComputerUseToolResult> {
+    const { call } = context;
     const { sessionId } = call;
     if (!this.host.isEnabled()) return fail(COMPUTER_USE_OFF_MESSAGE);
     const definition = computerUseToolDefinition(call.tool);
     if (!definition) return fail(`Unknown Computer use tool "${call.tool}".`);
     const facts = this.host.getSession(sessionId);
-    if (!facts) return fail('Computer use is not available: this conversation is no longer open.');
+    if (!facts) return fail(COMPUTER_USE_SESSION_GONE_MESSAGE);
+    context.generation = facts.generation;
+    // The session's agent was rebuilt since a grant was given: that grant is gone.
+    this.shared.grants.revokeOtherGenerations(sessionId, facts.generation, 'gateway');
     if (facts.readOnlyWorkflowRole) {
       this.host.onRefused?.(sessionId, call.tool);
-      return fail(
-        `This workflow ${facts.readOnlyWorkflowRole} is read-only; Computer use is not allowed. Report what you need in your result instead.`
-      );
+      return fail(readOnlyMemberMessage(facts.readOnlyWorkflowRole));
     }
     if (facts.planMode && definition.mutating) {
       // As when Codex leaves a mode that could act: standing grants do not survive it.
-      this.shared.grants.revokeThread(sessionId, 'mode-exit');
+      this.shared.grants.revokeThread(sessionId, 'mode-exit', 'gateway');
       return fail(COMPUTER_USE_PLAN_MESSAGE);
     }
-    if (definition.name === 'select_text') return fail(COMPUTER_USE_SELECT_TEXT_MESSAGE);
+    // One session has the desktop at a time, for looking as well as acting:
+    // while another session holds it, this one gets nothing.
+    if (this.shared.lease.heldByAnother(sessionId)) return fail(COMPUTER_USE_LEASE_MESSAGE);
 
     const appQuery = asString(call.args.app);
     if (definition.name !== 'list_apps') {
@@ -334,43 +463,72 @@ export class ComputerUseGateway {
     const status = this.host.driverStatus();
     if (status.state !== 'ready') return fail(status.message || "Computer use isn't available in this build.");
 
-    const missing = await this.missingPermissions(call);
-    if (missing) return fail(missing);
-
-    if (definition.name === 'list_apps') return this.listApps(call);
-    if (definition.name === 'get_app_state') return this.getAppState(call, facts, appQuery);
-    return this.act(call, definition, facts, appQuery);
+    if (definition.name === 'list_apps') return this.listApps(context);
+    if (definition.name === 'get_app_state') return this.getAppState(context, facts, appQuery);
+    return this.act(context, definition, appQuery);
   }
 
   /**
-   * The two macOS grants, as the driver itself sees them (it answers for the
-   * app that started it and never asks macOS for anything). Checked until
-   * both are there; a missing one is said in words instead of surfacing as a
-   * failed click.
+   * Whether the call still stands, asked at the moment something is about to
+   * be sent to the driver or written down for it. Returns why not, or null.
+   * `action`: the call is about to act, and must still be allowed to.
    */
-  private async missingPermissions(call: ComputerUseCall): Promise<string | null> {
-    if (this.permissionsGranted) return null;
-    const result = await this.drive(call.sessionId, 'check_permissions', { prompt: false }, call.signal);
+  private checkCurrent(context: CallContext, action: boolean): string | null {
+    const { sessionId, toolUseId, tool } = context.call;
+    if (!this.host.isEnabled()) return COMPUTER_USE_OFF_MESSAGE;
+    if (context.epoch !== this.epoch) return COMPUTER_USE_STALE_MESSAGE;
+    if (context.controller.signal.aborted) return COMPUTER_USE_CANCELLED_MESSAGE;
+    if ((this.turns.get(sessionId) ?? 0) !== context.turn) return COMPUTER_USE_TURN_OVER_MESSAGE;
+    const facts = this.host.getSession(sessionId);
+    if (!facts) return COMPUTER_USE_SESSION_GONE_MESSAGE;
+    if (facts.generation !== context.generation) return COMPUTER_USE_TURN_OVER_MESSAGE;
+    if (facts.readOnlyWorkflowRole) return readOnlyMemberMessage(facts.readOnlyWorkflowRole);
+    if (this.shared.lease.heldByAnother(sessionId)) return COMPUTER_USE_LEASE_MESSAGE;
+    if (!action) return null;
+    if (facts.planMode) return COMPUTER_USE_PLAN_MESSAGE;
+    if (!this.shared.lease.holds(sessionId, toolUseId)) return COMPUTER_USE_LEASE_MESSAGE;
+    const authorization = context.authorization;
+    if (!authorization) return `${tool} was not approved.`;
+    // What allowed it must still allow it: the mode may have changed, the grant may have been revoked.
+    if (authorization.by === 'full-access' && !facts.fullAccess) {
+      return 'The conversation left Full Access while this call waited. It was not run.';
+    }
+    if (authorization.by === 'grant' && !this.shared.grants.matchGrant(authorization.target)) {
+      return 'The permission for this action was revoked while the call waited. It was not run.';
+    }
+    return null;
+  }
+
+  /**
+   * The two macOS grants, as this driver process sees them (it answers for
+   * the app that started it and never asks macOS for anything). Read once
+   * per driver process, before its first call; a missing one is said in
+   * words instead of surfacing as a failed click.
+   */
+  private async requirePermissions(instance: number, session: string, signal: AbortSignal): Promise<void> {
+    if (this.permissionsInstance === instance) return;
+    const result = await this.driver.call('check_permissions', { prompt: false, session }, { signal, instance });
     const missing = [
       result.structured?.accessibility === true ? null : 'Accessibility',
       result.structured?.screen_recording === true ? null : 'Screen Recording',
     ].filter((name): name is string => Boolean(name));
     if (missing.length === 0) {
-      this.permissionsGranted = true;
-      return null;
+      this.permissionsInstance = instance;
+      return;
     }
-    // macOS answers per process: a driver started before the grant keeps saying no.
+    // macOS answers per process: a driver started before the grant keeps
+    // saying no, so this one is stopped (behind the call that found out).
     const stop = () => this.driver.stop();
     this.driverQueue = this.driverQueue.then(stop, stop).catch(() => undefined);
     this.driverSessions.clear();
-    return computerUsePermissionsMessage(missing);
+    throw new Error(computerUsePermissionsMessage(missing));
   }
 
   // ── Observation ────────────────────────────────────────────────────────
 
-  private async listApps(call: ComputerUseCall): Promise<ComputerUseToolResult> {
-    this.emitPending(call, 'list_apps', null);
-    const result = await this.drive(call.sessionId, 'list_apps', {}, call.signal);
+  private async listApps(context: CallContext): Promise<ComputerUseToolResult> {
+    this.emitPending(context.call, 'list_apps', null);
+    const { result } = await this.drive(context, false, 'list_apps', {});
     if (result.isError) return fail(result.text || 'Could not list apps.');
     const apps = readListedApps(result).filter((app) => !this.isOwnApp(app));
     const line = (app: ListedApp) => `- ${app.name}${app.bundleId ? ` [${app.bundleId}]` : ''}`;
@@ -390,27 +548,31 @@ export class ComputerUseGateway {
   }
 
   private async getAppState(
-    call: ComputerUseCall,
+    context: CallContext,
     facts: ComputerUseSessionFacts,
     appQuery: string
   ): Promise<ComputerUseToolResult> {
-    const { sessionId, signal } = call;
-    const listed = await this.drive(sessionId, 'list_apps', {}, signal);
-    if (listed.isError) return fail(listed.text || 'Could not list apps.');
-    const match = matchComputerUseApp(readListedApps(listed), appQuery);
+    const { call } = context;
+    const { sessionId } = call;
+    const signal = context.controller.signal;
+    const listed = await this.drive(context, false, 'list_apps', {});
+    if (listed.result.isError) return fail(listed.result.text || 'Could not list apps.');
+    // Everything this call learns (pid, window, snapshot) belongs to this driver process.
+    const instance = listed.instance;
+    const match = matchComputerUseApp(readListedApps(listed.result), appQuery);
     if ('error' in match) return fail(match.error);
     const app = match.app;
     if (this.isOwnApp(app)) return fail(COMPUTER_USE_DENIED_TARGET_MESSAGE);
 
     let pid = app.running ? app.pid : 0;
-    let window = pid ? await this.pickWindow(sessionId, pid, signal) : null;
+    let window = pid ? await this.pickWindow(context, pid, instance) : null;
     if (!window) {
       // Not running, or running without a window: opening it is an action.
       if (facts.planMode) {
-        this.shared.grants.revokeThread(sessionId, 'mode-exit');
+        this.shared.grants.revokeThread(sessionId, 'mode-exit', 'gateway');
         return fail(`${app.name} is not open, and Plan mode is read-only: Computer use cannot open it. Leave Plan mode to continue.`);
       }
-      const refused = await this.authorize(call, facts, {
+      const refused = await this.authorize(context, facts, {
         tool: 'get_app_state',
         risk: 'medium',
         app,
@@ -420,19 +582,20 @@ export class ComputerUseGateway {
       if (refused) return refused;
       this.emitPending(call, 'get_app_state', app.name);
       const launched = await this.drive(
-        sessionId,
+        context,
+        true,
         'launch_app',
         app.bundleId ? { bundle_id: app.bundleId } : { name: app.launchPath || app.name },
-        signal
+        instance
       );
-      if (launched.isError) return fail(launched.text || `Could not open ${app.name}.`);
-      pid = typeof launched.structured?.pid === 'number' ? launched.structured.pid : pid;
+      if (launched.result.isError) return fail(launched.result.text || `Could not open ${app.name}.`);
+      pid = typeof launched.result.structured?.pid === 'number' ? launched.result.structured.pid : pid;
       if (!pid) return fail(`${app.name} did not start.`);
       if (this.host.ownProcessIds().includes(pid)) return fail(COMPUTER_USE_DENIED_TARGET_MESSAGE);
       // A cold start takes a moment to put its window up.
       for (let attempt = 0; attempt < WINDOW_WAIT_ATTEMPTS && !window; attempt += 1) {
         if (attempt > 0) await delay(WINDOW_WAIT_MS, signal);
-        window = await this.pickWindow(sessionId, pid, signal);
+        window = await this.pickWindow(context, pid, instance);
       }
       if (!window) return fail(`${app.name} is open but has no window to look at yet. Try get_app_state again.`);
     } else {
@@ -448,19 +611,20 @@ export class ComputerUseGateway {
       windowTitle: window.title,
       snapshotId: null,
       tree: '',
+      instance,
     };
-    const snapshot = await this.snapshot(call, state);
+    const snapshot = await this.snapshot(context, state);
     if (snapshot.isError) return snapshot;
     this.statesOf(sessionId).set(stateKey(app), state);
     return snapshot;
   }
 
   private async pickWindow(
-    sessionId: string,
+    context: CallContext,
     pid: number,
-    signal?: AbortSignal
+    instance: number
   ): Promise<{ windowId: number; title: string } | null> {
-    const result = await this.drive(sessionId, 'list_windows', { pid }, signal);
+    const { result } = await this.drive(context, false, 'list_windows', { pid }, instance);
     if (result.isError) return null;
     const windows = (Array.isArray(result.structured?.windows) ? result.structured.windows : []).flatMap((item) => {
       if (!item || typeof item !== 'object') return [];
@@ -484,12 +648,13 @@ export class ComputerUseGateway {
   }
 
   /** Reads the window: the tree for the agent, the screenshot for the agent, the HUD and the session's files. */
-  private async snapshot(call: ComputerUseCall, state: AppState, preface = ''): Promise<ComputerUseToolResult> {
-    const result = await this.drive(
-      call.sessionId,
+  private async snapshot(context: CallContext, state: AppState, preface = ''): Promise<ComputerUseToolResult> {
+    const { result } = await this.drive(
+      context,
+      false,
       'get_window_state',
       { pid: state.pid, window_id: state.windowId, screenshot_format: 'jpeg' },
-      call.signal
+      state.instance
     );
     if (result.isError) {
       return fail([preface, result.text || `Could not read ${state.name}.`].filter(Boolean).join('\n\n'));
@@ -517,18 +682,18 @@ export class ComputerUseGateway {
     ]
       .filter(Boolean)
       .join('\n\n');
-    this.publishMedia(call, state.name, result.images);
+    this.publishMedia(context.call, state.name, result.images);
     return { text, images: result.images, isError: false };
   }
 
   // ── Actions ────────────────────────────────────────────────────────────
 
   private async act(
-    call: ComputerUseCall,
+    context: CallContext,
     definition: ComputerUseToolDefinition,
-    facts: ComputerUseSessionFacts,
     appQuery: string
   ): Promise<ComputerUseToolResult> {
+    const { call } = context;
     const state = this.findState(call.sessionId, appQuery);
     if (!state) {
       return fail(`Call get_app_state for "${appQuery}" first: it gives the window and the element indexes to act on.`);
@@ -542,8 +707,10 @@ export class ComputerUseGateway {
     }
     const planned = planDriverCall(definition.name, call.args, state);
     if ('error' in planned) return fail(planned.error);
+    const facts = this.host.getSession(call.sessionId);
+    if (!facts) return fail(COMPUTER_USE_SESSION_GONE_MESSAGE);
 
-    const refused = await this.authorize(call, facts, {
+    const refused = await this.authorize(context, facts, {
       tool: definition.name,
       risk: definition.risk,
       app: state,
@@ -553,20 +720,21 @@ export class ComputerUseGateway {
     if (refused) return refused;
 
     this.emitPending(call, definition.name, state.name);
-    const result = await this.drive(call.sessionId, planned.tool, planned.args, call.signal);
+    const { result } = await this.drive(context, true, planned.tool, planned.args, state.instance);
     const outcome = result.text || (result.isError ? `${definition.name} failed.` : 'Done.');
     if (result.isError) return fail(outcome);
     // Every action returns what the window looks like now.
-    const after = await this.snapshot(call, state, outcome);
+    const after = await this.snapshot(context, state, outcome);
     return after.isError ? { text: `${outcome}\n\n(The window could not be read afterwards: call get_app_state.)`, images: [], isError: false } : after;
   }
 
   /**
-   * The lease, then a grant or the approval card. Returns the refusal to hand
-   * back, or null when the action may run.
+   * The lease for this action, then what allows it: Full Access, a grant, or
+   * the approval card. Returns the refusal to hand back, or null when the
+   * action may be sent (it is checked once more when it is).
    */
   private async authorize(
-    call: ComputerUseCall,
+    context: CallContext,
     facts: ComputerUseSessionFacts,
     request: {
       tool: string;
@@ -576,50 +744,60 @@ export class ComputerUseGateway {
       paramLines: Array<{ label: string; value: string }>;
     }
   ): Promise<ComputerUseToolResult | null> {
+    const { call } = context;
     const { sessionId, toolUseId } = call;
     if (!this.shared.lease.tryAcquire(sessionId, toolUseId)) return fail(COMPUTER_USE_LEASE_MESSAGE);
-    if (facts.fullAccess) return null;
-    const target = {
-      threadId: sessionId,
-      providerThreadId: null,
-      generation: 0,
-      server: AEGIS_COMPUTER_USE_SERVER_NAME,
-      tool: request.tool,
-      // By the name the card and the grant list show, as Codex's grants are.
-      app: request.app.name,
-      riskLevel: request.risk,
-    };
-    if (this.shared.grants.matchGrant(target)) return null;
-    let decision: ComputerUseApprovalDecision;
-    try {
-      decision = await this.host.requestApproval(
-        sessionId,
-        {
-          kind: 'computer-use',
-          question: request.question,
-          title: request.question,
+    context.leased = true;
+    this.leased.add(sessionId);
+    if (facts.fullAccess) {
+      context.authorization = { by: 'full-access' };
+      return null;
+    }
+    // A grant is for one app by its exact identity. An app the driver gives
+    // no bundle identifier for is asked about every time.
+    const target: ComputerUseGrantTarget | null = request.app.bundleId
+      ? {
+          owner: 'gateway',
+          threadId: sessionId,
+          providerThreadId: null,
+          generation: context.generation,
           server: AEGIS_COMPUTER_USE_SERVER_NAME,
-          toolName: request.tool,
-          toolTitle: null,
+          tool: request.tool,
           app: request.app.name,
-          mutating: true,
-          code: null,
-          params: call.args,
-          paramLines: request.paramLines,
-          canAllowForSession: false,
-          canAllowUntilRevoked: true,
-        },
-        call.signal
-      );
-    } catch (error) {
-      this.shared.lease.release(sessionId, toolUseId);
-      return fail(error instanceof Error ? error.message : String(error));
+          appId: request.app.bundleId,
+          riskLevel: request.risk,
+        }
+      : null;
+    if (target && this.shared.grants.matchGrant(target)) {
+      context.authorization = { by: 'grant', target };
+      return null;
     }
-    if (!decision.allow) {
-      this.shared.lease.release(sessionId, toolUseId);
-      return fail(`The user declined: ${request.tool} in ${request.app.name} was not run.`);
-    }
-    if (decision.untilRevoked) this.shared.grants.createGrant(target);
+    const decision = await untilAborted(context.controller.signal, this.host.requestApproval(
+      sessionId,
+      {
+        kind: 'computer-use',
+        question: request.question,
+        title: request.question,
+        server: AEGIS_COMPUTER_USE_SERVER_NAME,
+        toolName: request.tool,
+        toolTitle: null,
+        app: request.app.name,
+        mutating: true,
+        code: null,
+        params: call.args,
+        paramLines: request.paramLines,
+        canAllowForSession: false,
+        canAllowUntilRevoked: Boolean(target),
+      },
+      context.controller.signal
+    ));
+    // The card may have been up for minutes. An answer to a card whose call
+    // no longer stands allows nothing and writes no grant.
+    const stale = this.checkCurrent(context, false);
+    if (stale) return fail(stale);
+    if (!decision.allow) return fail(`The user declined: ${request.tool} in ${request.app.name} was not run.`);
+    context.authorization = { by: 'card' };
+    if (decision.untilRevoked && target) this.shared.grants.createGrant(target);
     return null;
   }
 
@@ -642,37 +820,57 @@ export class ComputerUseGateway {
     return states;
   }
 
+  /**
+   * The app a later call means. A bundle identifier names exactly one app;
+   * a name must not be shared by two apps the session has looked at.
+   */
   private findState(sessionId: string, appQuery: string): AppState | null {
+    const states = [...(this.states.get(sessionId)?.values() ?? [])];
     const raw = appQuery.toLowerCase();
+    const byId = states.find((state) => state.bundleId?.toLowerCase() === raw);
+    if (byId) return byId;
     const wanted = (displayNameForComputerUseApp(appQuery) || appQuery).toLowerCase();
-    for (const state of this.states.get(sessionId)?.values() ?? []) {
-      if (
-        state.query === raw ||
-        state.name.toLowerCase() === wanted ||
-        state.name.toLowerCase() === raw ||
-        state.bundleId?.toLowerCase() === raw
-      ) {
-        return state;
-      }
-    }
-    return null;
+    const byName = states.filter(
+      (state) => state.query === raw || state.name.toLowerCase() === wanted || state.name.toLowerCase() === raw
+    );
+    return byName.length === 1 ? byName[0] : null;
   }
 
   /**
    * Every call to the driver goes through here, one at a time, under the
-   * driver session of the Aegis session's current turn. The switch is read
-   * again at the moment of the call: a call queued before it went off must
-   * not be what starts the driver again.
+   * driver session of the Aegis session's current turn. The call's standing
+   * is checked when its turn in the line comes, not when it joined it.
+   * `instance`: the driver process the arguments came from; another one is
+   * refused instead of being handed a pid or snapshot it never issued.
    */
   private drive(
-    sessionId: string,
+    context: CallContext,
+    action: boolean,
     tool: string,
     args: Record<string, unknown>,
-    signal?: AbortSignal
-  ): Promise<DriverToolResult> {
-    const run = () => {
-      if (!this.host.isEnabled()) throw new Error(COMPUTER_USE_OFF_MESSAGE);
-      return this.driver.call(tool, { ...args, session: this.driverSession(sessionId) }, { signal });
+    instance?: number
+  ): Promise<{ result: DriverToolResult; instance: number }> {
+    const { sessionId } = context.call;
+    const signal = context.controller.signal;
+    const run = async () => {
+      const refused = this.checkCurrent(context, action);
+      if (refused) throw new Error(refused);
+      const running = await this.driver.start(signal);
+      // The start can take seconds, and the world moves meanwhile.
+      const late = this.checkCurrent(context, action);
+      if (late) throw new Error(late);
+      if (instance !== undefined && instance !== running) {
+        this.states.delete(sessionId);
+        throw new Error(COMPUTER_USE_DRIVER_RESTARTED_MESSAGE);
+      }
+      await this.requirePermissions(running, this.driverSession(sessionId), signal);
+      if (action) context.dispatched = true;
+      const result = await this.driver.call(
+        tool,
+        { ...args, session: this.driverSession(sessionId) },
+        { signal, instance: running }
+      );
+      return { result, instance: running };
     };
     const next = this.driverQueue.then(run, run);
     this.driverQueue = next.catch(() => undefined);
@@ -734,8 +932,12 @@ export class ComputerUseGateway {
   }
 }
 
+function readOnlyMemberMessage(role: string): string {
+  return `This workflow ${role} is read-only; Computer use is not allowed. Report what you need in your result instead.`;
+}
+
 function stateKey(app: ListedApp): string {
-  return (app.bundleId || app.name).toLowerCase();
+  return (app.bundleId || app.launchPath || app.name).toLowerCase();
 }
 
 /** Drops the two lines the driver puts before a tree: they name its own tokens, which agents never see. */
@@ -774,8 +976,23 @@ type PlannedCall = {
   paramLines: Array<{ label: string; value: string }>;
 };
 
-/** One gateway action as the driver call that performs it, and the lines the approval card shows. */
+/**
+ * One gateway action as the driver call that performs it, and the lines the
+ * approval card shows. The card says what is sent: an argument the driver
+ * call cannot carry is refused here, not shown and dropped.
+ */
 export function planDriverCall(
+  tool: string,
+  args: Record<string, unknown>,
+  state: Pick<AppState, 'pid' | 'windowId' | 'snapshotId' | 'tree'>
+): PlannedCall | { error: string } {
+  const planned = planInput(tool, args, state);
+  if ('error' in planned) return planned;
+  // Background delivery inside one window, said on every call that can say it.
+  return { ...planned, args: { ...planned.args, ...fixedDriverInputArgs(planned.tool) } };
+}
+
+function planInput(
   tool: string,
   args: Record<string, unknown>,
   state: Pick<AppState, 'pid' | 'windowId' | 'snapshotId' | 'tree'>
@@ -800,14 +1017,19 @@ export function planDriverCall(
       const y = asNumber(args.y);
       const button = asString(args.mouse_button) || 'left';
       if (!['left', 'right', 'middle'].includes(button)) return { error: 'mouse_button must be left, right or middle.' };
-      const count = Math.max(1, Math.min(3, Math.round(asNumber(args.click_count) ?? 1)));
+      const count = Math.round(asNumber(args.click_count) ?? 1);
+      if (count < 1 || count > 3) return { error: 'click_count must be 1, 2 or 3.' };
       if (button !== 'left') paramLines.push({ label: 'button', value: button });
       if (count > 1) paramLines.push({ label: 'clicks', value: String(count) });
       if (elementToken) {
+        // An element is pressed through accessibility, which has no click count.
+        if (count === 1) return { tool: 'click', args: { element_token: elementToken, button }, paramLines };
         if (count === 2 && button === 'left') {
           return { tool: 'double_click', args: { element_token: elementToken }, paramLines };
         }
-        return { tool: 'click', args: { element_token: elementToken, button }, paramLines };
+        return {
+          error: 'With element_index, click_count can be 1, or 2 with the left button. For other clicks give x and y from the screenshot instead.',
+        };
       }
       if (x === null || y === null) return { error: 'Give an element_index, or both x and y from the screenshot.' };
       paramLines.push({ label: 'at', value: `${Math.round(x)}, ${Math.round(y)}` });

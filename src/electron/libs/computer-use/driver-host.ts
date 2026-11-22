@@ -2,18 +2,28 @@
 //
 // Two child processes of the main process, started on first use and never
 // while the switch is off:
-//   cua-driver serve --embedded --socket S   the daemon that acts on the desktop
-//   cua-driver mcp   --embedded --socket S   a stdio MCP proxy the gateway talks to
+//   cua-driver serve --embedded --parent-liveness-stdio --socket S   acts on the desktop
+//   cua-driver mcp   --embedded --socket S                           a stdio MCP proxy
 // The daemon must be spawned directly by the app that holds the macOS
 // Accessibility and Screen Recording grants (no `open`, no shell in between),
 // or macOS attributes its checks to something else. Embedded, it never shows
-// a system prompt of its own and exits when this process does.
+// a system prompt of its own.
+//
+// What was measured on the pinned version (0.57.0), and is relied on here:
+// - The daemon watches its parent only with `--parent-liveness-stdio`: then
+//   it exits when its stdin closes, which is what happens when this process
+//   dies however it dies.
+// - That exit fails when the daemon's stderr is a pipe to the dead parent
+//   (its last message cannot be written), so stderr goes to a log file.
+// - A call in flight cannot be cancelled over the stdio proxy (it drops
+//   plain notifications). Cancelling one therefore stops the driver: the
+//   only way to know a desktop action is no longer running.
 //
 // Providers never see either process: only the gateway holds the pipe.
 
 import { spawn, type ChildProcess } from 'child_process';
 import { createHash } from 'crypto';
-import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { buildCuaDriverPolicy } from './policy';
@@ -28,10 +38,18 @@ export interface DriverToolResult {
 export interface DriverCallOptions {
   signal?: AbortSignal;
   timeoutMs?: number;
+  /**
+   * The driver process the call is meant for (from `start`). A call made
+   * with what an earlier process returned (a pid, a snapshot) is refused
+   * once that process is gone, and never starts a new one.
+   */
+  instance?: number;
 }
 
 /** What the gateway needs from a driver; the tests pass a scripted one. */
 export interface ComputerUseDriver {
+  /** Starts the driver if it is not running. The number names this driver process. */
+  start(signal?: AbortSignal): Promise<number>;
   call(tool: string, args: Record<string, unknown>, options?: DriverCallOptions): Promise<DriverToolResult>;
   isRunning(): boolean;
   stop(): Promise<void>;
@@ -39,16 +57,41 @@ export interface ComputerUseDriver {
 }
 
 export const COMPUTER_USE_DRIVER_STOPPED_MESSAGE = 'Computer use stopped unexpectedly. Try again.';
+export const COMPUTER_USE_DRIVER_RESTARTED_MESSAGE =
+  'Computer use was restarted since this app was last looked at. Call get_app_state again.';
+export const COMPUTER_USE_CANCELLED_MESSAGE = 'Computer use was cancelled.';
 
 const START_TIMEOUT_MS = 20_000;
 const CALL_TIMEOUT_MS = 60_000;
+const EXIT_WAIT_MS = 2_000;
 const MCP_PROTOCOL_VERSION = '2025-06-18';
 /** macOS limits a unix socket path to 104 bytes including the terminator. */
 const SOCKET_PATH_LIMIT = 100;
 
 /**
- * The environment the driver starts with: embedded in this app, no telemetry,
- * no update check, its state under Aegis's own folder (never the folder of a
+ * What the driver is allowed to inherit from Aegis's own environment: where
+ * things are and how text is encoded. Nothing that configures the driver
+ * (`CUA_*`: an extra HTTP listener, foreground delivery, another policy), no
+ * tokens, no proxies.
+ */
+const INHERITED_ENV = [
+  'PATH',
+  'HOME',
+  'USER',
+  'LOGNAME',
+  'TMPDIR',
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+  'LC_MESSAGES',
+  'TZ',
+  '__CF_USER_TEXT_ENCODING',
+] as const;
+
+/**
+ * The whole environment the driver starts with: the few inherited names
+ * above, then what Aegis decides. Embedded in this app, no telemetry, no
+ * update check, its state under Aegis's own folder (never the folder of a
  * cua-driver the user installed themselves), and the gateway's policy file.
  */
 export function buildCuaDriverEnv(input: {
@@ -57,8 +100,13 @@ export function buildCuaDriverEnv(input: {
   hostBundleId: string;
   policyFile: string;
 }): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const name of INHERITED_ENV) {
+    const value = input.base[name];
+    if (typeof value === 'string' && value) env[name] = value;
+  }
   return {
-    ...input.base,
+    ...env,
     CUA_DRIVER_EMBEDDED: '1',
     CUA_DRIVER_HOST_BUNDLE_ID: input.hostBundleId,
     CUA_DRIVER_RS_HOME: input.homeDir,
@@ -67,6 +115,26 @@ export function buildCuaDriverEnv(input: {
     CUA_DRIVER_RS_UPDATE_CHECK: 'false',
     CUA_DRIVER_POLICY_FILE: input.policyFile,
   };
+}
+
+/**
+ * The daemon's arguments. `--parent-liveness-stdio`: exit when Aegis does,
+ * however it goes. `--permission-mode standard`: said outright, so that no
+ * default of the driver's decides it (in this mode input aimed at a macOS
+ * security prompt is refused).
+ */
+export function cuaDriverDaemonArgs(socketPath: string, hostBundleId: string): string[] {
+  return [
+    'serve',
+    '--embedded',
+    '--parent-liveness-stdio',
+    '--permission-mode',
+    'standard',
+    '--socket',
+    socketPath,
+    '--host-bundle-id',
+    hostBundleId,
+  ];
 }
 
 export function cuaDriverSocketPath(homeDir: string): string {
@@ -82,24 +150,27 @@ type Pending = {
 };
 
 type Running = {
+  instance: number;
   daemon: ChildProcess;
   proxy: ChildProcess;
   socketPath: string;
   pending: Map<number, Pending>;
   nextId: number;
   alive: boolean;
+  /** Settles when the daemon process is gone. */
+  exited: Promise<void>;
 };
 
 export class CuaDriverHost implements ComputerUseDriver {
   private running: Running | null = null;
   private starting: Promise<Running> | null = null;
-  private stderrTail = '';
+  private instances = 0;
 
   constructor(
     private readonly options: {
       /** The verified binary, or an error saying why there is none. */
       resolveBinary: () => string;
-      /** Aegis's own folder for the driver's state, socket and policy. */
+      /** Aegis's own folder for the driver's state, socket, policy and log. */
       homeDir: string;
       hostBundleId: string;
       env?: NodeJS.ProcessEnv;
@@ -110,9 +181,27 @@ export class CuaDriverHost implements ComputerUseDriver {
     return Boolean(this.running?.alive);
   }
 
-  async call(tool: string, args: Record<string, unknown>, options: DriverCallOptions = {}): Promise<DriverToolResult> {
-    if (options.signal?.aborted) throw new Error('Computer use was cancelled.');
+  async start(signal?: AbortSignal): Promise<number> {
+    if (signal?.aborted) throw new Error(COMPUTER_USE_CANCELLED_MESSAGE);
     const running = await this.ensureStarted();
+    // The start may have taken seconds: a call stopped meanwhile goes no further.
+    if (signal?.aborted) throw new Error(COMPUTER_USE_CANCELLED_MESSAGE);
+    return running.instance;
+  }
+
+  async call(tool: string, args: Record<string, unknown>, options: DriverCallOptions = {}): Promise<DriverToolResult> {
+    if (options.signal?.aborted) throw new Error(COMPUTER_USE_CANCELLED_MESSAGE);
+    let running: Running;
+    if (options.instance !== undefined) {
+      // Meant for one driver process: never the reason another one starts.
+      if (!this.running?.alive || this.running.instance !== options.instance) {
+        throw new Error(COMPUTER_USE_DRIVER_RESTARTED_MESSAGE);
+      }
+      running = this.running;
+    } else {
+      running = await this.ensureStarted();
+      if (options.signal?.aborted) throw new Error(COMPUTER_USE_CANCELLED_MESSAGE);
+    }
     const raw = await this.request(running, 'tools/call', { name: tool, arguments: args }, options);
     return readToolResult(raw);
   }
@@ -122,21 +211,10 @@ export class CuaDriverHost implements ComputerUseDriver {
     this.starting = null;
     if (!running) return;
     this.teardown(running, 'Computer use was turned off.');
-    await new Promise<void>((resolve) => {
-      if (running.daemon.exitCode !== null || running.daemon.signalCode !== null) return resolve();
-      const timer = setTimeout(() => {
-        running.daemon.kill('SIGKILL');
-        resolve();
-      }, 2_000);
-      timer.unref?.();
-      running.daemon.once('exit', () => {
-        clearTimeout(timer);
-        resolve();
-      });
-    });
+    await this.waitForExit(running);
   }
 
-  /** For app quit: no time to wait, and the daemon exits with its parent anyway. */
+  /** For app quit: no time to wait. The daemon also exits by itself when this process is gone. */
   stopSync(): void {
     if (this.running) this.teardown(this.running, 'Aegis is quitting.');
     this.starting = null;
@@ -145,14 +223,18 @@ export class CuaDriverHost implements ComputerUseDriver {
   private ensureStarted(): Promise<Running> {
     if (this.running?.alive) return Promise.resolve(this.running);
     if (!this.starting) {
-      this.starting = this.start().finally(() => {
+      this.starting = this.launch().finally(() => {
         this.starting = null;
       });
     }
     return this.starting;
   }
 
-  private async start(): Promise<Running> {
+  private logPath(): string {
+    return path.join(this.options.homeDir, 'driver.log');
+  }
+
+  private async launch(): Promise<Running> {
     const binary = this.options.resolveBinary();
     const { homeDir } = this.options;
     mkdirSync(homeDir, { recursive: true, mode: 0o700 });
@@ -173,42 +255,64 @@ export class CuaDriverHost implements ComputerUseDriver {
       hostBundleId: this.options.hostBundleId,
       policyFile,
     });
-    this.stderrTail = '';
 
-    const daemon = spawn(
-      binary,
-      ['serve', '--embedded', '--socket', socketPath, '--host-bundle-id', this.options.hostBundleId],
-      // stdin stays open: the daemon reads its end to notice this process dying.
-      { env, stdio: ['pipe', 'ignore', 'pipe'] }
-    );
-    daemon.stderr?.on('data', (chunk: Buffer) => this.noteStderr(chunk));
-    await this.waitForSocket(daemon, socketPath);
-
-    const proxy = spawn(binary, ['mcp', '--embedded', '--socket', socketPath], {
-      env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    proxy.stderr?.on('data', (chunk: Buffer) => this.noteStderr(chunk));
-    const running: Running = { daemon, proxy, socketPath, pending: new Map(), nextId: 1, alive: true };
-    this.wire(running);
+    // stderr to a file, started over with each driver: a pipe to this process
+    // would break the daemon's own exit when this process dies (see the top).
+    const log = openSync(this.logPath(), 'w', 0o600);
+    let daemon: ChildProcess;
+    let proxy: ChildProcess;
     try {
-      await this.request(
-        running,
-        'initialize',
-        {
-          protocolVersion: MCP_PROTOCOL_VERSION,
-          capabilities: {},
-          clientInfo: { name: 'aegis-computer-use', version: '1' },
-        },
-        { timeoutMs: START_TIMEOUT_MS }
-      );
-      this.send(running, { jsonrpc: '2.0', method: 'notifications/initialized' });
-    } catch (error) {
-      this.teardown(running, 'Computer use could not start.');
-      throw new Error(`Computer use could not start: ${errorText(error)}${this.stderrSuffix()}`);
+      daemon = spawn(binary, cuaDriverDaemonArgs(socketPath, this.options.hostBundleId), {
+        env,
+        // stdin stays open for as long as this process lives: the daemon's lifeline.
+        stdio: ['pipe', 'ignore', log],
+      });
+      const exited = new Promise<void>((resolve) => {
+        daemon.once('exit', () => resolve());
+        daemon.once('error', () => resolve());
+      });
+      try {
+        await this.waitForSocket(daemon, socketPath);
+      } catch (error) {
+        daemon.kill('SIGKILL');
+        throw error;
+      }
+      proxy = spawn(binary, ['mcp', '--embedded', '--socket', socketPath], {
+        env,
+        stdio: ['pipe', 'pipe', log],
+      });
+      const running: Running = {
+        instance: ++this.instances,
+        daemon,
+        proxy,
+        socketPath,
+        pending: new Map(),
+        nextId: 1,
+        alive: true,
+        exited,
+      };
+      this.wire(running);
+      try {
+        await this.request(
+          running,
+          'initialize',
+          {
+            protocolVersion: MCP_PROTOCOL_VERSION,
+            capabilities: {},
+            clientInfo: { name: 'aegis-computer-use', version: '1' },
+          },
+          { timeoutMs: START_TIMEOUT_MS }
+        );
+        this.send(running, { jsonrpc: '2.0', method: 'notifications/initialized' });
+      } catch (error) {
+        this.teardown(running, 'Computer use could not start.');
+        throw new Error(`Computer use could not start: ${errorText(error)}${this.logSuffix()}`);
+      }
+      this.running = running;
+      return running;
+    } finally {
+      closeSync(log);
     }
-    this.running = running;
-    return running;
   }
 
   private waitForSocket(daemon: ChildProcess, socketPath: string): Promise<void> {
@@ -221,22 +325,18 @@ export class CuaDriverHost implements ComputerUseDriver {
         clearInterval(poll);
         daemon.off('exit', onExit);
         daemon.off('error', onError);
-        if (error) {
-          daemon.kill('SIGKILL');
-          reject(error);
-        } else {
-          resolve();
-        }
+        if (error) reject(error);
+        else resolve();
       };
       const onExit = (code: number | null) =>
-        finish(new Error(`Computer use could not start: the driver exited (${code ?? 'signal'}).${this.stderrSuffix()}`));
+        finish(new Error(`Computer use could not start: the driver exited (${code ?? 'signal'}).${this.logSuffix()}`));
       const onError = (error: Error) => finish(new Error(`Computer use could not start: ${error.message}`));
       daemon.once('exit', onExit);
       daemon.once('error', onError);
       const poll = setInterval(() => {
         if (existsSync(socketPath)) return finish();
         if (Date.now() - startedAt > START_TIMEOUT_MS) {
-          finish(new Error(`Computer use could not start: the driver did not come up in time.${this.stderrSuffix()}`));
+          finish(new Error(`Computer use could not start: the driver did not come up in time.${this.logSuffix()}`));
         }
       }, 50);
     });
@@ -302,10 +402,12 @@ export class CuaDriverHost implements ComputerUseDriver {
         options.signal?.removeEventListener('abort', onAbort);
         running.pending.delete(id);
       };
+      // The request is with the driver and cannot be called back: the driver
+      // is stopped, and the caller hears "cancelled" once it is really gone.
       const onAbort = () => {
         cleanup();
-        this.send(running, { jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: id } });
-        reject(new Error('Computer use was cancelled.'));
+        this.teardown(running, COMPUTER_USE_DRIVER_STOPPED_MESSAGE);
+        void this.waitForExit(running).then(() => reject(new Error(COMPUTER_USE_CANCELLED_MESSAGE)));
       };
       const timer = setTimeout(() => {
         cleanup();
@@ -329,6 +431,21 @@ export class CuaDriverHost implements ComputerUseDriver {
     });
   }
 
+  /** Until the daemon process is gone; killed outright if it lingers. */
+  private waitForExit(running: Running): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        running.daemon.kill('SIGKILL');
+        running.proxy.kill('SIGKILL');
+      }, EXIT_WAIT_MS);
+      timer.unref?.();
+      void running.exited.then(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
+
   private teardown(running: Running, reason: string): void {
     running.alive = false;
     if (this.running === running) this.running = null;
@@ -348,14 +465,15 @@ export class CuaDriverHost implements ComputerUseDriver {
     }
   }
 
-  private noteStderr(chunk: Buffer): void {
-    this.stderrTail = `${this.stderrTail}${chunk.toString('utf8')}`.slice(-2_000);
-  }
-
-  private stderrSuffix(): string {
-    // eslint-disable-next-line no-control-regex
-    const text = this.stderrTail.replace(/\u001b\[[0-9;]*m/g, '').trim();
-    return text ? ` ${text.split('\n').slice(-3).join(' ')}` : '';
+  /** The last lines the driver wrote, for an error message. */
+  private logSuffix(): string {
+    try {
+      // eslint-disable-next-line no-control-regex
+      const text = readFileSync(this.logPath(), 'utf8').slice(-2_000).replace(/\u001b\[[0-9;]*m/g, '').trim();
+      return text ? ` ${text.split('\n').slice(-3).join(' ')}` : '';
+    } catch {
+      return '';
+    }
   }
 }
 

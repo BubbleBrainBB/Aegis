@@ -30,6 +30,9 @@ export interface ComputerUseMediaRef {
   sizeBytes: number;
 }
 
+/** Which Computer use backend a grant belongs to: Codex's own client, or the cua-driver gateway. */
+export type ComputerUseGrantOwner = 'codex' | 'gateway';
+
 export interface ComputerUseGrantView {
   key: string;
   threadId: string;
@@ -37,7 +40,12 @@ export interface ComputerUseGrantView {
   generation: number;
   server: string;
   tool: string;
+  /** The app's name, for showing. */
   app: string;
+  /** What the grant is matched on when the backend knows it: the bundle identifier. Absent: the name. */
+  appId?: string;
+  /** Absent on grants made before backends were told apart: Codex's. */
+  owner?: ComputerUseGrantOwner;
   maxRisk: number;
   createdAt: number;
 }
@@ -598,14 +606,35 @@ export interface ComputerUseDriverStatus {
 
 /** What Settings shows for Computer use. */
 export interface ComputerUseSettingsView {
-  /** The master switch. Off (the default): no tools are offered and no driver process runs. */
+  /**
+   * Whether Computer use is on right now. Off (the default): no tools are
+   * offered and no driver process runs.
+   */
   enabled: boolean;
+  /** On because the environment says so (AEGIS_COMPUTER_USE_ENABLED=1); the switch cannot turn that off. */
+  enabledByEnvironment: boolean;
   /** A cua-driver binary the user pointed at; empty for the default places. */
   driverPath: string;
   driver: ComputerUseDriverStatus;
   /** The two macOS grants, as Aegis itself holds them; null off macOS. */
   permissions: { accessibility: boolean; screenRecording: boolean } | null;
 }
+
+/**
+ * The tools the gateway offers: Codex's list without select_text, which
+ * cua-driver has no way to do.
+ */
+export const COMPUTER_USE_GATEWAY_TOOLS = [
+  'list_apps',
+  'get_app_state',
+  'click',
+  'perform_secondary_action',
+  'set_value',
+  'scroll',
+  'drag',
+  'press_key',
+  'type_text',
+] as const;
 
 /** A gateway tool under the name agents and the transcript know it by. */
 export function computerUseToolName(tool: string): string {
@@ -616,5 +645,5 @@ export function computerUseToolName(tool: string): string {
 export function computerUseGatewayTool(toolName: string | null | undefined): string | null {
   const parsed = toolName ? parseMcpToolName(toolName) : null;
   if (!parsed || parsed.server !== AEGIS_COMPUTER_USE_SERVER_NAME) return null;
-  return (COMPUTER_USE_TOOLS as readonly string[]).includes(parsed.tool) ? parsed.tool : null;
+  return (COMPUTER_USE_GATEWAY_TOOLS as readonly string[]).includes(parsed.tool) ? parsed.tool : null;
 }

@@ -109,6 +109,8 @@ import {
 } from './libs/computer-use';
 import {
   getComputerUseSettings,
+  isComputerUseEnabled,
+  isComputerUseForcedOn,
   isComputerUsePlatformSupported,
   setComputerUseDriverPath,
   setComputerUseEnabled,
@@ -4081,6 +4083,19 @@ function effectiveRunnerCwd(
   return session.cwd || null;
 }
 
+const runnerGenerations = new WeakMap<object, number>();
+let runnerGenerationCount = 0;
+
+/** A number that names one runner handle: a session whose runner was rebuilt gets another. */
+function runnerGeneration(handle: object): number {
+  let generation = runnerGenerations.get(handle);
+  if (generation === undefined) {
+    generation = ++runnerGenerationCount;
+    runnerGenerations.set(handle, generation);
+  }
+  return generation;
+}
+
 // 获取或创建会话状态
 function getSessionState(sessionId: string): SessionState {
   let state = sessionStates.get(sessionId);
@@ -5746,34 +5761,34 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
     return provider ? PROVIDER_LABELS[provider] : undefined;
   });
   const isSessionFullAccess = (sessionId: string): boolean => {
-      const row = sessions.getSession(sessionId);
-      if (!row) return false;
-      if (row.provider === 'claude') {
-        return row.claude_access_mode === 'fullAccess';
-      }
-      if (row.provider === 'codex') {
-        return row.codex_permission_mode === 'fullAccess';
-      }
-      const runner = runnerHandles.get(sessionId);
-      if (row.provider === 'deepseek' && runner?.provider === 'deepseek') {
-        return runner.deepseekPermissionMode === 'danger-full-access';
-      }
-      if (row.provider === 'devin' && runner?.provider === 'devin') {
-        return runner.devinPermissionMode === 'bypass';
-      }
-      if (row.provider === 'mimo' && runner?.provider === 'mimo') {
-        return runner.mimoPermissionMode === 'build';
-      }
-      if (row.provider === 'minimax' && runner?.provider === 'minimax') {
-        return runner.minimaxPermissionMode === 'bypassPermissions';
-      }
-      if (row.provider === 'qoder' && runner?.provider === 'qoder') {
-        return runner.qoderPermissionMode === 'bypassPermissions';
-      }
-      if (row.provider === 'bubble' && runner?.provider === 'bubble') {
-        return runner.bubblePermissionMode === 'bypassPermissions';
-      }
-      return false;
+    const row = sessions.getSession(sessionId);
+    if (!row) return false;
+    if (row.provider === 'claude') {
+      return row.claude_access_mode === 'fullAccess';
+    }
+    if (row.provider === 'codex') {
+      return row.codex_permission_mode === 'fullAccess';
+    }
+    const runner = runnerHandles.get(sessionId);
+    if (row.provider === 'deepseek' && runner?.provider === 'deepseek') {
+      return runner.deepseekPermissionMode === 'danger-full-access';
+    }
+    if (row.provider === 'devin' && runner?.provider === 'devin') {
+      return runner.devinPermissionMode === 'bypass';
+    }
+    if (row.provider === 'mimo' && runner?.provider === 'mimo') {
+      return runner.mimoPermissionMode === 'build';
+    }
+    if (row.provider === 'minimax' && runner?.provider === 'minimax') {
+      return runner.minimaxPermissionMode === 'bypassPermissions';
+    }
+    if (row.provider === 'qoder' && runner?.provider === 'qoder') {
+      return runner.qoderPermissionMode === 'bypassPermissions';
+    }
+    if (row.provider === 'bubble' && runner?.provider === 'bubble') {
+      return runner.bubblePermissionMode === 'bypassPermissions';
+    }
+    return false;
   };
   initializeBrowserUseConsent({
     getSessionHistory: (sessionId) => sessions.getSessionHistory(sessionId),
@@ -5794,9 +5809,9 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
         signal,
       }),
   });
-  // Computer use: every agent's desktop actions pass through this gateway,
-  // which asks here for what it needs to know about a session and for the
-  // COMPUTER USE card. It starts no process until a tool is called.
+  // Computer use through cua-driver (Bubble today; Codex keeps its own
+  // client). The gateway asks here for what it needs to know about a session
+  // and for the COMPUTER USE card. It starts no process until a tool is called.
   initializeComputerUseGateway(
     {
       getSession: (sessionId) => {
@@ -5811,6 +5826,8 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
           planMode: runner.provider === 'bubble' && runner.bubblePermissionMode === 'plan',
           fullAccess: isSessionFullAccess(sessionId),
           readOnlyWorkflowRole: workflowPolicy?.readOnly ? workflowPolicy.role : null,
+          // A rebuilt runner is another runtime: grants and calls of the old one end with it.
+          generation: runnerGeneration(runner.handle),
         };
       },
       requestApproval: async (sessionId, input, signal) => {
@@ -5842,7 +5859,10 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
   const computerUseSettingsView = (): import('../shared/computer-use').ComputerUseSettingsView => {
     const settings = getComputerUseSettings();
     return {
-      enabled: settings.enabled,
+      // What is in effect, not what is stored: the two differ when the
+      // environment turns Computer use on for a development run.
+      enabled: isComputerUseEnabled(),
+      enabledByEnvironment: isComputerUseForcedOn(),
       driverPath: settings.driverPath,
       driver: getComputerUseDriverStatus(),
       permissions: isComputerUsePlatformSupported()
@@ -5856,13 +5876,16 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
   ipcMainHandle('get-computer-use-settings', async () => computerUseSettingsView());
   ipcMainHandle('set-computer-use-enabled', async (_event, enabled: boolean) => {
     setComputerUseEnabled(enabled === true);
-    // Off means off: the driver stops and standing grants go.
-    if (enabled !== true) await getComputerUseGateway()?.shutdown('disabled');
+    // Off means off: calls on their way and open approval cards end, the
+    // driver stops and the gateway's grants go. (Not when the environment
+    // keeps it on: then nothing was turned off.)
+    if (!isComputerUseEnabled()) await getComputerUseGateway()?.shutdown('disabled');
     return computerUseSettingsView();
   });
   ipcMainHandle('set-computer-use-driver-path', async (_event, driverPath: string) => {
     setComputerUseDriverPath(typeof driverPath === 'string' ? driverPath : '');
-    // The next call starts whatever binary the path now names.
+    // Another binary is another driver: what stood on the old one (calls,
+    // approval cards, grants) ends, and the next call starts the new one.
     await getComputerUseGateway()?.shutdown('driver-changed');
     return computerUseSettingsView();
   });

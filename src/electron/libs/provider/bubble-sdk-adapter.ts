@@ -2,7 +2,7 @@ import { questionAnswerValues, resolveQuestionAnswer } from '../../../shared/que
 import { CompactionTracker } from './compaction-tracker';
 import { addAgentCost, costFields, emptyCostDetails } from '../agent-cost';
 import { assertBubbleSessionReader, bubbleHostTools, bubbleRoleOptions } from '../bubble-session-reader';
-import { isBubbleComputerUseApproval } from '../bubble-computer-use-tool';
+import { bubbleComputerUseToolNames, isBubbleComputerUseApproval } from '../bubble-computer-use-tool';
 import { getComputerUseGateway } from '../computer-use';
 import { computerUseGatewayTool } from '../../../shared/computer-use';
 import { isProjectFileApproval } from './project-access';
@@ -1048,7 +1048,7 @@ export class BubbleSdkAdapter implements ProviderAdapter {
     adoptOnStart = false
   ): BubbleRunTurnOptions {
     let started = false;
-    return {
+    const options: BubbleRunTurnOptions = {
       prompt,
       hostTools: bubbleHostTools(session.threadId),
       ...bubbleRoleOptions(session.threadId),
@@ -1090,10 +1090,14 @@ export class BubbleSdkAdapter implements ProviderAdapter {
           model: session.model,
         });
       },
-      onApproval: (request) => this.requestApproval(session, request),
       onQuestion: (request) => this.requestQuestion(session, request),
       onPlanApproval: (planMarkdown) => this.requestPlanApproval(session, planMarkdown),
     };
+    // The gateway's Computer use tools this very turn carries (the SDK reuses
+    // these options, host tools included, for the turns it starts itself).
+    const computerUseTools = bubbleComputerUseToolNames(options.hostTools ?? []);
+    options.onApproval = (request) => this.requestApproval(session, request, computerUseTools);
+    return options;
   }
 
   // ── Messages sent while a turn runs ────────────────────────────────────
@@ -1830,7 +1834,9 @@ export class BubbleSdkAdapter implements ProviderAdapter {
 
   private requestApproval(
     session: ActiveBubbleSession,
-    request: BubbleApprovalRequest
+    request: BubbleApprovalRequest,
+    /** The gateway's Computer use tools registered in the turn that asks. */
+    computerUseTools: ReadonlySet<string>
   ): Promise<BubbleApprovalDecision> {
     if (session.status === 'stopped' || this.sessions.get(session.threadId) !== session) {
       return Promise.resolve({ action: 'reject', feedback: 'Session is no longer active.' });
@@ -1838,8 +1844,10 @@ export class BubbleSdkAdapter implements ProviderAdapter {
     if (isProjectFileApproval(session.threadId, session.cwd, session.permissionMode, request)) {
       return Promise.resolve({ action: 'approve' });
     }
-    // Computer use asks through its own card, in the gateway.
-    if (isBubbleComputerUseApproval(request)) {
+    // Computer use asks through its own card, in the gateway. Only for a
+    // tool this turn registered: the same name in a turn without it is an
+    // MCP server's tool, which the gateway never sees.
+    if (isBubbleComputerUseApproval(request, computerUseTools)) {
       return Promise.resolve({ action: 'approve' });
     }
     const requestId = uuidv4();

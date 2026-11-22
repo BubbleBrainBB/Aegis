@@ -129,9 +129,9 @@ async function main() {
     const cards: ComputerUsePermissionInput[] = [];
     const frames: ComputerUseLiveFrame[] = [];
     const facts: Record<string, ComputerUseSessionFacts> = {
-      main: { planMode: false, fullAccess: false, readOnlyWorkflowRole: null },
-      plan: { planMode: true, fullAccess: false, readOnlyWorkflowRole: null },
-      second: { planMode: false, fullAccess: false, readOnlyWorkflowRole: null },
+      main: { planMode: false, fullAccess: false, readOnlyWorkflowRole: null, generation: 1 },
+      plan: { planMode: true, fullAccess: false, readOnlyWorkflowRole: null, generation: 1 },
+      second: { planMode: false, fullAccess: false, readOnlyWorkflowRole: null, generation: 1 },
     };
     let answer: ComputerUseApprovalDecision = { allow: true, untilRevoked: false };
     const gateway = new ComputerUseGateway(
@@ -205,27 +205,34 @@ async function main() {
     summary.result = /AXStaticText = "([^"]*42)"/.exec(state.text)?.[1];
     console.log('Calculator shows', summary.result);
 
-    // Plan mode looks, and does not act.
+    // One session at a time: "main" holds the desktop until its turn ends,
+    // and until then another session gets nothing, not even a look.
+    assert.equal(lease.currentOwner()?.threadId, 'main');
+    answer = { allow: true, untilRevoked: false };
+    const blockedCards = cards.length;
+    for (const [tool, args] of [
+      ['get_app_state', { app: CALCULATOR }],
+      ['list_apps', {}],
+      ['click', { app: CALCULATOR, element_index: '2' }],
+    ] as const) {
+      assert.equal((await call('second', tool, args)).text, COMPUTER_USE_LEASE_MESSAGE, tool);
+    }
+    assert.equal(cards.length, blockedCards, 'no card for a desktop that is taken');
+    gateway.finishTurn('main');
+
+    // Plan mode looks, and does not act (and looking does not take the desktop).
     const planLook = await call('plan', 'get_app_state', { app: CALCULATOR });
     assert.equal(planLook.isError, false, planLook.text);
     assert.equal((await call('plan', 'click', { app: CALCULATOR, element_index: buttonIndex(planLook.text, 'AllClear') })).text, COMPUTER_USE_PLAN_MESSAGE);
+    assert.equal(lease.currentOwner(), null);
 
-    // One session at a time: "main" holds the desktop until its turn ends.
-    assert.equal(lease.currentOwner()?.threadId, 'main');
-    answer = { allow: true, untilRevoked: false };
-    const secondLook = await call('second', 'get_app_state', { app: CALCULATOR });
-    const clear = buttonIndex(secondLook.text, 'AllClear');
-    const blockedCards = cards.length;
-    assert.equal((await call('second', 'click', { app: CALCULATOR, element_index: clear })).text, COMPUTER_USE_LEASE_MESSAGE);
-    assert.equal(cards.length, blockedCards, 'no card for a desktop that is taken');
-    gateway.finishTurn('main');
     const afterLook = await call('second', 'get_app_state', { app: CALCULATOR });
     const cleared = await call('second', 'click', { app: CALCULATOR, element_index: buttonIndex(afterLook.text, 'AllClear') });
     assert.equal(cleared.isError, false, cleared.text);
     assert.equal(cards.length, blockedCards + 1, "the second session asks for itself: main's grant is not its own");
     assert.match(cleared.text, /AXStaticText = "0"/, 'Calculator is back at 0');
     save('3-cleared', cleared);
-    summary.lease = 'second session refused while main held the desktop, allowed after main finished';
+    summary.lease = 'second session refused everything while main held the desktop, allowed after main finished';
 
     // A session's next turn works like its first (the driver session of the last turn has ended).
     gateway.finishTurn('second');

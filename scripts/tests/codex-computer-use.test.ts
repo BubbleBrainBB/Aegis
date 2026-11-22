@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -208,14 +208,30 @@ function testOverridesAndLease() {
   assert.equal(mutating.includes('"click"'), true);
   assert.equal(mutating.includes('disabled_tools=["js_add_node_module_dir"]'), true);
 
+  // The lease is held per action. A session that has acted keeps the desktop
+  // when a later action of its own is dropped (a declined approval), until
+  // its turn ends.
   const lease = new ComputerUseLease();
   assert.equal(lease.tryAcquire('thread-a', 'call-1'), true);
   assert.equal(lease.tryAcquire('thread-b', 'call-2'), false);
   assert.equal(lease.tryAcquire('thread-a', 'call-3'), true);
+  assert.deepEqual(lease.currentOwner(), { threadId: 'thread-a', toolUseId: 'call-3' });
   lease.release('thread-a', 'call-3');
+  assert.equal(lease.holds('thread-a', 'call-1'), true, 'the first action still holds the desktop');
+  assert.equal(lease.holds('thread-a', 'call-3'), false);
+  assert.deepEqual(lease.currentOwner(), { threadId: 'thread-a', toolUseId: 'call-1' });
+  assert.equal(lease.heldByAnother('thread-b'), true);
+  assert.equal(lease.heldByAnother('thread-a'), false);
+  assert.equal(lease.tryAcquire('thread-b', 'call-4'), false, 'dropping one action does not free the desktop');
+  lease.release('thread-b', 'call-4');
+  assert.equal(lease.currentOwner()?.threadId, 'thread-a', "another session cannot release what it does not hold");
+  lease.release('thread-a', 'call-1');
+  assert.equal(lease.currentOwner(), null, 'the last action dropped frees it');
   assert.equal(lease.tryAcquire('thread-b', 'call-4'), true);
   lease.releaseThread('thread-b');
   assert.equal(lease.tryAcquire('thread-a', 'call-5'), true);
+  lease.release('thread-a');
+  assert.equal(lease.currentOwner(), null, 'no id: every action of the session');
 }
 
 function testMediaSidecar() {
@@ -244,6 +260,36 @@ function testMediaSidecar() {
     assert.equal(resolveComputerUseArtifact(dir, '../escape', persisted.mediaRefs[0].sha256), null);
     assert.equal(resolveComputerUseArtifact(dir, 'session-1', 'not-a-hash'), null);
     assert.ok(saved.length > 0);
+
+    // The trusted root is the profile's one artifact folder: a session id that
+    // is not a plain name, or a session folder that is a link out of it, is
+    // refused for reading and for writing.
+    const sha = persisted.mediaRefs[0].sha256;
+    const artifacts = join(dir, 'computer-use-artifacts');
+    for (const id of ['.', '..', 'a/b', '']) {
+      assert.equal(resolveComputerUseArtifact(dir, id, sha), null, `read "${id}"`);
+      assert.deepEqual(persistComputerUseMedia({ userDataDir: dir, sessionId: id, payload }).mediaRefs, [], `write "${id}"`);
+    }
+    assert.deepEqual(readdirSync(artifacts), ['session-1'], 'nothing was written beside the session folder');
+    const outside = mkdtempSync(join(tmpdir(), 'aegis-cu-outside-'));
+    try {
+      symlinkSync(outside, join(artifacts, 'linked'));
+      assert.deepEqual(persistComputerUseMedia({ userDataDir: dir, sessionId: 'linked', payload }).mediaRefs, []);
+      assert.deepEqual(readdirSync(outside), [], 'a linked session folder is never written through');
+      writeFileSync(join(outside, `${sha}.jpg`), saved);
+      assert.equal(resolveComputerUseArtifact(dir, 'linked', sha), null, 'nor read through');
+      // A file under the right name that is a link elsewhere is not followed either.
+      const real = join(artifacts, 'session-1', `${sha}.jpg`);
+      rmSync(real);
+      symlinkSync(join(outside, `${sha}.jpg`), real);
+      assert.equal(resolveComputerUseArtifact(dir, 'session-1', sha), null);
+      // And writing does not go through it: the linked file keeps its bytes.
+      writeFileSync(join(outside, `${sha}.jpg`), 'not the image');
+      assert.equal(persistComputerUseMedia({ userDataDir: dir, sessionId: 'session-1', payload }).mediaRefs.length, 1);
+      assert.equal(readFileSync(join(outside, `${sha}.jpg`), 'utf8'), 'not the image');
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

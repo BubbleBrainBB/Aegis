@@ -1,12 +1,14 @@
-// The gateway's tools: the same ten names and argument shapes agents already
-// have with Codex's own Computer use (list_apps, get_app_state and eight
-// actions, addressed by app name and element index), so the approval card,
-// the grants, the labels and the HUD treat both backends alike. The gateway
+// The gateway's tools: the names and argument shapes agents already have with
+// Codex's own Computer use (list_apps, get_app_state and seven actions,
+// addressed by app name and element index), so the approval card, the
+// grants, the labels and the HUD treat both backends alike. The gateway
 // translates each call to cua-driver's (pid, window, element token) calls.
+// Only what the driver can do is offered: Codex's select_text has no
+// counterpart there and is left out.
 
-import { COMPUTER_USE_TOOLS } from '../../../shared/computer-use';
+import { COMPUTER_USE_GATEWAY_TOOLS } from '../../../shared/computer-use';
 
-export type ComputerUseToolId = (typeof COMPUTER_USE_TOOLS)[number];
+export type ComputerUseToolId = (typeof COMPUTER_USE_GATEWAY_TOOLS)[number];
 
 export interface ComputerUseToolDefinition {
   name: ComputerUseToolId;
@@ -55,7 +57,10 @@ export const COMPUTER_USE_TOOL_DEFINITIONS: readonly ComputerUseToolDefinition[]
         element_index: { type: 'string', description: 'Element index to click' },
         x: { type: 'number', description: 'X coordinate in screenshot pixel coordinates' },
         y: { type: 'number', description: 'Y coordinate in screenshot pixel coordinates' },
-        click_count: { type: 'integer', description: 'Number of clicks. Defaults to 1' },
+        click_count: {
+          type: 'integer',
+          description: 'Number of clicks. Defaults to 1. With element_index: 1, or 2 with the left button. With x and y: 1 to 3.',
+        },
         mouse_button: {
           type: 'string',
           enum: ['left', 'right', 'middle'],
@@ -96,28 +101,6 @@ export const COMPUTER_USE_TOOL_DEFINITIONS: readonly ComputerUseToolDefinition[]
     ),
     mutating: true,
     risk: 'medium',
-  },
-  {
-    name: 'select_text',
-    description:
-      'Select text inside a text element, or place the text cursor before or after it. Provide text exactly as it appears in the accessibility tree.',
-    parameters: schema(
-      {
-        app: APP,
-        element_index: { type: 'string', description: 'Text element identifier' },
-        text: { type: 'string', description: 'Target text as shown in the accessibility tree' },
-        prefix: { type: 'string', description: 'Optional text immediately before the target' },
-        suffix: { type: 'string', description: 'Optional text immediately after the target' },
-        selection: {
-          type: 'string',
-          enum: ['text', 'cursor_before', 'cursor_after'],
-          description: 'Whether to select the text or place the cursor before or after it. Defaults to text.',
-        },
-      },
-      ['app', 'element_index', 'text']
-    ),
-    mutating: true,
-    risk: 'low',
   },
   {
     name: 'scroll',

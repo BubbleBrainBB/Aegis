@@ -44,11 +44,28 @@ Change `VERSION` and `SHA256` in `scripts/fetch-cua-driver.mjs` and
 together, in a change of its own. Then compare the driver's tool schemas
 (`cua-driver describe <tool>`) for the tools named in
 `src/electron/libs/computer-use/policy.ts`, and run
-`npm run verify:computer-use` and `npm run verify:computer-use-live`.
+`npm run verify:computer-use`, `npm run verify:bubble-computer-use` and
+`npm run verify:computer-use-live`.
 
 ## How it is run
 
-`cua-driver serve --embedded --socket <userData>/computer-use/driver/driver.sock`
-with telemetry and the update check off, its state under Aegis's own folder,
-and a policy file that allows only the calls the gateway makes. See
-`driver-host.ts`.
+`cua-driver serve --embedded --parent-liveness-stdio --permission-mode standard --socket <userData>/computer-use/driver/driver.sock`,
+with:
+
+- an environment built from a short list (`PATH`, `HOME`, the locale), not
+  inherited: nothing in Aegis's own environment can switch on the driver's
+  HTTP listener, foreground delivery or another policy;
+- telemetry and the update check off, and its state under Aegis's own folder;
+- a policy file that allows only the calls the gateway makes, each input call
+  required to say `delivery_mode: background` (and `scope: window` where the
+  tool has it);
+- stderr in `driver.log` beside the socket.
+
+Measured on 0.57.0, and relied on in `driver-host.ts`:
+
+- The daemon exits with Aegis only with `--parent-liveness-stdio` (a hidden
+  flag), and only if its stderr is not a pipe to Aegis: with a pipe, its last
+  message fails to write when Aegis is killed and the daemon stays.
+- A call in flight cannot be cancelled over the stdio proxy. Stopping a turn
+  mid-call stops the driver process; the next call starts a new one.
+- A session name ended with `end_session` cannot be used again.
