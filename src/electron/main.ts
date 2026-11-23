@@ -1,5 +1,5 @@
 import { setupSessionWindowsIPC, sessionWindows } from './ipc/session-windows';
-import { app, autoUpdater as nativeUpdater, BrowserWindow, Menu, dialog, shell, ipcMain, nativeTheme, powerMonitor, session } from 'electron';
+import { app, autoUpdater as nativeUpdater, BrowserWindow, Menu, dialog, shell, ipcMain, nativeTheme, powerMonitor, safeStorage, session } from 'electron';
 import { queueSessionLink } from './ipc/session-links';
 import {
   applyWindowMaterial,
@@ -12,7 +12,6 @@ import {
   setThemedMaterial,
   watchFullScreen,
 } from './window-glass';
-import { autoUpdater } from 'electron-updater';
 import * as fs from 'fs';
 import * as path from 'path';
 import { setupIPCHandlers, cleanup } from './ipc-handlers';
@@ -30,7 +29,7 @@ import {
   ipcMainHandle,
   ipcMainOn,
 } from './util';
-import { ensureShellEnvironment } from './libs/shell-environment';
+import { startShellEnvironment, type ShellEnvironmentCache } from './libs/shell-environment';
 import { preloadClaudeAgentSdk } from './libs/runner';
 import { listRunningSessions } from './libs/session-store';
 import { buildUpdateDetail, createAppUpdater, releasePageUrl } from './libs/app-updater';
@@ -55,12 +54,6 @@ function countRunningSessionsSafe(): number {
     return 0;
   }
 }
-
-// 修复打包后的环境变量问题（macOS/Linux GUI 应用无法继承 shell 的环境变量）。
-// 细节见 src/electron/libs/shell-environment.ts：使用 interactive + login shell 抓 env
-// （让 .zshrc / .bashrc 里 nvm、volta、fnm 等 CLI 管理器生效），失败时用基于磁盘存在性的
-// 常见路径兜底（含 nvm/fnm/asdf 各自的 node bin 目录）。
-ensureShellEnvironment();
 
 // 禁用 macOS 窗口恢复提示（避免强制退出后弹出 "reopen windows" 对话框卡住启动）
 if (process.platform === 'darwin') {
@@ -773,8 +766,9 @@ function showMainWindow(): void {
 }
 
 const appUpdater = createAppUpdater({
-  // Reading electron-updater's autoUpdater creates it, so wait until needed.
-  updater: () => autoUpdater,
+  // Reading electron-updater's autoUpdater creates it, and loading the module
+  // takes about 80 ms: both wait until an update check runs.
+  updater: () => (require('electron-updater') as typeof import('electron-updater')).autoUpdater,
   nativeUpdater: () => nativeUpdater,
   platform: process.platform,
   isPackaged: app.isPackaged,
@@ -944,7 +938,37 @@ function setupMenu(): void {
 }
 
 // 应用启动
+/**
+ * Where the shell environment of the last launch is kept, for
+ * startShellEnvironment. It holds API keys, so it exists only where the
+ * system keychain can encrypt it, and only in the packaged app: a development
+ * or test build has no stable identity for the keychain, and asks the shell
+ * every time as before. AEGIS_SHELL_ENV_CACHE=1 turns it on for trying it out.
+ */
+function shellEnvironmentCache(): ShellEnvironmentCache | null {
+  if (!app.isPackaged && process.env.AEGIS_SHELL_ENV_CACHE !== '1') return null;
+  try {
+    if (!safeStorage.isEncryptionAvailable()) return null;
+  } catch {
+    return null;
+  }
+  return {
+    file: path.join(app.getPath('userData'), 'shell-environment.enc'),
+    encrypt: (text) => safeStorage.encryptString(text),
+    decrypt: (data) => safeStorage.decryptString(data),
+  };
+}
+
 app.whenReady().then(() => {
+  // 修复打包后的环境变量问题（macOS/Linux GUI 应用无法继承 shell 的环境变量）。
+  // 细节见 src/electron/libs/shell-environment.ts：使用 interactive + login shell 抓 env
+  // （让 .zshrc / .bashrc 里 nvm、volta、fnm 等 CLI 管理器生效），失败时用基于磁盘存在性的
+  // 常见路径兜底（含 nvm/fnm/asdf 各自的 node bin 目录）。
+  // First thing once the app is ready, before anything here starts a process:
+  // nothing above this line reads the environment, and the keychain that
+  // encrypts the cached answer can only be used from now on.
+  startShellEnvironment({ cache: shellEnvironmentCache() });
+
   // 生产环境设置 CSP；开发环境不限制（Vite HMR 需要 WebSocket 和 eval）
   installWidgetProtocol();
   registerWidgetIpc();
