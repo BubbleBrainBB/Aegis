@@ -12,6 +12,7 @@ const steps = [
   'node scripts/patch-bubble-sdk.mjs',
   'tsc -p src/electron/tsconfig.json',
   'node scripts/build-design-assets.mjs',
+  'node scripts/build-widget-libs.mjs',
   'node scripts/remote/build-crypto.mjs',
   'node scripts/build-liquid-glass.mjs',
 ];

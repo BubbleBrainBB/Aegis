@@ -1,5 +1,6 @@
 // electron-builder entry point: the static settings live in
-// electron-builder.json; this adds exclusions computed from package-lock.json.
+// electron-builder.json; this adds exclusions computed from package-lock.json
+// and per-platform native prebuild filters while preserving the root allowlist.
 // Build with `electron-builder --config electron-builder.config.cjs`
 // (`npm run build:electron`); electron-builder would otherwise pick the JSON.
 const fs = require('node:fs');
@@ -17,7 +18,7 @@ const config = json5.parse(fs.readFileSync(path.join(__dirname, 'electron-builde
 const lock = JSON.parse(fs.readFileSync(path.join(__dirname, 'package-lock.json'), 'utf8')).packages;
 const rootDependencies = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).dependencies;
 
-config.files = [
+const baseFiles = [
   ...config.files,
   ...unusedLauncherPackageNames(lock, rootDependencies).flatMap((name) => [
     `!node_modules/${name}`,
@@ -26,5 +27,23 @@ config.files = [
     `!node_modules/**/node_modules/${name}/**/*`,
   ]),
 ];
+
+function excludeForeignNativePrebuilds(foreignOsPrefixes) {
+  return foreignOsPrefixes.flatMap((osPrefix) => [
+    `!node_modules/node-pty/prebuilds/${osPrefix}-*`,
+    `!node_modules/node-pty/prebuilds/${osPrefix}-*/**/*`,
+    `!node_modules/**/node_modules/node-pty/prebuilds/${osPrefix}-*`,
+    `!node_modules/**/node_modules/node-pty/prebuilds/${osPrefix}-*/**/*`,
+    `!node_modules/better-sqlite3/prebuilds/${osPrefix}*.node`,
+  ]);
+}
+
+// Note: in electron-builder, platform-specific `files` replaces root `files`
+// (and an exclusion-only array implicitly prepends `**/*`!). Always spread
+// `baseFiles` so the allowlist (dist-electron, dist-react, node_modules) stays intact.
+config.files = baseFiles;
+config.mac = { ...config.mac, files: [...baseFiles, ...excludeForeignNativePrebuilds(['win32', 'linux'])] };
+config.win = { ...config.win, files: [...baseFiles, ...excludeForeignNativePrebuilds(['darwin', 'linux'])] };
+config.linux = { ...config.linux, files: [...baseFiles, ...excludeForeignNativePrebuilds(['darwin', 'win32'])] };
 
 module.exports = config;

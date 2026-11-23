@@ -82,6 +82,27 @@ function prepareDeepseekRuntime(context) {
     'spawn-helper'
   );
   if (fs.existsSync(spawnHelper)) fs.chmodSync(spawnHelper, 0o755);
+
+  // Prune foreign-platform prebuilds and C++ build sources from the bundled
+  // DeepSeek Harness node-pty so macOS/Linux bundles do not ship ~23 MB of
+  // Windows binaries (and vice versa).
+  const harnessPtyDir = path.join(profileDir, 'node_modules', 'node-pty');
+  const harnessPtyPrebuilds = path.join(harnessPtyDir, 'prebuilds');
+  if (fs.existsSync(harnessPtyPrebuilds)) {
+    const targetDir = `${platform}-${arch}`;
+    for (const entry of fs.readdirSync(harnessPtyPrebuilds)) {
+      if (entry !== targetDir) {
+        fs.rmSync(path.join(harnessPtyPrebuilds, entry), { recursive: true, force: true });
+      }
+    }
+  }
+  for (const unusedSubdir of ['deps', 'src', 'third_party']) {
+    const dir = path.join(harnessPtyDir, unusedSubdir);
+    if (fs.existsSync(dir)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
   console.log(`  • prepared DeepSeek Harness runtime  target=${platform}-${arch}`);
 }
 
