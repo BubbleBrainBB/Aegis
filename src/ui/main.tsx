@@ -5,6 +5,7 @@ import { App } from './App';
 import { ComputerUsePreviewApp } from './components/ComputerUsePreviewApp';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { isComputerUsePreviewHash } from '../shared/computer-use';
+import 'katex/dist/katex.min.css';
 import './index.css';
 
 window.addEventListener('unhandledrejection', (event) => {

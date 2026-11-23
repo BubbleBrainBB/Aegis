@@ -307,6 +307,9 @@ assert.ok(
 );
 
 const packageJson = JSON.parse(read('package.json'));
-assert.ok(packageJson.dependencies?.exceljs, 'package.json must depend on exceljs');
+// Vite bundles exceljs into the renderer (a chunk of its own, loaded when a
+// spreadsheet is opened), so it is needed to build the app, not beside it.
+assert.ok(packageJson.devDependencies?.exceljs, 'package.json must depend on exceljs to build the renderer');
+assert.equal(packageJson.dependencies?.exceljs, undefined, 'exceljs must not ship in the packaged node_modules: the renderer bundle already holds it');
 
 console.log('verify-spreadsheet-preview: OK');

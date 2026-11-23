@@ -32,14 +32,20 @@ export const WIDGET_FRAME_CSP = [
   "base-uri 'none'",
 ].join('; ');
 
-// dist-electron/electron/ sits two levels under the app root, in dev and in
-// the packaged app.asar alike; the app path is a fallback.
+// Packaged builds copy only the 3 minified bundles into dist-electron/electron/widget-libs/
+// so full npm packages (echarts, chart.js, d3) stay out of app.asar. Fall back to
+// node_modules so unit tests and dev runs without widget-libs still work.
 async function readLibrary(pkg: string, file: string): Promise<Buffer> {
-  const roots = [path.join(__dirname, '..', '..'), app.getAppPath()];
+  const bundledFile = path.join(__dirname, 'widget-libs', path.basename(file));
+  const candidates = [
+    bundledFile,
+    path.join(__dirname, '..', '..', 'node_modules', pkg, file),
+    path.join(app.getAppPath(), 'node_modules', pkg, file),
+  ];
   let lastError: unknown = null;
-  for (const base of roots) {
+  for (const candidate of candidates) {
     try {
-      return await fs.promises.readFile(path.join(base, 'node_modules', pkg, file));
+      return await fs.promises.readFile(candidate);
     } catch (error) {
       lastError = error;
     }
