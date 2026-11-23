@@ -432,6 +432,75 @@ async function main(): Promise<void> {
     await adapter.stopSession(threadId);
   }
 
+  // ── An edit's diff holds the whole file: the card gets the passage ───────
+  {
+    const line = (index: number) => `  const entry${index} = table[${index}] ?? fallback;`;
+    const changed = '  const entry9000 = changed;';
+    const size = (value: unknown) => JSON.stringify(value).length;
+
+    // agy names the passage in its arguments and sends the file twice in the diff.
+    const { adapter, events, threadId } = await open({ prompt: 'WHOLEFILE' });
+    await until(() => events.some((event) => event.type === 'permission_request'), 'the edit approval');
+    const approval = events.find((event) => event.type === 'permission_request')!;
+    assert.equal(approval.toolName, 'Edit');
+    assert.equal(approval.input.toolCall.rawInput.old_string, line(9000));
+    assert.equal(approval.input.toolCall.rawInput.new_string, changed);
+    const approvalDiff = approval.input.toolCall.content[0];
+    assert.equal(approvalDiff.type, 'diff');
+    assert.ok(approvalDiff.path.endsWith('big.ts'));
+    assert.equal(approvalDiff.oldText, [8997, 8998, 8999, 9000, 9001, 9002, 9003].map((index) => `${line(index)}\n`).join(''));
+    assert.ok(approvalDiff.newText.includes(changed));
+    assert.ok(size(approval) < 4_000, `the approval is ${size(approval)} characters, not the file twice`);
+    await adapter.respondToRequest(threadId, approval.requestId, { behavior: 'allow', updatedInput: {} } as never);
+    await turnDone(events);
+
+    const uses = blocks(events, 'tool_use').filter((block) => block.id === 'call_whole_1');
+    assert.equal(uses.length, 1, 'the diff arriving later does not change the card, so it is not sent again');
+    assert.equal(uses[0].name, 'Edit');
+    assert.ok(uses[0].input.file_path.endsWith('big.ts'));
+    assert.equal(uses[0].input.old_string, line(9000));
+    assert.equal(uses[0].input.new_string, changed);
+    // The fake sent the 600 KB file six times over; none of it reaches the host.
+    assert.ok(size(events) < 20_000, `the turn's events are ${size(events)} characters`);
+
+    // A tool that describes its edit by the diff alone: the lines that changed, with context.
+    await withTimeout(adapter.sendTurn({ threadId, prompt: 'WHOLEDIFF' } as never), 'sendTurn');
+    const byDiff = blocks(events, 'tool_use').filter((block) => block.id === 'call_diff_2').at(-1)!;
+    assert.equal(byDiff.name, 'Edit');
+    assert.ok(byDiff.input.file_path.endsWith('big.ts'));
+    assert.equal(byDiff.input.old_string, [8997, 8998, 8999, 9000, 9001, 9002, 9003].map((index) => `${line(index)}\n`).join(''));
+    assert.equal(
+      byDiff.input.new_string,
+      [line(8997), line(8998), line(8999), changed, line(9001), line(9002), line(9003)].map((text) => `${text}\n`).join('')
+    );
+    assert.ok(size(events) < 40_000, `both turns' events are ${size(events)} characters`);
+    await adapter.stopSession(threadId);
+
+    // Arguments the diff does not bear out give way to the diff.
+    const file = Array.from({ length: 40 }, (_, index) => `row ${index}`);
+    const edited = file.map((row, index) => (index === 20 ? 'row twenty' : row));
+    const diff = { type: 'diff', path: '/p/rows.txt', oldText: `${file.join('\n')}\n`, newText: `${edited.join('\n')}\n` };
+    assert.deepEqual(
+      antigravityToolInput('Edit', { rawInput: { Path: '/p/rows.txt', Target: 'not in the file', Replacement: 'x' }, content: [diff] }),
+      {
+        Path: '/p/rows.txt',
+        Target: 'not in the file',
+        Replacement: 'x',
+        file_path: '/p/rows.txt',
+        old_string: 'row 17\nrow 18\nrow 19\nrow 20\nrow 21\nrow 22\nrow 23\n',
+        new_string: 'row 17\nrow 18\nrow 19\nrow twenty\nrow 21\nrow 22\nrow 23\n',
+      }
+    );
+    // Before the diff arrives the arguments are all there is; once it does, the card is the same.
+    const args = { Path: '/p/rows.txt', Target: 'row 20', Replacement: 'row twenty' };
+    const early = antigravityToolInput('Edit', { rawInput: args });
+    assert.equal(early.old_string, 'row 20');
+    assert.equal(early.new_string, 'row twenty');
+    assert.deepEqual(antigravityToolInput('Edit', { rawInput: args, content: [diff] }), early);
+    // A new file has no old text to cut down.
+    assert.equal(antigravityToolInput('Edit', { content: [{ type: 'diff', path: '/p/new.txt', newText: 'hello\n' }] }).old_string, '');
+  }
+
   // ── Tools agy names differently, thinking, plans, its own title and mode ─
   {
     const { adapter, events, threadId } = await open({ prompt: 'THINK PLAN EDIT TITLE' });

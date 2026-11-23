@@ -195,24 +195,38 @@ function statusToOperation(status: string): ChangeOperation {
   return 'modified';
 }
 
-function buildToolResultMap(messages: StreamMessage[]): Map<string, ToolResultBlock> {
-  const results = new Map<string, ToolResultBlock>();
+/** A tool result as the records read it, with the stored block it was read from. */
+type ToolResultEntry = { result: ToolResultBlock; source: object };
+
+/** The last result of every tool call, and of every call made by the main agent itself. */
+function buildToolResultMaps(messages: StreamMessage[]): {
+  all: Map<string, ToolResultEntry>;
+  main: Map<string, ToolResultEntry>;
+} {
+  const all = new Map<string, ToolResultEntry>();
+  const main = new Map<string, ToolResultEntry>();
 
   for (const message of messages) {
+    const isMain = !(message as { parentToolUseId?: string | null }).parentToolUseId;
     for (const block of getMessageContentBlocks(message)) {
       const normalized = normalizeToolResultBlock(block);
       if (normalized) {
-        results.set(normalized.tool_use_id, {
-          type: 'tool_result',
-          tool_use_id: normalized.tool_use_id,
-          content: normalized.content,
-          is_error: normalized.is_error,
-        });
+        const entry: ToolResultEntry = {
+          result: {
+            type: 'tool_result',
+            tool_use_id: normalized.tool_use_id,
+            content: normalized.content,
+            is_error: normalized.is_error,
+          },
+          source: block,
+        };
+        all.set(normalized.tool_use_id, entry);
+        if (isMain) main.set(normalized.tool_use_id, entry);
       }
     }
   }
 
-  return results;
+  return { all, main };
 }
 
 type PendingHeredoc = {
@@ -906,13 +920,46 @@ function buildToolRecords(
   }];
 }
 
-export function extractToolChangeRecords(messages: StreamMessage[]): ChangeRecord[] {
-  const results = buildToolResultMap(messages);
+/**
+ * What one tool call changed, kept for as long as its stored input lives. A
+ * transcript is read again on every message that lands, and a record costs a
+ * line diff of the call's texts: without this, every edit of the conversation
+ * was diffed again for each new message. Stored messages are never changed in
+ * place, so the same input and result objects mean the same records.
+ */
+const toolRecordCache = new WeakMap<
+  object,
+  { id: string; name: string; resultSource: object | undefined; records: ChangeRecord[] }
+>();
+
+function cachedToolRecords(block: ToolUseBlock, entry: ToolResultEntry | undefined, order: number): ChangeRecord[] {
+  const input = block.input as object;
+  let cached = toolRecordCache.get(input);
+  if (!cached || cached.id !== block.id || cached.name !== block.name || cached.resultSource !== entry?.source) {
+    cached = { id: block.id, name: block.name, resultSource: entry?.source, records: buildToolRecords(0, block, entry?.result) };
+    toolRecordCache.set(input, cached);
+  }
+  // Callers get records of their own: they merge and re-number them.
+  return cached.records.map((record) => ({ ...record, order: order + record.order }));
+}
+
+/**
+ * The change records of every tool call in `messages`, and those of the calls
+ * the main agent made itself (a subagent's messages carry `parentToolUseId`),
+ * each numbered in its own order. One pass: a call's records are worked out
+ * once for both lists.
+ */
+export function extractToolChangeRecordSets(messages: StreamMessage[]): {
+  records: ChangeRecord[];
+  mainRecords: ChangeRecord[];
+} {
+  const results = buildToolResultMaps(messages);
   const records: ChangeRecord[] = [];
-  let order = 0;
+  const mainRecords: ChangeRecord[] = [];
 
   for (const message of messages) {
     if (message.type !== 'assistant') continue;
+    const isMain = !(message as { parentToolUseId?: string | null }).parentToolUseId;
     for (const block of getMessageContentBlocks(message)) {
       const normalized = normalizeToolUseBlock(block);
       if (!normalized) continue;
@@ -922,15 +969,18 @@ export function extractToolChangeRecords(messages: StreamMessage[]): ChangeRecor
         name: normalized.name,
         input: normalized.input,
       };
-      const nextRecords = buildToolRecords(order, toolBlock, results.get(toolBlock.id));
-      if (nextRecords.length > 0) {
-        records.push(...nextRecords);
-        order += nextRecords.length;
+      records.push(...cachedToolRecords(toolBlock, results.all.get(toolBlock.id), records.length));
+      if (isMain) {
+        mainRecords.push(...cachedToolRecords(toolBlock, results.main.get(toolBlock.id), mainRecords.length));
       }
     }
   }
 
-  return records;
+  return { records, mainRecords };
+}
+
+export function extractToolChangeRecords(messages: StreamMessage[]): ChangeRecord[] {
+  return extractToolChangeRecordSets(messages).records;
 }
 
 function splitGitPatchByFile(patch: string): string[] {

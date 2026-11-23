@@ -1298,7 +1298,9 @@ function ToolEntryDetail({
 }: {
   entry: Extract<WorkstreamEntry, { type: 'tool' | 'task' | 'memory' }>;
 }) {
-  const inputRecord = isRecord(entry.block.input) ? getPublicToolInput(entry.block.input) : {};
+  // One object per stored input: the diff below is worked out again only when the call changes.
+  const blockInput = entry.block.input;
+  const inputRecord = useMemo(() => (isRecord(blockInput) ? getPublicToolInput(blockInput) : {}), [blockInput]);
   const contentStr = ('liveOutput' in entry && entry.liveOutput) || entry.result?.displayContent || entry.result?.content || entry.detail || '';
   const diffContent =
     entry.toolName === 'Write' || entry.toolName === 'Edit' || entry.toolName === 'Delete'

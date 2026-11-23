@@ -46,10 +46,29 @@ function splitLines(text: string): string[] {
   return lines;
 }
 
-function buildLcsTable(oldLines: string[], newLines: string[]): Uint32Array {
+/**
+ * The table below is quadratic in the lines it compares: two versions of a
+ * 14,000-line file would need 196 million cells. It is built only while it
+ * stays under this many cells (2,000 by 2,000 lines).
+ */
+const LCS_TABLE_MAX_CELLS = 4_000_000;
+
+/**
+ * How many changed lines the search for larger texts looks for before it gives
+ * up and reports the differing span as replaced. Its memory grows with the
+ * square of this (about 17 MB at the limit), not with the size of the texts.
+ */
+const MYERS_MAX_EDITS = 2_048;
+
+function fitsLcsTable(oldCount: number, newCount: number): boolean {
+  return (oldCount + 1) * (newCount + 1) <= LCS_TABLE_MAX_CELLS;
+}
+
+/** A common subsequence is at most 2,000 lines under the cell limit, so 16 bits hold it. */
+function buildLcsTable(oldLines: string[], newLines: string[]): Uint16Array {
   const rows = oldLines.length + 1;
   const cols = newLines.length + 1;
-  const table = new Uint32Array(rows * cols);
+  const table = new Uint16Array(rows * cols);
 
   for (let oldIndex = oldLines.length - 1; oldIndex >= 0; oldIndex -= 1) {
     for (let newIndex = newLines.length - 1; newIndex >= 0; newIndex -= 1) {
@@ -67,7 +86,7 @@ function buildLcsTable(oldLines: string[], newLines: string[]): Uint32Array {
   return table;
 }
 
-function diffLines(oldLines: string[], newLines: string[]): DiffOp[] {
+function diffLinesByTable(oldLines: string[], newLines: string[]): DiffOp[] {
   const cols = newLines.length + 1;
   const table = buildLcsTable(oldLines, newLines);
   const ops: DiffOp[] = [];
@@ -103,6 +122,157 @@ function diffLines(oldLines: string[], newLines: string[]): DiffOp[] {
     newIndex += 1;
   }
 
+  return ops;
+}
+
+/**
+ * Myers' O(ND) search for a shortest edit script: its time and memory follow
+ * the number of changed lines, not the size of the texts. Null when the texts
+ * differ by more than MYERS_MAX_EDITS lines.
+ */
+function diffLinesByMyers(oldLines: string[], newLines: string[]): DiffOp[] | null {
+  // Lines become numbers so the search compares integers, not strings.
+  const ids = new Map<string, number>();
+  const intern = (lines: string[]): Int32Array => {
+    const out = new Int32Array(lines.length);
+    for (let index = 0; index < lines.length; index += 1) {
+      let id = ids.get(lines[index]);
+      if (id === undefined) {
+        id = ids.size;
+        ids.set(lines[index], id);
+      }
+      out[index] = id;
+    }
+    return out;
+  };
+  const oldIds = intern(oldLines);
+  const newIds = intern(newLines);
+  const oldCount = oldIds.length;
+  const newCount = newIds.length;
+
+  const maxEdits = Math.min(oldCount + newCount, MYERS_MAX_EDITS);
+  // furthest[offset + k]: how far into the old lines a path on diagonal k
+  // (old index minus new index) gets with the edits spent so far.
+  const offset = maxEdits + 1;
+  const furthest = new Int32Array(2 * maxEdits + 3);
+  // rounds[d]: the diagonals -d-1..d+1 as they stood before round d.
+  const rounds: Int32Array[] = [];
+  let edits = -1;
+
+  search: for (let round = 0; round <= maxEdits; round += 1) {
+    rounds.push(furthest.slice(offset - round - 1, offset + round + 2));
+    for (let k = -round; k <= round; k += 2) {
+      const insert = k === -round || (k !== round && furthest[offset + k - 1] < furthest[offset + k + 1]);
+      let oldIndex = insert ? furthest[offset + k + 1] : furthest[offset + k - 1] + 1;
+      let newIndex = oldIndex - k;
+      while (oldIndex < oldCount && newIndex < newCount && oldIds[oldIndex] === newIds[newIndex]) {
+        oldIndex += 1;
+        newIndex += 1;
+      }
+      furthest[offset + k] = oldIndex;
+      if (oldIndex >= oldCount && newIndex >= newCount) {
+        edits = round;
+        break search;
+      }
+    }
+  }
+  if (edits < 0) return null;
+
+  // Walk the rounds back from the end; the script comes out last line first.
+  const reversed: DiffOp[] = [];
+  let oldIndex = oldCount;
+  let newIndex = newCount;
+  for (let round = edits; round > 0; round -= 1) {
+    const before = rounds[round];
+    const at = (k: number) => before[k + round + 1];
+    const k = oldIndex - newIndex;
+    const insert = k === -round || (k !== round && at(k - 1) < at(k + 1));
+    const previousK = insert ? k + 1 : k - 1;
+    const previousOld = at(previousK);
+    const previousNew = previousOld - previousK;
+    while (oldIndex > previousOld && newIndex > previousNew) {
+      oldIndex -= 1;
+      newIndex -= 1;
+      reversed.push({ type: 'equal', text: oldLines[oldIndex] });
+    }
+    if (insert) {
+      newIndex -= 1;
+      reversed.push({ type: 'insert', text: newLines[newIndex] });
+    } else {
+      oldIndex -= 1;
+      reversed.push({ type: 'delete', text: oldLines[oldIndex] });
+    }
+  }
+  while (oldIndex > 0 && newIndex > 0) {
+    oldIndex -= 1;
+    newIndex -= 1;
+    reversed.push({ type: 'equal', text: oldLines[oldIndex] });
+  }
+
+  // Within one changed block, removed lines come before added ones.
+  const ops: DiffOp[] = [];
+  let inserts: DiffOp[] = [];
+  for (let index = reversed.length - 1; index >= 0; index -= 1) {
+    const op = reversed[index];
+    if (op.type === 'insert') {
+      inserts.push(op);
+      continue;
+    }
+    if (op.type === 'equal' && inserts.length > 0) {
+      for (const insert of inserts) ops.push(insert);
+      inserts = [];
+    }
+    ops.push(op);
+  }
+  for (const insert of inserts) ops.push(insert);
+  return ops;
+}
+
+/**
+ * Line diff of two texts. The lines both texts start with are never searched,
+ * so an edit to a large file costs what the edit is worth, not the file:
+ * - what follows the common head goes through the table while it fits, with
+ *   the result this function has always given;
+ * - larger than that, the common tail is set aside too, and the rest goes
+ *   through the table if it now fits, else through Myers' search;
+ * - texts that differ by more lines than that search allows are reported as
+ *   one replaced span, which is still a correct diff.
+ */
+function diffLines(oldLines: string[], newLines: string[]): DiffOp[] {
+  const shorter = Math.min(oldLines.length, newLines.length);
+  let head = 0;
+  while (head < shorter && oldLines[head] === newLines[head]) head += 1;
+
+  let tail = 0;
+  if (!fitsLcsTable(oldLines.length - head, newLines.length - head)) {
+    while (
+      tail < shorter - head &&
+      oldLines[oldLines.length - 1 - tail] === newLines[newLines.length - 1 - tail]
+    ) {
+      tail += 1;
+    }
+  }
+
+  const ops: DiffOp[] = [];
+  for (let index = 0; index < head; index += 1) {
+    ops.push({ type: 'equal', text: oldLines[index] });
+  }
+
+  const oldMiddle = head === 0 && tail === 0 ? oldLines : oldLines.slice(head, oldLines.length - tail);
+  const newMiddle = head === 0 && tail === 0 ? newLines : newLines.slice(head, newLines.length - tail);
+  const middle = fitsLcsTable(oldMiddle.length, newMiddle.length)
+    ? diffLinesByTable(oldMiddle, newMiddle)
+    : diffLinesByMyers(oldMiddle, newMiddle);
+  if (middle) {
+    for (const op of middle) ops.push(op);
+  } else {
+    for (const text of oldMiddle) ops.push({ type: 'delete', text });
+    for (const text of newMiddle) ops.push({ type: 'insert', text });
+  }
+
+  for (let index = oldLines.length - tail; index < oldLines.length; index += 1) {
+    ops.push({ type: 'equal', text: oldLines[index] });
+  }
   return ops;
 }
 
@@ -222,6 +392,44 @@ export function createUnifiedDiffHunks(
   const ops = diffLines(oldLines, newLines);
   const annotated = annotateOps(ops);
   return splitIntoHunks(annotated, contextLines);
+}
+
+/**
+ * Two versions of a file, cut down to the lines that differ plus a few lines
+ * of context on each side. Each result is a run of whole lines of its text, so
+ * it still reads as "this passage became that passage". Texts that share no
+ * leading or trailing lines come back as they are.
+ */
+export function trimCommonLines(
+  oldText: string,
+  newText: string,
+  contextLines = DEFAULT_CONTEXT_LINES
+): { oldText: string; newText: string } {
+  const oldLines = oldText.split('\n');
+  const newLines = newText.split('\n');
+  const shorter = Math.min(oldLines.length, newLines.length);
+
+  let head = 0;
+  while (head < shorter && oldLines[head] === newLines[head]) head += 1;
+  let tail = 0;
+  while (
+    tail < shorter - head &&
+    oldLines[oldLines.length - 1 - tail] === newLines[newLines.length - 1 - tail]
+  ) {
+    tail += 1;
+  }
+
+  const context = Math.max(0, Math.floor(contextLines));
+  const start = Math.max(0, head - context);
+  const kept = Math.max(0, tail - context);
+  if (start === 0 && kept === 0) return { oldText, newText };
+
+  // A run that stops before the last line keeps that line's own line break.
+  const cut = (lines: string[]) => {
+    const end = lines.length - kept;
+    return lines.slice(start, end).join('\n') + (end < lines.length ? '\n' : '');
+  };
+  return { oldText: cut(oldLines), newText: cut(newLines) };
 }
 
 function formatHunkHeader(hunk: UnifiedDiffHunk): string {

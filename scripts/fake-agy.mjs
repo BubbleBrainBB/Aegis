@@ -13,9 +13,13 @@
  * - session/cancel ends the running prompt with stopReason `cancelled`;
  * - the process exits by itself when its input closes.
  *
- * What a turn does is chosen by words in the prompt (WRITE, RUN, THINK, SLOW,
- * CRASH, EXIT_AFTER, REFUSE, FAIL, PLAN, SWITCH_MODE, TITLE); anything else
- * is echoed. Environment:
+ * - an edit's `diff` entry holds the whole file before and after it, while the
+ *   arguments name the passage (`Target` → `Replacement`): a real session's
+ *   stored calls had a 29-character Target beside two 536 KB texts;
+ *
+ * What a turn does is chosen by words in the prompt (WRITE, RUN, EDIT,
+ * WHOLEFILE, WHOLEDIFF, THINK, SLOW, CRASH, EXIT_AFTER, REFUSE, FAIL, PLAN,
+ * SWITCH_MODE, TITLE); anything else is echoed. Environment:
  *   FAKE_AGY_LOG            jsonl file that receives every request
  *   FAKE_AGY_AUTH_REQUIRED  session/new and session/resume fail with ACP's auth_required
  *   FAKE_AGY_FAIL_RESUME    session/resume fails (the session is gone)
@@ -117,6 +121,12 @@ const usage = (state, output) => {
   state.used += 10000 + output;
   return { inputTokens: 12000, outputTokens: output, cachedReadTokens: 8000, cachedWriteTokens: 0, thoughtTokens: 0, totalTokens: 20000 + output };
 };
+
+/** A 14,000-line source file (about 600 KB), and the same file with one line changed. */
+const BIG_FILE_LINES = 14000;
+const bigFileLine = (index) => `  const entry${index} = table[${index}] ?? fallback;`;
+const bigFile = (changed) =>
+  `${Array.from({ length: BIG_FILE_LINES }, (_, index) => changed?.[index] ?? bigFileLine(index)).join('\n')}\n`;
 
 async function toolCall(sessionId, call, { diff, output }) {
   const base = { toolCallId: call.id, name: call.name, args: call.args, kind: call.kind, title: call.title, rawInput: call.args };
@@ -235,7 +245,29 @@ async function prompt(id, params) {
     update(sessionId, { sessionUpdate: 'tool_call', ...base, status: 'in_progress', locations: [{ path: file }] });
     update(sessionId, { sessionUpdate: 'tool_call_update', ...base, status: 'completed', rawOutput: {}, content: [{ type: 'diff', path: file, oldText: 'hello\n', newText: 'goodbye\n' }] });
   }
-  say(/\bWRITE\b|\bRUN\b|\bEDIT\b/.test(text) ? 'done' : `echo: ${text}`);
+  if (/\bWHOLEFILE\b/.test(text)) {
+    // An edit of one line: the passage in the arguments, the whole file in the diff.
+    const file = `${process.cwd()}/big.ts`;
+    const replacement = '  const entry9000 = changed;';
+    const allowed = await toolCall(
+      sessionId,
+      { id: `call_whole_${++callSeq}`, name: 'replace_file_content', kind: 'edit', title: 'Edit big.ts', args: { Path: file, Target: bigFileLine(9000), Replacement: replacement } },
+      { diff: { type: 'diff', path: file, oldText: bigFile(), newText: bigFile({ 9000: replacement }) } }
+    );
+    if (turn.cancelled) return;
+    if (!allowed) {
+      finish('end_turn', 20);
+      return;
+    }
+  }
+  if (/\bWHOLEDIFF\b/.test(text)) {
+    // The same edit from a tool that describes it by its diff alone.
+    const file = `${process.cwd()}/big.ts`;
+    const base = { toolCallId: `call_diff_${++callSeq}`, name: 'apply_change', kind: 'edit', title: 'Edit big.ts', rawInput: { TargetFile: file } };
+    update(sessionId, { sessionUpdate: 'tool_call', ...base, status: 'in_progress', locations: [{ path: file }] });
+    update(sessionId, { sessionUpdate: 'tool_call_update', ...base, status: 'completed', rawOutput: {}, content: [{ type: 'diff', path: file, oldText: bigFile(), newText: bigFile({ 9000: '  const entry9000 = changed;' }) }] });
+  }
+  say(/\bWRITE\b|\bRUN\b|\bEDIT\b|\bWHOLEFILE\b|\bWHOLEDIFF\b/.test(text) ? 'done' : `echo: ${text}`);
   update(sessionId, { sessionUpdate: 'usage_update', used: state.used + 10000, size: 1048576 });
   finish('end_turn');
   if (/\bEXIT_AFTER\b/.test(text)) {

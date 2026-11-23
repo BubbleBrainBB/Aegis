@@ -12,6 +12,7 @@ import {
 } from '../antigravity-cli';
 import { costFields, emptyCostDetails } from '../agent-cost';
 import { AcpJsonRpcClient, AcpJsonRpcError, type AcpJsonRpcIncomingRequest } from './acp-json-rpc-client';
+import { trimCommonLines } from '../../../shared/unified-diff';
 import type {
   ProviderAdapter,
   ProviderAdapterCapabilities,
@@ -283,6 +284,37 @@ function findDiff(content: unknown): { path: string; oldText: string | null; new
   return null;
 }
 
+/**
+ * The passage an edit replaced and what replaced it. agy's `diff` entry holds
+ * the whole file before and after the edit (two 536 KB texts for a one-line
+ * change to a 14,000-line file), which no card, stored row or approval should
+ * carry. So the passage is the one agy names in its arguments (`Target` →
+ * `Replacement`) while the diff bears it out, and otherwise the diff cut down
+ * to the lines that changed.
+ */
+function antigravityEdit(
+  raw: Record<string, unknown>,
+  diff: ReturnType<typeof findDiff>
+): { oldText: string; newText: string } | null {
+  const target = raw.Target;
+  const replacement = raw.Replacement;
+  if (typeof target === 'string' && typeof replacement === 'string') {
+    if (!diff) return { oldText: target, newText: replacement };
+    if (target && diff.oldText?.includes(target)) return { oldText: target, newText: replacement };
+  }
+  return diff ? trimCommonLines(diff.oldText ?? '', diff.newText) : null;
+}
+
+/** ACP `content` with each diff entry cut down to the lines that changed. */
+function trimDiffContent(content: unknown): unknown {
+  if (!Array.isArray(content)) return content;
+  return content.map((item) => {
+    const record = getRecord(item);
+    if (record?.type !== 'diff' || typeof record.oldText !== 'string' || typeof record.newText !== 'string') return item;
+    return { ...record, ...trimCommonLines(record.oldText, record.newText) };
+  });
+}
+
 /** What the tool returned: agy's `rawOutput.output`, else the text in ACP `content`. */
 function extractToolOutput(update: Record<string, unknown>): string {
   const raw = getString(getRecord(update.rawOutput)?.output);
@@ -319,7 +351,7 @@ function firstString(record: Record<string, unknown>, keys: readonly string[]): 
  * its arguments in PascalCase (`CommandLine`, `Path`, `Content`); what it does
  * not put in the arguments comes from the standard ACP fields of the call:
  * the edited file from its `diff` entry or first location, the edit itself
- * from the diff.
+ * from the diff's changed lines (see antigravityEdit).
  */
 export function antigravityToolInput(name: string, update: Record<string, unknown>): Record<string, unknown> {
   const raw = getRecord(update.rawInput) ?? getRecord(update.args) ?? {};
@@ -341,9 +373,12 @@ export function antigravityToolInput(name: string, update: Record<string, unknow
     const content = typeof raw.Content === 'string' ? raw.Content : diff?.newText;
     if (content !== undefined) input.content = content;
   }
-  if (name === 'Edit' && diff && input.old_string === undefined && input.new_string === undefined) {
-    input.old_string = diff.oldText ?? '';
-    input.new_string = diff.newText;
+  if (name === 'Edit' && input.old_string === undefined && input.new_string === undefined) {
+    const edit = antigravityEdit(raw, diff);
+    if (edit) {
+      input.old_string = edit.oldText;
+      input.new_string = edit.newText;
+    }
   }
   return input;
 }
@@ -1231,7 +1266,8 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
       title,
       toolName,
       options,
-      toolCall: { ...toolCall, title, rawInput: input },
+      // The request's own diff holds the whole file twice: the card gets the changed lines.
+      toolCall: { ...toolCall, content: trimDiffContent(toolCall.content), title, rawInput: input },
     };
     this.emit({
       type: 'permission_request',

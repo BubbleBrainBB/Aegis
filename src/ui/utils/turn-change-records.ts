@@ -2,6 +2,7 @@ import { opensTurn } from '../../shared/turn-boundary';
 import type { StreamMessage } from '../types';
 import {
   extractGitPatchChangeRecords,
+  extractToolChangeRecordSets,
   extractToolChangeRecords,
   type ChangeRecord,
 } from './change-records';
@@ -111,14 +112,11 @@ export function buildTurnChangeContext(
   const flush = (endExclusive: number) => {
     if (endExclusive <= turnStart) return;
     const slice = messages.slice(turnStart, endExclusive);
-    const records = extractToolChangeRecords(slice);
     // Subagent-made changes belong to the subagent's own card (SubagentPanel);
     // the turn card aggregates only the main agent's own edits. The per-tool
     // maps below still index ALL records so hover hints inside subagent lanes
     // keep resolving.
-    const mainRecords = extractToolChangeRecords(
-      slice.filter((msg) => !(msg as { parentToolUseId?: string }).parentToolUseId)
-    );
+    const { records, mainRecords } = extractToolChangeRecordSets(slice);
 
     for (const record of records) {
       if (record.toolUseId) {
