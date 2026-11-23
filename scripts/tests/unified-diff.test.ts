@@ -278,6 +278,34 @@ function median(runs: number, work: () => void): number {
   }
 }
 
+// ── The search has a budget of steps, not only of changed lines ─────────────
+// 0/1 alternating against 0/1 that shifts its phase every 501 lines: under
+// 2,000 changed lines in a million, so the limit on changes never applies,
+// yet every diagonal can walk the whole text: a thousand million steps, about
+// a second. The budget stops it, and the span is reported as replaced.
+{
+  const phased = (count: number) => ({
+    oldText: text(['head a', ...Array.from({ length: count }, (_, index) => String(index % 2)), 'tail a']),
+    newText: text(['head b', ...Array.from({ length: count }, (_, index) => String((index + Math.floor(index / 501)) % 2)), 'tail b']),
+  });
+  const large = phased(1_000_000);
+  const stopped = createUnifiedDiffHunks(large.oldText, large.newText, { contextLines: 3 });
+  assert.equal(stopped.length, 1, 'the search gives up: one replaced span');
+  assert.equal(stopped[0].lines.length, 2_000_004);
+  // The same pattern at a tenth of the size is within the budget and keeps its real diff.
+  const small = phased(100_000);
+  const found = createUnifiedDiffHunks(small.oldText, small.newText, { contextLines: 3 });
+  assert.ok(found.length > 100, `a real diff of ${found.length} hunks`);
+  assert.ok(found.reduce((sum, hunk) => sum + hunk.lines.length, 0) < 5_000);
+  // An ordinary large edit is nowhere near it: 300 scattered changes in 14,000 lines.
+  const file = Array.from({ length: 14_000 }, (_, index) => `  const entry${index % 500} = table[${index}];`);
+  const edited = file.map((line, index) => (index % 45 === 40 ? `changed ${index}` : line));
+  edited[0] = 'first';
+  edited[13_999] = 'last';
+  const ordinary = createUnifiedDiffHunks(text(file), text(edited), { contextLines: 3 });
+  assert.ok(ordinary.length > 300, 'every change has its own hunk');
+}
+
 // ── limitDiffHunks: a preview draws the start of a large diff, and counts the rest ─
 {
   const oldLines = Array.from({ length: 300 }, (_, index) => `line ${index + 1}`);

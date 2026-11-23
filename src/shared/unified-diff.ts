@@ -60,6 +60,18 @@ const LCS_TABLE_MAX_CELLS = 4_000_000;
  */
 const MYERS_MAX_EDITS = 2_048;
 
+/**
+ * How many matching lines that search may step over before it gives up the
+ * same way. The limit on changed lines does not bound this: texts whose lines
+ * repeat (0/1 alternating against 0/1 that shifts phase every 501 lines) let
+ * every diagonal walk the whole text, a thousand million steps for a million
+ * lines. An edit of ordinary text steps over each line about once, so the
+ * budget is several times the size of the texts plus a fixed allowance.
+ */
+function myersMatchBudget(oldCount: number, newCount: number): number {
+  return 4 * (oldCount + newCount) + 16_000_000;
+}
+
 function fitsLcsTable(oldCount: number, newCount: number): boolean {
   return (oldCount + 1) * (newCount + 1) <= LCS_TABLE_MAX_CELLS;
 }
@@ -128,7 +140,8 @@ function diffLinesByTable(oldLines: string[], newLines: string[]): DiffOp[] {
 /**
  * Myers' O(ND) search for a shortest edit script: its time and memory follow
  * the number of changed lines, not the size of the texts. Null when the texts
- * differ by more than MYERS_MAX_EDITS lines.
+ * differ by more than MYERS_MAX_EDITS lines, or when finding out would take
+ * more steps than myersMatchBudget allows.
  */
 function diffLinesByMyers(oldLines: string[], newLines: string[]): DiffOp[] | null {
   // Lines become numbers so the search compares integers, not strings.
@@ -158,6 +171,7 @@ function diffLinesByMyers(oldLines: string[], newLines: string[]): DiffOp[] | nu
   // rounds[d]: the diagonals -d-1..d+1 as they stood before round d.
   const rounds: Int32Array[] = [];
   let edits = -1;
+  let budget = myersMatchBudget(oldCount, newCount);
 
   search: for (let round = 0; round <= maxEdits; round += 1) {
     rounds.push(furthest.slice(offset - round - 1, offset + round + 2));
@@ -165,10 +179,13 @@ function diffLinesByMyers(oldLines: string[], newLines: string[]): DiffOp[] | nu
       const insert = k === -round || (k !== round && furthest[offset + k - 1] < furthest[offset + k + 1]);
       let oldIndex = insert ? furthest[offset + k + 1] : furthest[offset + k - 1] + 1;
       let newIndex = oldIndex - k;
+      const from = oldIndex;
       while (oldIndex < oldCount && newIndex < newCount && oldIds[oldIndex] === newIds[newIndex]) {
         oldIndex += 1;
         newIndex += 1;
       }
+      budget -= oldIndex - from;
+      if (budget < 0) return null;
       furthest[offset + k] = oldIndex;
       if (oldIndex >= oldCount && newIndex >= newCount) {
         edits = round;
@@ -235,8 +252,10 @@ function diffLinesByMyers(oldLines: string[], newLines: string[]): DiffOp[] | nu
  *   the result this function has always given;
  * - larger than that, the common tail is set aside too, and the rest goes
  *   through the table if it now fits, else through Myers' search;
- * - texts that differ by more lines than that search allows are reported as
- *   one replaced span, which is still a correct diff.
+ * - texts that differ by more lines than that search allows, or that would
+ *   take it too long, are reported as one replaced span. That is still a
+ *   correct diff, though its counts of added and removed lines are then those
+ *   of the whole span, not of the smallest change.
  */
 function diffLines(oldLines: string[], newLines: string[]): DiffOp[] {
   const shorter = Math.min(oldLines.length, newLines.length);

@@ -40,8 +40,14 @@
  *   FAKE_AGY_SLOW_INIT      initialize answers after 400ms
  *   FAKE_AGY_SESSION_ID     id of the next new session
  *   FAKE_AGY_WAKE_MS        how long a BACKGROUND command runs after its turn (80)
+ *   FAKE_AGY_GATE_DIR       a folder: where the script would pause for a while
+ *                           (before WAKE_TWICE's second note, before
+ *                           WAKE_PARALLEL's slow call ends) it logs
+ *                           `{ reached: <name> }` and waits until a file of
+ *                           that name is there, so a test decides the order
+ *                           of events instead of racing a timer
  */
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, existsSync } from 'node:fs';
 
 const args = process.argv.slice(2);
 const LOG = process.env.FAKE_AGY_LOG;
@@ -103,6 +109,13 @@ const inOneWrite = (work) => {
 };
 const update = (sessionId, payload) => send({ method: 'session/update', params: { sessionId, update: payload } });
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/** A pause of `ms`, or with FAKE_AGY_GATE_DIR a wait for the test to open the gate `name`. */
+const pauseAt = async (name, ms) => {
+  const dir = process.env.FAKE_AGY_GATE_DIR;
+  if (!dir) return sleep(ms);
+  log({ reached: name });
+  while (!existsSync(`${dir}/${name}`)) await sleep(5);
+};
 
 const configOptions = (state) => {
   const model = MODELS.find((entry) => entry.value === state.model);
@@ -224,7 +237,7 @@ async function wake(sessionId, state, build, text, finishPrompt) {
   update(sessionId, { sessionUpdate: 'tool_call_update', ...check, status: 'completed', rawOutput: { output: 'app.dmg', exit_code: 0 } });
   if (has('WAKE_PARALLEL')) {
     // The model still waits for the slow call, far longer than for the quick one.
-    await sleep(pause * 8);
+    await pauseAt('slow', pause * 8);
     update(sessionId, { sessionUpdate: 'tool_call_update', ...slow, status: 'completed', rawOutput: { output: 'signed', exit_code: 0 } });
   }
   if (has('WAKE_EDIT')) {
@@ -247,7 +260,7 @@ async function wake(sessionId, state, build, text, finishPrompt) {
   // A call that finished long ago gets a new title: no status, nothing new.
   if (has('WAKE_RETITLE')) update(sessionId, { sessionUpdate: 'tool_call_update', toolCallId: check.toolCallId, title: 'ls dist (done)' });
   if (has('WAKE_TWICE')) {
-    await sleep(pause * 5);
+    await pauseAt('note', pause * 5);
     say('One more note.');
     stepEnds();
   }

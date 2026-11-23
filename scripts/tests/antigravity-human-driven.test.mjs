@@ -94,13 +94,15 @@ const prompts = () => calls().filter((call) => call.method === 'session/prompt')
 /** A window of the app, as far as the handlers need one: what it is sent, and what it sends. */
 function appWindow() {
   const events = [];
+  /** Called with each event as it is sent to the window, in the handlers' own tick. */
+  const tap = { onEvent: null };
   const frame = { url: 'http://127.0.0.1:10087' };
-  const webContents = { id: 1, mainFrame: frame, isDestroyed: () => false, send: (_channel, json) => { try { events.push(JSON.parse(json)); } catch { /* not an event */ } }, on() {}, once() {} };
+  const webContents = { id: 1, mainFrame: frame, isDestroyed: () => false, send: (_channel, json) => { try { const event = JSON.parse(json); events.push(event); tap.onEvent?.(event); } catch { /* not an event */ } }, on() {}, once() {} };
   const window = loose({ isDestroyed: () => false, webContents: loose(webContents), on() {}, once() {} });
   const invoke = (channel, ...args) => handlers.get(channel)({ sender: webContents, senderFrame: frame }, ...args);
   /** An event from the app's own window, as its composer sends one. */
   const send = (event) => listeners.get('client-event')({ sender: webContents, senderFrame: frame }, JSON.stringify(event));
-  return { window, events, invoke, send };
+  return { window, events, invoke, send, tap };
 }
 
 let ipc;
@@ -108,7 +110,7 @@ let passed = false;
 try {
   ipc = require(path.join(root, 'dist-electron/electron/ipc-handlers.js'));
   const store = require(path.join(root, 'dist-electron/electron/libs/session-store.js'));
-  const { window, events, invoke, send } = appWindow();
+  const { window, events, invoke, send, tap } = appWindow();
   store.initialize();
   ipc.setupIPCHandlers(window);
   const errors = () => events.filter((event) => event.type === 'runner.error').map((event) => event.payload.message);
@@ -327,6 +329,61 @@ try {
     store.addMessage(row.id, { type: 'assistant', uuid: 'answer-three', createdAt: at + 3, message: { content: [{ type: 'text', text: 'new' }] } });
     assert.equal(store.getSessionHistory(row.id).at(-1).uuid, 'answer-three');
     store.deleteSession(row.id);
+  }
+
+  // ── 7. Stop pressed after a message is shown and before it is sent. ──
+  // Between showing a message and sending it the handlers await a check of
+  // the agent's CLI. A Stop in that moment ends the task's run; the message
+  // stays shown and must not be sent after all, on this runner or a new one.
+  const cli = require(path.join(root, 'dist-electron/electron/libs/antigravity-cli.js'));
+  {
+    const sent = prompts().length;
+    // Forget the cached check, so this one takes a real moment (it starts the CLI).
+    cli.noteAntigravityAuthState('login_required');
+    cli.noteAntigravityAuthState('ready');
+    tap.onEvent = (event) => {
+      if (event.type !== 'stream.user_prompt' || event.payload.prompt !== 'Do not run this') return;
+      tap.onEvent = null;
+      // On the loop's next turn: the message is shown, its check still awaited.
+      setImmediate(() => send({ type: 'session.stop', payload: { sessionId: task.id } }));
+    };
+    const from = events.length;
+    await send({ type: 'session.continue', payload: { sessionId: task.id, prompt: 'Do not run this' } });
+    await until(() => store.getSession(task.id).status === 'idle', 'the task is stopped');
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.equal(prompts().length, sent, 'the stopped message never reached agy');
+    assert.equal(store.getSession(task.id).status, 'idle');
+    const afterStop = events.slice(from).filter((event) => event.type === 'session.status' && event.payload.sessionId === task.id).map((event) => event.payload.status);
+    assert.equal(afterStop.at(-1), 'idle', 'and the task does not start running again');
+    assert.ok(store.getSessionHistory(task.id).some((message) => message.type === 'user_prompt' && message.prompt === 'Do not run this'), 'the message stays in the conversation');
+    // The next message is sent as usual.
+    await send({ type: 'session.continue', payload: { sessionId: task.id, prompt: 'This one, please' } });
+    await until(() => prompts().length === sent + 1, 'agy got the next message');
+    await idle(task.id);
+    assert.equal(prompts().at(-1), 'This one, please');
+    assert.equal(store.getSession(task.id).status, 'completed');
+  }
+
+  // ── 8. The check fails after the message is shown. ──
+  // The window is told the task failed (the error alone left it showing the
+  // task as running), agy is not prompted, and the next message works.
+  {
+    const sent = prompts().length;
+    const seenErrors = errors().length;
+    cli.noteAntigravityAuthState('login_required', 'Authentication required');
+    const from = events.length;
+    assert.equal(await send({ type: 'session.continue', payload: { sessionId: task.id, prompt: 'While signed out' } }), undefined);
+    await until(() => errors().length === seenErrors + 1, 'the reason is given');
+    assert.match(errors().at(-1), /sign[- ]?in/i);
+    const told = events.slice(from).filter((event) => event.type === 'session.status' && event.payload.sessionId === task.id).map((event) => event.payload.status);
+    assert.equal(told.at(-1), 'error', 'the window is told the task failed');
+    assert.equal(store.getSession(task.id).status, 'error');
+    assert.equal(prompts().length, sent);
+    cli.noteAntigravityAuthState('ready');
+    await send({ type: 'session.continue', payload: { sessionId: task.id, prompt: 'Signed in again' } });
+    await until(() => prompts().length === sent + 1, 'agy got the message after sign-in');
+    await idle(task.id);
+    assert.equal(store.getSession(task.id).status, 'completed');
   }
 
   passed = true;

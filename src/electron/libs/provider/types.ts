@@ -291,6 +291,12 @@ export interface ProviderAdapter {
    * prompt starts. A no-op for a thread with no such work.
    */
   yieldToPrompt?(threadId: string): void;
+  /**
+   * The prompt announced with yieldToPrompt will not be sent after all (the
+   * host's checks failed). What the agent did by itself since is given a
+   * turn of its own instead of waiting for a prompt that never comes.
+   */
+  promptWithdrawn?(threadId: string): void;
 
   // Permission responses
   respondToRequest(threadId: string, requestId: string, decision: PermissionResult): Promise<void>;
@@ -398,6 +404,8 @@ export interface ProviderService {
   disposeSession(threadId: string): boolean;
   /** See ProviderAdapter.yieldToPrompt. */
   yieldToPrompt(threadId: string): void;
+  /** See ProviderAdapter.promptWithdrawn. */
+  promptWithdrawn(threadId: string): void;
 
   // Permission
   respondToRequest(threadId: string, requestId: string, decision: PermissionResult): Promise<void>;

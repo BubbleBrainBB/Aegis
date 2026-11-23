@@ -10909,6 +10909,13 @@ async function startSession(
 
 // 继续会话
 const sessionDispatchLeases = new Set<string>();
+/**
+ * Tasks whose message, already shown, was stopped before it was sent: Stop
+ * came while handleSessionContinue awaited its last checks. The send ends
+ * there. Without this it found its runner gone, took that for a runner in
+ * need of a restart, and ran the stopped message on a new one.
+ */
+const stoppedDispatches = new Set<string>();
 async function handleSessionContinue(
   mainWindow: BrowserWindow,
   payload: SessionContinuePayload,
@@ -10940,7 +10947,10 @@ async function handleSessionContinue(
     prepareMainBotTurn(payload.sessionId);
     return await handleSessionContinueImpl(mainWindow, payload, internal);
   }
-  finally { sessionDispatchLeases.delete(payload.sessionId); }
+  finally {
+    sessionDispatchLeases.delete(payload.sessionId);
+    stoppedDispatches.delete(payload.sessionId);
+  }
 }
 
 async function handleSessionContinueImpl(
@@ -11400,6 +11410,9 @@ async function handleSessionContinueImpl(
   if (session.provider === 'antigravity' && nextProvider === 'antigravity') {
     getProviderService().yieldToPrompt(sessionId);
   }
+  // From here the message is shown, and a Stop is a Stop of this message. One
+  // pressed earlier stopped the turn before it.
+  stoppedDispatches.delete(sessionId);
 
   // 更新状态
   sessions.updateSessionStatus(sessionId, 'running');
@@ -11607,8 +11620,16 @@ async function handleSessionContinueImpl(
     }
   } else if (nextProvider === 'antigravity') {
     const runtimeStatus = await getAntigravityRuntimeStatus();
-    if (!runtimeStatus.ready) {
+    if (!runtimeStatus.ready && !stoppedDispatches.has(sessionId)) {
       sessions.updateSessionStatus(sessionId, 'error');
+      // The prompt announced above is not coming: what agy did by itself
+      // meanwhile gets a turn of its own. And the window is told the task
+      // failed; the error alone leaves it showing the task as running.
+      getProviderService().promptWithdrawn(sessionId);
+      broadcast(mainWindow, {
+        type: 'session.status',
+        payload: { sessionId, status: 'error', hiddenFromThreads: session.hidden_from_threads === 1 },
+      });
       broadcast(mainWindow, {
         type: 'runner.error',
         payload: {
@@ -11619,6 +11640,10 @@ async function handleSessionContinueImpl(
       return false;
     }
   }
+
+  // Stop was pressed while the check above was awaited. It ended the task's
+  // run and set its status; the message stays shown and is not sent.
+  if (stoppedDispatches.has(sessionId)) return false;
 
   // While a codex turn is still streaming, a follow-up send becomes a
   // turn/steer injection into that turn. Composer config drift (model /
@@ -11916,6 +11941,9 @@ async function handleSessionContinueImpl(
       return false;
     }
   }
+
+  // The same for a Stop pressed while Claude's checks above were awaited.
+  if (stoppedDispatches.has(sessionId)) return false;
 
   startRunner(
     mainWindow,
@@ -13544,6 +13572,8 @@ function stopComputerUseSession(mainWindow: BrowserWindow, sessionId: string): v
 }
 
 function handleSessionStop(mainWindow: BrowserWindow, sessionId: string): void {
+  // A message of this task is between being shown and being sent: it is not sent.
+  if (sessionDispatchLeases.has(sessionId)) stoppedDispatches.add(sessionId);
   finishComputerUseUi(mainWindow, sessionId);
   finishBrowserUseTurn(browserManager, sessionId);
   getComputerUseGateway()?.forgetSession(sessionId, 'stop');
