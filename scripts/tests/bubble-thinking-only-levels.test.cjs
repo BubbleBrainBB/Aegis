@@ -15,6 +15,7 @@ fs.writeFileSync(path.join(process.env.BUBBLE_HOME, 'config.json'), JSON.stringi
   providers: [
     { id: 'moss', name: 'MOSS', baseURL: 'https://api.mosi.cn/v1', apiKey: 'test-key', enabled: true },
     { id: 'alibaba', name: 'Alibaba DashScope', baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1', apiKey: 'test-key', enabled: true },
+    { id: 'zhipuai-coding-plan', name: 'Zhipu AI Coding Plan', baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4', apiKey: 'test-key', enabled: true },
   ],
   defaultProvider: 'moss',
   defaultModel: 'moss:nex-n2.6',
@@ -60,6 +61,14 @@ Module._load = function (name, ...args) {
   const fixed = model(':kimi/kimi-k3');
   assert.deepEqual(fixed.reasoningLevels, ['max'], 'a fixed real grade is still shown');
   assert.equal(fixed.defaultReasoningLevel, 'max');
+
+  // GLM-5.4 (SDK 0.0.74, Zhipu Coding Plan only) has three real grades and
+  // starts at the highest; the picker lists them as the catalog gives them.
+  const glm = model('zhipuai-coding-plan:glm-5.4');
+  assert.deepEqual(glm.reasoningLevels, ['low', 'high', 'max']);
+  assert.equal(glm.defaultReasoningLevel, 'max');
+  assert.equal(glm.maxContextSize, 1000000);
+  assert.deepEqual(model('zhipuai-coding-plan:glm-5.1').reasoningLevels, ['off', 'medium'], 'an on/off GLM keeps its switch');
 
   const graded = config.availableModels.filter((entry) => entry.reasoningLevels.length > 1);
   assert(graded.length > 0, 'models with grades keep them');
