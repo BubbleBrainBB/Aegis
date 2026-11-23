@@ -1,6 +1,6 @@
-import { execFileSync } from 'child_process';
-import { existsSync, readdirSync, statSync } from 'fs';
-import { join } from 'path';
+import { execFile, execFileSync } from 'child_process';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'fs';
+import { dirname, join } from 'path';
 
 const ENV_MARKER_BEGIN = '__AEGIS_ENV_BEGIN_9f3a7c__';
 const ENV_MARKER_END = '__AEGIS_ENV_END_9f3a7c__';
@@ -60,14 +60,14 @@ const PROXY_ENV_KEYS = [
 
 const DEFAULT_NO_PROXY = ['localhost', '127.0.0.1', '::1'];
 
-function runShellEnvDump(shell: string, flags: string): Record<string, string> | null {
-  // Wrap the env dump with markers so noise from interactive shell startup
-  // (MOTD, prompts, plugin warnings) cannot corrupt the parsed output.
-  const command = `echo ${ENV_MARKER_BEGIN}; env; echo ${ENV_MARKER_END}`;
+// Wrap the env dump with markers so noise from interactive shell startup
+// (MOTD, prompts, plugin warnings) cannot corrupt the parsed output.
+const ENV_DUMP_COMMAND = `echo ${ENV_MARKER_BEGIN}; env; echo ${ENV_MARKER_END}`;
 
+function runShellEnvDump(shell: string, flags: string): Record<string, string> | null {
   let stdout: string;
   try {
-    stdout = execFileSync(shell, [flags, command], {
+    stdout = execFileSync(shell, [flags, ENV_DUMP_COMMAND], {
       encoding: 'utf-8',
       timeout: 8000,
       maxBuffer: 4 * 1024 * 1024,
@@ -77,7 +77,27 @@ function runShellEnvDump(shell: string, flags: string): Record<string, string> |
   } catch {
     return null;
   }
+  return parseShellEnvDump(stdout);
+}
 
+/** The same dump without blocking: for refreshing an environment that is already in use. */
+function runShellEnvDumpAsync(shell: string, flags: string): Promise<Record<string, string> | null> {
+  return new Promise((resolve) => {
+    const child = execFile(
+      shell,
+      [flags, ENV_DUMP_COMMAND],
+      { encoding: 'utf-8', timeout: 8000, maxBuffer: 4 * 1024 * 1024 },
+      (error, stdout) => resolve(error || typeof stdout !== 'string' ? null : parseShellEnvDump(stdout))
+    );
+    // As with the blocking dump: nothing to read. A startup script that asks
+    // a question (an update prompt) gets end-of-input instead of waiting out
+    // the timeout.
+    child.stdin?.end();
+    child.on('error', () => resolve(null));
+  });
+}
+
+function parseShellEnvDump(stdout: string): Record<string, string> | null {
   const startIdx = stdout.indexOf(ENV_MARKER_BEGIN);
   const endIdx = stdout.indexOf(ENV_MARKER_END);
   if (startIdx === -1 || endIdx === -1 || endIdx <= startIdx) {
@@ -332,7 +352,11 @@ export function ensureShellEnvironment(): void {
   if (process.platform === 'win32') return;
 
   const { env, source } = loadShellEnvironment();
+  applyShellEnvironment(env, source);
+}
 
+/** Puts a shell's environment into this process: the keys Aegis inherits, a proxy, a usable PATH. */
+function applyShellEnvironment(env: Record<string, string>, source: ShellEnvResult['source'] | 'cache'): void {
   for (const key of INHERITED_ENV_KEYS) {
     const value = env[key];
     if (value && value.length > 0) {
@@ -382,4 +406,142 @@ export function ensureShellEnvironment(): void {
     pathPreview,
     includesNvm: (process.env.PATH || '').includes('.nvm/versions/node'),
   });
+}
+
+// ── Starting from the environment of the last launch ───────────────────────
+
+/** Where the last launch's shell environment is kept. It holds API keys and proxy URLs: the caller encrypts. */
+export interface ShellEnvironmentCache {
+  file: string;
+  encrypt(text: string): Buffer;
+  decrypt(data: Buffer): string;
+}
+
+interface CachedShellEnvironment {
+  shell: string;
+  /** The shell's startup files as they were: a change to any of them means the cache is not asked. */
+  startupFiles: string;
+  savedAt: number;
+  env: Record<string, string>;
+}
+
+const SHELL_ENV_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const SHELL_STARTUP_FILES = ['.zshenv', '.zprofile', '.zshrc', '.zlogin', '.bash_profile', '.bashrc', '.profile', '.config/fish/config.fish'];
+
+function describeStartupFiles(home: string): string {
+  return SHELL_STARTUP_FILES.map((name) => {
+    try {
+      const stat = statSync(join(home, name));
+      return `${name}:${Math.floor(stat.mtimeMs)}:${stat.size}`;
+    } catch {
+      return `${name}:-`;
+    }
+  }).join('|');
+}
+
+function readCachedShellEnvironment(cache: ShellEnvironmentCache, shell: string, startupFiles: string, now: number): Record<string, string> | null {
+  try {
+    if (!existsSync(cache.file)) return null;
+    const entry = JSON.parse(cache.decrypt(readFileSync(cache.file))) as CachedShellEnvironment;
+    const usable =
+      entry?.shell === shell &&
+      entry.startupFiles === startupFiles &&
+      typeof entry.savedAt === 'number' &&
+      now - entry.savedAt >= 0 &&
+      now - entry.savedAt <= SHELL_ENV_CACHE_MAX_AGE_MS &&
+      typeof entry.env?.PATH === 'string' &&
+      entry.env.PATH.length > 0;
+    return usable ? entry.env : null;
+  } catch {
+    // Unreadable, or encrypted for another keychain: as good as not there.
+    return null;
+  }
+}
+
+function writeCachedShellEnvironment(cache: ShellEnvironmentCache, entry: CachedShellEnvironment): void {
+  try {
+    mkdirSync(dirname(cache.file), { recursive: true });
+    const temporary = `${cache.file}.tmp`;
+    writeFileSync(temporary, cache.encrypt(JSON.stringify(entry)), { mode: 0o600 });
+    renameSync(temporary, cache.file);
+  } catch {
+    // The next launch asks the shell again.
+  }
+}
+
+function inheritedKeysOf(env: Record<string, string>): Record<string, string> {
+  const picked: Record<string, string> = {};
+  for (const key of INHERITED_ENV_KEYS) {
+    if (env[key]) picked[key] = env[key];
+  }
+  return picked;
+}
+
+async function loadShellEnvironmentAsync(): Promise<ShellEnvResult> {
+  const shell = process.env.SHELL || '/bin/zsh';
+  let env = await runShellEnvDumpAsync(shell, '-ilc');
+  let source: ShellEnvResult['source'] = 'interactive-login';
+  if (!env) {
+    env = await runShellEnvDumpAsync(shell, '-lc');
+    source = env ? 'login' : 'none';
+  }
+  return { env: env || {}, source };
+}
+
+/**
+ * ensureShellEnvironment without the wait, when it can be had. Asking the
+ * shell means running its startup files (about a second with nvm or
+ * oh-my-zsh), and nothing else can start until the answer is in. So the
+ * answer of the last launch is kept, encrypted, and used at once when the
+ * shell and its startup files are as they were then and it is less than a
+ * day old; the shell is asked again in the background, and what changed
+ * replaces what was used: new values are set, and keys the shell no longer
+ * has are removed. With no cache to use (the first launch, an edited
+ * startup file, no way to encrypt), the shell is asked as before, and
+ * everything waits for it.
+ *
+ * The proxy macOS is set to is read on every launch either way: that takes
+ * no time, and it changes without any file changing.
+ *
+ * `refreshed` settles when the environment is the shell's own answer.
+ * `probe` and `probeAsync` stand in for the shell in tests.
+ */
+export function startShellEnvironment(options: {
+  cache?: ShellEnvironmentCache | null;
+  probe?: () => ShellEnvResult;
+  probeAsync?: () => Promise<ShellEnvResult>;
+  now?: () => number;
+} = {}): { source: ShellEnvResult['source'] | 'cache'; refreshed: Promise<void> } {
+  if (process.platform === 'win32') return { source: 'none', refreshed: Promise.resolve() };
+
+  const cache = options.cache ?? null;
+  const now = options.now ?? Date.now;
+  const shell = process.env.SHELL || '/bin/zsh';
+  const startupFiles = describeStartupFiles(process.env.HOME || '');
+  const save = (env: Record<string, string>) => {
+    if (cache) writeCachedShellEnvironment(cache, { shell, startupFiles, savedAt: now(), env: inheritedKeysOf(env) });
+  };
+
+  const cached = cache ? readCachedShellEnvironment(cache, shell, startupFiles, now()) : null;
+  if (!cached) {
+    const { env, source } = (options.probe ?? loadShellEnvironment)();
+    applyShellEnvironment(env, source);
+    if (source !== 'none') save(env);
+    return { source, refreshed: Promise.resolve() };
+  }
+
+  applyShellEnvironment(cached, 'cache');
+  const refreshed = (options.probeAsync ?? loadShellEnvironmentAsync)()
+    .then(({ env, source }) => {
+      // The shell could not be asked this time: what the last launch had stays.
+      if (source === 'none') return;
+      for (const key of INHERITED_ENV_KEYS) {
+        // Gone from the shell, and still here only because the cache put it here.
+        if (cached[key] && !env[key] && process.env[key] === cached[key]) delete process.env[key];
+      }
+      applyShellEnvironment(env, source);
+      save(env);
+    })
+    .catch(() => undefined);
+  return { source: 'cache', refreshed };
 }

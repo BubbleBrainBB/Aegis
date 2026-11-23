@@ -699,9 +699,13 @@ export function initialize(): void {
   if (backfilledCount > 0) {
     console.log(`[session-store] Backfilled ${backfilledCount} Claude session model values from init messages.`);
   }
-  backfillMessageMetadata();
-  backfillExternalizedMessagePayloads();
-  rebalanceSearchIndexText();
+  // Each of these reads every stored message to bring rows written by an
+  // older version up to date: about a second, at every launch, on a database
+  // of 220,000 messages (1 GB). Rows written since are stored the way these
+  // leave them, so each pass is needed once per database.
+  runStoredRowPassOnce('message-metadata', backfillMessageMetadata);
+  runStoredRowPassOnce('externalized-message-payloads', backfillExternalizedMessagePayloads);
+  runStoredRowPassOnce('search-index-text', rebalanceSearchIndexText);
   // Records kept for tasks that are gone, or in a layout this version does not read.
   getDb().prepare(`
     DELETE FROM devin_request_cache
@@ -724,6 +728,21 @@ function assignTaskNumber(sessionId: string): void {
     database.prepare('INSERT INTO task_number_sequence (id, last) VALUES (1, 1) ON CONFLICT(id) DO UPDATE SET last = last + 1').run();
     database.prepare('UPDATE sessions SET task_number = (SELECT last FROM task_number_sequence WHERE id = 1) WHERE id = ? AND task_number IS NULL').run(sessionId);
   })();
+}
+
+/**
+ * Runs a pass over stored rows once per database, and remembers by name that
+ * it ran. Only for passes that mend what an older version wrote and that
+ * nothing written since can need again. Schema work (tables, columns) is not
+ * run this way: it is cheap and runs at every launch, so a column added later
+ * can never be skipped. A pass whose work changes gets a new name.
+ */
+function runStoredRowPassOnce(name: string, pass: () => void): void {
+  const database = getDb();
+  database.exec('CREATE TABLE IF NOT EXISTS stored_row_passes (name TEXT PRIMARY KEY, completed_at INTEGER NOT NULL)');
+  if (database.prepare('SELECT 1 FROM stored_row_passes WHERE name = ?').get(name)) return;
+  pass();
+  database.prepare('INSERT OR REPLACE INTO stored_row_passes (name, completed_at) VALUES (?, ?)').run(name, Date.now());
 }
 
 /** Tasks from before numbers existed get theirs in the order they were created. */
