@@ -94,9 +94,9 @@ async function main(): Promise<void> {
   let threadSeq = 0;
   const open = async (
     input: Record<string, unknown> = {},
-    options: { stopGraceMs?: number } = {}
+    options: { stopGraceMs?: number; selfTurnSettleMs?: number; selfTurnIdleMs?: number } = {}
   ) => {
-    const adapter = new AntigravityAcpAdapter({ stopGraceMs: options.stopGraceMs ?? 400 });
+    const adapter = new AntigravityAcpAdapter({ ...options, stopGraceMs: options.stopGraceMs ?? 400 });
     const events: Event[] = [];
     adapter.events.on('event', (event: Event) => events.push(event));
     const threadId = `t${++threadSeq}`;
@@ -499,6 +499,130 @@ async function main(): Promise<void> {
     assert.deepEqual(antigravityToolInput('Edit', { rawInput: args, content: [diff] }), early);
     // A new file has no old text to cut down.
     assert.equal(antigravityToolInput('Edit', { content: [{ type: 'diff', path: '/p/new.txt', newText: 'hello\n' }] }).old_string, '');
+  }
+
+  // ── A background command: agy goes on by itself after the turn ───────────
+  {
+    /** What the host is told, in order, without the streamed increments. */
+    const story = (events: Event[]): string[] =>
+      events.flatMap((event) => {
+        if (event.type === 'status_change') return [`status ${event.status}`];
+        if (event.type === 'error') return ['error'];
+        if (event.type !== 'message') return [];
+        const message = event.message;
+        if (message.type === 'result') return [`result ${message.subtype}`];
+        if (message.type === 'system' && message.subtype === 'init') return [message.selfStarted ? 'init by itself' : 'init'];
+        if (message.type !== 'assistant') return [];
+        const block = message.message.content[0];
+        if (block.type === 'tool_use') return [`call ${block.id}`];
+        if (block.type === 'tool_result') return [`result of ${block.tool_use_id}: ${block.content}`];
+        return [`${block.type}: ${block.text ?? block.thinking}`];
+      });
+    const quiet = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    const woke = (events: Event[]) => story(events).includes('init by itself');
+
+    // The turn ends with the command still running; agy takes the rest up by
+    // itself. That work is a turn of its own: it opens marked as agy's own,
+    // sets the task running, commits what it wrote and ends with a result.
+    const { adapter, events, threadId, session } = await open({ prompt: 'BACKGROUND' }, { selfTurnSettleMs: 150, selfTurnIdleMs: 10_000 });
+    await turnDone(events, 2);
+    await quiet(400);
+    assert.deepEqual(story(events).slice(story(events).indexOf('status running')), [
+      'status running',
+      'thinking: I will start the build.',
+      'call call_bg_1',
+      'text: Started the build; waiting for it to finish.',
+      // The call is still open when the turn ends: its card is settled for now.
+      'result of call_bg_1: npm run build',
+      'result success',
+      'status completed',
+      // The command reports back between turns: its card gets the real output.
+      'result of call_bg_1: built in 63s',
+      'status running',
+      'init by itself',
+      'thinking: The build finished.',
+      'call call_check_2',
+      'result of call_check_2: app.dmg',
+      // The step's usage_update was followed by a call at once: no end there.
+      // The last one was followed by nothing: the words are committed, then the result.
+      'text: Checking the artefact. The build is done: app.dmg.',
+      'result success',
+      'status completed',
+    ]);
+    const settled = messages(events).filter((message) => message.uuid === `antigravity-tool-result:${threadId}:call_bg_1`);
+    assert.equal(settled.length, 2, 'the real outcome replaces the stand-in under the same id');
+    assert.equal(settled[0].createdAt, settled[1].createdAt, 'and at the same place in the transcript');
+    const wokenInit = messages(events).find((message) => message.type === 'system' && message.selfStarted);
+    assert.equal(wokenInit?.session_id, session.providerSessionId);
+    assert.equal(wokenInit?.model, 'gemini-4-neon');
+    assert.ok(results(events)[0].usage.total_tokens > 0);
+    assert.equal(results(events)[1].usage.total_tokens, 0, 'no prompt response reports what agy used by itself');
+    assert.equal(adapter.listSessions()[0].status, 'completed');
+
+    // The next message is an ordinary turn again, with nothing left over.
+    await withTimeout(adapter.sendTurn({ threadId, prompt: 'plain' } as never), 'sendTurn');
+    assert.deepEqual(story(events).slice(-4), ['status running', 'text: echo: plain', 'result success', 'status completed']);
+    await adapter.stopSession(threadId);
+
+    // agy speaks again after a pause longer than the wait: one more turn of its own.
+    {
+      const twice = await open({ prompt: 'BACKGROUND WAKE_TWICE' }, { selfTurnSettleMs: 150, selfTurnIdleMs: 10_000 });
+      await turnDone(twice.events, 3);
+      assert.deepEqual(story(twice.events).slice(-5), ['status running', 'init by itself', 'text: One more note.', 'result success', 'status completed']);
+      await twice.adapter.stopSession(twice.threadId);
+    }
+
+    // A message sent while agy works by itself takes the work over: what agy
+    // wrote is kept, and the one result is the prompt's.
+    {
+      const held = await open({ prompt: 'BACKGROUND WAKE_HOLD' }, { selfTurnSettleMs: 150, selfTurnIdleMs: 60_000 });
+      await until(() => story(held.events).includes('result of call_check_2: app.dmg'), 'agy working by itself');
+      await quiet(400);
+      assert.equal(results(held.events).length, 1, 'in the middle of a step there is no end to report');
+      assert.equal(held.adapter.listSessions()[0].status, 'running');
+      await withTimeout(held.adapter.sendTurn({ threadId: held.threadId, prompt: 'plain' } as never), 'sendTurn');
+      assert.deepEqual(story(held.events).slice(story(held.events).indexOf('init by itself')), [
+        'init by itself',
+        'thinking: The build finished.',
+        'call call_check_2',
+        'result of call_check_2: app.dmg',
+        'text: Checking the artefact. ',
+        'status running',
+        'text: echo: plain',
+        'result success',
+        'status completed',
+      ]);
+      await held.adapter.stopSession(held.threadId);
+    }
+
+    // Stop reaches work agy started by itself, and nothing is reported after it.
+    {
+      const stopped = await open({ prompt: 'BACKGROUND WAKE_HOLD' }, { selfTurnSettleMs: 150, selfTurnIdleMs: 300 });
+      await until(() => woke(stopped.events), 'agy working by itself');
+      resetCalls();
+      await stopped.adapter.stopSession(stopped.threadId);
+      await until(() => methods().includes('session/cancel'), 'agy is told to stop');
+      const told = stopped.events.length;
+      await quiet(500);
+      assert.equal(stopped.events.length, told, 'a stopped session reports nothing more');
+    }
+
+    // Silence in the middle of a step ends the turn after the long wait.
+    {
+      const silent = await open({ prompt: 'BACKGROUND WAKE_HOLD' }, { selfTurnSettleMs: 150, selfTurnIdleMs: 300 });
+      await turnDone(silent.events, 2);
+      assert.deepEqual(story(silent.events).slice(-3), ['text: Checking the artefact. ', 'result success', 'status completed']);
+      await silent.adapter.stopSession(silent.threadId);
+    }
+
+    // agy dies while working by itself: the turn ends as failed, with the reason.
+    {
+      const crashed = await open({ prompt: 'BACKGROUND WAKE_CRASH' }, { selfTurnSettleMs: 150, selfTurnIdleMs: 10_000 });
+      await turnDone(crashed.events, 2);
+      assert.deepEqual(story(crashed.events).slice(-3), ['text: Checking the artefact. ', 'result error', 'error']);
+      assert.match(crashed.events.at(-1)!.error.message, /exited during the turn \(code 3\).*panic: fake agy crashed/);
+      crashed.adapter.disposeSession(crashed.threadId);
+    }
   }
 
   // ── Tools agy names differently, thinking, plans, its own title and mode ─

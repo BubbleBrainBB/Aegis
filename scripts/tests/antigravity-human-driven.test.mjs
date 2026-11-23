@@ -228,6 +228,53 @@ try {
   await idle(task.id);
   assert.equal(prompts().at(-1), 'Still here?');
 
+  // ── 4. agy goes on by itself after a turn: the task runs again, then ends. ──
+  // The typed message starts a command that outlives the turn. When it is
+  // done agy takes the work up with no prompt from anyone; the handlers set
+  // the task running for that turn, store it marked as agy's own, and finish it.
+  const statuses = () => events.filter((event) => event.type === 'session.status' && event.payload.sessionId === task.id).map((event) => event.payload.status);
+  const seenStatuses = statuses().length;
+  const seenErrors = errors().length;
+  const storedBefore = store.getSessionHistory(task.id).length;
+  await send({ type: 'session.continue', payload: { sessionId: task.id, prompt: 'Start the build in the BACKGROUND' } });
+  const turnRows = () => store.getSessionHistory(task.id).slice(storedBefore);
+  const resultRows = () => turnRows().filter((message) => message.type === 'result');
+  await until(() => resultRows().length === 1, 'the typed turn ended');
+  await until(() => turnRows().some((message) => message.type === 'system' && message.subtype === 'init' && message.selfStarted), 'agy took the work up by itself');
+  assert.equal(store.getSession(task.id).status, 'running', 'the task runs while agy works by itself');
+  assert.equal(resultRows().length, 1, 'and that turn is still open');
+  await until(() => resultRows().length === 2, 'the turn agy started ended');
+  await idle(task.id);
+  assert.equal(store.getSession(task.id).status, 'completed');
+  assert.deepEqual(statuses().slice(seenStatuses).filter((status, index, all) => status !== all[index - 1]), ['running', 'completed', 'running', 'completed']);
+  assert.equal(prompts().at(-1), 'Start the build in the BACKGROUND', 'nothing but the typed message was sent to agy');
+  // What is stored reads as two turns: the typed one, then agy's own, each with its words and its result.
+  const rowKinds = turnRows()
+    .filter((message) => !(message.type === 'system' && message.subtype === 'token_usage'))
+    .map((message) => {
+      if (message.type === 'user_prompt' || message.type === 'result') return message.type;
+      if (message.type === 'system') return message.selfStarted ? 'init by itself' : message.subtype;
+      const block = message.message.content[0];
+      return block.type === 'tool_use' ? `call ${block.id.replace(/_\d+$/, '')}` : block.type === 'tool_result' ? `result of ${block.tool_use_id.replace(/_\d+$/, '')}` : block.type;
+    });
+  assert.deepEqual(rowKinds, [
+    'user_prompt',
+    'thinking',
+    'call call_bg',
+    'text',
+    'result of call_bg',
+    'result',
+    'init by itself',
+    'thinking',
+    'call call_check',
+    'result of call_check',
+    'text',
+    'result',
+  ]);
+  const buildResult = turnRows().find((message) => message.type === 'assistant' && message.message.content[0].type === 'tool_result' && message.message.content[0].tool_use_id.startsWith('call_bg'));
+  assert.equal(buildResult.message.content[0].content, 'built in 63s', 'the command\'s card holds its real output');
+  assert.equal(errors().length, seenErrors, 'none of this is an error');
+
   passed = true;
   console.log('antigravity-human-driven: ok');
 } catch (failure) {

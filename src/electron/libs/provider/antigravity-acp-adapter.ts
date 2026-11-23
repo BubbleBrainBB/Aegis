@@ -49,6 +49,12 @@ import type {
  * - A tool approval's toolCall carries the tool call's own id, and a `diff`
  *   content entry for edits. Options are allow / deny.
  * - The prompt response carries the turn's token usage. agy reports no cost.
+ * - A command that outlives its wait goes on in the background: the prompt
+ *   turn ends with its call still open, and when the command is done agy goes
+ *   on by itself, sending thoughts, text and tool calls outside any prompt.
+ *   ACP has no word for such a turn, so its start and end are read off the
+ *   updates (see openSelfTurn). Every model step ends with a `usage_update`;
+ *   a step that calls tools sends the first call within 60 ms of it.
  * - agy exits by itself when its input closes.
  *
  * Usage boundary (Antigravity Additional Terms, and Google's answer in
@@ -75,6 +81,9 @@ interface AntigravityToolCall {
   createdAt: number;
   output: string;
   settled: boolean;
+  /** Settled only because its turn ended: the command may still report back. */
+  placeholder?: boolean;
+  resultAt?: number;
 }
 
 export interface AntigravityTurnUsage {
@@ -129,6 +138,8 @@ interface ActiveAntigravitySession {
   lastTitle?: string;
   toolCalls: Map<string, AntigravityToolCall>;
   turn?: AntigravityTurn;
+  /** A turn agy started by itself, between prompts. */
+  selfTurn?: { startedAt: number; timer?: ReturnType<typeof setTimeout> };
   /** Settles when the latest queued turn has ended; turns never overlap. */
   turnChain: Promise<void>;
   /** agy exited outside a stop; the next turn reconnects and resumes. */
@@ -187,6 +198,14 @@ const CAPABILITIES: ProviderAdapterCapabilities = {
 
 /** How long a stop waits for the cancelled turn to report what it used. */
 const STOP_GRACE_MS = 1500;
+/**
+ * A turn agy started by itself is over when a model step has ended and no
+ * tool call followed. agy sends the call within 60 ms of the step's
+ * `usage_update`; this waits much longer than that before calling it the end.
+ */
+const SELF_TURN_SETTLE_MS = 2000;
+/** With no step running a tool, this long without a word from agy ends such a turn too. */
+const SELF_TURN_IDLE_MS = 120_000;
 const STDERR_TAIL_LINES = 12;
 
 /** agy tools seen on the wire, mapped to the Claude-shaped names the transcript renders richly. */
@@ -493,15 +512,19 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
   private sessions = new Map<string, ActiveAntigravitySession>();
   private starting = new Map<string, PendingStart>();
   private readonly stopGraceMs: number;
+  private readonly selfTurnSettleMs: number;
+  private readonly selfTurnIdleMs: number;
   /** Tool approvals awaiting the user. */
   private pendingPermissions = new Map<
     string,
     { threadId: string; rpc: AcpJsonRpcClient; request: AcpJsonRpcIncomingRequest; options: AcpPermissionOption[] }
   >();
 
-  /** The grace period is a parameter so tests need not wait it out. */
-  constructor(options: { stopGraceMs?: number } = {}) {
+  /** The waits are parameters so tests need not sit them out. */
+  constructor(options: { stopGraceMs?: number; selfTurnSettleMs?: number; selfTurnIdleMs?: number } = {}) {
     this.stopGraceMs = options.stopGraceMs ?? STOP_GRACE_MS;
+    this.selfTurnSettleMs = options.selfTurnSettleMs ?? SELF_TURN_SETTLE_MS;
+    this.selfTurnIdleMs = options.selfTurnIdleMs ?? SELF_TURN_IDLE_MS;
   }
 
   /**
@@ -666,6 +689,10 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
       // reconnects and resumes rather than writing into a dead pipe.
       session.dead = { code, signal };
       this.dismissPermissions(session.threadId);
+      // A turn agy was running by itself has no RPC to fail: end it here.
+      if (session.selfTurn) {
+        this.endSelfTurn(session, this.describeTurnError(session, new Error('ACP process exited')));
+      }
     });
 
     if (binding.commands) {
@@ -834,10 +861,16 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
     };
     session.turn = turn;
     session.status = 'running';
+    // A prompt sent while agy was working by itself takes that work over:
+    // what it wrote is committed, and this turn's result ends both.
+    this.closeSelfTurn(session);
     session.currentAssistant = undefined;
     session.currentThinking = undefined;
-    // The last turn's calls are all settled; a turn starts with none.
-    session.toolCalls.clear();
+    // The last turn's calls are settled. One settled only because its turn
+    // ended may still be running in the background and report back.
+    for (const [id, call] of session.toolCalls) {
+      if (!call.placeholder) session.toolCalls.delete(id);
+    }
     this.emit({ type: 'status_change', threadId: session.threadId, status: 'running' });
 
     try {
@@ -950,14 +983,16 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
     session.status = 'stopped';
     session.stopping = true;
     const running = session.turn;
-    // session/cancel ends a prompt turn; between turns there is none to end.
-    if (running?.promptSent && !session.dead) {
+    // session/cancel ends a prompt turn, or the work agy took up by itself;
+    // with neither there is nothing to end.
+    if ((running?.promptSent || session.selfTurn) && !session.dead) {
       try {
         session.rpc.notify('session/cancel', { sessionId: session.providerSessionId });
       } catch {
         // ignore shutdown cancellation errors
       }
     }
+    this.dropSelfTurn(session);
     // ACP: a cancelled turn's pending approvals are answered `cancelled`.
     this.dismissPermissions(threadId);
     if (running?.promptSent && !session.dead && this.stopGraceMs > 0) {
@@ -1026,9 +1061,11 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
       // that follows emits nothing.
       this.sessions.delete(threadId);
       running?.resolveDone();
+      const workingAlone = Boolean(session.selfTurn);
+      this.dropSelfTurn(session);
       if (!session.dead) {
         // A turn still running is cancelled before the input closes.
-        if (running?.promptSent && !session.stopping) {
+        if ((running?.promptSent || workingAlone) && !session.stopping) {
           try {
             session.rpc.notify('session/cancel', { sessionId: session.providerSessionId });
           } catch {
@@ -1310,6 +1347,132 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
   // ── Session updates ──────────────────────────────────────────────────────
 
   private handleSessionUpdate(session: ActiveAntigravitySession, update: AntigravitySessionUpdate): void {
+    if (!session.turn && !session.selfTurn && !session.stopping && this.startsWork(session, update)) {
+      this.openSelfTurn(session);
+    }
+    this.routeSessionUpdate(session, update);
+    if (session.selfTurn) this.paceSelfTurn(session, update);
+  }
+
+  // ── Turns agy starts by itself ───────────────────────────────────────────
+
+  /** Whether an update is agy at work: text, a thought, or a call not seen before. */
+  private startsWork(session: ActiveAntigravitySession, update: AntigravitySessionUpdate): boolean {
+    switch (update.sessionUpdate) {
+      case 'agent_message_chunk':
+      case 'agent_thought_chunk':
+        return extractTextContent(update.content) !== '';
+      case 'tool_call':
+        return !session.toolCalls.has(getString(update.toolCallId));
+      default:
+        return false;
+    }
+  }
+
+  /**
+   * agy took up work with no prompt running (a background command finished,
+   * say). To the host it is a turn like any other: it opens with an init
+   * marked `selfStarted`, which sets the session running and gives the work
+   * its own place in the transcript, and it ends with a result.
+   */
+  private openSelfTurn(session: ActiveAntigravitySession): void {
+    session.selfTurn = { startedAt: Date.now() };
+    session.status = 'running';
+    this.emit({ type: 'status_change', threadId: session.threadId, status: 'running' });
+    this.emit({
+      type: 'message',
+      threadId: session.threadId,
+      message: {
+        type: 'system',
+        subtype: 'init',
+        session_id: session.providerSessionId,
+        model: session.model || '',
+        permissionMode: '',
+        cwd: session.cwd,
+        tools: [],
+        selfStarted: true,
+      },
+    });
+  }
+
+  /**
+   * Sets the deadline that ends the turn if agy says nothing more. After a
+   * model step ended, a tool call follows at once or the turn is over. While
+   * a call runs, or waits for approval, there is no deadline. Otherwise the
+   * model is expected to speak, and a long silence ends the turn.
+   */
+  private paceSelfTurn(session: ActiveAntigravitySession, update: AntigravitySessionUpdate): void {
+    const selfTurn = session.selfTurn;
+    if (!selfTurn) return;
+    let wait: number | null;
+    switch (update.sessionUpdate) {
+      case 'usage_update':
+        wait = this.selfTurnSettleMs;
+        break;
+      case 'agent_message_chunk':
+      case 'agent_thought_chunk':
+        wait = this.selfTurnIdleMs;
+        break;
+      case 'tool_call':
+      case 'tool_call_update': {
+        const status = getString(update.status);
+        wait = status === 'completed' || status === 'failed' ? this.selfTurnIdleMs : null;
+        break;
+      }
+      default:
+        // Commands, modes, titles and plans say nothing about the turn.
+        return;
+    }
+    clearTimeout(selfTurn.timer);
+    selfTurn.timer = undefined;
+    if (wait === null) return;
+    selfTurn.timer = setTimeout(() => {
+      if (this.sessions.get(session.threadId) === session && session.selfTurn === selfTurn) this.endSelfTurn(session);
+    }, wait);
+    selfTurn.timer.unref?.();
+  }
+
+  /** Commits what the turn wrote and settles its calls, without reporting an end. */
+  private closeSelfTurn(session: ActiveAntigravitySession): boolean {
+    const selfTurn = session.selfTurn;
+    if (!selfTurn) return false;
+    this.dropSelfTurn(session);
+    this.finalizeStreaming(session);
+    this.settleOpenToolCalls(session);
+    return true;
+  }
+
+  /** Ends the turn agy started by itself: its last words, then its result. */
+  private endSelfTurn(session: ActiveAntigravitySession, error?: Error): void {
+    const startedAt = session.selfTurn?.startedAt;
+    if (!this.closeSelfTurn(session) || startedAt === undefined) return;
+    session.status = error ? 'error' : 'completed';
+    this.emit({
+      type: 'message',
+      threadId: session.threadId,
+      message: {
+        type: 'result',
+        subtype: error ? 'error' : 'success',
+        duration_ms: Date.now() - startedAt,
+        // No prompt response reports what such a turn used.
+        ...costFields(emptyCostDetails()),
+        usage: usageFields(null),
+        ...this.modelFields(session),
+      },
+    });
+    if (error) {
+      this.emit({ type: 'error', threadId: session.threadId, error });
+    } else {
+      this.emit({ type: 'status_change', threadId: session.threadId, status: 'completed' });
+    }
+  }
+
+  private dropSelfTurn(session: ActiveAntigravitySession): void {
+    clearTimeout(session.selfTurn?.timer);
+    session.selfTurn = undefined;
+  }
+
+  private routeSessionUpdate(session: ActiveAntigravitySession, update: AntigravitySessionUpdate): void {
     switch (update.sessionUpdate) {
       case 'agent_message_chunk':
         this.emitAssistantDelta(session, extractTextContent(update.content));
@@ -1516,15 +1679,29 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
     }
   }
 
-  private emitToolResult(session: ActiveAntigravitySession, id: string, call: AntigravityToolCall, isError: boolean): void {
-    if (call.settled) return;
+  /**
+   * `placeholder`: the call is settled because its turn ended, not because it
+   * finished. Its real outcome, when agy reports one later, replaces that
+   * result in place (same uuid, same time).
+   */
+  private emitToolResult(
+    session: ActiveAntigravitySession,
+    id: string,
+    call: AntigravityToolCall,
+    isError: boolean,
+    placeholder = false
+  ): void {
+    if (call.settled && (placeholder || !call.placeholder)) return;
     call.settled = true;
+    call.placeholder = placeholder || undefined;
+    call.resultAt ??= Date.now();
     this.emit({
       type: 'message',
       threadId: session.threadId,
       message: {
         type: 'assistant',
         uuid: `antigravity-tool-result:${session.threadId}:${id}`,
+        createdAt: call.resultAt,
         message: {
           content: [
             {
@@ -1542,7 +1719,7 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
   /** A turn that ends (or dies) with calls still open must not leave spinning cards. */
   private settleOpenToolCalls(session: ActiveAntigravitySession): void {
     for (const [id, call] of session.toolCalls) {
-      if (!call.settled) this.emitToolResult(session, id, call, false);
+      if (!call.settled) this.emitToolResult(session, id, call, false, true);
     }
   }
 

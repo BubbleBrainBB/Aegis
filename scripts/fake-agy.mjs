@@ -16,10 +16,18 @@
  * - an edit's `diff` entry holds the whole file before and after it, while the
  *   arguments name the passage (`Target` → `Replacement`): a real session's
  *   stored calls had a 29-character Target beside two 536 KB texts;
+ * - a command that outlives its wait goes on in the background: the prompt
+ *   turn ends with its call still in progress, and when the command is done
+ *   agy goes on by itself, with thoughts, calls and text outside any prompt
+ *   (a real session's stored rows show such work after three of five turns).
+ *   Every model step ends with a usage_update, sent just before its tool call;
  *
  * What a turn does is chosen by words in the prompt (WRITE, RUN, EDIT,
- * WHOLEFILE, WHOLEDIFF, THINK, SLOW, CRASH, EXIT_AFTER, REFUSE, FAIL, PLAN,
- * SWITCH_MODE, TITLE); anything else is echoed. Environment:
+ * WHOLEFILE, WHOLEDIFF, BACKGROUND, THINK, SLOW, CRASH, EXIT_AFTER, REFUSE,
+ * FAIL, PLAN, SWITCH_MODE, TITLE); anything else is echoed. After BACKGROUND,
+ * WAKE_HOLD stops the work agy does by itself in the middle of a step,
+ * WAKE_CRASH ends the process there, and WAKE_TWICE has it speak once more
+ * after a pause. Environment:
  *   FAKE_AGY_LOG            jsonl file that receives every request
  *   FAKE_AGY_AUTH_REQUIRED  session/new and session/resume fail with ACP's auth_required
  *   FAKE_AGY_FAIL_RESUME    session/resume fails (the session is gone)
@@ -27,6 +35,7 @@
  *   FAKE_AGY_NO_ACP         `acp --help` fails (a CLI too old for ACP)
  *   FAKE_AGY_SLOW_INIT      initialize answers after 400ms
  *   FAKE_AGY_SESSION_ID     id of the next new session
+ *   FAKE_AGY_WAKE_MS        how long a BACKGROUND command runs after its turn (80)
  */
 import { appendFileSync } from 'node:fs';
 
@@ -157,6 +166,40 @@ async function toolCall(sessionId, call, { diff, output }) {
   return true;
 }
 
+/** What agy does by itself once the background command of a BACKGROUND turn is done. */
+async function wake(sessionId, state, build, text) {
+  const pause = Number(process.env.FAKE_AGY_WAKE_MS || 80);
+  const think = (chunk) => update(sessionId, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: chunk } });
+  const say = (chunk) => update(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: chunk } });
+  const stepEnds = () => update(sessionId, { sessionUpdate: 'usage_update', used: (state.used += 5000), size: 1048576 });
+  await sleep(pause);
+  // The command reports back, and the model takes it from there.
+  update(sessionId, { sessionUpdate: 'tool_call_update', ...build, status: 'completed', rawOutput: { output: 'built in 63s', exit_code: 0 } });
+  think('The build ');
+  await sleep(10);
+  think('finished.');
+  stepEnds();
+  const check = { toolCallId: `call_check_${++callSeq}`, name: 'run_command', kind: 'execute', title: 'ls dist', rawInput: { CommandLine: 'ls dist' } };
+  update(sessionId, { sessionUpdate: 'tool_call', ...check, status: 'in_progress' });
+  await sleep(10);
+  update(sessionId, { sessionUpdate: 'tool_call_update', ...check, status: 'completed', rawOutput: { output: 'app.dmg', exit_code: 0 } });
+  say('Checking the artefact. ');
+  if (/\bWAKE_HOLD\b/.test(text)) return;
+  if (/\bWAKE_CRASH\b/.test(text)) {
+    console.error('panic: fake agy crashed');
+    await sleep(20);
+    process.exit(3);
+  }
+  await sleep(10);
+  say('The build is done: app.dmg.');
+  stepEnds();
+  if (/\bWAKE_TWICE\b/.test(text)) {
+    await sleep(pause * 5);
+    say('One more note.');
+    stepEnds();
+  }
+}
+
 async function prompt(id, params) {
   const { sessionId } = params;
   const state = sessions.get(sessionId);
@@ -244,6 +287,19 @@ async function prompt(id, params) {
     const base = { toolCallId: `call_edit_${++callSeq}`, name: 'replace_file_content', kind: 'edit', title: 'Edit hello.txt', rawInput: { TargetFile: file } };
     update(sessionId, { sessionUpdate: 'tool_call', ...base, status: 'in_progress', locations: [{ path: file }] });
     update(sessionId, { sessionUpdate: 'tool_call_update', ...base, status: 'completed', rawOutput: {}, content: [{ type: 'diff', path: file, oldText: 'hello\n', newText: 'goodbye\n' }] });
+  }
+  if (/\bBACKGROUND\b/.test(text)) {
+    // A command that outlives its wait: the turn ends with its call open.
+    const build = { toolCallId: `call_bg_${++callSeq}`, name: 'run_command', kind: 'execute', title: 'npm run build', rawInput: { CommandLine: 'npm run build', WaitMsBeforeAsync: 10000 } };
+    update(sessionId, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'I will start the build.' } });
+    update(sessionId, { sessionUpdate: 'usage_update', used: state.used + 5000, size: 1048576 });
+    update(sessionId, { sessionUpdate: 'tool_call', ...build, status: 'in_progress' });
+    await sleep(10);
+    say('Started the build; waiting for it to finish.');
+    update(sessionId, { sessionUpdate: 'usage_update', used: state.used + 10000, size: 1048576 });
+    finish('end_turn');
+    void wake(sessionId, state, build, text);
+    return;
   }
   if (/\bWHOLEFILE\b/.test(text)) {
     // An edit of one line: the passage in the arguments, the whole file in the diff.

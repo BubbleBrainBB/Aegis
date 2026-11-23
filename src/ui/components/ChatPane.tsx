@@ -1303,9 +1303,10 @@ export function ChatPane({
         ? deriveTranscriptTimelineItems(session.messages, {
             activeTurnStartIndex: lastUserPromptIndex,
             sessionRunning: session.status === 'running',
+            unmarkedWokenTurns: session.provider === 'antigravity',
           })
         : [],
-    [lastUserPromptIndex, session?.messages, session?.status]
+    [lastUserPromptIndex, session?.messages, session?.provider, session?.status]
   );
   // Each work group's disclosure names, recomputed only when the transcript changes.
   const disclosureScopes = useMemo(() => {

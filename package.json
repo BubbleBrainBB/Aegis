@@ -141,7 +141,7 @@
     "verify:decision-panel": "node scripts/tests/decision-panel-electron.test.mjs",
     "verify:mimo-acp-adapter": "npx tsx scripts/tests/mimo-acp-adapter.test.ts",
     "verify:minimax-acp-adapter": "npx tsx scripts/tests/minimax-acp-adapter.test.ts",
-    "verify:antigravity-acp-adapter": "npx tsx scripts/tests/antigravity-acp-adapter.test.ts",
+    "verify:antigravity-acp-adapter": "npx tsx scripts/tests/antigravity-acp-adapter.test.ts && npx tsx scripts/tests/antigravity-woken-turn.test.ts",
     "verify:antigravity": "npx tsx scripts/verify-antigravity.ts",
     "verify:antigravity-settings": "node scripts/tests/antigravity-settings-electron.test.mjs",
     "verify:antigravity-human-driven": "npm run transpile:electron && node scripts/tests/antigravity-human-driven.test.mjs",

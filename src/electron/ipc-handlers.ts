@@ -12245,6 +12245,12 @@ function startRunner(
           if (message.model) {
             sessions.updateSessionModel(session.id, message.model);
           }
+          // agy took up work by itself (a background command finished): the
+          // task runs again until that turn's result, as after a prompt. The
+          // status sent below is read from the row.
+          if (message.selfStarted) {
+            sessions.updateSessionStatus(session.id, 'running');
+          }
         } else {
           markClaudeInit(session.id);
           sessions.updateClaudeSessionId(session.id, message.session_id);
