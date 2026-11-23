@@ -711,10 +711,15 @@ export function initialize(): void {
     DELETE FROM devin_request_cache
     WHERE version != ? OR devin_session_id NOT IN (SELECT devin_session_id FROM sessions WHERE devin_session_id IS NOT NULL)
   `).run(DEVIN_REQUEST_CACHE_VERSION);
-  const markedCopies = markResultsCopiedBeforeMarking();
-  if (markedCopies > 0) {
-    console.log(`[session-store] Marked ${markedCopies} results copied by earlier forks and handoffs; usage reports no longer count them twice.`);
-  }
+  // Copies are marked when they are made now (copySessionHistory), so the
+  // unmarked ones are all from before: found once, there are none to find
+  // again, and looking read every stored result at each launch.
+  runStoredRowPassOnce('results-copied-before-marking', () => {
+    const markedCopies = markResultsCopiedBeforeMarking();
+    if (markedCopies > 0) {
+      console.log(`[session-store] Marked ${markedCopies} results copied by earlier forks and handoffs; usage reports no longer count them twice.`);
+    }
+  });
 }
 
 /**
@@ -3794,33 +3799,41 @@ function parseCodexRolloutUsage(params: {
   return result;
 }
 
+/**
+ * Gives a Claude task that has no stored model the one its latest init
+ * message names (usage reports fall back on it). Runs at every launch, since
+ * a task's model can be cleared at any time. The tasks are found first and
+ * only their own messages are read: as one join over both tables this read
+ * every stored `system` message at each launch, 0.6 s on a database of
+ * 220,000 messages that was not in the file cache, to find no task at all.
+ */
 function backfillClaudeSessionModelsFromInitMessages(): number {
-  const rows = getDb().prepare(`
-    SELECT
-      s.id AS session_id,
-      m.data AS data,
-      m.created_at AS created_at
-    FROM sessions s
-    INNER JOIN messages m ON m.session_id = s.id
-    WHERE s.provider = 'claude'
-      AND (s.model IS NULL OR s.model = '')
-      AND m.message_type = 'system'
-    ORDER BY s.id ASC, m.created_at DESC
-  `).all() as Array<{ session_id: string; data: string; created_at: number }>;
+  const database = getDb();
+  const tasks = database
+    .prepare(`SELECT id FROM sessions WHERE provider = 'claude' AND (model IS NULL OR model = '')`)
+    .all() as Array<{ id: string }>;
+  if (tasks.length === 0) {
+    return 0;
+  }
 
+  const systemMessages = database.prepare(`
+    SELECT data, created_at
+    FROM messages INDEXED BY idx_messages_session_id
+    WHERE session_id = ? AND message_type = 'system'
+    ORDER BY created_at DESC
+  `);
   const updates = new Map<string, string>();
-  for (const row of rows) {
-    if (updates.has(row.session_id)) {
-      continue;
-    }
-
-    try {
-      const parsed = readStoredMessagePayload(row.data, row.created_at);
-      if (parsed.type === 'system' && parsed.subtype === 'init' && parsed.model?.trim()) {
-        updates.set(row.session_id, parsed.model.trim());
+  for (const task of tasks) {
+    for (const row of systemMessages.iterate(task.id) as IterableIterator<{ data: string; created_at: number }>) {
+      try {
+        const parsed = readStoredMessagePayload(row.data, row.created_at);
+        if (parsed.type === 'system' && parsed.subtype === 'init' && parsed.model?.trim()) {
+          updates.set(task.id, parsed.model.trim());
+          break;
+        }
+      } catch {
+        continue;
       }
-    } catch {
-      continue;
     }
   }
 
@@ -3828,8 +3841,8 @@ function backfillClaudeSessionModelsFromInitMessages(): number {
     return 0;
   }
 
-  const updateStmt = getDb().prepare('UPDATE sessions SET model = ? WHERE id = ?');
-  const transaction = getDb().transaction(() => {
+  const updateStmt = database.prepare('UPDATE sessions SET model = ? WHERE id = ?');
+  const transaction = database.transaction(() => {
     for (const [sessionId, model] of updates.entries()) {
       updateStmt.run(model, sessionId);
     }

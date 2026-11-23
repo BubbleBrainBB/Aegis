@@ -8,7 +8,12 @@
 // - the next launch does not read the rows again;
 // - schema work is not part of that: a missing column comes back at every
 //   launch, whatever has been remembered;
-// - rows written since need no mending.
+// - rows written since need no mending;
+// - results copied by forks before copies were marked are marked once, and not
+//   looked for again;
+// - a Claude task without a stored model still gets it from its latest init
+//   message at any launch (that one is not a pass over old rows: a model can
+//   be cleared at any time), and tasks that have a model are left alone.
 // Requires the main process to be compiled (npm run transpile:electron).
 const assert = require('node:assert/strict');
 const Module = require('node:module');
@@ -32,7 +37,7 @@ try {
   const store = require(path.join(root, 'dist-electron/electron/libs/session-store.js'));
   const Database = require(path.join(root, 'node_modules/better-sqlite3'));
   const raw = () => new Database(path.join(profile, 'sessions.db'));
-  const PASSES = ['externalized-message-payloads', 'message-metadata', 'search-index-text'];
+  const PASSES = ['externalized-message-payloads', 'message-metadata', 'results-copied-before-marking', 'search-index-text'];
   const remembered = () => {
     const db = raw();
     const names = db.prepare('SELECT name FROM stored_row_passes ORDER BY name').all().map((row) => row.name);
@@ -60,7 +65,28 @@ try {
     db.prepare('UPDATE search_index SET text = ? WHERE message_id = ?').run('y'.repeat(30_000), 'old-long-search');
     db.close();
   }
+  // And a fork from before copies were marked: the same result, under a new
+  // id, in a task created after the turn ran.
+  const ranAt = Date.now();
+  const turn = { type: 'result', subtype: 'success', duration_ms: 1200, total_cost_usd: 2, usage: { input_tokens: 100, output_tokens: 10 }, createdAt: ranAt };
+  store.addMessage(task.id, { ...turn, uuid: 'the-turn' });
+  const fork = store.createSession({ title: 'Old fork', cwd: profile, provider: 'claude' });
+  {
+    const db = raw();
+    db.prepare('UPDATE sessions SET created_at = ? WHERE id = ?').run(ranAt + 60_000, fork.id);
+    db.close();
+  }
+  store.addMessage(fork.id, { ...turn, uuid: 'the-turn-copied' });
+  const copiedFrom = (id) => {
+    const db = raw();
+    const data = JSON.parse(db.prepare('SELECT data FROM messages WHERE id = ?').get(id).data);
+    db.close();
+    return data.copiedFromSessionId;
+  };
+  assert.equal(copiedFrom('the-turn-copied'), undefined);
   store.initialize();
+  assert.equal(copiedFrom('the-turn-copied'), task.id, 'the old copy is marked with the task its turn ran in');
+  assert.equal(copiedFrom('the-turn'), undefined, 'the turn itself is not');
   {
     const db = raw();
     const row = (id) => db.prepare('SELECT message_type, source_origin, search_text, sort_key, data FROM messages WHERE id = ?').get(id);
@@ -85,12 +111,15 @@ try {
     db.prepare('INSERT INTO messages (id, session_id, data, created_at) VALUES (?, ?, ?, ?)').run('untouched', task.id, JSON.stringify(small), 1_700_000_000_003);
     db.close();
   }
+  // Nor is an unmarked copy looked for again (none is written any more: a fork marks its copies).
+  store.addMessage(fork.id, { ...turn, uuid: 'the-turn-copied-again' });
   store.initialize();
   {
     const db = raw();
     assert.equal(db.prepare('SELECT message_type FROM messages WHERE id = ?').get('untouched').message_type, null, 'no pass ran a second time');
     db.close();
   }
+  assert.equal(copiedFrom('the-turn-copied-again'), undefined, 'stored results were not read a second time');
 
   // ── Schema work is never skipped. ──
   {
@@ -130,6 +159,33 @@ try {
     assert.equal(JSON.parse(written.data).__aegisStorage, 'external-message-payload-v1');
     db.close();
   }
+
+  // ── A Claude task without a stored model: looked up at every launch. ──
+  // Every pass above is remembered by now; this still runs, and reads only
+  // the messages of the tasks that lack a model.
+  const modelOf = (id) => {
+    const db = raw();
+    const model = db.prepare('SELECT model FROM sessions WHERE id = ?').get(id).model;
+    db.close();
+    return model;
+  };
+  const init = (uuid, model, createdAt) => ({ type: 'system', subtype: 'init', uuid, session_id: 'claude-session', model, createdAt });
+  const unset = store.createSession({ title: 'Model cleared', cwd: profile, provider: 'claude' });
+  store.addMessage(unset.id, init('init-first', 'claude-first', 1_800_000_000_000));
+  store.addMessage(unset.id, init('init-latest', 'claude-latest', 1_800_000_000_100));
+  store.addMessage(unset.id, { type: 'system', subtype: 'status', uuid: 'a-later-note', createdAt: 1_800_000_000_200 });
+  const chosen = store.createSession({ title: 'Model chosen', cwd: profile, provider: 'claude', model: 'claude-chosen' });
+  store.addMessage(chosen.id, init('init-other', 'claude-other', 1_800_000_000_300));
+  const otherAgent = store.createSession({ title: 'Another agent', cwd: profile, provider: 'codex' });
+  store.addMessage(otherAgent.id, init('init-codex', 'gpt-x', 1_800_000_000_400));
+  assert.equal(modelOf(unset.id), null);
+  assert.equal(modelOf(task.id), null, 'a task that never had an init message has no model');
+  store.initialize();
+  assert.equal(modelOf(unset.id), 'claude-latest', 'the latest init message names the model');
+  assert.equal(modelOf(chosen.id), 'claude-chosen', 'a stored model is kept');
+  assert.equal(modelOf(otherAgent.id), null, 'only Claude tasks are filled in this way');
+  assert.equal(modelOf(task.id), null);
+  assert.ok(!remembered().some((name) => /model/.test(name)), 'and it is not remembered as a pass: the next launch looks again');
 
   passed = true;
   log('stored-row-passes: all checks passed');
