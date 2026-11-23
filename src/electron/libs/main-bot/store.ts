@@ -555,10 +555,9 @@ export class MainBotStore {
     return (this.db.prepare("SELECT * FROM main_bot_waits WHERE status != 'waiting' ORDER BY ended_at DESC, id DESC LIMIT ?").all(limit) as WaitRow[]).map(waitFromRow);
   }
 
-  /** The last wait made on one thing, however it ended. */
-  latestWaitOn(targetKey: string): MainBotWait | null {
-    const row = this.db.prepare('SELECT * FROM main_bot_waits WHERE target_key = ? ORDER BY id DESC LIMIT 1').get(targetKey) as WaitRow | undefined;
-    return row ? waitFromRow(row) : null;
+  /** Every wait still known that was made on one thing, oldest first, however each ended. */
+  waitsOn(targetKey: string): MainBotWait[] {
+    return (this.db.prepare('SELECT * FROM main_bot_waits WHERE target_key = ? ORDER BY id').all(targetKey) as WaitRow[]).map(waitFromRow);
   }
 
   /** A look at what a wait is for left it waiting: when, what was seen, and when to look next. */
@@ -574,9 +573,9 @@ export class MainBotStore {
       .run(input.checkedAt, input.nextCheckAt, input.failures, input.problem, input.progress ? JSON.stringify(input.progress) : null, id);
   }
 
-  /** Have every wait on GitHub looked at with the next round. */
-  dueWaitsNow(at: number): void {
-    this.db.prepare("UPDATE main_bot_waits SET next_check_at = ? WHERE status = 'waiting' AND kind != 'time'").run(at);
+  /** Have a wait looked at no later than then. One that is due sooner stays as it is. */
+  hastenWait(id: number, at: number): void {
+    this.db.prepare("UPDATE main_bot_waits SET next_check_at = ? WHERE id = ? AND status = 'waiting' AND (next_check_at IS NULL OR next_check_at > ?)").run(at, id, at);
   }
 
   /** A wait is over: what it waited for happened, or its deadline came. False when it no longer waited. */
@@ -591,6 +590,15 @@ export class MainBotStore {
   endWait(id: number, status: 'cancelled' | 'expired', at: number): boolean {
     const done = this.db.prepare("UPDATE main_bot_waits SET status = ?, ended_at = ?, next_check_at = NULL WHERE id = ? AND status = 'waiting'").run(status, at, id);
     return Number(done.changes) > 0;
+  }
+
+  /** The bot was told how a wait ended and its turn did not get through. How often that has happened now; 0 when it is no longer to be told. */
+  noteWaitTold(id: number): number {
+    const wait = this.wait(id);
+    if (!wait || wait.status !== 'fired') return 0;
+    const tells = Math.max(0, Math.floor(Number(wait.outcome?.tells) || 0)) + 1;
+    this.db.prepare("UPDATE main_bot_waits SET outcome = ? WHERE id = ? AND status = 'fired'").run(JSON.stringify({ ...(wait.outcome ?? {}), tells }), id);
+    return tells;
   }
 
   /** The bot's conversation took how these waits ended. */
