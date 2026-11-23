@@ -623,6 +623,200 @@ async function main(): Promise<void> {
       assert.match(crashed.events.at(-1)!.error.message, /exited during the turn \(code 3\).*panic: fake agy crashed/);
       crashed.adapter.disposeSession(crashed.threadId);
     }
+
+    // The response to a prompt and what agy sends right after it can arrive
+    // in one read. The response ends the turn first: what follows is agy's own.
+    {
+      const now = await open({ prompt: 'BACKGROUND WAKE_NOW' }, { selfTurnSettleMs: 150, selfTurnIdleMs: 10_000 });
+      await turnDone(now.events, 2);
+      const told = story(now.events);
+      assert.deepEqual(told.slice(told.indexOf('result success')), [
+        'result success',
+        'status completed',
+        'result of call_bg_1: built in 63s',
+        'status running',
+        'init by itself',
+        'thinking: The build finished.',
+        'call call_check_2',
+        'result of call_check_2: app.dmg',
+        'text: Checking the artefact. The build is done: app.dmg.',
+        'result success',
+        'status completed',
+      ]);
+      await now.adapter.stopSession(now.threadId);
+    }
+
+    // agy repeats a call it is still running after the turn settled it for
+    // now: the repeat keeps the stand-in replaceable, and the real outcome lands.
+    {
+      const resent = await open({ prompt: 'BACKGROUND WAKE_RESEND' }, { selfTurnSettleMs: 150, selfTurnIdleMs: 10_000 });
+      await turnDone(resent.events, 2);
+      const outcomes = story(resent.events).filter((line) => line.startsWith('result of call_bg_1'));
+      assert.deepEqual(outcomes, ['result of call_bg_1: npm run build', 'result of call_bg_1: built in 63s']);
+      await resent.adapter.stopSession(resent.threadId);
+    }
+
+    // Two calls in one step: the quick one finishing is not a reason to stop
+    // waiting for the slow one, however long the silence. (The silence here
+    // is twice the wait that ends a turn in the middle of a step.)
+    {
+      const parallel = await open({ prompt: 'BACKGROUND WAKE_PARALLEL' }, { selfTurnSettleMs: 150, selfTurnIdleMs: 300 });
+      await turnDone(parallel.events, 2);
+      const told = story(parallel.events);
+      assert.deepEqual(told.slice(told.indexOf('init by itself')), [
+        'init by itself',
+        'thinking: The build finished.',
+        'call call_check_2',
+        'call call_slow_3',
+        'result of call_check_2: app.dmg',
+        // Its real output, not a stand-in from a turn ended too early.
+        'result of call_slow_3: signed',
+        'text: Checking the artefact. The build is done: app.dmg.',
+        'result success',
+        'status completed',
+      ]);
+      await parallel.adapter.stopSession(parallel.threadId);
+    }
+
+    // An update that only renames a finished call says nothing about the
+    // turn: the end that was due still comes.
+    {
+      const retitled = await open({ prompt: 'BACKGROUND WAKE_RETITLE' }, { selfTurnSettleMs: 150, selfTurnIdleMs: 60_000 });
+      await turnDone(retitled.events, 2);
+      assert.deepEqual(story(retitled.events).slice(-2), ['result success', 'status completed']);
+      await retitled.adapter.stopSession(retitled.threadId);
+    }
+
+    // The host announces a prompt (yieldToPrompt) before it shows it: agy's
+    // own work ends there without a result of its own, its words committed.
+    {
+      const yielded = await open({ prompt: 'BACKGROUND WAKE_HOLD' }, { selfTurnSettleMs: 150, selfTurnIdleMs: 60_000 });
+      await until(() => story(yielded.events).includes('result of call_check_2: app.dmg'), 'agy working by itself');
+      await quiet(100);
+      yielded.adapter.yieldToPrompt(yielded.threadId);
+      assert.equal(story(yielded.events).at(-1), 'text: Checking the artefact. ', 'committed at once, before the prompt is shown');
+      await quiet(400);
+      assert.equal(results(yielded.events).length, 1, 'and nothing of it ends a turn afterwards');
+      await withTimeout(yielded.adapter.sendTurn({ threadId: yielded.threadId, prompt: 'plain' } as never), 'sendTurn');
+      assert.deepEqual(story(yielded.events).slice(-4), ['status running', 'text: echo: plain', 'result success', 'status completed']);
+      assert.equal(results(yielded.events).length, 2);
+      await yielded.adapter.stopSession(yielded.threadId);
+
+      // What agy sends between the announcement and the prompt opens no turn;
+      // the prompt's turn takes it in.
+      const gap = await open({ prompt: 'BACKGROUND WAKE_TWICE' }, { selfTurnSettleMs: 150, selfTurnIdleMs: 60_000 });
+      await turnDone(gap.events, 2);
+      gap.adapter.yieldToPrompt(gap.threadId);
+      await quiet(700);
+      assert.equal(results(gap.events).length, 2);
+      assert.equal(story(gap.events).filter((line) => line === 'init by itself').length, 1);
+      await withTimeout(gap.adapter.sendTurn({ threadId: gap.threadId, prompt: 'plain' } as never), 'sendTurn');
+      assert.deepEqual(story(gap.events).slice(-5), ['text: One more note.', 'status running', 'text: echo: plain', 'result success', 'status completed']);
+      await gap.adapter.stopSession(gap.threadId);
+    }
+
+    // What a finished call carried is let go, turn after turn: the whole-file
+    // texts of an edit's diff are never kept, and a finished call keeps nothing.
+    {
+      const lean = await open({ prompt: 'BACKGROUND WAKE_EDIT' }, { selfTurnSettleMs: 150, selfTurnIdleMs: 10_000 });
+      await turnDone(lean.events, 2);
+      const edit = blocks(lean.events, 'tool_use').filter((block) => block.id === 'call_edit_3');
+      assert.equal(edit.length, 1, 'the diff arriving later leaves the card as it is');
+      assert.equal(edit[0].input.new_string, '  const entry9000 = changed;');
+      const kept = (lean.adapter as any).sessions.get(lean.threadId).toolCalls as Map<string, unknown>;
+      assert.deepEqual([...kept.keys()], ['call_bg_1', 'call_check_2', 'call_edit_3']);
+      assert.ok(JSON.stringify([...kept]).length < 1_500, `finished calls hold ${JSON.stringify([...kept]).length} characters`);
+      // A prompt drops them; calls that may still report back are kept, the latest 32.
+      const calls = (lean.adapter as any).sessions.get(lean.threadId).toolCalls as Map<string, Record<string, unknown>>;
+      for (let index = 0; index < 40; index += 1) {
+        calls.set(`left_${index}`, { name: 'Bash', title: 'sleep', source: {}, input: {}, createdAt: 1, output: '', settled: true, placeholder: true });
+      }
+      await withTimeout(lean.adapter.sendTurn({ threadId: lean.threadId, prompt: 'plain' } as never), 'sendTurn');
+      const after = (lean.adapter as any).sessions.get(lean.threadId).toolCalls as Map<string, unknown>;
+      assert.deepEqual([...after.keys()], Array.from({ length: 32 }, (_, index) => `left_${index + 8}`));
+      await lean.adapter.stopSession(lean.threadId);
+    }
+
+    // A process that has exited, or one the session has moved on from, opens
+    // no turn with what was still in its pipe.
+    {
+      const gone = await open({ prompt: 'plain EXIT_AFTER' });
+      await turnDone(gone.events);
+      const live = (gone.adapter as any).sessions.get(gone.threadId);
+      await until(() => Boolean(live.dead), 'agy exited');
+      const told = gone.events.length;
+      const late = { update: { sessionUpdate: 'tool_call', toolCallId: 'call_late', name: 'run_command', kind: 'execute', title: 'ls', status: 'in_progress' } };
+      (gone.adapter as any).handleNotification({ proc: live.proc, session: live }, 'session/update', late);
+      assert.equal(gone.events.length, told, 'nothing from a dead process');
+      assert.equal(live.selfTurn, undefined);
+      // The next message reconnects; the old connection's leftovers still say nothing.
+      const oldProc = live.proc;
+      await withTimeout(gone.adapter.sendTurn({ threadId: gone.threadId, prompt: 'plain' } as never), 'sendTurn');
+      const heard = gone.events.length;
+      (gone.adapter as any).handleNotification({ proc: oldProc, session: live }, 'session/update', late);
+      assert.equal(gone.events.length, heard, 'nothing from a connection the session left');
+      await gone.adapter.stopSession(gone.threadId);
+    }
+  }
+
+  // ── An edit that is more than the passage agy names ──────────────────────
+  {
+    const rows = Array.from({ length: 40 }, (_, index) => (index === 5 || index === 30 ? 'flag=false' : `row ${index}`));
+    const text = (lines: string[]) => `${lines.join('\n')}\n`;
+    const args = { Path: '/p/flags.txt', Target: 'flag=false', Replacement: 'flag=true' };
+    // Both occurrences changed: the card shows both, not the one the arguments name.
+    const both = antigravityToolInput('Edit', {
+      rawInput: args,
+      content: [{ type: 'diff', path: '/p/flags.txt', oldText: text(rows), newText: text(rows.map((row) => (row === 'flag=false' ? 'flag=true' : row))) }],
+    });
+    assert.equal(String(both.old_string).split('flag=false').length - 1, 2);
+    assert.equal(String(both.new_string).split('flag=true').length - 1, 2);
+    assert.ok(String(both.old_string).startsWith('row 2\n') && String(both.old_string).endsWith('row 33\n'));
+    // The named passage changed and so did another line.
+    const more = antigravityToolInput('Edit', {
+      rawInput: args,
+      content: [{ type: 'diff', path: '/p/flags.txt', oldText: text(rows), newText: text(rows.map((row, index) => (index === 5 ? 'flag=true' : index === 20 ? 'row twenty' : row))) }],
+    });
+    assert.ok(String(more.new_string).includes('flag=true') && String(more.new_string).includes('row twenty'));
+    // Only the first occurrence changed: that one replacement is the whole edit.
+    const first = antigravityToolInput('Edit', {
+      rawInput: args,
+      content: [{ type: 'diff', path: '/p/flags.txt', oldText: text(rows), newText: text(rows.map((row, index) => (index === 5 ? 'flag=true' : row))) }],
+    });
+    assert.equal(first.old_string, 'flag=false');
+    assert.equal(first.new_string, 'flag=true');
+    // Only the second occurrence changed: the arguments would point at the wrong line.
+    const second = antigravityToolInput('Edit', {
+      rawInput: args,
+      content: [{ type: 'diff', path: '/p/flags.txt', oldText: text(rows), newText: text(rows.map((row, index) => (index === 30 ? 'flag=true' : row))) }],
+    });
+    assert.equal(second.old_string, 'row 27\nrow 28\nrow 29\nflag=false\nrow 31\nrow 32\nrow 33\n');
+  }
+
+  // ── The ACP client: a response before the lines that follow it ───────────
+  {
+    const { AcpJsonRpcClient } = await import('../../src/electron/libs/provider/acp-json-rpc-client');
+    const { EventEmitter } = await import('node:events');
+    const heardIn = async (options?: { responsesFirst?: boolean }) => {
+      const order: string[] = [];
+      const stdout = Object.assign(new EventEmitter(), { setEncoding() {} });
+      const proc = Object.assign(new EventEmitter(), { stdout, stdin: { writable: true, write() {} } });
+      const rpc = new AcpJsonRpcClient(proc as never, (method) => order.push(method), () => undefined, () => undefined, options);
+      const answered = rpc.request('session/prompt').then(() => order.push('the caller'));
+      // One read: the response, two notifications, another response, a notification.
+      const later = rpc.request('session/set_mode').then(() => order.push('the second caller'));
+      stdout.emit(
+        'data',
+        '{"jsonrpc":"2.0","id":1,"result":{}}\n{"jsonrpc":"2.0","method":"first"}\n{"jsonrpc":"2.0","method":"second"}\n{"jsonrpc":"2.0","id":2,"result":{}}\n{"jsonrpc":"2.0","method":"third"}\n{"jsonrpc":"2.0","method":"cut'
+      );
+      stdout.emit('data', ' off"}\n');
+      await Promise.all([answered, later]);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return order;
+    };
+    assert.deepEqual(await heardIn({ responsesFirst: true }), ['the caller', 'first', 'second', 'the second caller', 'third', 'cut off']);
+    // Every other agent's client reads as it always did.
+    assert.deepEqual(await heardIn(), ['first', 'second', 'third', 'cut off', 'the caller', 'the second caller']);
   }
 
   // ── Tools agy names differently, thinking, plans, its own title and mode ─

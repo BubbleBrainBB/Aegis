@@ -75,8 +75,13 @@ type AntigravitySessionUpdate = Record<string, unknown> & { sessionUpdate?: unkn
 interface AntigravityToolCall {
   name: string;
   title: string;
-  /** What agy sent for the call so far; the card input is derived from it. */
+  /**
+   * What agy sent for the call so far, without its `content`: a diff there
+   * holds the whole file twice, and is read once (see `edit`) and not kept.
+   */
   source: Record<string, unknown>;
+  /** The edit read off the call's diff. */
+  edit?: { oldText: string; newText: string };
   input: Record<string, unknown>;
   createdAt: number;
   output: string;
@@ -103,6 +108,15 @@ interface AntigravityTurn {
   usage: AntigravityTurnUsage | null;
   done: Promise<void>;
   resolveDone: () => void;
+}
+
+interface SelfStartedTurn {
+  startedAt: number;
+  timer?: ReturnType<typeof setTimeout>;
+  /** The model's last step is over (a usage_update), and it has not spoken or called a tool since. */
+  stepEnded: boolean;
+  /** Calls the current step made that have not finished: the model waits for them. */
+  waitingFor: Set<string>;
 }
 
 interface ActiveAntigravitySession {
@@ -139,7 +153,9 @@ interface ActiveAntigravitySession {
   toolCalls: Map<string, AntigravityToolCall>;
   turn?: AntigravityTurn;
   /** A turn agy started by itself, between prompts. */
-  selfTurn?: { startedAt: number; timer?: ReturnType<typeof setTimeout> };
+  selfTurn?: SelfStartedTurn;
+  /** The host said a prompt is coming: until then (or this time) nothing agy sends opens a turn. */
+  promptDueBy?: number;
   /** Settles when the latest queued turn has ended; turns never overlap. */
   turnChain: Promise<void>;
   /** agy exited outside a stop; the next turn reconnects and resumes. */
@@ -175,6 +191,8 @@ interface AntigravityConnection {
 
 /** Startup state that arrives before the session is bound, applied once it is. */
 interface SessionBinding {
+  /** The process this connection reads: a session listens to its current one only. */
+  proc: ChildProcessWithoutNullStreams;
   session?: ActiveAntigravitySession;
   commands?: AntigravitySessionUpdate;
   usage?: AntigravitySessionUpdate;
@@ -206,6 +224,10 @@ const STOP_GRACE_MS = 1500;
 const SELF_TURN_SETTLE_MS = 2000;
 /** With no step running a tool, this long without a word from agy ends such a turn too. */
 const SELF_TURN_IDLE_MS = 120_000;
+/** How long agy's own work stays turnless after the host announced a prompt that then never came. */
+const PROMPT_HANDOVER_MS = 30_000;
+/** Calls kept because they may still report back after their turn (background commands). */
+const MAX_KEPT_CALLS = 32;
 const STDERR_TAIL_LINES = 12;
 
 /** agy tools seen on the wire, mapped to the Claude-shaped names the transcript renders richly. */
@@ -308,8 +330,10 @@ function findDiff(content: unknown): { path: string; oldText: string | null; new
  * the whole file before and after the edit (two 536 KB texts for a one-line
  * change to a 14,000-line file), which no card, stored row or approval should
  * carry. So the passage is the one agy names in its arguments (`Target` →
- * `Replacement`) while the diff bears it out, and otherwise the diff cut down
- * to the lines that changed.
+ * `Replacement`) when that one replacement is the whole edit, which is so
+ * when it turns the diff's old text into its new text. An edit that changed
+ * more (a second occurrence, another passage) is the diff cut down to the
+ * lines that changed.
  */
 function antigravityEdit(
   raw: Record<string, unknown>,
@@ -319,9 +343,40 @@ function antigravityEdit(
   const replacement = raw.Replacement;
   if (typeof target === 'string' && typeof replacement === 'string') {
     if (!diff) return { oldText: target, newText: replacement };
-    if (target && diff.oldText?.includes(target)) return { oldText: target, newText: replacement };
+    const at = target && diff.oldText !== null ? diff.oldText.indexOf(target) : -1;
+    if (
+      at >= 0 &&
+      diff.oldText !== null &&
+      diff.oldText.length - target.length + replacement.length === diff.newText.length &&
+      diff.oldText.slice(0, at) + replacement + diff.oldText.slice(at + target.length) === diff.newText
+    ) {
+      return { oldText: target, newText: replacement };
+    }
   }
   return diff ? trimCommonLines(diff.oldText ?? '', diff.newText) : null;
+}
+
+/**
+ * An update folded into what is known of a call. The diff an update carries
+ * is read here and not kept: the call remembers the edit it stands for, where
+ * the file is, and a written file's text when only the diff has it.
+ */
+function mergeToolCall(
+  existing: Pick<AntigravityToolCall, 'name' | 'source' | 'edit'> | undefined,
+  update: Record<string, unknown>
+): Pick<AntigravityToolCall, 'name' | 'source' | 'edit' | 'input'> {
+  const name = existing?.name || antigravityToolName(update);
+  const { content, ...fields } = update;
+  const source: Record<string, unknown> = { ...existing?.source, ...fields };
+  const raw = getRecord(source.rawInput) ?? getRecord(source.args) ?? {};
+  const diff = findDiff(content);
+  let edit = existing?.edit;
+  if (diff) {
+    if (name === 'Edit') edit = antigravityEdit(raw, diff) ?? edit;
+    const writes = name === 'Write' && typeof raw.Content !== 'string';
+    source.content = [{ type: 'diff', path: diff.path, ...(writes ? { newText: diff.newText } : {}) }];
+  }
+  return { name, source, edit, input: antigravityToolInput(name, source, edit) };
 }
 
 /** ACP `content` with each diff entry cut down to the lines that changed. */
@@ -370,9 +425,14 @@ function firstString(record: Record<string, unknown>, keys: readonly string[]): 
  * its arguments in PascalCase (`CommandLine`, `Path`, `Content`); what it does
  * not put in the arguments comes from the standard ACP fields of the call:
  * the edited file from its `diff` entry or first location, the edit itself
- * from the diff's changed lines (see antigravityEdit).
+ * from the diff's changed lines (see antigravityEdit). `knownEdit`: the edit
+ * already read off a diff the call sent earlier.
  */
-export function antigravityToolInput(name: string, update: Record<string, unknown>): Record<string, unknown> {
+export function antigravityToolInput(
+  name: string,
+  update: Record<string, unknown>,
+  knownEdit?: { oldText: string; newText: string }
+): Record<string, unknown> {
   const raw = getRecord(update.rawInput) ?? getRecord(update.args) ?? {};
   const input: Record<string, unknown> = { ...raw };
   const diff = findDiff(update.content);
@@ -393,7 +453,7 @@ export function antigravityToolInput(name: string, update: Record<string, unknow
     if (content !== undefined) input.content = content;
   }
   if (name === 'Edit' && input.old_string === undefined && input.new_string === undefined) {
-    const edit = antigravityEdit(raw, diff);
+    const edit = knownEdit ?? antigravityEdit(raw, diff);
     if (edit) {
       input.old_string = edit.oldText;
       input.new_string = edit.newText;
@@ -561,7 +621,7 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
     // A write after agy is gone must not take the app down with EPIPE.
     proc.stdin.on('error', () => undefined);
 
-    const binding: SessionBinding = {};
+    const binding: SessionBinding = { proc };
     let rpc!: AcpJsonRpcClient;
     rpc = new AcpJsonRpcClient(
       proc,
@@ -569,7 +629,10 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
       (request) => this.handleRequest(binding, rpc, request),
       (line, error) => {
         console.warn('[Antigravity ACP] failed to parse stdout line', { line: line.slice(0, 200), error: error.message });
-      }
+      },
+      // A prompt's response ends its turn before what agy sent after it is
+      // read, however the two were split into reads.
+      { responsesFirst: true }
     );
 
     const fail = (error: unknown): never => {
@@ -816,7 +879,22 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
         model: session.model,
       });
     }
+    // Calls of the process that is gone will never report back.
+    session.toolCalls.clear();
     this.bindConnection(session, connection);
+  }
+
+  /**
+   * The host is about to send a prompt. What agy started by itself ends here,
+   * before the prompt is shown: its words are committed above the prompt,
+   * and no result of its own can land on the turn that follows. Until the
+   * prompt arrives, nothing agy sends opens another turn.
+   */
+  yieldToPrompt(threadId: string): void {
+    const session = this.sessions.get(threadId);
+    if (!session || session.stopping) return;
+    this.closeSelfTurn(session);
+    session.promptDueBy = Date.now() + PROMPT_HANDOVER_MS;
   }
 
   async sendTurn(input: ProviderSendTurnInput): Promise<void> {
@@ -861,16 +939,17 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
     };
     session.turn = turn;
     session.status = 'running';
+    session.promptDueBy = undefined;
     // A prompt sent while agy was working by itself takes that work over:
     // what it wrote is committed, and this turn's result ends both.
-    this.closeSelfTurn(session);
-    session.currentAssistant = undefined;
-    session.currentThinking = undefined;
+    this.dropSelfTurn(session);
+    this.finalizeStreaming(session);
+    this.settleOpenToolCalls(session);
     // The last turn's calls are settled. One settled only because its turn
-    // ended may still be running in the background and report back.
-    for (const [id, call] of session.toolCalls) {
-      if (!call.placeholder) session.toolCalls.delete(id);
-    }
+    // ended may still be running in the background and report back: the
+    // latest few of those are kept.
+    const kept = [...session.toolCalls].filter(([, call]) => call.placeholder).slice(-MAX_KEPT_CALLS);
+    session.toolCalls = new Map(kept);
     this.emit({ type: 'status_change', threadId: session.threadId, status: 'running' });
 
     try {
@@ -1250,12 +1329,21 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
       else if (update.sessionUpdate === 'usage_update') binding.usage = update;
       return;
     }
+    // What a process still had to say after it exited, or after the session
+    // moved to another process, has no turn to belong to.
+    if (session.dead || session.proc !== binding.proc) return;
     this.handleSessionUpdate(session, update);
   }
 
   private handleRequest(binding: SessionBinding, rpc: AcpJsonRpcClient, request: AcpJsonRpcIncomingRequest): void {
     const session = binding.session;
-    const live = Boolean(session && this.sessions.get(session.threadId) === session && !session.stopping);
+    const live = Boolean(
+      session &&
+        this.sessions.get(session.threadId) === session &&
+        !session.stopping &&
+        !session.dead &&
+        session.proc === binding.proc
+    );
     if (request.method === 'session/request_permission') {
       if (live && session) this.handlePermissionRequest(session, rpc, request);
       else rpc.respond(request.id, { outcome: { outcome: 'cancelled' } });
@@ -1290,8 +1378,7 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
       .filter((option): option is AcpPermissionOption => Boolean(option));
     // The request repeats the tool call it gates, with the edit's diff.
     const known = session.toolCalls.get(getString(toolCall.toolCallId));
-    const toolName = known?.name || antigravityToolName(toolCall);
-    const input = antigravityToolInput(toolName, { ...known?.source, ...toolCall });
+    const { name: toolName, input } = mergeToolCall(known, toolCall);
     const command = toolName === 'Bash' ? getString(input.command) : '';
     const title = getString(toolCall.title) || known?.title || command || 'Antigravity permission request';
     const requestId = `antigravity-permission:${session.threadId}:${request.id}`;
@@ -1347,23 +1434,27 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
   // ── Session updates ──────────────────────────────────────────────────────
 
   private handleSessionUpdate(session: ActiveAntigravitySession, update: AntigravitySessionUpdate): void {
-    if (!session.turn && !session.selfTurn && !session.stopping && this.startsWork(session, update)) {
+    const kind = update.sessionUpdate;
+    // Read before the update is applied: whether this is a call not seen before.
+    const newCall = kind === 'tool_call' && !session.toolCalls.has(getString(update.toolCallId));
+    const promptDue = session.promptDueBy !== undefined && Date.now() < session.promptDueBy;
+    if (!session.turn && !session.selfTurn && !session.stopping && !promptDue && this.startsWork(update, newCall)) {
       this.openSelfTurn(session);
     }
     this.routeSessionUpdate(session, update);
-    if (session.selfTurn) this.paceSelfTurn(session, update);
+    if (session.selfTurn) this.paceSelfTurn(session, update, newCall);
   }
 
   // ── Turns agy starts by itself ───────────────────────────────────────────
 
   /** Whether an update is agy at work: text, a thought, or a call not seen before. */
-  private startsWork(session: ActiveAntigravitySession, update: AntigravitySessionUpdate): boolean {
+  private startsWork(update: AntigravitySessionUpdate, newCall: boolean): boolean {
     switch (update.sessionUpdate) {
       case 'agent_message_chunk':
       case 'agent_thought_chunk':
         return extractTextContent(update.content) !== '';
       case 'tool_call':
-        return !session.toolCalls.has(getString(update.toolCallId));
+        return newCall;
       default:
         return false;
     }
@@ -1376,7 +1467,7 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
    * its own place in the transcript, and it ends with a result.
    */
   private openSelfTurn(session: ActiveAntigravitySession): void {
-    session.selfTurn = { startedAt: Date.now() };
+    session.selfTurn = { startedAt: Date.now(), stepEnded: false, waitingFor: new Set() };
     session.status = 'running';
     this.emit({ type: 'status_change', threadId: session.threadId, status: 'running' });
     this.emit({
@@ -1396,27 +1487,46 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
   }
 
   /**
-   * Sets the deadline that ends the turn if agy says nothing more. After a
-   * model step ended, a tool call follows at once or the turn is over. While
-   * a call runs, or waits for approval, there is no deadline. Otherwise the
-   * model is expected to speak, and a long silence ends the turn.
+   * Follows where the turn stands and sets the deadline that ends it if agy
+   * says nothing more. The turn is in one of three places:
+   * - a model step has ended and nothing followed: a tool call comes at once
+   *   or the turn is over (the short wait);
+   * - the model waits for calls its step made: no deadline, they take as long
+   *   as they take, approval included;
+   * - otherwise the model is expected to speak: a long silence ends the turn.
+   * The deadline is worked out from that state, not from the last update:
+   * one call finishing says nothing while another the model waits for runs,
+   * and an update that changes nothing (a new title, a call of an earlier
+   * step reporting back) leaves the deadline as it is.
    */
-  private paceSelfTurn(session: ActiveAntigravitySession, update: AntigravitySessionUpdate): void {
+  private paceSelfTurn(session: ActiveAntigravitySession, update: AntigravitySessionUpdate, newCall: boolean): void {
     const selfTurn = session.selfTurn;
     if (!selfTurn) return;
-    let wait: number | null;
     switch (update.sessionUpdate) {
       case 'usage_update':
-        wait = this.selfTurnSettleMs;
+        // The step is over. Calls still open went on without the model (a
+        // command sent to the background): it no longer waits for them.
+        selfTurn.stepEnded = true;
+        selfTurn.waitingFor.clear();
         break;
       case 'agent_message_chunk':
       case 'agent_thought_chunk':
-        wait = this.selfTurnIdleMs;
+        if (!extractTextContent(update.content)) return;
+        // The model speaks: every call it waited for has answered it.
+        selfTurn.stepEnded = false;
+        selfTurn.waitingFor.clear();
         break;
       case 'tool_call':
       case 'tool_call_update': {
+        const id = getString(update.toolCallId);
         const status = getString(update.status);
-        wait = status === 'completed' || status === 'failed' ? this.selfTurnIdleMs : null;
+        const finished = status === 'completed' || status === 'failed';
+        if (newCall) {
+          selfTurn.stepEnded = false;
+          if (!finished) selfTurn.waitingFor.add(id);
+        } else if (!finished || !selfTurn.waitingFor.delete(id)) {
+          return;
+        }
         break;
       }
       default:
@@ -1425,10 +1535,13 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
     }
     clearTimeout(selfTurn.timer);
     selfTurn.timer = undefined;
-    if (wait === null) return;
-    selfTurn.timer = setTimeout(() => {
-      if (this.sessions.get(session.threadId) === session && session.selfTurn === selfTurn) this.endSelfTurn(session);
-    }, wait);
+    if (!selfTurn.stepEnded && selfTurn.waitingFor.size > 0) return;
+    selfTurn.timer = setTimeout(
+      () => {
+        if (this.sessions.get(session.threadId) === session && session.selfTurn === selfTurn) this.endSelfTurn(session);
+      },
+      selfTurn.stepEnded ? this.selfTurnSettleMs : this.selfTurnIdleMs
+    );
     selfTurn.timer.unref?.();
   }
 
@@ -1619,18 +1732,19 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
   private handleToolCall(session: ActiveAntigravitySession, update: AntigravitySessionUpdate): void {
     const id = getString(update.toolCallId) || uuidv4();
     const existing = session.toolCalls.get(id);
+    // A call that reported its outcome is done: nothing agy repeats changes it.
+    if (existing?.settled && !existing.placeholder) return;
     // A first-seen call closes the current prose block so narration between
     // calls keeps its own position; a repeat must not split mid-sentence.
     if (!existing) {
       this.finalizeStreaming(session);
     }
-    const source = { ...existing?.source, ...update };
-    const name = existing?.name || antigravityToolName(update);
     const call: AntigravityToolCall = {
-      name,
+      // A repeat keeps what the call already is: when it began, what it
+      // printed, and a result that only stands in for the real one.
+      ...existing,
+      ...mergeToolCall(existing, update),
       title: getString(update.title) || existing?.title || '',
-      source,
-      input: antigravityToolInput(name, source),
       createdAt: existing?.createdAt || Date.now(),
       output: existing?.output || '',
       settled: existing?.settled || false,
@@ -1643,14 +1757,15 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
   private handleToolCallUpdate(session: ActiveAntigravitySession, update: AntigravitySessionUpdate): void {
     const id = getString(update.toolCallId);
     const call = id ? session.toolCalls.get(id) : undefined;
-    if (!id || !call) return;
+    if (!id || !call || (call.settled && !call.placeholder)) return;
 
-    call.source = { ...call.source, ...update };
     // agy retitles a call as it moves between states (a relative path while
     // it runs); the card keeps its first title and follows the input only.
-    const nextInput = antigravityToolInput(call.name, call.source);
-    if (JSON.stringify(nextInput) !== JSON.stringify(call.input)) {
-      call.input = nextInput;
+    const merged = mergeToolCall(call, update);
+    call.source = merged.source;
+    call.edit = merged.edit;
+    if (JSON.stringify(merged.input) !== JSON.stringify(call.input)) {
+      call.input = merged.input;
       this.emitToolUseMessage(session, id, call);
     }
     this.settleToolCall(session, id, call, update);
@@ -1695,6 +1810,15 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
     call.settled = true;
     call.placeholder = placeholder || undefined;
     call.resultAt ??= Date.now();
+    const content = call.output || call.title || (isError ? 'Failed' : 'Done');
+    if (!placeholder) {
+      // Done for good: the entry stays so a repeat is known as one, without
+      // the arguments, file text and output it carried.
+      call.source = {};
+      call.input = {};
+      call.output = '';
+      call.edit = undefined;
+    }
     this.emit({
       type: 'message',
       threadId: session.threadId,
@@ -1707,7 +1831,7 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
             {
               type: 'tool_result',
               tool_use_id: id,
-              content: call.output || call.title || (isError ? 'Failed' : 'Done'),
+              content,
               is_error: isError,
             },
           ],

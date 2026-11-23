@@ -283,6 +283,15 @@ export interface ProviderAdapter {
    */
   disposeSession(threadId: string): boolean;
 
+  /**
+   * The host is about to send this thread a prompt. An agent that can be at
+   * work by itself between prompts (Antigravity, once a background command
+   * ends) closes that work here, synchronously and without a result, so what
+   * it wrote lands above the prompt and nothing of it ends the turn the
+   * prompt starts. A no-op for a thread with no such work.
+   */
+  yieldToPrompt?(threadId: string): void;
+
   // Permission responses
   respondToRequest(threadId: string, requestId: string, decision: PermissionResult): Promise<void>;
   runOneShot?(input: ProviderSessionStartInput): Promise<{ text: string; sessionId?: string; model?: string }>;
@@ -387,6 +396,8 @@ export interface ProviderService {
   /** Quiet teardown (see ProviderAdapter.disposeSession); removes the
    * directory binding only when the adapter actually released resources. */
   disposeSession(threadId: string): boolean;
+  /** See ProviderAdapter.yieldToPrompt. */
+  yieldToPrompt(threadId: string): void;
 
   // Permission
   respondToRequest(threadId: string, requestId: string, decision: PermissionResult): Promise<void>;

@@ -27,7 +27,11 @@
  * FAIL, PLAN, SWITCH_MODE, TITLE); anything else is echoed. After BACKGROUND,
  * WAKE_HOLD stops the work agy does by itself in the middle of a step,
  * WAKE_CRASH ends the process there, and WAKE_TWICE has it speak once more
- * after a pause. Environment:
+ * after a pause. WAKE_NOW sends the first of that work in the same write as
+ * the prompt's response; WAKE_RESEND repeats the command's tool_call before
+ * it reports back; WAKE_PARALLEL runs a quick and a slow call in one step;
+ * WAKE_RETITLE ends with an update that only renames a finished call; and
+ * WAKE_EDIT has agy edit a large file, whole-file diff and all. Environment:
  *   FAKE_AGY_LOG            jsonl file that receives every request
  *   FAKE_AGY_AUTH_REQUIRED  session/new and session/resume fail with ACP's auth_required
  *   FAKE_AGY_FAIL_RESUME    session/resume fails (the session is gone)
@@ -83,7 +87,20 @@ const MODES = [
 const sessions = new Map();
 const freshState = () => ({ model: 'gemini-4-neon', level: 'high', mode: 'default', used: 0 });
 
-const send = (message) => process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`);
+/** Lines held to go out in one write, so they reach the client in one read. */
+let held = null;
+const send = (message) => {
+  const line = `${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`;
+  if (held) held.push(line);
+  else process.stdout.write(line);
+};
+const inOneWrite = (work) => {
+  held = [];
+  work();
+  const lines = held.join('');
+  held = null;
+  process.stdout.write(lines);
+};
 const update = (sessionId, payload) => send({ method: 'session/update', params: { sessionId, update: payload } });
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -166,26 +183,60 @@ async function toolCall(sessionId, call, { diff, output }) {
   return true;
 }
 
-/** What agy does by itself once the background command of a BACKGROUND turn is done. */
-async function wake(sessionId, state, build, text) {
+/**
+ * What agy does by itself once the background command of a BACKGROUND turn is
+ * done. `finishPrompt`: with WAKE_NOW, the prompt's response, sent together
+ * with the first of this work.
+ */
+async function wake(sessionId, state, build, text, finishPrompt) {
+  const has = (word) => new RegExp(`\\b${word}\\b`).test(text);
   const pause = Number(process.env.FAKE_AGY_WAKE_MS || 80);
   const think = (chunk) => update(sessionId, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: chunk } });
   const say = (chunk) => update(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: chunk } });
   const stepEnds = () => update(sessionId, { sessionUpdate: 'usage_update', used: (state.used += 5000), size: 1048576 });
-  await sleep(pause);
-  // The command reports back, and the model takes it from there.
-  update(sessionId, { sessionUpdate: 'tool_call_update', ...build, status: 'completed', rawOutput: { output: 'built in 63s', exit_code: 0 } });
-  think('The build ');
+  const reportsBack = () =>
+    update(sessionId, { sessionUpdate: 'tool_call_update', ...build, status: 'completed', rawOutput: { output: 'built in 63s', exit_code: 0 } });
+  if (finishPrompt) {
+    inOneWrite(() => {
+      finishPrompt();
+      reportsBack();
+      think('The build ');
+    });
+  } else {
+    await sleep(pause);
+    // agy repeats the call it is still running, as it does when a call changes state.
+    if (has('WAKE_RESEND')) update(sessionId, { sessionUpdate: 'tool_call', ...build, status: 'in_progress' });
+    // The command reports back, and the model takes it from there.
+    reportsBack();
+    think('The build ');
+  }
   await sleep(10);
   think('finished.');
   stepEnds();
   const check = { toolCallId: `call_check_${++callSeq}`, name: 'run_command', kind: 'execute', title: 'ls dist', rawInput: { CommandLine: 'ls dist' } };
   update(sessionId, { sessionUpdate: 'tool_call', ...check, status: 'in_progress' });
+  const slow = { toolCallId: `call_slow_${callSeq + 1}`, name: 'run_command', kind: 'execute', title: 'codesign app', rawInput: { CommandLine: 'codesign app' } };
+  if (has('WAKE_PARALLEL')) {
+    callSeq += 1;
+    update(sessionId, { sessionUpdate: 'tool_call', ...slow, status: 'in_progress' });
+  }
   await sleep(10);
   update(sessionId, { sessionUpdate: 'tool_call_update', ...check, status: 'completed', rawOutput: { output: 'app.dmg', exit_code: 0 } });
+  if (has('WAKE_PARALLEL')) {
+    // The model still waits for the slow call, far longer than for the quick one.
+    await sleep(pause * 8);
+    update(sessionId, { sessionUpdate: 'tool_call_update', ...slow, status: 'completed', rawOutput: { output: 'signed', exit_code: 0 } });
+  }
+  if (has('WAKE_EDIT')) {
+    const file = `${process.cwd()}/big.ts`;
+    const replacement = '  const entry9000 = changed;';
+    const edit = { toolCallId: `call_edit_${++callSeq}`, name: 'replace_file_content', kind: 'edit', title: 'Edit big.ts', rawInput: { Path: file, Target: bigFileLine(9000), Replacement: replacement } };
+    update(sessionId, { sessionUpdate: 'tool_call', ...edit, status: 'in_progress' });
+    update(sessionId, { sessionUpdate: 'tool_call_update', ...edit, status: 'completed', rawOutput: {}, content: [{ type: 'diff', path: file, oldText: bigFile(), newText: bigFile({ 9000: replacement }) }] });
+  }
   say('Checking the artefact. ');
-  if (/\bWAKE_HOLD\b/.test(text)) return;
-  if (/\bWAKE_CRASH\b/.test(text)) {
+  if (has('WAKE_HOLD')) return;
+  if (has('WAKE_CRASH')) {
     console.error('panic: fake agy crashed');
     await sleep(20);
     process.exit(3);
@@ -193,7 +244,9 @@ async function wake(sessionId, state, build, text) {
   await sleep(10);
   say('The build is done: app.dmg.');
   stepEnds();
-  if (/\bWAKE_TWICE\b/.test(text)) {
+  // A call that finished long ago gets a new title: no status, nothing new.
+  if (has('WAKE_RETITLE')) update(sessionId, { sessionUpdate: 'tool_call_update', toolCallId: check.toolCallId, title: 'ls dist (done)' });
+  if (has('WAKE_TWICE')) {
     await sleep(pause * 5);
     say('One more note.');
     stepEnds();
@@ -297,6 +350,10 @@ async function prompt(id, params) {
     await sleep(10);
     say('Started the build; waiting for it to finish.');
     update(sessionId, { sessionUpdate: 'usage_update', used: state.used + 10000, size: 1048576 });
+    if (/\bWAKE_NOW\b/.test(text)) {
+      void wake(sessionId, state, build, text, () => finish('end_turn'));
+      return;
+    }
     finish('end_turn');
     void wake(sessionId, state, build, text);
     return;

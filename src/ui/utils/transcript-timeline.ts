@@ -216,6 +216,31 @@ function opensWokenTurn(item: TranscriptTimelineItem, turnFinished: boolean): bo
 }
 
 /**
+ * Where the turn that may still be running begins: the latest prompt bubble
+ * (steered or not, the transcript splits the work at every bubble), or, later
+ * than that, the mark that opens a turn the agent started by itself. Work
+ * above it belongs to turns that are over, and the live timer counts from it.
+ */
+export function findActiveTurnStartIndex(messages: StreamMessage[]): number {
+  let start = -1;
+  let turnFinished = false;
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (!message || message.parentToolUseId) continue;
+    if (message.type === 'user_prompt') {
+      start = index;
+      turnFinished = false;
+    } else if (opensWokenTurn({ type: 'message', message, originalIndex: index }, turnFinished)) {
+      start = index;
+      turnFinished = false;
+    } else if (message.type === 'result') {
+      turnFinished = true;
+    }
+  }
+  return start;
+}
+
+/**
  * The same kind of turn in a transcript that has no mark for it: the agent's
  * own work or words after a turn's result, with no prompt between. When it
  * began, if the item says.

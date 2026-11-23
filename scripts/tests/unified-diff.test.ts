@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import {
   createUnifiedDiffHunks,
+  limitDiffHunks,
   trimCommonLines,
   type UnifiedDiffHunk,
 } from '../../src/shared/unified-diff';
@@ -251,6 +252,59 @@ function median(runs: number, work: () => void): number {
   const cut = trimCommonLines(text(big), text(bigChanged));
   assert.equal(cut.oldText.split('\n').length, 8);
   assert.ok(cut.oldText.length + cut.newText.length < 1000);
+}
+
+// ── Large inputs built to make the search work hardest ──────────────────────
+// Nothing in common at either end, a long stretch between that matches on
+// many diagonals, and more changed lines than the search allows: it gives up
+// at its limit, having cost little more than reading the texts.
+{
+  const oldTail = Array.from({ length: 1_200 }, (_, index) => `old ${index}`);
+  const newTail = Array.from({ length: 1_200 }, (_, index) => `new ${index}`);
+  const cases: Array<[string, (index: number) => string, (index: number) => string]> = [
+    ['one line repeated', () => 'x', () => 'x'],
+    ['two lines alternating, shifted by one', (index) => (index % 2 ? 'x' : 'y'), (index) => (index % 2 ? 'y' : 'x')],
+    ['equal blocks split by changed lines', (index) => (index % 100 ? 'same' : `old ${index}`), (index) => (index % 100 ? 'same' : `new ${index}`)],
+  ];
+  for (const [label, oldLine, newLine] of cases) {
+    const oldText = text(['a', ...Array.from({ length: 100_000 }, (_, index) => oldLine(index)), ...oldTail]);
+    const newText = text(['b', ...Array.from({ length: 100_000 }, (_, index) => newLine(index)), ...newTail]);
+    let hunks: UnifiedDiffHunk[] = [];
+    const ms = median(3, () => {
+      hunks = createUnifiedDiffHunks(oldText, newText, { contextLines: 3 });
+    });
+    assert.equal(hunks.length, 1, `${label}: one replaced span`);
+    assert.ok(ms < 2000, `${label}: 100,000 lines took ${ms.toFixed(0)} ms`);
+  }
+}
+
+// ── limitDiffHunks: a preview draws the start of a large diff, and counts the rest ─
+{
+  const oldLines = Array.from({ length: 300 }, (_, index) => `line ${index + 1}`);
+  const newLines = oldLines.map((line, index) => (index === 9 || index === 199 ? `${line} changed` : line));
+  const hunks = createUnifiedDiffHunks(text(oldLines), text(newLines));
+  assert.deepEqual(hunks.map((hunk) => hunk.lines.length), [8, 8]);
+  // Small enough: the same hunks, untouched.
+  assert.equal(limitDiffHunks(hunks, 16).hunks, hunks);
+  assert.equal(limitDiffHunks(hunks, 16).hiddenLines, 0);
+  // Cut inside the second hunk: its header counts what is left of it.
+  const cut = limitDiffHunks(hunks, 11);
+  assert.equal(cut.hiddenLines, 5);
+  assert.deepEqual(cut.hunks.map((hunk) => hunk.lines.length), [8, 3]);
+  assert.equal(cut.hunks[0], hunks[0]);
+  assert.deepEqual([cut.hunks[1].oldStart, cut.hunks[1].oldLines, cut.hunks[1].newStart, cut.hunks[1].newLines], [197, 3, 197, 3]);
+  // Cut at a hunk's end, and at nothing.
+  assert.deepEqual(limitDiffHunks(hunks, 8).hunks, [hunks[0]]);
+  assert.deepEqual(limitDiffHunks(hunks, 0), { hunks: [], hiddenLines: 16 });
+  // A rewritten 14,000-line file: 2,000 rows drawn, 26,000 counted.
+  const rewritten = createUnifiedDiffHunks(
+    text(Array.from({ length: 14_000 }, (_, index) => `old ${index}`)),
+    text(Array.from({ length: 14_000 }, (_, index) => `new ${index}`))
+  );
+  const preview = limitDiffHunks(rewritten, 2_000);
+  assert.equal(preview.hunks.reduce((sum, hunk) => sum + hunk.lines.length, 0), 2_000);
+  assert.equal(preview.hiddenLines, 26_000);
+  assert.deepEqual([preview.hunks[0].oldLines, preview.hunks[0].newLines], [2_000, 0]);
 }
 
 console.log('unified-diff: all checks passed');

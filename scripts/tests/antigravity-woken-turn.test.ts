@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
-import { deriveTranscriptTimelineItems, type TranscriptTimelineItem } from '../../src/ui/utils/transcript-timeline';
+import {
+  deriveTranscriptTimelineItems,
+  findActiveTurnStartIndex,
+  type TranscriptTimelineItem,
+} from '../../src/ui/utils/transcript-timeline';
 import type { StreamMessage } from '../../src/ui/types';
 
 // Antigravity goes on by itself after a turn whose command went to the
@@ -29,10 +33,13 @@ const wokeByItself = (): StreamMessage =>
   ({ type: 'system', subtype: 'init', session_id: 'agy-1', model: 'gemini-4-neon', permissionMode: '', cwd: '/p', tools: [], selfStarted: true, createdAt: at(60) }) as unknown as StreamMessage;
 
 /** One line per timeline item: what it is, and how its trace is shown. */
-function layout(messages: StreamMessage[], options: { running: boolean; unmarkedWokenTurns?: boolean }): string[] {
-  const lastPrompt = messages.reduce((last, message, index) => (message.type === 'user_prompt' ? index : last), -1);
+function layout(
+  messages: StreamMessage[],
+  options: { running: boolean; unmarkedWokenTurns?: boolean; activeTurnStartIndex?: number }
+): string[] {
   const items = deriveTranscriptTimelineItems(messages, {
-    activeTurnStartIndex: lastPrompt,
+    // As the chat does: the live turn starts at the latest prompt or self-started turn.
+    activeTurnStartIndex: options.activeTurnStartIndex ?? findActiveTurnStartIndex(messages),
     sessionRunning: options.running,
     unmarkedWokenTurns: options.unmarkedWokenTurns ?? true,
   });
@@ -81,6 +88,40 @@ const wokenEnd = [text('2', 'The build is done: app.dmg.'), usage(), result(9_00
     'prompt: Package the app',
     'trace (folded 28s): thinking, npm run dist',
     'answer: Started the build; waiting for it to finish.',
+    'trace (live): thinking, ls dist',
+  ]);
+}
+
+// ── Where the live turn starts: at agy's own turn, not the prompt before it ─
+{
+  const lastPromptIndex = (messages: StreamMessage[]) =>
+    messages.reduce((last, message, index) => (message.type === 'user_prompt' ? index : last), -1);
+  const live = [...askedTurn, ...wokenWork];
+  const wokeAt = live.findIndex((message) => message.type === 'system' && message.subtype === 'init');
+  assert.equal(findActiveTurnStartIndex(askedTurn), 0, 'a prompt opens the live turn');
+  assert.equal(findActiveTurnStartIndex(live), wokeAt, 'then the turn agy started by itself does');
+  // The live timer counts from there: a minute after the prompt, not from it.
+  const startedAt = (index: number) => (live[index] as { createdAt: number }).createdAt;
+  assert.ok(startedAt(wokeAt) - startedAt(0) >= 60_000);
+  // A selfStarted init inside a turn that has not ended opens nothing (the turn is still the prompt's).
+  assert.equal(findActiveTurnStartIndex([...askedTurn.slice(0, -1), wokeByItself()]), 0);
+  // A later prompt takes over again; a subagent's messages never count.
+  assert.equal(findActiveTurnStartIndex([...live, prompt('Thanks')]), live.length);
+  assert.equal(findActiveTurnStartIndex([...live, { ...prompt('inner'), parentToolUseId: 'task' } as StreamMessage]), wokeAt);
+  assert.equal(findActiveTurnStartIndex([]), -1);
+
+  // A turn that ended without words (calls and a result only), then agy wakes:
+  // counted from the old prompt, that finished trace came back to life.
+  const silentTurn = [prompt('Package the app'), usage(), call('call_bg_1', 'npm run dist'), callResult('call_bg_1', 'npm run dist'), result(12_000)];
+  const woken = [...silentTurn, ...wokenWork];
+  assert.deepEqual(layout(woken, { running: true, activeTurnStartIndex: lastPromptIndex(woken) }), [
+    'prompt: Package the app',
+    'trace (live): npm run dist',
+    'trace (live): thinking, ls dist',
+  ]);
+  assert.deepEqual(layout(woken, { running: true }), [
+    'prompt: Package the app',
+    'trace (folded 12s): npm run dist',
     'trace (live): thinking, ls dist',
   ]);
 }

@@ -275,6 +275,60 @@ try {
   assert.equal(buildResult.message.content[0].content, 'built in 63s', 'the command\'s card holds its real output');
   assert.equal(errors().length, seenErrors, 'none of this is an error');
 
+  // ── 5. A message typed while agy works by itself takes that work over. ──
+  // agy's words so far are stored and shown above the new message, and from
+  // the moment the message is shown the task runs until that message's own
+  // result: nothing of the work agy had started marks it finished.
+  {
+    const from = events.length;
+    const rowsBefore = store.getSessionHistory(task.id).length;
+    await send({ type: 'session.continue', payload: { sessionId: task.id, prompt: 'Another BACKGROUND build, WAKE_HOLD' } });
+    const streamed = (text) => events.slice(from).some((event) =>
+      event.type === 'stream.message' && event.payload.message.type === 'stream_event' && String(event.payload.message.event?.delta?.text ?? '').includes(text));
+    await until(() => streamed('Checking the artefact'), 'agy is writing by itself');
+    assert.equal(store.getSession(task.id).status, 'running');
+    await send({ type: 'session.continue', payload: { sessionId: task.id, prompt: 'And then?' } });
+    await until(() => prompts().at(-1) === 'And then?', 'agy got the message');
+    await idle(task.id);
+    const seen = events.slice(from);
+    const shownAt = seen.findIndex((event) => event.type === 'stream.user_prompt' && event.payload.prompt === 'And then?');
+    const committedAt = seen.findIndex((event) =>
+      event.type === 'stream.message' && event.payload.message.type === 'assistant' && event.payload.message.message.content[0].text === 'Checking the artefact. ');
+    assert.ok(shownAt > 0 && committedAt > 0, 'both were sent to the window');
+    assert.ok(committedAt < shownAt, 'agy\'s words are committed before the new message is shown');
+    const after = seen.slice(shownAt).filter((event) => event.type === 'session.status' && event.payload.sessionId === task.id).map((event) => event.payload.status);
+    // The task was running already; once the message is shown the only change is its own end.
+    assert.deepEqual(after.filter((status, index, all) => status !== all[index - 1]), ['completed'], 'running from the message to its result');
+    const stored = store.getSessionHistory(task.id).slice(rowsBefore);
+    const lastPrompt = stored.findLastIndex((message) => message.type === 'user_prompt');
+    assert.equal(stored.slice(lastPrompt).filter((message) => message.type === 'result').length, 1, 'one result ends it');
+    assert.equal(stored.slice(0, lastPrompt).filter((message) => message.type === 'result').length, 1, 'the work agy started reported none of its own');
+  }
+
+  // ── 6. A result that replaces an earlier one keeps its place, also after a rewrite. ──
+  // A fork or an edited message rewrites a task's stored history; rows added
+  // later go below it. A message stored again under its own id is not new.
+  {
+    const row = store.createSession({ title: 'Order', cwd: project, provider: 'antigravity' });
+    const at = Date.now() - 60_000;
+    const callResult = (content) => ({ type: 'assistant', uuid: 'result-of-build', createdAt: at + 2, message: { content: [{ type: 'tool_result', tool_use_id: 'build', content, is_error: false }] } });
+    store.addMessage(row.id, { type: 'user_prompt', prompt: 'one', createdAt: at });
+    store.addMessage(row.id, { type: 'assistant', uuid: 'call-build', createdAt: at + 1, message: { content: [{ type: 'tool_use', id: 'build', name: 'Bash', input: { command: 'npm run build' } }] } });
+    store.addMessage(row.id, callResult('npm run build'));
+    store.replaceSessionHistory(row.id, store.getSessionHistory(row.id));
+    store.addMessage(row.id, { type: 'user_prompt', prompt: 'two', createdAt: at + 10 });
+    store.addMessage(row.id, { type: 'assistant', uuid: 'answer-two', createdAt: at + 11, message: { content: [{ type: 'text', text: 'later' }] } });
+    // The command reports back: the same id, the same time.
+    store.addMessage(row.id, callResult('built in 63s'));
+    const order = store.getSessionHistory(row.id).map((message) => message.uuid ?? message.prompt);
+    assert.deepEqual(order, ['one', 'call-build', 'result-of-build', 'two', 'answer-two']);
+    assert.equal(store.getSessionHistory(row.id)[2].message.content[0].content, 'built in 63s');
+    // A new message still goes below everything.
+    store.addMessage(row.id, { type: 'assistant', uuid: 'answer-three', createdAt: at + 3, message: { content: [{ type: 'text', text: 'new' }] } });
+    assert.equal(store.getSessionHistory(row.id).at(-1).uuid, 'answer-three');
+    store.deleteSession(row.id);
+  }
+
   passed = true;
   console.log('antigravity-human-driven: ok');
 } catch (failure) {

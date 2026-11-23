@@ -2691,10 +2691,25 @@ export function addMessage(sessionId: string, message: StreamMessage, options?: 
   let sortKey = options?.sortKey;
   const floor = sortKeyFloors.get(sessionId);
   if (floor !== undefined) {
-    const createdAt = (message as { createdAt?: unknown }).createdAt;
-    const own = sortKey ?? (typeof createdAt === 'number' && Number.isFinite(createdAt) ? createdAt : Date.now());
-    sortKey = Math.max(own, floor + 1);
-    if (sortKey > floor) sortKeyFloors.set(sessionId, sortKey);
+    // The floor puts new rows after a rewrite. A message stored again under
+    // its own id (a tool result that replaces a stand-in, a call whose input
+    // grew) is not new: it keeps the place it has, or it would move below
+    // everything that came after it.
+    const id = (message as { uuid?: unknown }).uuid;
+    const stored =
+      sortKey === undefined && typeof id === 'string' && id
+        ? (getDb().prepare('SELECT sort_key FROM messages WHERE session_id = ? AND id = ?').get(sessionId, id) as
+            | { sort_key: number | null }
+            | undefined)
+        : undefined;
+    if (typeof stored?.sort_key === 'number') {
+      sortKey = stored.sort_key;
+    } else {
+      const createdAt = (message as { createdAt?: unknown }).createdAt;
+      const own = sortKey ?? (typeof createdAt === 'number' && Number.isFinite(createdAt) ? createdAt : Date.now());
+      sortKey = Math.max(own, floor + 1);
+      if (sortKey > floor) sortKeyFloors.set(sessionId, sortKey);
+    }
   }
   const record = buildMessagePersistenceRecord(sessionId, sourceOrigin, message, sortKey);
 

@@ -432,6 +432,39 @@ export function trimCommonLines(
   return { oldText: cut(oldLines), newText: cut(newLines) };
 }
 
+/**
+ * The first `maxLines` lines of a diff, for a preview that draws one row per
+ * line: a rewritten 14,000-line file is 28,000 rows otherwise. The hunk that
+ * is cut says how many lines it now holds; `hiddenLines` is what was left out.
+ */
+export function limitDiffHunks(
+  hunks: UnifiedDiffHunk[],
+  maxLines: number
+): { hunks: UnifiedDiffHunk[]; hiddenLines: number } {
+  const total = hunks.reduce((sum, hunk) => sum + hunk.lines.length, 0);
+  if (total <= maxLines) return { hunks, hiddenLines: 0 };
+
+  const shown: UnifiedDiffHunk[] = [];
+  let room = Math.max(0, Math.floor(maxLines));
+  for (const hunk of hunks) {
+    if (room <= 0) break;
+    if (hunk.lines.length <= room) {
+      shown.push(hunk);
+      room -= hunk.lines.length;
+      continue;
+    }
+    const lines = hunk.lines.slice(0, room);
+    shown.push({
+      ...hunk,
+      oldLines: lines.filter((line) => line.type !== 'addition').length,
+      newLines: lines.filter((line) => line.type !== 'deletion').length,
+      lines,
+    });
+    room = 0;
+  }
+  return { hunks: shown, hiddenLines: total - Math.max(0, Math.floor(maxLines)) };
+}
+
 function formatHunkHeader(hunk: UnifiedDiffHunk): string {
   return `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`;
 }

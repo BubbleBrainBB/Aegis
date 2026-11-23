@@ -155,6 +155,17 @@ class ProviderServiceImpl implements ProviderService {
     }
   }
 
+  /** See ProviderAdapter.yieldToPrompt. Never throws: a prompt is sent either way. */
+  yieldToPrompt(threadId: string): void {
+    try {
+      const provider = this.directory.getProvider(threadId);
+      const adapter = provider ? registry.getAdapter(provider) : null;
+      adapter?.yieldToPrompt?.(threadId);
+    } catch (error) {
+      console.warn('[ProviderService] yieldToPrompt failed:', error);
+    }
+  }
+
   async stopAll(): Promise<void> {
     const adapters = registry.listAdapters();
     await Promise.all(adapters.map((adapter) => adapter.stopAll()));

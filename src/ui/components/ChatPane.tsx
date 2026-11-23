@@ -27,7 +27,7 @@ import {
   normalizeToolResultBlock,
   normalizeToolUseBlock,
 } from '../utils/message-content';
-import { deriveTranscriptTimelineItems } from '../utils/transcript-timeline';
+import { deriveTranscriptTimelineItems, findActiveTurnStartIndex } from '../utils/transcript-timeline';
 import { resolveCodexModel } from '../utils/codex-model';
 import { AssistantCopyAction, MessageCard, getAssistantMarkdownToCopy } from './MessageCard';
 import { ChatOutlineRail } from './ChatOutlineRail';
@@ -1289,24 +1289,31 @@ export function ChatPane({
     window.addEventListener('aegis-rewind-open', handler);
     return () => window.removeEventListener('aegis-rewind-open', handler);
   }, [resolveRewindTarget, session, sessionId]);
+  // Where the turn that may be running begins: the latest prompt bubble, or
+  // the start of a turn the agent took up by itself after it. The live trace
+  // and its timer count from there, not from a prompt answered long before.
+  const activeTurnStartIndex = useMemo(
+    () => (session ? findActiveTurnStartIndex(session.messages) : -1),
+    [session?.messages]
+  );
   const activeTurnStartedAt = useMemo(() => {
-    if (!session || lastUserPromptIndex < 0) {
+    if (!session || activeTurnStartIndex < 0) {
       return undefined;
     }
-    const createdAt = (session.messages[lastUserPromptIndex] as { createdAt?: unknown })?.createdAt;
+    const createdAt = (session.messages[activeTurnStartIndex] as { createdAt?: unknown })?.createdAt;
     return typeof createdAt === 'number' && Number.isFinite(createdAt) ? createdAt : undefined;
-  }, [lastUserPromptIndex, session?.messages]);
+  }, [activeTurnStartIndex, session?.messages]);
 
   const timelineItems = useMemo(
     () =>
       session
         ? deriveTranscriptTimelineItems(session.messages, {
-            activeTurnStartIndex: lastUserPromptIndex,
+            activeTurnStartIndex,
             sessionRunning: session.status === 'running',
             unmarkedWokenTurns: session.provider === 'antigravity',
           })
         : [],
-    [lastUserPromptIndex, session?.messages, session?.provider, session?.status]
+    [activeTurnStartIndex, session?.messages, session?.provider, session?.status]
   );
   // Each work group's disclosure names, recomputed only when the transcript changes.
   const disclosureScopes = useMemo(() => {

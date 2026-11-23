@@ -11393,6 +11393,14 @@ async function handleSessionContinueImpl(
     sessions.updateSessionTeam(sessionId, nextTeamMode, nextTeamId);
   }
 
+  // Antigravity can be at work by itself when the message is sent (a
+  // background command just ended). That work ends here, before the prompt is
+  // stored and shown: its words go above the prompt, and its result cannot
+  // arrive while the checks below are awaited and mark this turn finished.
+  if (session.provider === 'antigravity' && nextProvider === 'antigravity') {
+    getProviderService().yieldToPrompt(sessionId);
+  }
+
   // 更新状态
   sessions.updateSessionStatus(sessionId, 'running');
   const hideGoalPrompt = internal?.hideGoalPrompt && nextProvider === 'claude' && parseGoalInput(prompt, false).isGoal;
