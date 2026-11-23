@@ -699,18 +699,27 @@ export function initialize(): void {
   if (backfilledCount > 0) {
     console.log(`[session-store] Backfilled ${backfilledCount} Claude session model values from init messages.`);
   }
-  backfillMessageMetadata();
-  backfillExternalizedMessagePayloads();
-  rebalanceSearchIndexText();
+  // Each of these reads every stored message to bring rows written by an
+  // older version up to date: about a second, at every launch, on a database
+  // of 220,000 messages (1 GB). Rows written since are stored the way these
+  // leave them, so each pass is needed once per database.
+  runStoredRowPassOnce('message-metadata', backfillMessageMetadata);
+  runStoredRowPassOnce('externalized-message-payloads', backfillExternalizedMessagePayloads);
+  runStoredRowPassOnce('search-index-text', rebalanceSearchIndexText);
   // Records kept for tasks that are gone, or in a layout this version does not read.
   getDb().prepare(`
     DELETE FROM devin_request_cache
     WHERE version != ? OR devin_session_id NOT IN (SELECT devin_session_id FROM sessions WHERE devin_session_id IS NOT NULL)
   `).run(DEVIN_REQUEST_CACHE_VERSION);
-  const markedCopies = markResultsCopiedBeforeMarking();
-  if (markedCopies > 0) {
-    console.log(`[session-store] Marked ${markedCopies} results copied by earlier forks and handoffs; usage reports no longer count them twice.`);
-  }
+  // Copies are marked when they are made now (copySessionHistory), so the
+  // unmarked ones are all from before: found once, there are none to find
+  // again, and looking read every stored result at each launch.
+  runStoredRowPassOnce('results-copied-before-marking', () => {
+    const markedCopies = markResultsCopiedBeforeMarking();
+    if (markedCopies > 0) {
+      console.log(`[session-store] Marked ${markedCopies} results copied by earlier forks and handoffs; usage reports no longer count them twice.`);
+    }
+  });
 }
 
 /**
@@ -724,6 +733,21 @@ function assignTaskNumber(sessionId: string): void {
     database.prepare('INSERT INTO task_number_sequence (id, last) VALUES (1, 1) ON CONFLICT(id) DO UPDATE SET last = last + 1').run();
     database.prepare('UPDATE sessions SET task_number = (SELECT last FROM task_number_sequence WHERE id = 1) WHERE id = ? AND task_number IS NULL').run(sessionId);
   })();
+}
+
+/**
+ * Runs a pass over stored rows once per database, and remembers by name that
+ * it ran. Only for passes that mend what an older version wrote and that
+ * nothing written since can need again. Schema work (tables, columns) is not
+ * run this way: it is cheap and runs at every launch, so a column added later
+ * can never be skipped. A pass whose work changes gets a new name.
+ */
+function runStoredRowPassOnce(name: string, pass: () => void): void {
+  const database = getDb();
+  database.exec('CREATE TABLE IF NOT EXISTS stored_row_passes (name TEXT PRIMARY KEY, completed_at INTEGER NOT NULL)');
+  if (database.prepare('SELECT 1 FROM stored_row_passes WHERE name = ?').get(name)) return;
+  pass();
+  database.prepare('INSERT OR REPLACE INTO stored_row_passes (name, completed_at) VALUES (?, ?)').run(name, Date.now());
 }
 
 /** Tasks from before numbers existed get theirs in the order they were created. */
@@ -3775,33 +3799,41 @@ function parseCodexRolloutUsage(params: {
   return result;
 }
 
+/**
+ * Gives a Claude task that has no stored model the one its latest init
+ * message names (usage reports fall back on it). Runs at every launch, since
+ * a task's model can be cleared at any time. The tasks are found first and
+ * only their own messages are read: as one join over both tables this read
+ * every stored `system` message at each launch, 0.6 s on a database of
+ * 220,000 messages that was not in the file cache, to find no task at all.
+ */
 function backfillClaudeSessionModelsFromInitMessages(): number {
-  const rows = getDb().prepare(`
-    SELECT
-      s.id AS session_id,
-      m.data AS data,
-      m.created_at AS created_at
-    FROM sessions s
-    INNER JOIN messages m ON m.session_id = s.id
-    WHERE s.provider = 'claude'
-      AND (s.model IS NULL OR s.model = '')
-      AND m.message_type = 'system'
-    ORDER BY s.id ASC, m.created_at DESC
-  `).all() as Array<{ session_id: string; data: string; created_at: number }>;
+  const database = getDb();
+  const tasks = database
+    .prepare(`SELECT id FROM sessions WHERE provider = 'claude' AND (model IS NULL OR model = '')`)
+    .all() as Array<{ id: string }>;
+  if (tasks.length === 0) {
+    return 0;
+  }
 
+  const systemMessages = database.prepare(`
+    SELECT data, created_at
+    FROM messages INDEXED BY idx_messages_session_id
+    WHERE session_id = ? AND message_type = 'system'
+    ORDER BY created_at DESC
+  `);
   const updates = new Map<string, string>();
-  for (const row of rows) {
-    if (updates.has(row.session_id)) {
-      continue;
-    }
-
-    try {
-      const parsed = readStoredMessagePayload(row.data, row.created_at);
-      if (parsed.type === 'system' && parsed.subtype === 'init' && parsed.model?.trim()) {
-        updates.set(row.session_id, parsed.model.trim());
+  for (const task of tasks) {
+    for (const row of systemMessages.iterate(task.id) as IterableIterator<{ data: string; created_at: number }>) {
+      try {
+        const parsed = readStoredMessagePayload(row.data, row.created_at);
+        if (parsed.type === 'system' && parsed.subtype === 'init' && parsed.model?.trim()) {
+          updates.set(task.id, parsed.model.trim());
+          break;
+        }
+      } catch {
+        continue;
       }
-    } catch {
-      continue;
     }
   }
 
@@ -3809,8 +3841,8 @@ function backfillClaudeSessionModelsFromInitMessages(): number {
     return 0;
   }
 
-  const updateStmt = getDb().prepare('UPDATE sessions SET model = ? WHERE id = ?');
-  const transaction = getDb().transaction(() => {
+  const updateStmt = database.prepare('UPDATE sessions SET model = ? WHERE id = ?');
+  const transaction = database.transaction(() => {
     for (const [sessionId, model] of updates.entries()) {
       updateStmt.run(model, sessionId);
     }

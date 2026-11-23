@@ -1,17 +1,15 @@
 import { opensTurn } from '../shared/turn-boundary';
 import { EnvironmentPanelProvider } from './components/environment/EnvironmentPanelLayout';
 import { DotFieldBackdrop } from './components/DotFieldBackdrop';
+import { GoalEditorPanel } from './components/SessionGoal';
+import { Settings } from './components/settings/Settings';
 import { Image as ImageStudioIcon } from './components/icons';
-import { ImageStudioPanel, ImageStudioFileActions } from './components/ImageStudioPanel';
 import { Palette as DesignIcon } from './components/icons';
-import { DesignPanel } from './components/design/DesignPanel';
-import { DesignSection } from './components/design/DesignSection';
 import { useDesignStore, subscribeDesignChanges } from './store/useDesignStore';
 import { subscribeAppPreferences, useAppPreferences } from './store/useAppPreferences';
 import { shortcutLabel } from '../shared/keyboard-shortcuts';
 import { TextInputDialogHost } from './components/ui/text-input-dialog';
-import { GoalEditorPanel } from './components/SessionGoal';
-import { useEffect, useRef, useMemo, useState, useCallback, type ReactNode } from 'react';
+import { lazy, Suspense, useEffect, useRef, useMemo, useState, useCallback, type ReactNode } from 'react';
 import * as Dialog from '@/ui/components/ui/dialog';
 import * as DropdownMenu from '@/ui/components/ui/dropdown-menu';
 import { ConfirmDialogHost } from '@/ui/components/ui/confirm-dialog';
@@ -55,9 +53,6 @@ import { useIPC, sendEvent } from './hooks/useIPC';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { Sidebar } from './components/Sidebar';
 import { MainSheet, MainTitlebarRow } from './components/MainSheet';
-import { AutomationsView } from './components/AutomationsView';
-import { TasksView } from './components/TasksView';
-import { PullRequestsView } from './components/PullRequestsView';
 import { useTabsStore, type TabView } from './store/useTabsStore';
 import { NewSessionView } from './components/NewSessionView';
 import { NewTabMenuButton, type NewTabMode } from './components/NewTabMenuButton';
@@ -68,23 +63,13 @@ import { LogoShimmer } from './components/LogoShimmer';
 import { SessionHandoffProviderRoute } from './components/SessionHandoffIndicator';
 import { PromptInput } from './components/PromptInput';
 import { InSessionSearch } from './components/search/InSessionSearch';
-import { Settings } from './components/settings/Settings';
-import { SkillMarketSettingsContent } from './components/settings/SkillMarketSettings';
-import {
-  ProjectTreePanel,
-} from './components/ProjectTreePanel';
 import { FileTypeIcon } from './components/FileTypeIcon';
-import { AegisDiffPanel } from './components/AegisDiffPanel';
-import { BrowserPanel } from './components/browser/BrowserPanel';
 import {
   BrowserNativeOverlayContext,
   useBrowserNativeOverlayRegistration,
 } from './components/browser/browser-native-overlay';
-import { RightTerminalPanel } from './components/RightTerminalPanel';
-import { IosSimulatorPanel } from './components/IosSimulatorPanel';
 import { useIosSimulatorStore } from './store/useIosSimulatorStore';
 import { iosSimulatorTabId, iosSimulatorTabUdid } from '../shared/ios-simulator';
-import { SubagentPanel } from './components/SubagentPanel';
 import { SubagentAvatar } from './components/SubagentAvatar';
 import { DesignAnnotateBridge } from './components/browser/DesignAnnotateBridge';
 import { getSubagentPersona } from './utils/subagent-persona';
@@ -153,6 +138,32 @@ import type {
 } from './types';
 
 const COMMIT_GENERATION_MIN_VISIBLE_MS = 450;
+
+// Secondary workspaces and the heavy right-pane tools (xterm, CodeMirror,
+// @pierre/diffs, the design canvas) load when first shown, so a cold start
+// parses the chat shell only. Settings and the goal editor are not here: the
+// sidebar and the composer import their modules anyway, so a lazy import
+// would split nothing.
+const ImageStudioPanel = lazy(() => import('./components/ImageStudioPanel').then((m) => ({ default: m.ImageStudioPanel })));
+const ImageStudioFileActions = lazy(() => import('./components/ImageStudioPanel').then((m) => ({ default: m.ImageStudioFileActions })));
+const DesignPanel = lazy(() => import('./components/design/DesignPanel').then((m) => ({ default: m.DesignPanel })));
+const DesignSection = lazy(() => import('./components/design/DesignSection').then((m) => ({ default: m.DesignSection })));
+const AutomationsView = lazy(() => import('./components/AutomationsView').then((m) => ({ default: m.AutomationsView })));
+const TasksView = lazy(() => import('./components/TasksView').then((m) => ({ default: m.TasksView })));
+const PullRequestsView = lazy(() => import('./components/PullRequestsView').then((m) => ({ default: m.PullRequestsView })));
+const SkillMarketSettingsContent = lazy(() => import('./components/settings/SkillMarketSettings').then((m) => ({ default: m.SkillMarketSettingsContent })));
+const ProjectTreePanel = lazy(() => import('./components/ProjectTreePanel').then((m) => ({ default: m.ProjectTreePanel })));
+const AegisDiffPanel = lazy(() => import('./components/AegisDiffPanel').then((m) => ({ default: m.AegisDiffPanel })));
+const BrowserPanel = lazy(() => import('./components/browser/BrowserPanel').then((m) => ({ default: m.BrowserPanel })));
+const RightTerminalPanel = lazy(() => import('./components/RightTerminalPanel').then((m) => ({ default: m.RightTerminalPanel })));
+const IosSimulatorPanel = lazy(() => import('./components/IosSimulatorPanel').then((m) => ({ default: m.IosSimulatorPanel })));
+const SubagentPanel = lazy(() => import('./components/SubagentPanel').then((m) => ({ default: m.SubagentPanel })));
+
+/** One lazily loaded right-pane panel: while its code arrives, only that panel is missing, not its neighbours. */
+function LazyPanel({ children }: { children: ReactNode }) {
+  return <Suspense fallback={null}>{children}</Suspense>;
+}
+
 const RIGHT_UTILITY_PANEL_WIDTH_STORAGE_KEY = 'cowork.rightUtilityPanelWidth';
 const RIGHT_UTILITY_PANEL_DEFAULT_WIDTH = 820;
 // Codex-parity “Don’t ask again” flag for destroying a side chat on close.
@@ -1255,22 +1266,32 @@ export function App() {
         <div className="flex-1 min-w-0 min-h-0 flex flex-col bg-[var(--chat-pane-surface)]">
           <main className="min-w-0 flex-1 overflow-y-auto">
             <div className="mx-auto max-w-[1360px] px-8 py-8">
-              <SkillMarketSettingsContent />
+              <Suspense fallback={null}>
+                <SkillMarketSettingsContent />
+              </Suspense>
             </div>
           </main>
         </div>
         </MainSheet>
       ) : activeWorkspace === 'tasks' ? (
-        <TasksView />
+        <Suspense fallback={null}>
+          <TasksView />
+        </Suspense>
       ) : activeWorkspace === 'design' ? (
-        <DesignSection codexModelConfig={codexModelConfig} />
+        <Suspense fallback={null}>
+          <DesignSection codexModelConfig={codexModelConfig} />
+        </Suspense>
       ) : activeWorkspace === 'automations' ? (
         <MainSheet>
-          <AutomationsView />
+          <Suspense fallback={null}>
+            <AutomationsView />
+          </Suspense>
         </MainSheet>
       ) : activeWorkspace === 'prs' ? (
         <MainSheet>
-          <PullRequestsView />
+          <Suspense fallback={null}>
+            <PullRequestsView />
+          </Suspense>
         </MainSheet>
       ) : chatLayoutMode === 'split' || (activeSession && !showNewSession) ? (
         <EnvironmentPanelProvider>
@@ -1404,8 +1425,8 @@ export function App() {
             }}
           />
           {fileUtilityTabs.map((tabId) => (
+            <LazyPanel key={`${activeSessionId ?? 'new'}:${tabId}`}>
             <ProjectTreePanel
-              key={`${activeSessionId ?? 'new'}:${tabId}`}
               embedded
               sessionId={activeSessionId}
               utilityTabId={tabId}
@@ -1423,6 +1444,7 @@ export function App() {
               }
               onToggleFullscreen={toggleFilesPanelFullscreen}
             />
+            </LazyPanel>
           ))}
           {openUtilityPanel === 'sources' && environmentContext.sessionId ? (
             <SessionSourcesPanel
@@ -1437,22 +1459,25 @@ export function App() {
             />
           ) : null}
           {rightUtilityTabs.filter(tab => tab === 'design' || tab.startsWith('design:')).map(tab => (
-            <DesignPanel
-              key={`${activeSessionId}:${tab}`}
-              sessionId={activeSessionId}
-              documentId={tab.startsWith('design:') ? tab.slice(7) : undefined}
-              hidden={activeUtilityPanel !== 'design' || activeRightUtilityTab !== tab}
-            />
+            <LazyPanel key={`${activeSessionId}:${tab}`}>
+              <DesignPanel
+                sessionId={activeSessionId}
+                documentId={tab.startsWith('design:') ? tab.slice(7) : undefined}
+                hidden={activeUtilityPanel !== 'design' || activeRightUtilityTab !== tab}
+              />
+            </LazyPanel>
           ))}
           {rightUtilityTabs.filter(tab => tab.startsWith('images:')).map(tab => (
-            <ImageStudioPanel key={tab} sessionId={tab.slice(7)} hidden={activeUtilityPanel === null || activeRightUtilityTab !== tab} fullscreen={rightPanelFullscreen === 'images'} />
+            <LazyPanel key={tab}>
+              <ImageStudioPanel sessionId={tab.slice(7)} hidden={activeUtilityPanel === null || activeRightUtilityTab !== tab} fullscreen={rightPanelFullscreen === 'images'} />
+            </LazyPanel>
           ))}
           {rightUtilityTabs.filter(tab => tab.startsWith('goal:')).map(tab => (
             <GoalEditorPanel key={tab} sessionId={tab.slice(5)} hidden={activeRightUtilityTab !== tab} />
           ))}
           {rightUtilityTabs.includes('review') ? (
+            <LazyPanel key={`${activeSessionId ?? 'new'}:review`}>
             <AegisDiffPanel
-              key={`${activeSessionId ?? 'new'}:review`}
               collapsed={activeRightUtilityTab !== 'review'}
               cwd={activeSession?.agentWorktreePath || activeSession?.cwd || projectCwd || null}
               session={activeSession}
@@ -1462,10 +1487,11 @@ export function App() {
               }
               onToggleFullscreen={toggleReviewPanelFullscreen}
             />
+            </LazyPanel>
           ) : null}
           {browserUtilityTabs.map((tabId) => (
+            <LazyPanel key={`${activeSessionId ?? 'new'}:${tabId}`}>
             <BrowserPanel
-              key={`${activeSessionId ?? 'new'}:${tabId}`}
               sessionId={activeSessionId}
               browserSessionId={getBrowserUtilitySessionId(activeSessionId, tabId)}
               collapsed={activeUtilityPanel !== 'browser' || activeRightUtilityTab !== tabId}
@@ -1475,10 +1501,11 @@ export function App() {
                 setRightPanelFullscreen(rightPanelFullscreen === 'browser' ? null : 'browser')
               }
             />
+            </LazyPanel>
           ))}
           {rightUtilityTabs.filter(isRightUtilityTerminalTab).map((tab) => (
+            <LazyPanel key={`${activeSessionId ?? 'new'}:${tab}`}>
             <RightTerminalPanel
-              key={`${activeSessionId ?? 'new'}:${tab}`}
               embedded
               collapsed={activeUtilityPanel !== 'terminal' || activeRightUtilityTab !== tab}
               width={renderedRightUtilityPanelWidth}
@@ -1488,10 +1515,11 @@ export function App() {
               cwd={activeSession?.cwd || projectCwd || null}
               tabId={tab}
             />
+            </LazyPanel>
           ))}
           {rightUtilityTabs.filter(isRightUtilitySimulatorTab).map((tab) => (
+            <LazyPanel key={`${activeSessionId ?? 'new'}:${tab}`}>
             <IosSimulatorPanel
-              key={`${activeSessionId ?? 'new'}:${tab}`}
               sessionId={activeSessionId}
               udid={iosSimulatorTabUdid(tab)}
               hidden={activeUtilityPanel !== 'simulator' || activeRightUtilityTab !== tab}
@@ -1501,14 +1529,16 @@ export function App() {
                 openRightUtilityTab(next, { replace: tab });
               }}
             />
+            </LazyPanel>
           ))}
           {subagentUtilityTabs.map((tabId) => (
-            <SubagentPanel
-              key={`${activeSessionId ?? 'new'}:${tabId}`}
-              collapsed={activeRightUtilityTab !== tabId}
-              sessionId={activeSessionId}
-              subagentId={getProjectUtilitySubagentId(tabId) ?? ''}
-            />
+            <LazyPanel key={`${activeSessionId ?? 'new'}:${tabId}`}>
+              <SubagentPanel
+                collapsed={activeRightUtilityTab !== tabId}
+                sessionId={activeSessionId}
+                subagentId={getProjectUtilitySubagentId(tabId) ?? ''}
+              />
+            </LazyPanel>
           ))}
           {workflowMemberUtilityTabs.map((tabId) => {
             const memberSessionId = getWorkflowMemberSessionId(tabId) ?? '';
@@ -2027,7 +2057,11 @@ function RightUtilityTabStrip({
       <div className="min-w-4 flex-1 self-stretch" aria-hidden="true" />
 
       <div className="no-drag ml-1 flex h-full shrink-0 items-center gap-0.5">
-        {activeTab?.startsWith('images:') && <ImageStudioFileActions sessionId={activeTab.slice(7)} />}
+        {activeTab?.startsWith('images:') && (
+          <Suspense fallback={null}>
+            <ImageStudioFileActions sessionId={activeTab.slice(7)} />
+          </Suspense>
+        )}
         {activeTab?.startsWith('task:') ? (
           <button
             type="button"

@@ -1,7 +1,6 @@
 import { useSandboxEpoch } from '../utils/sandbox-frames';
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react';
 import { FolderClosed, FolderOpen, Folders, ChevronDown, ChevronLeft, ChevronRight, Copy, Check, Search, X, Maximize2, Minimize2, File, Files, FileAddIcon, FolderAddIcon } from './icons';
-import { pptxToHtml } from '@jvmr/pptx-to-html';
 import { toast } from 'sonner';
 import { useAppStore } from '../store/useAppStore';
 import { MDContent } from '../render/markdown';
@@ -3845,6 +3844,8 @@ function PptxPreview({
 
       try {
         const buffer = base64ToArrayBuffer(preview.dataBase64);
+        // @jvmr/pptx-to-html (+ xmldom) is only needed when opening a .pptx file.
+        const { pptxToHtml } = await import('@jvmr/pptx-to-html');
         const slides = await pptxToHtml(buffer);
 
         if (cancelled) {

@@ -1,7 +1,13 @@
 // The bridge's view of Feishu: a small transport over @larksuite/channel so the
 // bridge logic can run against a fake in tests.
-import { createLarkChannel, registerApp, type LarkChannel, type NormalizedMessage, type CardActionEvent } from "@larksuite/channel";
+// Lazy-require @larksuite/channel inside connectChannel/registerWithQr so cold
+// startup does not pay ~105 ms loading the Feishu SDK when Feishu is unused.
+import type { LarkChannel, NormalizedMessage, CardActionEvent } from "@larksuite/channel";
 import type { FeishuDomain } from "./store";
+
+function loadLarkChannelSdk(): typeof import("@larksuite/channel") {
+  return require("@larksuite/channel") as typeof import("@larksuite/channel");
+}
 
 export interface SendTarget {
   chatId: string;
@@ -53,6 +59,7 @@ export async function connectChannel(
   credentials: { appId: string; appSecret: string; domain: FeishuDomain },
   handlers: ChannelHandlers,
 ): Promise<{ transport: FeishuTransport; channel: LarkChannel }> {
+  const { createLarkChannel } = loadLarkChannelSdk();
   const channel = createLarkChannel({
     appId: credentials.appId,
     appSecret: credentials.appSecret,
@@ -150,6 +157,7 @@ export async function registerWithQr(options: {
   onUrl: (url: string, expiresIn: number) => void;
   signal: AbortSignal;
 }) {
+  const { registerApp } = loadLarkChannelSdk();
   const result = await registerApp({
     domain: DOMAINS.feishu.accounts,
     larkDomain: DOMAINS.lark.accounts,

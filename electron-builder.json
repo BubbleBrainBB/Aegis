@@ -2,6 +2,7 @@
   "appId": "com.aegis.desktop",
   "protocols": [{ "name": "Aegis conversations", "schemes": ["aegis"] }],
   "productName": "Aegis",
+  "compression": "maximum",
   "directories": {
     "output": "release",
     "buildResources": "build"
@@ -40,10 +41,29 @@
     "!node_modules/typescript",
     "!node_modules/typescript/**/*",
     "!node_modules/**/node_modules/typescript",
-    "!node_modules/**/node_modules/typescript/**/*"
+    "!node_modules/**/node_modules/typescript/**/*",
+    // Native module C/C++ sources & build trees are never needed at runtime
+    // (better-sqlite3/deps alone is ~9.8 MB; node-pty/third_party+deps ~3.6 MB).
+    "!node_modules/better-sqlite3/deps",
+    "!node_modules/better-sqlite3/deps/**/*",
+    "!node_modules/better-sqlite3/src",
+    "!node_modules/better-sqlite3/src/**/*",
+    "!node_modules/node-pty/deps",
+    "!node_modules/node-pty/deps/**/*",
+    "!node_modules/node-pty/src",
+    "!node_modules/node-pty/src/**/*",
+    "!node_modules/node-pty/third_party",
+    "!node_modules/node-pty/third_party/**/*",
+    "!node_modules/**/node_modules/node-pty/deps",
+    "!node_modules/**/node_modules/node-pty/deps/**/*",
+    "!node_modules/**/node_modules/node-pty/src",
+    "!node_modules/**/node_modules/node-pty/src/**/*",
+    "!node_modules/**/node_modules/node-pty/third_party",
+    "!node_modules/**/node_modules/node-pty/third_party/**/*"
   ],
   "asarUnpack": [
-    "node_modules/better-sqlite3/**/*",
+    "node_modules/better-sqlite3/build/Release/*.node",
+    "node_modules/better-sqlite3/prebuilds/**/*.node",
     "dist-electron/native/**/*"
   ],
   "extraResources": [
