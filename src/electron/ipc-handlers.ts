@@ -11529,7 +11529,7 @@ async function handleSessionContinueImpl(
   // between planning and dispatch (see claudePlan).
   if (nextProvider === 'opencode') {
     const runtimeStatus = await getOpencodeRuntimeStatus();
-    if (!runtimeStatus.ready) {
+    if (!runtimeStatus.ready && !stoppedDispatches.has(sessionId)) {
       sessions.updateSessionStatus(sessionId, 'error');
       broadcast(mainWindow, {
         type: 'runner.error',
@@ -11542,7 +11542,7 @@ async function handleSessionContinueImpl(
     }
   } else if (nextProvider === 'kimi') {
     const runtimeStatus = await getKimiRuntimeStatus();
-    if (!runtimeStatus.ready) {
+    if (!runtimeStatus.ready && !stoppedDispatches.has(sessionId)) {
       sessions.updateSessionStatus(sessionId, 'error');
       broadcast(mainWindow, {
         type: 'runner.error',
@@ -11555,7 +11555,7 @@ async function handleSessionContinueImpl(
     }
   } else if (nextProvider === 'grok') {
     const runtimeStatus = await getGrokRuntimeStatus();
-    if (!runtimeStatus.ready) {
+    if (!runtimeStatus.ready && !stoppedDispatches.has(sessionId)) {
       sessions.updateSessionStatus(sessionId, 'error');
       broadcast(mainWindow, {
         type: 'runner.error',
@@ -11568,7 +11568,7 @@ async function handleSessionContinueImpl(
     }
   } else if (nextProvider === 'deepseek') {
     const runtimeStatus = getDeepseekRuntimeStatus();
-    if (!runtimeStatus.ready) {
+    if (!runtimeStatus.ready && !stoppedDispatches.has(sessionId)) {
       sessions.updateSessionStatus(sessionId, 'error');
       broadcast(mainWindow, {
         type: 'runner.error',
@@ -11581,7 +11581,7 @@ async function handleSessionContinueImpl(
     }
   } else if (nextProvider === 'devin') {
     const runtimeStatus = await getDevinRuntimeStatus();
-    if (!runtimeStatus.ready) {
+    if (!runtimeStatus.ready && !stoppedDispatches.has(sessionId)) {
       sessions.updateSessionStatus(sessionId, 'error');
       broadcast(mainWindow, {
         type: 'runner.error',
@@ -11594,7 +11594,7 @@ async function handleSessionContinueImpl(
     }
   } else if (nextProvider === 'mimo') {
     const runtimeStatus = await getMimoRuntimeStatus();
-    if (!runtimeStatus.ready) {
+    if (!runtimeStatus.ready && !stoppedDispatches.has(sessionId)) {
       sessions.updateSessionStatus(sessionId, 'error');
       broadcast(mainWindow, {
         type: 'runner.error',
@@ -11607,7 +11607,7 @@ async function handleSessionContinueImpl(
     }
   } else if (nextProvider === 'minimax') {
     const runtimeStatus = await getMinimaxRuntimeStatus();
-    if (!runtimeStatus.ready) {
+    if (!runtimeStatus.ready && !stoppedDispatches.has(sessionId)) {
       sessions.updateSessionStatus(sessionId, 'error');
       broadcast(mainWindow, {
         type: 'runner.error',
@@ -11621,15 +11621,18 @@ async function handleSessionContinueImpl(
   } else if (nextProvider === 'antigravity') {
     const runtimeStatus = await getAntigravityRuntimeStatus();
     if (!runtimeStatus.ready && !stoppedDispatches.has(sessionId)) {
-      sessions.updateSessionStatus(sessionId, 'error');
-      // The prompt announced above is not coming: what agy did by itself
-      // meanwhile gets a turn of its own. And the window is told the task
-      // failed; the error alone leaves it showing the task as running.
-      getProviderService().promptWithdrawn(sessionId);
-      broadcast(mainWindow, {
-        type: 'session.status',
-        payload: { sessionId, status: 'error', hiddenFromThreads: session.hidden_from_threads === 1 },
-      });
+      // The prompt announced above is not coming. If agy is at work by
+      // itself, that turn goes on and the task with it: its result will set
+      // the status, and writing `error` here would leave the row and the
+      // window telling different things. Otherwise the task failed, and the
+      // window is told so; the error alone leaves it showing as running.
+      if (!getProviderService().promptWithdrawn(sessionId)) {
+        sessions.updateSessionStatus(sessionId, 'error');
+        broadcast(mainWindow, {
+          type: 'session.status',
+          payload: { sessionId, status: 'error', hiddenFromThreads: session.hidden_from_threads === 1 },
+        });
+      }
       broadcast(mainWindow, {
         type: 'runner.error',
         payload: {
@@ -11642,7 +11645,8 @@ async function handleSessionContinueImpl(
   }
 
   // Stop was pressed while the check above was awaited. It ended the task's
-  // run and set its status; the message stays shown and is not sent.
+  // run and set its status; the message stays shown and is not sent. A check
+  // that failed meanwhile does not turn the Stop's `idle` into `error`.
   if (stoppedDispatches.has(sessionId)) return false;
 
   // While a codex turn is still streaming, a follow-up send becomes a
@@ -11846,6 +11850,9 @@ async function handleSessionContinueImpl(
 
   if (nextProvider === 'claude') {
     const runtimeStatus = await getClaudeRuntimeStatusCached(nextModel || null);
+    // Stop pressed during the check: nothing after it runs, not the rebuild
+    // of the conversation below either, and a failed check stays the Stop's idle.
+    if (stoppedDispatches.has(sessionId)) return false;
     if (!runtimeStatus.ready) {
       sessions.updateSessionStatus(sessionId, 'error');
       broadcast(mainWindow, {
@@ -11920,6 +11927,8 @@ async function handleSessionContinueImpl(
       nextResumeSessionId = bootstrap.sessionId;
       startModel = normalizeModel(bootstrap.model || nextModel || undefined);
     } catch (error) {
+      // Stopped while the conversation was rebuilt: its failure is not the task's.
+      if (stoppedDispatches.has(sessionId)) return false;
       const message = error instanceof Error ? error.message : String(error);
       sessions.updateSessionStatus(sessionId, 'error');
       broadcast(mainWindow, {
@@ -11942,7 +11951,7 @@ async function handleSessionContinueImpl(
     }
   }
 
-  // The same for a Stop pressed while Claude's checks above were awaited.
+  // The same for a Stop pressed while Claude's conversation was rebuilt.
   if (stoppedDispatches.has(sessionId)) return false;
 
   startRunner(

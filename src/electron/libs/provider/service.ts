@@ -167,13 +167,14 @@ class ProviderServiceImpl implements ProviderService {
   }
 
   /** See ProviderAdapter.promptWithdrawn. Never throws. */
-  promptWithdrawn(threadId: string): void {
+  promptWithdrawn(threadId: string): boolean {
     try {
       const provider = this.directory.getProvider(threadId);
       const adapter = provider ? registry.getAdapter(provider) : null;
-      adapter?.promptWithdrawn?.(threadId);
+      return adapter?.promptWithdrawn?.(threadId) ?? false;
     } catch (error) {
       console.warn('[ProviderService] promptWithdrawn failed:', error);
+      return false;
     }
   }
 

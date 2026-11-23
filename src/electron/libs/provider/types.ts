@@ -293,10 +293,11 @@ export interface ProviderAdapter {
   yieldToPrompt?(threadId: string): void;
   /**
    * The prompt announced with yieldToPrompt will not be sent after all (the
-   * host's checks failed). What the agent did by itself since is given a
-   * turn of its own instead of waiting for a prompt that never comes.
+   * host's checks failed). A turn the agent started by itself that was
+   * waiting for the prompt goes on as its own instead. True when there is
+   * such a turn: the task is then still running, whatever became of the send.
    */
-  promptWithdrawn?(threadId: string): void;
+  promptWithdrawn?(threadId: string): boolean;
 
   // Permission responses
   respondToRequest(threadId: string, requestId: string, decision: PermissionResult): Promise<void>;
@@ -405,7 +406,7 @@ export interface ProviderService {
   /** See ProviderAdapter.yieldToPrompt. */
   yieldToPrompt(threadId: string): void;
   /** See ProviderAdapter.promptWithdrawn. */
-  promptWithdrawn(threadId: string): void;
+  promptWithdrawn(threadId: string): boolean;
 
   // Permission
   respondToRequest(threadId: string, requestId: string, decision: PermissionResult): Promise<void>;

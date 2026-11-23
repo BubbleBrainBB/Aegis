@@ -626,7 +626,8 @@ async function main(): Promise<void> {
 
     // Stop reaches work agy started by itself, and nothing is reported after it.
     {
-      const stopped = await open({ prompt: 'BACKGROUND WAKE_HOLD' }, { selfTurnSettleMs: 150, selfTurnIdleMs: 300 });
+      // (No deadline that could end the turn before the Stop, however slow the machine.)
+      const stopped = await open({ prompt: 'BACKGROUND WAKE_HOLD' }, { selfTurnSettleMs: 60_000, selfTurnIdleMs: 3_600_000 });
       await until(() => woke(stopped.events), 'agy working by itself');
       resetCalls();
       await stopped.adapter.stopSession(stopped.threadId);
@@ -762,9 +763,13 @@ async function main(): Promise<void> {
       assert.equal(edit.length, 1, 'the diff arriving later leaves the card as it is');
       assert.equal(edit[0].input.new_string, '  const entry9000 = changed;');
       const session = (lean.adapter as any).sessions.get(lean.threadId);
-      assert.equal(session.toolCalls.size, 0);
-      assert.deepEqual([...session.finishedCalls], ['call_bg_1', 'call_check_2', 'call_edit_3']);
-      // A prompt keeps the calls that may still report back, the latest 32.
+      assert.deepEqual([...session.finishedCalls], ['call_bg_1', 'call_check_2']);
+      // The edit reported done without output: an entry stays for output it
+      // may still send, holding none of what the call carried.
+      assert.deepEqual([...session.toolCalls.keys()], ['call_edit_3']);
+      assert.equal(session.toolCalls.get('call_edit_3').awaitingOutput, true);
+      assert.ok(JSON.stringify([...session.toolCalls]).length < 400, `kept entry: ${JSON.stringify([...session.toolCalls]).length} characters`);
+      // A prompt keeps the calls more may come for, the latest 32.
       for (let index = 0; index < 40; index += 1) {
         session.toolCalls.set(`left_${index}`, { name: 'Bash', title: 'sleep', source: {}, input: {}, createdAt: 1, output: '', settled: true, placeholder: true });
       }
@@ -1002,28 +1007,121 @@ async function main(): Promise<void> {
       assert.equal(stopped.events.length, heard);
     }
 
+    // A turn already told to the host, then a prompt announced that never
+    // comes: the turn goes on as agy's own and ends with its result. Nothing
+    // is announced twice, and its calls were never cut short.
+    scene((tick) => {
+      thought('On it.');
+      call('k1');
+      assert.deepEqual(tick(0), ['status running', 'init by itself', 'thinking: On it.', 'call k1']);
+      mem.adapter.yieldToPrompt(mem.threadId);
+      say('Half done. ');
+      assert.equal(mem.adapter.promptWithdrawn(mem.threadId), true, 'agy is at work: the task goes on running');
+      done('k1', 'ok');
+      say('All done.');
+      stepEnds();
+      assert.deepEqual(tick(2_000), ['result of k1: ok', 'text: Half done. All done.', ...ENDED]);
+    });
+    assert.equal(mem.adapter.promptWithdrawn(mem.threadId), false, 'nothing announced, nothing at work');
+    mem.adapter.yieldToPrompt(mem.threadId);
+    assert.equal(mem.adapter.promptWithdrawn(mem.threadId), false, 'announced, but agy idle: the send simply failed');
+
+    // A call reports done without output and its turn ends; the output comes
+    // afterwards (agy can send it after the prompt's response). It still
+    // lands on the call's card, also turns later, and only once.
+    from = mem.events.length;
+    scene((tick) => {
+      call('m1');
+      done('m1');
+      thought('Done.');
+      stepEnds();
+      assert.deepEqual(tick(2_000), ['status running', 'init by itself', 'call m1', 'result of m1: run m1', 'thinking: Done.', ...ENDED]);
+    });
+    assert.equal(session.toolCalls.get('m1')?.awaitingOutput, true);
+    await withTimeout(mem.adapter.sendTurn({ threadId: mem.threadId, prompt: 'plain' } as never), 'sendTurn');
+    scene((tick) => {
+      call('m1');
+      callUpdate('m1', { status: 'in_progress', rawOutput: { output: 'a repeated progress frame' } });
+      assert.deepEqual(tick(3_600_000), [], 'a repeat of the call opens no turn and changes nothing');
+      callUpdate('m1', { rawOutput: { output: 'the output, turns later' } });
+      assert.deepEqual(tick(0), ['result of m1: the output, turns later']);
+      callUpdate('m1', { rawOutput: { output: 'the output, turns later' } });
+      assert.deepEqual(tick(3_600_000), []);
+    });
+    await withTimeout(mem.adapter.sendTurn({ threadId: mem.threadId, prompt: 'plain' } as never), 'sendTurn');
+    assert.equal(session.toolCalls.has('m1'), false, 'with its output the call is done for good');
+    assert.equal(session.finishedCalls.has('m1'), true);
+
+    // Progress repeated after the end takes nothing back: the final output stays.
+    scene((tick) => {
+      call('n1');
+      callUpdate('n1', { status: 'in_progress', rawOutput: { output: 'one' } });
+      callUpdate('n1', { status: 'completed', rawOutput: { output: 'one two' } });
+      callUpdate('n1', { status: 'in_progress', rawOutput: { output: 'one' } });
+      callUpdate('n1', { rawOutput: { output: 'one' } });
+      stepEnds();
+      assert.deepEqual(tick(2_000), ['status running', 'init by itself', 'call n1', 'result of n1: one two', ...ENDED]);
+    });
+
     // The process exits in the middle of a turn agy started. Its exit can be
-    // seen before the last of its pipe is read: the turn ends as failed with
-    // the call settled for now, the call's real outcome read afterwards still
-    // counts, and nothing else read afterwards opens a turn.
+    // seen before the last of its output is read. The turn fails only once
+    // that output has been read: the call's real outcome is in it.
     scene((tick) => {
       call('h1');
+      say('Running it.');
       session.proc.emit('exit', 3, null);
-      done('h1', 'the real output, read late');
+      assert.deepEqual(tick(100), ['status running', 'init by itself', 'call h1'], 'not failed at the exit itself');
+      done('h1', 'the real output, read after the exit');
+      session.proc.emit('close', 3, null);
+      assert.deepEqual(tick(0), ['result of h1: the real output, read after the exit', 'text: Running it.', 'result error', 'error']);
+      // After that nothing counts, and nothing opens a turn.
       thought('Too late for this.');
       call('h2');
-      assert.deepEqual(tick(3_600_000), [
-        'status running',
-        'init by itself',
-        'call h1',
-        'result of h1: run h1',
-        'result error',
-        'error',
-        'result of h1: the real output, read late',
-      ]);
+      assert.deepEqual(tick(3_600_000), []);
     });
     assert.equal(session.selfTurn, undefined);
     mem.adapter.disposeSession(mem.threadId);
+
+    // The same with a host that lets go of the session the moment its turn
+    // fails (as the app does), and a turn the person asked for. The pipe is
+    // never closed here (a child of agy holds it): the wait for it is bounded.
+    {
+      const hosted = await open({ prompt: 'SLOW' }, { selfTurnSettleMs: 2_000, selfTurnIdleMs: 120_000 });
+      hosted.adapter.events.on('event', (event: Event) => {
+        if (event.type === 'error') hosted.adapter.disposeSession(hosted.threadId);
+      });
+      await until(
+        () => hosted.events.some((event) => event.type === 'message' && event.message.type === 'stream_event' && event.message.event.delta.text === 'working'),
+        'the turn is running'
+      );
+      const live = (hosted.adapter as any).sessions.get(hosted.threadId);
+      const hand = (update: Record<string, unknown>) =>
+        (hosted.adapter as any).handleNotification({ proc: live.proc, session: live }, 'session/update', { update });
+      const before = hosted.events.length;
+      mock.timers.enable({ apis: ['setTimeout'] });
+      try {
+        hand({ sessionUpdate: 'tool_call', toolCallId: 'x1', name: 'run_command', kind: 'execute', title: 'run x1', rawInput: { CommandLine: 'run x1' }, status: 'in_progress' });
+        live.proc.emit('exit', 3, null);
+        hand({ sessionUpdate: 'tool_call_update', toolCallId: 'x1', status: 'completed', rawOutput: { output: 'the real output, read after the exit' } });
+        mock.timers.tick(499);
+        assert.equal(told(hosted.events.slice(before)).includes('result error'), false, 'still waiting for the output to end');
+        mock.timers.tick(1);
+      } finally {
+        mock.timers.reset();
+      }
+      // The failed RPC is handled a moment later, off the mocked clock.
+      await until(() => told(hosted.events.slice(before)).includes('error'), 'the turn failed');
+      assert.deepEqual(told(hosted.events.slice(before)), [
+        'text: working',
+        'call x1',
+        // Read after the exit, and still before the turn fails and the host lets go.
+        'result of x1: the real output, read after the exit',
+        'result error',
+        'error',
+      ]);
+      assert.equal(hosted.adapter.hasSession(hosted.threadId), false, 'and the host let go of the session');
+      live.proc.kill('SIGKILL');
+    }
   }
 
   // ── An edit that is more than the passage agy names ──────────────────────

@@ -50,6 +50,33 @@ export class AcpJsonRpcError extends Error {
   }
 }
 
+/**
+ * How long a process's output is waited for after it has exited. A child of
+ * the process that kept the pipe open would otherwise hold its `close` back
+ * for as long as that child lives.
+ */
+const OUTPUT_AFTER_EXIT_MS = 500;
+
+/**
+ * Runs `done` once a process has exited AND what it wrote has been read. Its
+ * `exit` can be reported while the last of its output is still in the pipe;
+ * `close` comes after the streams have ended. Whoever ends a turn at the
+ * exit itself loses that output, a call's final outcome for one.
+ */
+export function afterOutputEnds(proc: ChildProcessWithoutNullStreams, done: () => void): void {
+  let pending = true;
+  const finish = () => {
+    if (!pending) return;
+    pending = false;
+    done();
+  };
+  proc.once('close', finish);
+  proc.once('exit', () => {
+    const timer = setTimeout(finish, OUTPUT_AFTER_EXIT_MS);
+    timer.unref?.();
+  });
+}
+
 export class AcpJsonRpcClient {
   private nextId = 1;
   private buffer = '';
@@ -72,15 +99,23 @@ export class AcpJsonRpcClient {
      * the code awaiting that response runs before those lines are handled.
      * Without it they are handled first, in the same pass, and a client that
      * ends a turn at the response sees what followed as part of that turn.
+     *
+     * `failAfterOutput`: pending requests fail once the exited process's
+     * output has been read (see afterOutputEnds), not at the exit itself, so
+     * the updates still in its pipe reach the turn they belong to before the
+     * turn fails. New requests are refused from the exit on either way.
      */
-    private readonly options: { responsesFirst?: boolean } = {}
+    private readonly options: { responsesFirst?: boolean; failAfterOutput?: boolean } = {}
   ) {
     this.proc.stdout.setEncoding('utf8');
     this.proc.stdout.on('data', (chunk) => this.handleChunk(String(chunk)));
     this.proc.on('exit', () => {
       this.closed = true;
-      this.rejectAll(new Error('ACP process exited'));
+      if (!this.options.failAfterOutput) this.rejectAll(new Error('ACP process exited'));
     });
+    if (this.options.failAfterOutput) {
+      afterOutputEnds(this.proc, () => this.rejectAll(new Error('ACP process exited')));
+    }
     this.proc.on('error', (error) => {
       this.closed = true;
       this.rejectAll(error instanceof Error ? error : new Error(String(error)));
