@@ -63,7 +63,7 @@ export interface MainBotDeps {
    */
   freshThread(sessionId: string, entering: boolean, automatic: boolean): boolean;
   /** A wait of the bot ended in a way the person is to hear of: shown as a system notification that opens its conversation. */
-  waitOver?(sessionId: string, label: string, summary: string): void;
+  waitOver?(sessionId: string, title: string, body: string): void;
 }
 
 const AGENTS_TTL_MS = 60_000;
@@ -534,7 +534,10 @@ export function setupMainBot(needs: MainBotDeps): MainBotService {
     probes: ghWaitProbes(),
     waitOver: (wait, outcome) => {
       const row = mainBotSession();
-      if (row) needs.waitOver?.(row.id, wait.label, outcome.summary);
+      if (!row) return;
+      // A reminder is its own news; anything else is named, with how it ended.
+      if (wait.kind === 'time') needs.waitOver?.(row.id, 'Reminder', wait.label);
+      else needs.waitOver?.(row.id, wait.label, outcome.summary.charAt(0).toUpperCase() + outcome.summary.slice(1));
     },
   });
   service = bot;

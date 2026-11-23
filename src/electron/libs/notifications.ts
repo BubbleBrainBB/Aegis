@@ -103,8 +103,8 @@ export function notifySessionInput(row: SessionRow, requestId: string, question:
  * app (they may be in another task); only switching notifications off stops
  * it. A wait that ends unheard, or is called off, never comes here.
  */
-export function notifyWaitOver(sessionId: string, label: string, summary: string): void {
-  show('Wait over', summary && summary !== label ? `${label}: ${summary}` : label, { kind: 'session', sessionId }, 'asked');
+export function notifyWaitOver(sessionId: string, title: string, body: string): void {
+  show(title, body, { kind: 'session', sessionId }, 'asked');
 }
 
 /**

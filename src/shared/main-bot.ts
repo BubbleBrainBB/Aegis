@@ -218,8 +218,13 @@ export interface MainBotWaitView {
   checkedAt: number | null;
   /** Why it cannot be looked at now; null when it can. */
   problem: string | null;
+  /** How what it waits for stood at the last look, in a few words; null for a time alone, or before the first look. */
+  stands: string | null;
   /** How it ended, once it has. */
   ended: { at: number; summary: string } | null;
+  /** What Aegis read from GitHub when it ended, line by line, and when; empty for a time alone. */
+  facts: string[];
+  readAt: number | null;
 }
 
 /** The label a wait that ended carries in the conversation (the chat draws it as a row). */

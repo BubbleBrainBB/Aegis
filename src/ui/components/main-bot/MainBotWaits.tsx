@@ -1,20 +1,22 @@
-// The main bot's waits, in its conversation. A wait is something outside
-// Aegis the bot asked to be woken for once: a time, a pull request, a GitHub
-// Actions run. Aegis keeps it; no agent runs while it waits.
+// The main bot's waits, as its conversation shows them. A wait is something
+// outside Aegis the bot asked to be woken for once: a time, a pull request, a
+// GitHub Actions run. Aegis keeps it; no agent runs while it waits.
 //
-// Three places show one: the line in the turn where the bot set it (it shows
-// how the wait stands now, and Cancel while it waits), the Waiting list at the
-// top of the conversation (every wait still waiting), and the row that opens
-// the turn a wait woke the bot for. Cancel is the person's own doing, so it
-// goes straight to Aegis, not through a turn of the bot.
+// Three places show one. The Waiting section at the top of the conversation's
+// Environment card lists every wait still waiting, and is where one is
+// cancelled (the person's own doing, so it goes straight to Aegis, not through
+// a turn of the bot). The line in the turn where the bot set a wait shows how
+// it stands now; three or more set in one turn fold into one line. And the
+// turn a wait woke the bot for opens with a line saying which, and how it
+// ended.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { toast } from 'sonner';
 import { create } from 'zustand';
 import { mainBotToolKind, parseMainBotWaitResult, type MainBotWaitView } from '../../../shared/main-bot';
-import { cn } from '../../utils/cn';
-import { AlertTriangle, Bell, Check, ChevronDown, Clock, LoaderCircle, Square } from '../icons';
-import { TraceLine } from '../TraceLine';
+import { AlertTriangle, Bell, Check, Clock, GitPullRequest, LoaderCircle, MoreHorizontal, Play, X } from '../icons';
+import { TraceChevron, TraceLine, TraceNest } from '../TraceLine';
+import * as DropdownMenu from '../ui/dropdown-menu';
 
 /** How often the list is read again while something waits: a wait can end, or stop being readable, with nothing said in the conversation. */
 const REFRESH_MS = 20_000;
@@ -22,8 +24,6 @@ const REFRESH_MS = 20_000;
 interface WaitsState {
   waits: MainBotWaitView[];
   loaded: boolean;
-  open: boolean;
-  setOpen: (open: boolean) => void;
   load: () => Promise<void>;
   cancel: (id: string) => Promise<void>;
 }
@@ -33,8 +33,6 @@ let loading: Promise<void> | null = null;
 export const useMainBotWaitsStore = create<WaitsState>((set, get) => ({
   waits: [],
   loaded: false,
-  open: false,
-  setOpen: (open) => set({ open }),
   load: () => {
     loading ??= (async () => {
       try {
@@ -64,69 +62,69 @@ function field(input: unknown, name: string): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-/** A moment in the days ahead, as short as it stays clear: "17:00", "Fri 17:00", "Nov 28, 17:00". */
+const clock = (at: number) => new Date(at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+
+/** A moment ahead, as short as it stays clear: "in 35 min", "5:00 PM", "Mon 5:00 PM", "Nov 28". */
 export function waitMoment(at: number, now = Date.now()): string {
+  const ahead = at - now;
+  if (ahead > 0 && ahead < 60 * 60_000) return `in ${Math.max(1, Math.round(ahead / 60_000))} min`;
   const date = new Date(at);
-  const time = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-  if (date.toDateString() === new Date(now).toDateString()) return time;
-  if (Math.abs(at - now) < 6 * 86_400_000) return `${date.toLocaleDateString(undefined, { weekday: 'short' })} ${time}`;
-  return `${date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}, ${time}`;
+  if (date.toDateString() === new Date(now).toDateString()) return clock(at);
+  if (Math.abs(ahead) < 6 * 86_400_000) return `${date.toLocaleDateString(undefined, { weekday: 'short' })} ${clock(at)}`;
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
-/** Until when a wait waits, in a few words; empty when nothing is worth saying. */
-function untilText(wait: MainBotWaitView): string {
-  if (wait.by !== null) return wait.kind === 'time' ? waitMoment(wait.by) : `until ${waitMoment(wait.by)}`;
-  return wait.expiresAt !== null ? `ends ${waitMoment(wait.expiresAt)}` : '';
+/** `owner/repo#482` reads as `repo #482`; a run as `repo · Actions run`. The whole of it is in the row's tooltip. */
+export function shortWaitTarget(target: string): string {
+  const pull = /^[^/\s]+\/([^#\s]+)#(\d+)$/.exec(target);
+  if (pull) return `${pull[1]} #${pull[2]}`;
+  const run = /^[^/\s]+\/(\S+) run \d+$/.exec(target);
+  return run ? `${run[1]} · Actions run` : target;
 }
 
-/** How a wait that is over ended, in one word where one will do. */
-function endedWord(wait: MainBotWaitView): string {
-  if (wait.status === 'cancelled') return 'Cancelled';
-  if (wait.status === 'expired') return 'Expired';
-  return wait.ended?.summary || 'Over';
+/** Why a wait cannot be looked at, or could not be set, in a few words; the full text stays in the tooltip. */
+export function shortWaitReason(text: string | null | undefined): string {
+  const said = (text ?? '').trim();
+  if (/not installed/i.test(said)) return 'GitHub CLI is not installed';
+  if (/not signed in/i.test(said)) return 'GitHub CLI is signed out';
+  if (/shows no such thing|does not show/i.test(said)) return 'not found on GitHub';
+  if (/limiting requests|rate limit/i.test(said)) return 'GitHub is limiting requests';
+  if (/already wait/i.test(said)) return 'already waiting for it';
+  if (/as many as Aegis keeps/i.test(said)) return 'too many waits';
+  if (/made again \d+ times/i.test(said)) return 'needs your say first';
+  if (/acted on your own many times/i.test(said)) return 'needs your say first';
+  const first = said.split(/[.:]/)[0];
+  return first.length > 60 ? `${first.slice(0, 59)}…` : first;
 }
 
-const cancelClass =
-  'flex-shrink-0 rounded px-1.5 text-[11.5px] leading-5 text-[var(--text-muted)] transition-colors hover:bg-[var(--sidebar-item-hover)] hover:text-[var(--text-primary)] disabled:opacity-50';
-
-function CancelWait({ id }: { id: string }) {
-  const [busy, setBusy] = useState(false);
-  return (
-    <button
-      type="button"
-      className={cancelClass}
-      disabled={busy}
-      data-main-bot-wait-cancel={id}
-      onClick={async (event) => {
-        event.stopPropagation();
-        setBusy(true);
-        await useMainBotWaitsStore.getState().cancel(id);
-        setBusy(false);
-      }}
-    >
-      Cancel
-    </button>
-  );
+function KindIcon({ kind, className }: { kind: MainBotWaitView['kind']; className?: string }) {
+  const Icon = kind === 'pr' ? GitPullRequest : kind === 'run' ? Play : Clock;
+  return <Icon className={className} aria-hidden="true" />;
 }
 
-/**
- * The line for a wait_for or cancel_wait call. A wait that was set shows how
- * it stands now, so nothing more is drawn when it ends: the turn it wakes the
- * bot for opens with its own row.
- */
-export function MainBotWaitLine({ toolName, input, resultText, failed, pending }: {
+// ---- In the conversation ----
+
+interface WaitCallProps {
   toolName: string;
   input: unknown;
   resultText: string | null;
   failed: boolean;
   pending: boolean;
-}) {
+}
+
+/**
+ * The line for a wait_for or cancel_wait call. A wait that was set shows how
+ * it stands now, so nothing more is drawn when it ends: the turn it wakes the
+ * bot for opens with a line of its own. It is cancelled in the Environment
+ * card, not here.
+ */
+export function MainBotWaitLine({ toolName, input, resultText, failed, pending }: WaitCallProps) {
   const calledOff = mainBotToolKind(toolName) === 'unwait';
   const result = failed ? {} : parseMainBotWaitResult(resultText);
   const loaded = useMainBotWaitsStore((state) => state.loaded);
   const wait = useMainBotWaitsStore((state) => (result.waitId ? state.waits.find((entry) => entry.id === result.waitId) : undefined));
   useEffect(() => {
-    // A line can be on screen before the Waiting list ever was (a search hit, a side pane).
+    // A line can be on screen before the conversation read the list (a search hit, a side pane).
     if (!loaded) void useMainBotWaitsStore.getState().load();
   }, [loaded]);
   // A wait just set is not in the list yet: read again once its result is in.
@@ -137,13 +135,14 @@ export function MainBotWaitLine({ toolName, input, resultText, failed, pending }
 
   const label = wait?.label || result.label || field(input, 'label') || field(input, 'wait') || 'something';
   const name = <span className="text-[var(--text-secondary)]">{label}</span>;
+  const kind: MainBotWaitView['kind'] = wait?.kind ?? (field(input, 'pr') ? 'pr' : field(input, 'run') ? 'run' : 'time');
 
   if (calledOff) {
     return (
       <div className="my-1" data-main-bot-wait-line="called-off">
         <TraceLine
           as="div"
-          icon={pending ? <LoaderCircle className="animate-spin" /> : <Square />}
+          icon={pending ? <LoaderCircle className="animate-spin" /> : <X />}
           title={<>{pending ? 'Calling off the wait for' : failed ? 'Could not call off the wait for' : 'Called off the wait for'} {name}</>}
           tone={failed ? 'error' : 'default'}
           hint={failed && resultText ? resultText : undefined}
@@ -151,16 +150,17 @@ export function MainBotWaitLine({ toolName, input, resultText, failed, pending }
       </div>
     );
   }
-  if (pending || failed) {
+  if (pending) {
     return (
-      <div className="my-1" data-main-bot-wait-line={failed ? 'failed' : 'pending'}>
-        <TraceLine
-          as="div"
-          icon={pending ? <LoaderCircle className="animate-spin" /> : <AlertTriangle />}
-          title={<>{pending ? 'Setting a wait for' : 'Could not wait for'} {name}</>}
-          tone={failed ? 'error' : 'default'}
-          hint={failed && resultText ? resultText : undefined}
-        />
+      <div className="my-1" data-main-bot-wait-line="pending">
+        <TraceLine as="div" icon={<LoaderCircle className="animate-spin" />} title={<>Setting a wait for {name}</>} />
+      </div>
+    );
+  }
+  if (failed) {
+    return (
+      <div className="my-1" data-main-bot-wait-line="failed">
+        <TraceLine as="div" icon={<AlertTriangle />} title={<>Could not wait for {name}</>} meta={shortWaitReason(resultText)} tone="error" hint={resultText ?? undefined} />
       </div>
     );
   }
@@ -168,111 +168,217 @@ export function MainBotWaitLine({ toolName, input, resultText, failed, pending }
   if (!result.waitId) {
     return (
       <div className="my-1" data-main-bot-wait-line="already">
-        <TraceLine as="div" icon={<Check />} title={<>No wait needed for {name}</>} meta={result.already} hint={result.already} />
+        <TraceLine as="div" icon={<Check />} title={<>No wait needed for {name}</>} meta={result.already ? `already ${result.already}` : undefined} hint={result.already} />
       </div>
     );
   }
   const waiting = wait ? wait.status === 'waiting' : !loaded;
-  const meta = wait ? (waiting ? wait.problem || untilText(wait) : endedWord(wait)) : undefined;
+  const meta = !wait
+    ? undefined
+    : !waiting
+      ? wait.status === 'cancelled' ? 'cancelled' : wait.status === 'expired' ? 'expired' : wait.ended?.summary
+      : wait.problem
+        ? <span className="text-[var(--warning)]" title={wait.problem}>{shortWaitReason(wait.problem)}</span>
+        : wait.kind === 'time' ? (wait.by !== null ? waitMoment(wait.by) : undefined) : wait.stands ?? undefined;
   return (
     <div className="my-1" data-main-bot-wait-line={wait?.status ?? (loaded ? 'gone' : 'waiting')}>
+      <TraceLine as="div" icon={<KindIcon kind={kind} />} title={<>{waiting ? 'Waiting for' : 'Waited for'} {name}</>} meta={meta} hint={wait?.target || undefined} />
+    </div>
+  );
+}
+
+type WaitCall = Omit<WaitCallProps, 'pending'> & { toolUseId: string };
+
+/** Waits set in one turn, folded into one line that opens. */
+function MainBotWaitGroup({ calls }: { calls: WaitCall[] }) {
+  const [open, setOpen] = useState(false);
+  const waits = useMainBotWaitsStore((state) => state.waits);
+  let waiting = 0;
+  let over = 0;
+  let unneeded = 0;
+  let unset = 0;
+  for (const call of calls) {
+    if (call.failed) {
+      unset += 1;
+      continue;
+    }
+    const id = parseMainBotWaitResult(call.resultText).waitId;
+    if (!id) unneeded += 1;
+    // One not in the list yet has only just been set.
+    else if ((waits.find((entry) => entry.id === id)?.status ?? 'waiting') === 'waiting') waiting += 1;
+    else over += 1;
+  }
+  const parts = [waiting ? `${waiting} waiting` : '', over ? `${over} over` : '', unneeded ? `${unneeded} not needed` : '', unset ? `${unset} not set` : ''].filter(Boolean);
+  return (
+    <div className="my-1" data-main-bot-wait-group={open ? 'open' : 'closed'}>
       <TraceLine
-        as="div"
         icon={<Clock />}
-        title={<>{waiting ? 'Waiting for' : 'Waited for'} {name}</>}
-        meta={meta}
-        tone={waiting && wait?.problem ? 'waiting' : 'default'}
-        hint={wait ? [wait.target, wait.kind === 'time' ? '' : `until ${wait.waitsFor}`].filter(Boolean).join(': ') || undefined : undefined}
-        aside={waiting && wait ? <CancelWait id={wait.id} /> : undefined}
+        title={<>Set <span className="text-[var(--text-secondary)]">{calls.length} waits</span></>}
+        meta={parts.join(' · ')}
+        trail={<TraceChevron expanded={open} />}
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
       />
+      {open ? (
+        <TraceNest>
+          {calls.map((call) => (
+            <MainBotWaitLine key={call.toolUseId} toolName={call.toolName} input={call.input} resultText={call.resultText} failed={call.failed} pending={call.resultText === null && !call.failed} />
+          ))}
+        </TraceNest>
+      ) : null}
+    </div>
+  );
+}
+
+/** How many waits set one after another in a turn it takes for them to fold into one line. */
+const FOLD_FROM = 3;
+
+/** A turn's task rows, with a run of wait_for calls folded into one line once there are enough of them. */
+export function foldMainBotWaitCards<T extends WaitCall>(calls: T[], render: (call: T) => ReactNode): ReactNode[] {
+  const rows: ReactNode[] = [];
+  let run: T[] = [];
+  const flush = () => {
+    if (run.length >= FOLD_FROM) rows.push(<MainBotWaitGroup key={`waits-${run[0].toolUseId}`} calls={run} />);
+    else rows.push(...run.map(render));
+    run = [];
+  };
+  for (const call of calls) {
+    if (mainBotToolKind(call.toolName) === 'wait') {
+      run.push(call);
+      continue;
+    }
+    flush();
+    rows.push(render(call));
+  }
+  flush();
+  return rows;
+}
+
+/** What opens the turn a wait woke the bot for: Aegis's word, not the person's. One quiet line per wait, with how it ended; it opens to what Aegis read. */
+export function WaitOverRow({ titles }: { titles: string[] }) {
+  const waits = useMainBotWaitsStore((state) => state.waits);
+  const loaded = useMainBotWaitsStore((state) => state.loaded);
+  useEffect(() => {
+    if (!loaded) void useMainBotWaitsStore.getState().load();
+  }, [loaded]);
+  return (
+    <div className="mb-1 mt-4" data-main-bot-wait-over>
+      {titles.map((title) => {
+        // The label is all the conversation keeps: the latest wait of that name that is over is the one meant.
+        const wait = [...waits].reverse().find((entry) => entry.label === title && entry.ended !== null && entry.status !== 'cancelled' && entry.status !== 'expired');
+        return <WaitOverLine key={title} title={title} wait={wait} />;
+      })}
+    </div>
+  );
+}
+
+function WaitOverLine({ title, wait }: { title: string; wait: MainBotWaitView | undefined }) {
+  const [open, setOpen] = useState(false);
+  const facts = wait?.facts ?? [];
+  return (
+    <div data-main-bot-wait-over-line={open ? 'open' : 'closed'}>
+      <TraceLine
+        as={facts.length ? 'button' : 'div'}
+        icon={<Bell />}
+        title={<>Wait over <span className="text-[var(--text-secondary)]">{title}</span></>}
+        meta={wait?.ended?.summary}
+        trail={facts.length ? <TraceChevron expanded={open} /> : undefined}
+        aria-expanded={facts.length ? open : undefined}
+        onClick={facts.length ? () => setOpen(!open) : undefined}
+      />
+      {open ? (
+        <TraceNest>
+          <div className="flex flex-col gap-0.5 py-1 text-[12px] leading-5 text-[var(--text-muted)]">
+            <div>Read from GitHub{wait?.readAt ? ` at ${clock(wait.readAt)}` : ''}</div>
+            {facts.map((fact) => <div key={fact} className="text-[var(--text-secondary)]">{fact}</div>)}
+          </div>
+        </TraceNest>
+      ) : null}
     </div>
   );
 }
 
 /**
- * Every wait still waiting, at the top of the main bot's conversation: one
- * line that says how many, unfolding into what each waits for and until when.
- * Nothing is drawn when nothing waits.
+ * Keeps the list of waits fresh while the main bot's conversation is open:
+ * read again when the conversation moves (the bot set or called off one, or
+ * was woken by one), and by the clock while any waits. It draws nothing.
  */
-export function MainBotWaitingList({ messageCount, busy }: { messageCount: number; busy: boolean }) {
-  const waiting = useMainBotWaitsStore((state) => state.waits).filter((wait) => wait.status === 'waiting');
-  const open = useMainBotWaitsStore((state) => state.open);
-  // Read again when the conversation moves (the bot set or called off one, or was woken by one) and by the clock while any waits.
+export function MainBotWaitsRefresh({ messageCount, busy }: { messageCount: number; busy: boolean }) {
+  const any = useMainBotWaitsStore((state) => state.waits.some((wait) => wait.status === 'waiting'));
   useEffect(() => {
     void useMainBotWaitsStore.getState().load();
   }, [messageCount, busy]);
-  const any = waiting.length > 0;
   useEffect(() => {
     if (!any) return undefined;
     const timer = window.setInterval(() => void useMainBotWaitsStore.getState().load(), REFRESH_MS);
     return () => window.clearInterval(timer);
   }, [any]);
+  return null;
+}
 
-  if (!any) return null;
-  const troubled = waiting.some((wait) => wait.problem);
+// ---- In the Environment card ----
+
+function WaitRow({ wait }: { wait: MainBotWaitView }) {
+  const open = () => {
+    if (wait.url) void window.electron.openExternalUrl(wait.url).then((result) => { if (!result.ok) toast.error(result.message || 'Could not open GitHub.'); });
+  };
+  const when = wait.by !== null ? waitMoment(wait.by) : '';
+  const hint = [
+    wait.label,
+    wait.target ? `${wait.target}: until ${wait.waitsFor}` : '',
+    wait.by === null && wait.expiresAt !== null ? `No deadline. Stops watching ${waitMoment(wait.expiresAt)}.` : '',
+    wait.problem ?? '',
+  ].filter(Boolean).join('\n');
   return (
-    <div className="flex-shrink-0 border-b border-[var(--border)] px-4 text-[12px] leading-5 text-[var(--text-secondary)]" data-main-bot-waits>
-      <div className="message-container">
-        <button
-          type="button"
-          className="flex h-8 w-full items-center gap-1.5 text-left text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-          aria-expanded={open}
-          data-main-bot-waits-toggle
-          onClick={() => useMainBotWaitsStore.getState().setOpen(!open)}
-        >
-          <Clock className="h-3.5 w-3.5 flex-shrink-0 text-[var(--text-muted)]" aria-hidden="true" />
-          <span className="font-medium">Waiting</span>
-          <span className="text-[var(--text-muted)]">{waiting.length}</span>
-          {troubled ? <AlertTriangle className="h-3 w-3 flex-shrink-0 text-[var(--warning)]" aria-label="A wait cannot be looked at" /> : null}
-          {!open ? <span className="min-w-0 flex-1 truncate text-[var(--text-muted)]">{waiting.map((wait) => wait.label).join(' · ')}</span> : <span className="flex-1" />}
-          <ChevronDown className={cn('h-3 w-3 flex-shrink-0 text-[var(--text-muted)] transition-transform', open ? 'rotate-180' : '')} aria-hidden="true" />
-        </button>
-        {open ? (
-          <ul className="max-h-[40vh] overflow-auto pb-1.5">
-            {waiting.map((wait) => (
-              <li key={wait.id} className="flex min-w-0 items-center gap-2 py-[3px] pl-5" data-main-bot-wait={wait.id}>
-                <span className="min-w-0 max-w-[45%] flex-shrink-0 truncate text-[var(--text-primary)]" title={wait.label}>{wait.label}</span>
-                {wait.kind === 'time' ? null : (
-                  <button
-                    type="button"
-                    className="min-w-0 truncate text-left text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:underline"
-                    title={`${wait.target}: until ${wait.waitsFor}`}
-                    onClick={() => (wait.url ? void window.electron.openExternalUrl(wait.url) : undefined)}
-                  >
-                    {wait.target}
-                  </button>
-                )}
-                <span className="flex-1" />
-                {wait.problem ? (
-                  <span className="min-w-0 truncate text-[var(--warning)]" title={wait.problem}>{wait.problem}</span>
-                ) : (
-                  <span className="flex-shrink-0 text-[var(--text-muted)]" title={wait.kind === 'time' ? undefined : wait.checkedAt ? `Last looked at ${waitMoment(wait.checkedAt)}` : undefined}>
-                    {untilText(wait)}
-                  </span>
-                )}
-                <CancelWait id={wait.id} />
-              </li>
-            ))}
-          </ul>
-        ) : null}
-      </div>
+    <div className="group/wait flex items-start" data-main-bot-wait={wait.id}>
+      <button type="button" className={`environment-summary-row min-w-0 flex-1 !items-start ${wait.url ? '' : '!cursor-default'}`} title={hint} onClick={open}>
+        <KindIcon kind={wait.kind} className="mt-[3px] h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]" />
+        <span className="flex min-w-0 flex-1 flex-col">
+          <span className="flex min-w-0 items-baseline gap-2">
+            <span className="min-w-0 flex-1 truncate">{wait.label}</span>
+            {when ? <span className="shrink-0 text-[11px] tabular-nums text-[var(--text-muted)]">{when}</span> : null}
+          </span>
+          {wait.kind === 'time' ? null : (
+            <span className="flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-[var(--text-muted)]">
+              <span className="min-w-0 truncate">{[shortWaitTarget(wait.target), wait.problem ? '' : wait.stands ?? ''].filter(Boolean).join(' · ')}</span>
+              {wait.problem ? <span className="min-w-0 truncate text-[var(--warning)]">· {shortWaitReason(wait.problem)}</span> : null}
+            </span>
+          )}
+        </span>
+      </button>
+      <DropdownMenu.Root modal={false}>
+        <DropdownMenu.Trigger asChild>
+          <button
+            type="button"
+            aria-label={`${wait.label} options`}
+            data-main-bot-wait-menu={wait.id}
+            className="mt-0.5 inline-flex h-7 w-6 shrink-0 items-center justify-center rounded-md text-[var(--text-muted)] opacity-0 hover:bg-[var(--sidebar-item-hover)] focus-visible:opacity-100 group-hover/wait:opacity-100 data-[popup-open]:opacity-100"
+          >
+            <MoreHorizontal className="h-3.5 w-3.5" />
+          </button>
+        </DropdownMenu.Trigger>
+        <DropdownMenu.Portal>
+          <DropdownMenu.Content data-environment-hub-layer align="end" sideOffset={4}>
+            {wait.url ? <DropdownMenu.Item onSelect={open}>Open on GitHub</DropdownMenu.Item> : null}
+            <DropdownMenu.Item onSelect={() => void useMainBotWaitsStore.getState().cancel(wait.id)}>Cancel wait</DropdownMenu.Item>
+          </DropdownMenu.Content>
+        </DropdownMenu.Portal>
+      </DropdownMenu.Root>
     </div>
   );
 }
 
-/** What opens the turn a wait woke the bot for: Aegis's word, not the person's. */
-export function WaitOverRow({ titles }: { titles: string[] }) {
-  const label = titles.join(' · ');
+/** Every wait still waiting, at the top of the main bot's Environment card. Nothing is drawn when nothing waits. */
+export function EnvironmentWaitingSection() {
+  const waiting = useMainBotWaitsStore((state) => state.waits).filter((wait) => wait.status === 'waiting');
+  if (!waiting.length) return null;
   return (
-    <div className="mb-1.5 mt-4 flex" data-main-bot-wait-over>
-      <span
-        className="inline-flex h-6 max-w-full items-center gap-1.5 rounded-full bg-[var(--bg-secondary)] pl-[7px] pr-[9px] text-[11.5px] text-[var(--text-secondary)]"
-        title={`Wait over: ${label}`}
-      >
-        <Bell className="h-3 w-3 flex-shrink-0" aria-hidden="true" />
-        <span className="flex-shrink-0 text-[var(--text-muted)]">Wait over</span>
-        <span className="min-w-0 truncate">{label}</span>
-      </span>
-    </div>
+    <section className="environment-summary-section px-1.5" aria-label="Waiting" data-main-bot-waits>
+      <div className="flex items-baseline gap-1.5 px-2 py-1 text-[12px] font-medium text-[var(--text-secondary)]">
+        <span>Waiting</span>
+        <span className="font-normal text-[var(--text-muted)]">· {waiting.length}</span>
+      </div>
+      {waiting.map((wait) => <WaitRow key={wait.id} wait={wait} />)}
+    </section>
   );
 }

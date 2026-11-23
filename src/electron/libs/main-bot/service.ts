@@ -190,7 +190,7 @@ export type ToolOutcome = { ok: true; text: string } | { ok: false; error: strin
 export interface MainBotOutside {
   probes: WaitProbes;
   /** A wait ended in a way the person is to hear of: what it waited for happened, or its deadline came. */
-  waitOver?(wait: { id: string; label: string }, outcome: { reason: 'event' | 'deadline'; summary: string }): void;
+  waitOver?(wait: { id: string; label: string; kind: MainBotWaitKind }, outcome: { reason: 'event' | 'deadline'; summary: string }): void;
   /** The waits changed: the app's list of them is out of date. */
   waitsChanged?(): void;
 }
@@ -1899,7 +1899,7 @@ export class MainBotService {
   private fireWait(wait: MainBotWait, outcome: WaitOutcome): boolean {
     if (!this.store.fireWait(wait.id, { ...outcome }, outcome.at)) return false;
     try {
-      this.outside?.waitOver?.({ id: waitRef(wait.id), label: wait.label }, { reason: outcome.reason, summary: outcome.summary });
+      this.outside?.waitOver?.({ id: waitRef(wait.id), label: wait.label, kind: wait.kind }, { reason: outcome.reason, summary: outcome.summary });
     } catch (failure) {
       console.error('[main-bot] could not announce a wait that ended:', failure);
     }

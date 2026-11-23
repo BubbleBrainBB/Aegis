@@ -83,7 +83,7 @@ function setup() {
     tellFails: false,
     sends: [] as Array<{ taskId: string; prompt: string }>,
     starts: 0,
-    announced: [] as Array<{ id: string; label: string; reason: string; summary: string }>,
+    announced: [] as Array<{ id: string; label: string; kind: string; reason: string; summary: string }>,
     pulls: new Map<string, PullRequestSnapshot | Error>(),
     runs: new Map<string, RunSnapshot | Error>(),
     /** Every time GitHub was asked, by what for. */
@@ -313,7 +313,7 @@ async function main() {
     assert.match(world.told[0].text, /\[Wait over: "Call Dana" \(w1\)\] It is past .*the time you set\./);
     assert.match(world.told[0].text, /Your note to yourself when you set it: "They asked to be reminded\."/);
     assert.doesNotMatch(world.told[0].text, /could not tell you then/, 'on time');
-    assert.deepEqual(world.announced, [{ id: 'w1', label: 'Call Dana', reason: 'deadline', summary: 'It is time' }], 'the person hears of it once');
+    assert.deepEqual(world.announced, [{ id: 'w1', label: 'Call Dana', kind: 'time', reason: 'deadline', summary: 'It is time' }], 'the person hears of it once');
     assert.equal(store.wait(1)?.status, 'delivered');
     // Over means over: nothing wakes the bot for it again.
     tick(DAY);
@@ -391,8 +391,14 @@ async function main() {
     assert.match(text, /What Aegis read from GitHub at .*:\n- Pull request acme\/app#12 \(https:\/\/github\.com\/acme\/app\/pull\/12\): open, at commit aaaaaaa\.\n- Checks: 1 of 5 checks failing \(build\)\./);
     assert.match(text, /It belongs to the task "Fix the export" \(aegis:\/\/sessions\/00000000-0000-4000-8000-000000000001\)\./);
     assert.match(text, /you may send it that with message_task/);
-    assert.deepEqual(world.announced.map((entry) => [entry.id, entry.reason]), [['w1', 'event']]);
+    assert.deepEqual(world.announced.map((entry) => [entry.id, entry.kind, entry.reason]), [['w1', 'pr', 'event']]);
     assert.equal(store.wait(2)?.status, 'waiting', 'the other wait on it goes on');
+    // What the app shows of a wait that ended: how, and what Aegis read then; of one still waiting, how it stands.
+    const [ended, going] = bot.waitViews();
+    assert.deepEqual([ended.status, ended.ended?.summary, ended.stands], ['delivered', 'checks failed (1 of 5 checks failing: build)', null]);
+    assert.deepEqual(ended.facts, ['Pull request acme/app#12 (https://github.com/acme/app/pull/12): open, at commit aaaaaaa.', 'Checks: 1 of 5 checks failing (build).']);
+    assert.equal(typeof ended.readAt, 'number');
+    assert.deepEqual([going.status, going.stands, going.facts], ['waiting', 'no review yet', []]);
 
     // The turn the wait began: no new task, no workflow; its own task may hear of what failed.
     assert.equal(world.main.turn?.wait, true);
@@ -532,9 +538,9 @@ async function main() {
     world.pulls.set('acme/app#12', pull());
     ok(await bot.waitFor({ label: 'Checks on #12', pr: PR_LINK }));
     ok(await bot.waitFor({ label: 'Call Dana', by: at(now(), 10 * MINUTE) }));
-    assert.deepEqual(bot.waitViews().map((view) => [view.id, view.status, view.target, view.waitsFor]), [
-      ['w1', 'waiting', 'acme/app#12', 'its checks pass or a check fails'],
-      ['w2', 'waiting', '', 'the time'],
+    assert.deepEqual(bot.waitViews().map((view) => [view.id, view.status, view.target, view.waitsFor, view.stands]), [
+      ['w1', 'waiting', 'acme/app#12', 'its checks pass or a check fails', '3 of 5 checks running'],
+      ['w2', 'waiting', '', 'the time', null],
     ]);
     assert.equal(ok(bot.cancelWait({ wait: 'w1' })).waitId, 'w1');
     assert.match(error(bot.cancelWait({ wait: 'w1' })), /There is no wait w1/);

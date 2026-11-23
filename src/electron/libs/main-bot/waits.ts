@@ -337,6 +337,20 @@ const MINUTE = 60_000;
 /** How long after a push its checks may take to show up: until then the pull request is looked at as often as with checks running. */
 const CHECKS_START_MS = 10 * MINUTE;
 
+/** How a pull request stands for what its wait is for, in a few words: "3 of 14 checks running", "no review yet". */
+function pullRequestStands(snapshot: PullRequestSnapshot, events: WaitEvent[]): string {
+  const parts: string[] = [];
+  if (events.includes('checks_passed') || events.includes('checks_failed')) {
+    const checks = snapshot.checks.state === 'none' ? 'no checks yet' : snapshot.checks.summary;
+    parts.push(checks.charAt(0).toLowerCase() + checks.slice(1));
+  }
+  if (events.includes('review') && events.includes('comment')) parts.push('no review or comment yet');
+  else if (events.includes('review')) parts.push('no review yet');
+  else if (events.includes('comment')) parts.push('no comment yet');
+  if (events.includes('conflict')) parts.push('no conflict');
+  return parts.slice(0, 2).join(' · ') || 'open';
+}
+
 /** What a look at a pull request leaves for the next one. */
 export function pullRequestProgress(before: WaitProgress | null, snapshot: PullRequestSnapshot, events: WaitEvent[], createdAt: number, now: number): WaitProgress {
   const sameHead = before?.headSha === snapshot.headSha;
@@ -347,7 +361,7 @@ export function pullRequestProgress(before: WaitProgress | null, snapshot: PullR
     headSha: snapshot.headSha,
     headSince,
     busySince: busy ? (sameHead ? (before?.busySince ?? now) : now) : null,
-    summary: snapshot.checks.summary,
+    summary: pullRequestStands(snapshot, events),
     facts: pullRequestFacts(snapshot),
   };
 }
@@ -458,7 +472,10 @@ export function waitView(wait: MainBotWait): MainBotWaitView {
     createdAt: wait.createdAt,
     checkedAt: wait.checkedAt,
     problem: wait.problem,
+    stands: wait.status === 'waiting' ? (wait.progress as WaitProgress | null)?.summary || null : null,
     ended,
+    facts: wait.status === 'waiting' ? [] : (outcome?.facts ?? []),
+    readAt: wait.status === 'waiting' ? null : (outcome?.readAt ?? null),
   };
 }
 
