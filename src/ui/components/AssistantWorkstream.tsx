@@ -43,6 +43,7 @@ import {
 import {
   createUnifiedDiffHunks,
   extractUnifiedDiffFilePath,
+  limitDiffHunks,
   parseUnifiedDiff,
   type UnifiedDiffHunk,
 } from '../utils/unified-diff';
@@ -97,6 +98,8 @@ interface AssistantWorkstreamProps {
 
 const MAX_TRACE_TEXT_CHARS = 20_000;
 const MAX_TITLE_CHARS = 800;
+/** Rows an expanded tool call draws for its diff; the rest is counted, not drawn. */
+const MAX_DIFF_PREVIEW_LINES = 2_000;
 
 export function AssistantWorkstream({
   model,
@@ -1298,7 +1301,9 @@ function ToolEntryDetail({
 }: {
   entry: Extract<WorkstreamEntry, { type: 'tool' | 'task' | 'memory' }>;
 }) {
-  const inputRecord = isRecord(entry.block.input) ? getPublicToolInput(entry.block.input) : {};
+  // One object per stored input: the diff below is worked out again only when the call changes.
+  const blockInput = entry.block.input;
+  const inputRecord = useMemo(() => (isRecord(blockInput) ? getPublicToolInput(blockInput) : {}), [blockInput]);
   const contentStr = ('liveOutput' in entry && entry.liveOutput) || entry.result?.displayContent || entry.result?.content || entry.detail || '';
   const diffContent =
     entry.toolName === 'Write' || entry.toolName === 'Edit' || entry.toolName === 'Delete'
@@ -1325,6 +1330,8 @@ function ToolEntryDetail({
     }
     return [];
   }, [diffContent, entry.toolName, inputRecord]);
+  // One row per line: a whole file written or replaced is cut to its start.
+  const diffPreview = useMemo(() => limitDiffHunks(diffHunks, MAX_DIFF_PREVIEW_LINES), [diffHunks]);
 
   return (
     <div className="my-1 space-y-2 text-[12px]">
@@ -1339,9 +1346,14 @@ function ToolEntryDetail({
           </div>
           <div className="overflow-hidden border border-[var(--border)]/45 bg-[var(--bg-secondary)]/35">
             <div className="max-h-72 overflow-auto">
-              {diffHunks.map((hunk, index) => (
+              {diffPreview.hunks.map((hunk, index) => (
                 <DiffHunkView key={`${hunk.oldStart}-${hunk.newStart}-${index}`} hunk={hunk} />
               ))}
+              {diffPreview.hiddenLines > 0 ? (
+                <div className="border-t border-[var(--border)]/50 px-3 py-1 text-[11px] text-[var(--text-muted)]" data-diff-preview-cut>
+                  {diffPreview.hiddenLines.toLocaleString()} more lines not shown
+                </div>
+              ) : null}
             </div>
           </div>
         </div>

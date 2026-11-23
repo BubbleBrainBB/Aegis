@@ -5,6 +5,9 @@
 //  - P0c: turn-latency instrumentation is wired (dispatch/init/first-output)
 //  - P1:  renderer-side delta coalescer behavior (compiled unit tests) and
 //         its store wiring (flush/discard rules per event type)
+//  - P4:  an edit's line diff costs what the edit is worth, not the file
+//         (a one-line change to a 14,000-line file), and the chat works out
+//         each tool call's change records once, not on every message
 
 import { spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
@@ -300,6 +303,27 @@ assert.equal(
   'P3: prewarm timer must read latest config from a ref at fire time'
 );
 
+// P4 — change records are kept per tool call, and the turn summary reads the
+// transcript once for both the main agent's records and everyone's.
+const changeRecordsSource = fs.readFileSync(
+  path.join(root, 'src', 'ui', 'utils', 'change-records.ts'),
+  'utf8'
+);
+assert.equal(
+  changeRecordsSource.includes('const toolRecordCache = new WeakMap<'),
+  true,
+  'P4: change records must be kept per tool call, or every message diffs every edit again'
+);
+const turnChangeRecordsSource = fs.readFileSync(
+  path.join(root, 'src', 'ui', 'utils', 'turn-change-records.ts'),
+  'utf8'
+);
+assert.equal(
+  turnChangeRecordsSource.includes('const { records, mainRecords } = extractToolChangeRecordSets(slice);'),
+  true,
+  'P4: a turn must read its tool records in one pass'
+);
+
 // ── Behavioral tests (compiled + run) ────────────────────────────────────────
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aegis-stream-perf-'));
@@ -313,6 +337,8 @@ const tscBin = path.join(
 const testFiles = [
   'scripts/tests/stream-delta-coalescer.test.ts',
   'scripts/tests/claude-turn-metrics.test.ts',
+  'scripts/tests/unified-diff.test.ts',
+  'scripts/tests/turn-change-records-cache.test.ts',
 ];
 
 try {

@@ -94,9 +94,9 @@ async function main(): Promise<void> {
   let threadSeq = 0;
   const open = async (
     input: Record<string, unknown> = {},
-    options: { stopGraceMs?: number } = {}
+    options: { stopGraceMs?: number; selfTurnSettleMs?: number; selfTurnIdleMs?: number } = {}
   ) => {
-    const adapter = new AntigravityAcpAdapter({ stopGraceMs: options.stopGraceMs ?? 400 });
+    const adapter = new AntigravityAcpAdapter({ ...options, stopGraceMs: options.stopGraceMs ?? 400 });
     const events: Event[] = [];
     adapter.events.on('event', (event: Event) => events.push(event));
     const threadId = `t${++threadSeq}`;
@@ -430,6 +430,758 @@ async function main(): Promise<void> {
     // An answer for a request already settled is ignored.
     await adapter.respondToRequest(threadId, denied.requestId, { behavior: 'allow', updatedInput: {} } as never);
     await adapter.stopSession(threadId);
+  }
+
+  // ── An edit's diff holds the whole file: the card gets the passage ───────
+  {
+    const line = (index: number) => `  const entry${index} = table[${index}] ?? fallback;`;
+    const changed = '  const entry9000 = changed;';
+    const size = (value: unknown) => JSON.stringify(value).length;
+
+    // agy names the passage in its arguments and sends the file twice in the diff.
+    const { adapter, events, threadId } = await open({ prompt: 'WHOLEFILE' });
+    await until(() => events.some((event) => event.type === 'permission_request'), 'the edit approval');
+    const approval = events.find((event) => event.type === 'permission_request')!;
+    assert.equal(approval.toolName, 'Edit');
+    assert.equal(approval.input.toolCall.rawInput.old_string, line(9000));
+    assert.equal(approval.input.toolCall.rawInput.new_string, changed);
+    const approvalDiff = approval.input.toolCall.content[0];
+    assert.equal(approvalDiff.type, 'diff');
+    assert.ok(approvalDiff.path.endsWith('big.ts'));
+    assert.equal(approvalDiff.oldText, [8997, 8998, 8999, 9000, 9001, 9002, 9003].map((index) => `${line(index)}\n`).join(''));
+    assert.ok(approvalDiff.newText.includes(changed));
+    assert.ok(size(approval) < 4_000, `the approval is ${size(approval)} characters, not the file twice`);
+    await adapter.respondToRequest(threadId, approval.requestId, { behavior: 'allow', updatedInput: {} } as never);
+    await turnDone(events);
+
+    const uses = blocks(events, 'tool_use').filter((block) => block.id === 'call_whole_1');
+    assert.equal(uses.length, 1, 'the diff arriving later does not change the card, so it is not sent again');
+    assert.equal(uses[0].name, 'Edit');
+    assert.ok(uses[0].input.file_path.endsWith('big.ts'));
+    assert.equal(uses[0].input.old_string, line(9000));
+    assert.equal(uses[0].input.new_string, changed);
+    // The fake sent the 600 KB file six times over; none of it reaches the host.
+    assert.ok(size(events) < 20_000, `the turn's events are ${size(events)} characters`);
+
+    // A tool that describes its edit by the diff alone: the lines that changed, with context.
+    await withTimeout(adapter.sendTurn({ threadId, prompt: 'WHOLEDIFF' } as never), 'sendTurn');
+    const byDiff = blocks(events, 'tool_use').filter((block) => block.id === 'call_diff_2').at(-1)!;
+    assert.equal(byDiff.name, 'Edit');
+    assert.ok(byDiff.input.file_path.endsWith('big.ts'));
+    assert.equal(byDiff.input.old_string, [8997, 8998, 8999, 9000, 9001, 9002, 9003].map((index) => `${line(index)}\n`).join(''));
+    assert.equal(
+      byDiff.input.new_string,
+      [line(8997), line(8998), line(8999), changed, line(9001), line(9002), line(9003)].map((text) => `${text}\n`).join('')
+    );
+    assert.ok(size(events) < 40_000, `both turns' events are ${size(events)} characters`);
+    await adapter.stopSession(threadId);
+
+    // Arguments the diff does not bear out give way to the diff.
+    const file = Array.from({ length: 40 }, (_, index) => `row ${index}`);
+    const edited = file.map((row, index) => (index === 20 ? 'row twenty' : row));
+    const diff = { type: 'diff', path: '/p/rows.txt', oldText: `${file.join('\n')}\n`, newText: `${edited.join('\n')}\n` };
+    assert.deepEqual(
+      antigravityToolInput('Edit', { rawInput: { Path: '/p/rows.txt', Target: 'not in the file', Replacement: 'x' }, content: [diff] }),
+      {
+        Path: '/p/rows.txt',
+        Target: 'not in the file',
+        Replacement: 'x',
+        file_path: '/p/rows.txt',
+        old_string: 'row 17\nrow 18\nrow 19\nrow 20\nrow 21\nrow 22\nrow 23\n',
+        new_string: 'row 17\nrow 18\nrow 19\nrow twenty\nrow 21\nrow 22\nrow 23\n',
+      }
+    );
+    // Before the diff arrives the arguments are all there is; once it does, the card is the same.
+    const args = { Path: '/p/rows.txt', Target: 'row 20', Replacement: 'row twenty' };
+    const early = antigravityToolInput('Edit', { rawInput: args });
+    assert.equal(early.old_string, 'row 20');
+    assert.equal(early.new_string, 'row twenty');
+    assert.deepEqual(antigravityToolInput('Edit', { rawInput: args, content: [diff] }), early);
+    // A new file has no old text to cut down.
+    assert.equal(antigravityToolInput('Edit', { content: [{ type: 'diff', path: '/p/new.txt', newText: 'hello\n' }] }).old_string, '');
+  }
+
+  // ── A background command: agy goes on by itself after the turn ───────────
+  {
+    /** What the host is told, in order, without the streamed increments. */
+    const story = (events: Event[]): string[] =>
+      events.flatMap((event) => {
+        if (event.type === 'status_change') return [`status ${event.status}`];
+        if (event.type === 'error') return ['error'];
+        if (event.type !== 'message') return [];
+        const message = event.message;
+        if (message.type === 'result') return [`result ${message.subtype}`];
+        if (message.type === 'system' && message.subtype === 'init') return [message.selfStarted ? 'init by itself' : 'init'];
+        if (message.type !== 'assistant') return [];
+        const block = message.message.content[0];
+        if (block.type === 'tool_use') return [`call ${block.id}`];
+        if (block.type === 'tool_result') return [`result of ${block.tool_use_id}: ${block.content}`];
+        return [`${block.type}: ${block.text ?? block.thinking}`];
+      });
+    const quiet = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    const woke = (events: Event[]) => story(events).includes('init by itself');
+    /** Whether text has arrived as streamed increments (before it is committed). */
+    const streamed = (events: Event[], text: string) =>
+      events
+        .filter((event) => event.type === 'message' && event.message.type === 'stream_event')
+        .map((event) => event.message.event.delta.text ?? '')
+        .join('')
+        .includes(text);
+    /**
+     * A session whose fake waits at named gates instead of pausing for a
+     * time: `reached` resolves once the fake is at the gate, `open` lets it on.
+     */
+    let gateSeq = 0;
+    const gated = async (input: Record<string, unknown>, options: Parameters<typeof open>[1]) => {
+      const gates = path.join(dir, `gates-${++gateSeq}`);
+      mkdirSync(gates);
+      const before = readCalls().length;
+      const opened = await withEnv({ FAKE_AGY_GATE_DIR: gates }, () => open(input, options));
+      return {
+        ...opened,
+        reached: (name: string) => until(() => readCalls().slice(before).some((call) => (call as { reached?: string }).reached === name), `the fake at gate "${name}"`),
+        open: (name: string) => writeFileSync(path.join(gates, name), ''),
+      };
+    };
+
+    // The turn ends with the command still running; agy takes the rest up by
+    // itself. That work is a turn of its own: it opens marked as agy's own,
+    // sets the task running, commits what it wrote and ends with a result.
+    const { adapter, events, threadId, session } = await open({ prompt: 'BACKGROUND' }, { selfTurnSettleMs: 150, selfTurnIdleMs: 10_000 });
+    await turnDone(events, 2);
+    await quiet(400);
+    assert.deepEqual(story(events).slice(story(events).indexOf('status running')), [
+      'status running',
+      'thinking: I will start the build.',
+      'call call_bg_1',
+      'text: Started the build; waiting for it to finish.',
+      // The call is still open when the turn ends: its card is settled for now.
+      'result of call_bg_1: npm run build',
+      'result success',
+      'status completed',
+      // The command reports back between turns: its card gets the real output.
+      'result of call_bg_1: built in 63s',
+      'status running',
+      'init by itself',
+      'thinking: The build finished.',
+      'call call_check_2',
+      'result of call_check_2: app.dmg',
+      // The step's usage_update was followed by a call at once: no end there.
+      // The last one was followed by nothing: the words are committed, then the result.
+      'text: Checking the artefact. The build is done: app.dmg.',
+      'result success',
+      'status completed',
+    ]);
+    const settled = messages(events).filter((message) => message.uuid === `antigravity-tool-result:${threadId}:call_bg_1`);
+    assert.equal(settled.length, 2, 'the real outcome replaces the stand-in under the same id');
+    assert.equal(settled[0].createdAt, settled[1].createdAt, 'and at the same place in the transcript');
+    const wokenInit = messages(events).find((message) => message.type === 'system' && message.selfStarted);
+    assert.equal(wokenInit?.session_id, session.providerSessionId);
+    assert.equal(wokenInit?.model, 'gemini-4-neon');
+    assert.ok(results(events)[0].usage.total_tokens > 0);
+    assert.equal(results(events)[1].usage.total_tokens, 0, 'no prompt response reports what agy used by itself');
+    assert.equal(adapter.listSessions()[0].status, 'completed');
+
+    // The next message is an ordinary turn again, with nothing left over.
+    await withTimeout(adapter.sendTurn({ threadId, prompt: 'plain' } as never), 'sendTurn');
+    assert.deepEqual(story(events).slice(-4), ['status running', 'text: echo: plain', 'result success', 'status completed']);
+    await adapter.stopSession(threadId);
+
+    // agy speaks again after its turn has ended: one more turn of its own.
+    // (The fake waits at a gate before it speaks, so the first turn's end is
+    // seen before the second starts, whatever the machine's load.)
+    {
+      const twice = await gated({ prompt: 'BACKGROUND WAKE_TWICE' }, { selfTurnSettleMs: 150, selfTurnIdleMs: 10_000 });
+      await turnDone(twice.events, 2);
+      await twice.reached('note');
+      twice.open('note');
+      await turnDone(twice.events, 3);
+      assert.deepEqual(story(twice.events).slice(-5), ['status running', 'init by itself', 'text: One more note.', 'result success', 'status completed']);
+      await twice.adapter.stopSession(twice.threadId);
+    }
+
+    // A message sent while agy works by itself takes the work over: what agy
+    // wrote is kept, and the one result is the prompt's.
+    {
+      const held = await open({ prompt: 'BACKGROUND WAKE_HOLD' }, { selfTurnSettleMs: 150, selfTurnIdleMs: 60_000 });
+      // Until its words have arrived, not for a fixed time.
+      await until(() => streamed(held.events, 'Checking the artefact. '), 'agy writing by itself');
+      await quiet(400);
+      assert.equal(results(held.events).length, 1, 'in the middle of a step there is no end to report');
+      assert.equal(held.adapter.listSessions()[0].status, 'running');
+      await withTimeout(held.adapter.sendTurn({ threadId: held.threadId, prompt: 'plain' } as never), 'sendTurn');
+      assert.deepEqual(story(held.events).slice(story(held.events).indexOf('init by itself')), [
+        'init by itself',
+        'thinking: The build finished.',
+        'call call_check_2',
+        'result of call_check_2: app.dmg',
+        'text: Checking the artefact. ',
+        'status running',
+        'text: echo: plain',
+        'result success',
+        'status completed',
+      ]);
+      await held.adapter.stopSession(held.threadId);
+    }
+
+    // Stop reaches work agy started by itself, and nothing is reported after it.
+    {
+      // (No deadline that could end the turn before the Stop, however slow the machine.)
+      const stopped = await open({ prompt: 'BACKGROUND WAKE_HOLD' }, { selfTurnSettleMs: 60_000, selfTurnIdleMs: 3_600_000 });
+      await until(() => woke(stopped.events), 'agy working by itself');
+      resetCalls();
+      await stopped.adapter.stopSession(stopped.threadId);
+      await until(() => methods().includes('session/cancel'), 'agy is told to stop');
+      const told = stopped.events.length;
+      await quiet(500);
+      assert.equal(stopped.events.length, told, 'a stopped session reports nothing more');
+    }
+
+    // Silence in the middle of a step ends the turn after the long wait.
+    {
+      const silent = await open({ prompt: 'BACKGROUND WAKE_HOLD' }, { selfTurnSettleMs: 150, selfTurnIdleMs: 300 });
+      await turnDone(silent.events, 2);
+      assert.deepEqual(story(silent.events).slice(-3), ['text: Checking the artefact. ', 'result success', 'status completed']);
+      await silent.adapter.stopSession(silent.threadId);
+    }
+
+    // agy dies while working by itself: the turn ends as failed, with the reason.
+    {
+      const crashed = await open({ prompt: 'BACKGROUND WAKE_CRASH' }, { selfTurnSettleMs: 150, selfTurnIdleMs: 10_000 });
+      await turnDone(crashed.events, 2);
+      assert.deepEqual(story(crashed.events).slice(-3), ['text: Checking the artefact. ', 'result error', 'error']);
+      assert.match(crashed.events.at(-1)!.error.message, /exited during the turn \(code 3\).*panic: fake agy crashed/);
+      crashed.adapter.disposeSession(crashed.threadId);
+    }
+
+    // The response to a prompt and what agy sends right after it can arrive
+    // in one read. The response ends the turn first: what follows is agy's own.
+    {
+      const now = await open({ prompt: 'BACKGROUND WAKE_NOW' }, { selfTurnSettleMs: 150, selfTurnIdleMs: 10_000 });
+      await turnDone(now.events, 2);
+      const told = story(now.events);
+      assert.deepEqual(told.slice(told.indexOf('result success')), [
+        'result success',
+        'status completed',
+        'result of call_bg_1: built in 63s',
+        'status running',
+        'init by itself',
+        'thinking: The build finished.',
+        'call call_check_2',
+        'result of call_check_2: app.dmg',
+        'text: Checking the artefact. The build is done: app.dmg.',
+        'result success',
+        'status completed',
+      ]);
+      await now.adapter.stopSession(now.threadId);
+    }
+
+    // agy repeats a call it is still running after the turn settled it for
+    // now: the repeat keeps the stand-in replaceable, and the real outcome lands.
+    {
+      const resent = await open({ prompt: 'BACKGROUND WAKE_RESEND' }, { selfTurnSettleMs: 150, selfTurnIdleMs: 10_000 });
+      await turnDone(resent.events, 2);
+      const outcomes = story(resent.events).filter((line) => line.startsWith('result of call_bg_1'));
+      assert.deepEqual(outcomes, ['result of call_bg_1: npm run build', 'result of call_bg_1: built in 63s']);
+      await resent.adapter.stopSession(resent.threadId);
+    }
+
+    // Two calls in one step: the quick one finishing is not a reason to stop
+    // waiting for the slow one, however long the silence. The slow call ends
+    // only when the test opens its gate, well past the wait that ends a turn
+    // in the middle of a step.
+    {
+      const parallel = await gated({ prompt: 'BACKGROUND WAKE_PARALLEL' }, { selfTurnSettleMs: 150, selfTurnIdleMs: 300 });
+      await parallel.reached('slow');
+      await until(() => story(parallel.events).includes('result of call_check_2: app.dmg'), 'the quick call finished');
+      await quiet(900);
+      assert.equal(results(parallel.events).length, 1, 'the turn waits for the slow call');
+      assert.equal(story(parallel.events).some((line) => line.startsWith('result of call_slow_3')), false);
+      parallel.open('slow');
+      await turnDone(parallel.events, 2);
+      const told = story(parallel.events);
+      assert.deepEqual(told.slice(told.indexOf('init by itself')), [
+        'init by itself',
+        'thinking: The build finished.',
+        'call call_check_2',
+        'call call_slow_3',
+        'result of call_check_2: app.dmg',
+        // Its real output, not a stand-in from a turn ended too early.
+        'result of call_slow_3: signed',
+        'text: Checking the artefact. The build is done: app.dmg.',
+        'result success',
+        'status completed',
+      ]);
+      await parallel.adapter.stopSession(parallel.threadId);
+    }
+
+    // An update that only renames a finished call says nothing about the
+    // turn: the end that was due still comes.
+    {
+      const retitled = await open({ prompt: 'BACKGROUND WAKE_RETITLE' }, { selfTurnSettleMs: 150, selfTurnIdleMs: 60_000 });
+      await turnDone(retitled.events, 2);
+      assert.deepEqual(story(retitled.events).slice(-2), ['result success', 'status completed']);
+      await retitled.adapter.stopSession(retitled.threadId);
+    }
+
+    // The host announces a prompt (yieldToPrompt) before it shows it: agy's
+    // own work ends there without a result of its own, its words committed.
+    {
+      const yielded = await open({ prompt: 'BACKGROUND WAKE_HOLD' }, { selfTurnSettleMs: 150, selfTurnIdleMs: 60_000 });
+      await until(() => streamed(yielded.events, 'Checking the artefact. '), 'agy writing by itself');
+      yielded.adapter.yieldToPrompt(yielded.threadId);
+      assert.equal(story(yielded.events).at(-1), 'text: Checking the artefact. ', 'committed at once, before the prompt is shown');
+      await quiet(400);
+      assert.equal(results(yielded.events).length, 1, 'and nothing of it ends a turn afterwards');
+      await withTimeout(yielded.adapter.sendTurn({ threadId: yielded.threadId, prompt: 'plain' } as never), 'sendTurn');
+      assert.deepEqual(story(yielded.events).slice(-4), ['status running', 'text: echo: plain', 'result success', 'status completed']);
+      assert.equal(results(yielded.events).length, 2);
+      await yielded.adapter.stopSession(yielded.threadId);
+
+      // What agy sends between the announcement and the prompt is not told to
+      // the host as a turn; the prompt's turn takes it in.
+      const gap = await gated({ prompt: 'BACKGROUND WAKE_TWICE' }, { selfTurnSettleMs: 150, selfTurnIdleMs: 60_000 });
+      await turnDone(gap.events, 2);
+      await gap.reached('note');
+      gap.adapter.yieldToPrompt(gap.threadId);
+      gap.open('note');
+      await until(() => streamed(gap.events, 'One more note.'), 'agy writing after the announcement');
+      await quiet(400);
+      assert.equal(results(gap.events).length, 2, 'no end of its own, though its step ended');
+      assert.equal(story(gap.events).filter((line) => line === 'init by itself').length, 1);
+      await withTimeout(gap.adapter.sendTurn({ threadId: gap.threadId, prompt: 'plain' } as never), 'sendTurn');
+      assert.deepEqual(story(gap.events).slice(-5), ['text: One more note.', 'status running', 'text: echo: plain', 'result success', 'status completed']);
+      await gap.adapter.stopSession(gap.threadId);
+    }
+
+    // What a call carried is let go when its turn ends: the whole-file texts
+    // of an edit's diff are never kept, and of a finished call only the id is.
+    {
+      const lean = await open({ prompt: 'BACKGROUND WAKE_EDIT' }, { selfTurnSettleMs: 150, selfTurnIdleMs: 10_000 });
+      await turnDone(lean.events, 2);
+      const edit = blocks(lean.events, 'tool_use').filter((block) => block.id === 'call_edit_3');
+      assert.equal(edit.length, 1, 'the diff arriving later leaves the card as it is');
+      assert.equal(edit[0].input.new_string, '  const entry9000 = changed;');
+      const session = (lean.adapter as any).sessions.get(lean.threadId);
+      assert.deepEqual([...session.finishedCalls], ['call_bg_1', 'call_check_2']);
+      // The edit reported done without output: an entry stays for output it
+      // may still send, holding none of what the call carried.
+      assert.deepEqual([...session.toolCalls.keys()], ['call_edit_3']);
+      assert.equal(session.toolCalls.get('call_edit_3').awaitingOutput, true);
+      assert.ok(JSON.stringify([...session.toolCalls]).length < 400, `kept entry: ${JSON.stringify([...session.toolCalls]).length} characters`);
+      // A prompt keeps the calls more may come for, the latest 32.
+      for (let index = 0; index < 40; index += 1) {
+        session.toolCalls.set(`left_${index}`, { name: 'Bash', title: 'sleep', source: {}, input: {}, createdAt: 1, output: '', settled: true, placeholder: true });
+      }
+      await withTimeout(lean.adapter.sendTurn({ threadId: lean.threadId, prompt: 'plain' } as never), 'sendTurn');
+      assert.deepEqual([...session.toolCalls.keys()], Array.from({ length: 32 }, (_, index) => `left_${index + 8}`));
+      await lean.adapter.stopSession(lean.threadId);
+    }
+
+    // A process that has exited, or one the session has moved on from, opens
+    // no turn with what was still in its pipe.
+    {
+      const gone = await open({ prompt: 'plain EXIT_AFTER' });
+      await turnDone(gone.events);
+      const live = (gone.adapter as any).sessions.get(gone.threadId);
+      await until(() => Boolean(live.dead), 'agy exited');
+      const told = gone.events.length;
+      const late = { update: { sessionUpdate: 'tool_call', toolCallId: 'call_late', name: 'run_command', kind: 'execute', title: 'ls', status: 'in_progress' } };
+      (gone.adapter as any).handleNotification({ proc: live.proc, session: live }, 'session/update', late);
+      assert.equal(gone.events.length, told, 'nothing from a dead process');
+      assert.equal(live.selfTurn, undefined);
+      // The next message reconnects; the old connection's leftovers still say nothing.
+      const oldProc = live.proc;
+      await withTimeout(gone.adapter.sendTurn({ threadId: gone.threadId, prompt: 'plain' } as never), 'sendTurn');
+      const heard = gone.events.length;
+      (gone.adapter as any).handleNotification({ proc: oldProc, session: live }, 'session/update', late);
+      assert.equal(gone.events.length, heard, 'nothing from a connection the session left');
+      await gone.adapter.stopSession(gone.threadId);
+    }
+  }
+
+  // ── Deadlines and event orders, on a clock the test moves ────────────────
+  // Updates are handed to a live session directly, and the adapter's timers
+  // run on a mocked clock: every wait here is exact, none depends on load.
+  {
+    const { mock } = await import('node:test');
+    const mem = await open({ prompt: 'plain' }, { selfTurnSettleMs: 2_000, selfTurnIdleMs: 120_000, promptHandoverMs: 30_000 });
+    await turnDone(mem.events);
+    const session = (mem.adapter as any).sessions.get(mem.threadId);
+    const feed = (update: Record<string, unknown>) =>
+      (mem.adapter as any).handleNotification({ proc: session.proc, session }, 'session/update', { update });
+    const thought = (text: string) => feed({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text } });
+    const say = (text: string) => feed({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } });
+    const stepEnds = () => feed({ sessionUpdate: 'usage_update', used: 1, size: 100 });
+    const call = (id: string, status = 'in_progress') =>
+      feed({ sessionUpdate: 'tool_call', toolCallId: id, name: 'run_command', kind: 'execute', title: `run ${id}`, rawInput: { CommandLine: `run ${id}` }, status });
+    const callUpdate = (id: string, fields: Record<string, unknown>) => feed({ sessionUpdate: 'tool_call_update', toolCallId: id, ...fields });
+    const done = (id: string, output?: string) => callUpdate(id, { status: 'completed', ...(output ? { rawOutput: { output } } : {}) });
+    const told = (events: Event[]): string[] =>
+      events.flatMap((event) => {
+        if (event.type === 'status_change') return [`status ${event.status}`];
+        if (event.type === 'error') return ['error'];
+        if (event.type !== 'message') return [];
+        const message = event.message;
+        if (message.type === 'result') return [`result ${message.subtype}`];
+        if (message.type === 'system' && message.subtype === 'init') return [message.selfStarted ? 'init by itself' : 'init'];
+        if (message.type !== 'assistant') return [];
+        const block = message.message.content[0];
+        if (block.type === 'tool_use') return [`call ${block.id}`];
+        if (block.type === 'tool_result') return [`result of ${block.tool_use_id}: ${block.content}`];
+        return [`${block.type}: ${block.text ?? block.thinking}`];
+      });
+    /** Runs one scenario on the mocked clock and returns what the host was told during it. */
+    const scene = (play: (tick: (ms: number) => string[]) => void): string[] => {
+      const from = mem.events.length;
+      mock.timers.enable({ apis: ['setTimeout'] });
+      try {
+        let seen = from;
+        play((ms) => {
+          mock.timers.tick(ms);
+          const fresh = told(mem.events.slice(seen));
+          seen = mem.events.length;
+          return fresh;
+        });
+      } finally {
+        mock.timers.reset();
+      }
+      return told(mem.events.slice(from));
+    };
+    const ENDED = ['result success', 'status completed'];
+
+    // A step ends and nothing follows: the turn ends after the short wait, not before.
+    scene((tick) => {
+      thought('Looking.');
+      stepEnds();
+      assert.deepEqual(tick(1_999), ['status running', 'init by itself']);
+      assert.deepEqual(tick(1), ['thinking: Looking.', ...ENDED]);
+    });
+
+    // A call follows the step's end: no deadline while it runs; once it is
+    // done the model is expected to speak, and the long wait applies.
+    scene((tick) => {
+      thought('Running it.');
+      stepEnds();
+      call('a1');
+      assert.equal(tick(3_600_000).includes('result success'), false, 'an hour of a running call ends nothing');
+      done('a1', 'ok');
+      assert.deepEqual(tick(119_999), ['result of a1: ok']);
+      assert.deepEqual(tick(1), ENDED);
+    });
+
+    // Text while a call still waits (for approval, say) does not end the wait
+    // for it: the turn stays open, and the call gets its own outcome.
+    scene((tick) => {
+      call('b1', 'pending');
+      say('I need your approval for this.');
+      assert.deepEqual(tick(3_600_000), ['status running', 'init by itself', 'call b1'], 'an hour of silence: still waiting, nothing reported');
+      callUpdate('b1', { status: 'in_progress' });
+      done('b1', 'approved and run');
+      say(' Done.');
+      stepEnds();
+      assert.deepEqual(tick(2_000), ['result of b1: approved and run', 'text: I need your approval for this. Done.', ...ENDED]);
+    });
+
+    // Two calls of one step: the first to finish starts no deadline.
+    scene((tick) => {
+      call('c1');
+      call('c2');
+      done('c2', 'quick');
+      assert.equal(tick(3_600_000).includes('result success'), false);
+      done('c1', 'slow');
+      stepEnds();
+      assert.deepEqual(tick(2_000), ['result of c1: slow', ...ENDED]);
+    });
+
+    // Updates that change nothing leave the deadline alone: a new title for a
+    // finished call, a status the call already had, a call nobody knows.
+    scene((tick) => {
+      call('d1');
+      done('d1', 'ok');
+      thought('Done.');
+      stepEnds();
+      tick(1_000);
+      callUpdate('d1', { title: 'run d1 (done)' });
+      callUpdate('d1', { status: 'in_progress' });
+      callUpdate('never-seen', { status: 'in_progress' });
+      assert.deepEqual(tick(999), []);
+      assert.deepEqual(tick(1), ['thinking: Done.', ...ENDED]);
+    });
+
+    // A command sent to the background: the step ends with its call open, the
+    // turn ends, the call is settled for now. Its real outcome replaces that,
+    // and a frame agy repeats for it later is not a new call.
+    let from = mem.events.length;
+    scene((tick) => {
+      call('e1');
+      say('Started; it runs in the background.');
+      stepEnds();
+      assert.deepEqual(tick(2_000), ['status running', 'init by itself', 'call e1', 'text: Started; it runs in the background.', 'result of e1: run e1', ...ENDED]);
+      done('e1', 'finished after all');
+      assert.deepEqual(tick(0), ['result of e1: finished after all']);
+    });
+    // The next typed turn lets the finished call go; only its id is kept.
+    await withTimeout(mem.adapter.sendTurn({ threadId: mem.threadId, prompt: 'plain' } as never), 'sendTurn');
+    assert.equal(session.toolCalls.has('e1'), false);
+    assert.equal(session.finishedCalls.has('e1'), true);
+    scene((tick) => {
+      call('e1');
+      callUpdate('e1', { status: 'in_progress' });
+      assert.deepEqual(tick(3_600_000), [], 'the repeat opens no turn and says nothing');
+    });
+    await withTimeout(mem.adapter.sendTurn({ threadId: mem.threadId, prompt: 'plain' } as never), 'sendTurn');
+    assert.deepEqual(
+      told(mem.events.slice(from)).filter((line) => line.startsWith('result of e1')),
+      ['result of e1: run e1', 'result of e1: finished after all'],
+      'no later turn puts a stand-in over the real outcome'
+    );
+
+    // A call reports done without its output, then sends the output: the result follows it.
+    scene((tick) => {
+      call('f1');
+      done('f1');
+      callUpdate('f1', { rawOutput: { output: 'the output, a moment late' } });
+      thought('Read it.');
+      stepEnds();
+      assert.deepEqual(tick(2_000), [
+        'status running',
+        'init by itself',
+        'call f1',
+        'result of f1: run f1',
+        'result of f1: the output, a moment late',
+        'thinking: Read it.',
+        ...ENDED,
+      ]);
+    });
+
+    // The host announces a prompt that never comes. What agy does meanwhile
+    // is not told as a turn; when the announcement lapses it becomes one,
+    // and ends as any: words committed, the call settled, a result.
+    scene((tick) => {
+      mem.adapter.yieldToPrompt(mem.threadId);
+      call('g1');
+      say('Almost there.');
+      stepEnds();
+      assert.deepEqual(tick(29_999), ['call g1'], 'followed, not announced, and not ended');
+      assert.deepEqual(tick(1), ['status running', 'init by itself']);
+      assert.deepEqual(tick(2_000), ['text: Almost there.', 'result of g1: run g1', ...ENDED]);
+    });
+    // The host says so itself (its checks failed): the same, at once.
+    scene((tick) => {
+      mem.adapter.yieldToPrompt(mem.threadId);
+      say('Still at it.');
+      assert.deepEqual(tick(10_000), []);
+      mem.adapter.promptWithdrawn(mem.threadId);
+      assert.deepEqual(tick(119_999), ['status running', 'init by itself']);
+      assert.deepEqual(tick(1), ['text: Still at it.', ...ENDED]);
+    });
+    // Nothing happened meanwhile: nothing is announced, and agy's next work is a turn as usual.
+    scene((tick) => {
+      mem.adapter.yieldToPrompt(mem.threadId);
+      assert.deepEqual(tick(30_000), []);
+      thought('Back.');
+      stepEnds();
+      assert.deepEqual(tick(2_000), ['status running', 'init by itself', 'thinking: Back.', ...ENDED]);
+    });
+    // The prompt does come: its turn takes in what agy did, with one result.
+    from = mem.events.length;
+    mem.adapter.yieldToPrompt(mem.threadId);
+    say('Halfway through.');
+    await withTimeout(mem.adapter.sendTurn({ threadId: mem.threadId, prompt: 'plain' } as never), 'sendTurn');
+    assert.deepEqual(told(mem.events.slice(from)), ['text: Halfway through.', 'status running', 'text: echo: plain', ...ENDED]);
+    assert.equal(session.handover, undefined);
+
+    // Stop while a prompt is announced: nothing lapses later, nothing is reported.
+    {
+      const stopped = await open({ prompt: 'plain' }, { promptHandoverMs: 50 });
+      await turnDone(stopped.events);
+      const live = (stopped.adapter as any).sessions.get(stopped.threadId);
+      stopped.adapter.yieldToPrompt(stopped.threadId);
+      (stopped.adapter as any).handleNotification({ proc: live.proc, session: live }, 'session/update', {
+        update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Working.' } },
+      });
+      await stopped.adapter.stopSession(stopped.threadId);
+      const heard = stopped.events.length;
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      assert.equal(stopped.events.length, heard);
+    }
+
+    // A turn already told to the host, then a prompt announced that never
+    // comes: the turn goes on as agy's own and ends with its result. Nothing
+    // is announced twice, and its calls were never cut short.
+    scene((tick) => {
+      thought('On it.');
+      call('k1');
+      assert.deepEqual(tick(0), ['status running', 'init by itself', 'thinking: On it.', 'call k1']);
+      mem.adapter.yieldToPrompt(mem.threadId);
+      say('Half done. ');
+      assert.equal(mem.adapter.promptWithdrawn(mem.threadId), true, 'agy is at work: the task goes on running');
+      done('k1', 'ok');
+      say('All done.');
+      stepEnds();
+      assert.deepEqual(tick(2_000), ['result of k1: ok', 'text: Half done. All done.', ...ENDED]);
+    });
+    assert.equal(mem.adapter.promptWithdrawn(mem.threadId), false, 'nothing announced, nothing at work');
+    mem.adapter.yieldToPrompt(mem.threadId);
+    assert.equal(mem.adapter.promptWithdrawn(mem.threadId), false, 'announced, but agy idle: the send simply failed');
+
+    // A call reports done without output and its turn ends; the output comes
+    // afterwards (agy can send it after the prompt's response). It still
+    // lands on the call's card, also turns later, and only once.
+    from = mem.events.length;
+    scene((tick) => {
+      call('m1');
+      done('m1');
+      thought('Done.');
+      stepEnds();
+      assert.deepEqual(tick(2_000), ['status running', 'init by itself', 'call m1', 'result of m1: run m1', 'thinking: Done.', ...ENDED]);
+    });
+    assert.equal(session.toolCalls.get('m1')?.awaitingOutput, true);
+    await withTimeout(mem.adapter.sendTurn({ threadId: mem.threadId, prompt: 'plain' } as never), 'sendTurn');
+    scene((tick) => {
+      call('m1');
+      callUpdate('m1', { status: 'in_progress', rawOutput: { output: 'a repeated progress frame' } });
+      assert.deepEqual(tick(3_600_000), [], 'a repeat of the call opens no turn and changes nothing');
+      callUpdate('m1', { rawOutput: { output: 'the output, turns later' } });
+      assert.deepEqual(tick(0), ['result of m1: the output, turns later']);
+      callUpdate('m1', { rawOutput: { output: 'the output, turns later' } });
+      assert.deepEqual(tick(3_600_000), []);
+    });
+    await withTimeout(mem.adapter.sendTurn({ threadId: mem.threadId, prompt: 'plain' } as never), 'sendTurn');
+    assert.equal(session.toolCalls.has('m1'), false, 'with its output the call is done for good');
+    assert.equal(session.finishedCalls.has('m1'), true);
+
+    // Progress repeated after the end takes nothing back: the final output stays.
+    scene((tick) => {
+      call('n1');
+      callUpdate('n1', { status: 'in_progress', rawOutput: { output: 'one' } });
+      callUpdate('n1', { status: 'completed', rawOutput: { output: 'one two' } });
+      callUpdate('n1', { status: 'in_progress', rawOutput: { output: 'one' } });
+      callUpdate('n1', { rawOutput: { output: 'one' } });
+      stepEnds();
+      assert.deepEqual(tick(2_000), ['status running', 'init by itself', 'call n1', 'result of n1: one two', ...ENDED]);
+    });
+
+    // The process exits in the middle of a turn agy started. Its exit can be
+    // seen before the last of its output is read. The turn fails only once
+    // that output has been read: the call's real outcome is in it.
+    scene((tick) => {
+      call('h1');
+      say('Running it.');
+      session.proc.emit('exit', 3, null);
+      assert.deepEqual(tick(100), ['status running', 'init by itself', 'call h1'], 'not failed at the exit itself');
+      done('h1', 'the real output, read after the exit');
+      session.proc.emit('close', 3, null);
+      assert.deepEqual(tick(0), ['result of h1: the real output, read after the exit', 'text: Running it.', 'result error', 'error']);
+      // After that nothing counts, and nothing opens a turn.
+      thought('Too late for this.');
+      call('h2');
+      assert.deepEqual(tick(3_600_000), []);
+    });
+    assert.equal(session.selfTurn, undefined);
+    mem.adapter.disposeSession(mem.threadId);
+
+    // The same with a host that lets go of the session the moment its turn
+    // fails (as the app does), and a turn the person asked for. The pipe is
+    // never closed here (a child of agy holds it): the wait for it is bounded.
+    {
+      const hosted = await open({ prompt: 'SLOW' }, { selfTurnSettleMs: 2_000, selfTurnIdleMs: 120_000 });
+      hosted.adapter.events.on('event', (event: Event) => {
+        if (event.type === 'error') hosted.adapter.disposeSession(hosted.threadId);
+      });
+      await until(
+        () => hosted.events.some((event) => event.type === 'message' && event.message.type === 'stream_event' && event.message.event.delta.text === 'working'),
+        'the turn is running'
+      );
+      const live = (hosted.adapter as any).sessions.get(hosted.threadId);
+      const hand = (update: Record<string, unknown>) =>
+        (hosted.adapter as any).handleNotification({ proc: live.proc, session: live }, 'session/update', { update });
+      const before = hosted.events.length;
+      mock.timers.enable({ apis: ['setTimeout'] });
+      try {
+        hand({ sessionUpdate: 'tool_call', toolCallId: 'x1', name: 'run_command', kind: 'execute', title: 'run x1', rawInput: { CommandLine: 'run x1' }, status: 'in_progress' });
+        live.proc.emit('exit', 3, null);
+        hand({ sessionUpdate: 'tool_call_update', toolCallId: 'x1', status: 'completed', rawOutput: { output: 'the real output, read after the exit' } });
+        mock.timers.tick(499);
+        assert.equal(told(hosted.events.slice(before)).includes('result error'), false, 'still waiting for the output to end');
+        mock.timers.tick(1);
+      } finally {
+        mock.timers.reset();
+      }
+      // The failed RPC is handled a moment later, off the mocked clock.
+      await until(() => told(hosted.events.slice(before)).includes('error'), 'the turn failed');
+      assert.deepEqual(told(hosted.events.slice(before)), [
+        'text: working',
+        'call x1',
+        // Read after the exit, and still before the turn fails and the host lets go.
+        'result of x1: the real output, read after the exit',
+        'result error',
+        'error',
+      ]);
+      assert.equal(hosted.adapter.hasSession(hosted.threadId), false, 'and the host let go of the session');
+      live.proc.kill('SIGKILL');
+    }
+  }
+
+  // ── An edit that is more than the passage agy names ──────────────────────
+  {
+    const rows = Array.from({ length: 40 }, (_, index) => (index === 5 || index === 30 ? 'flag=false' : `row ${index}`));
+    const text = (lines: string[]) => `${lines.join('\n')}\n`;
+    const args = { Path: '/p/flags.txt', Target: 'flag=false', Replacement: 'flag=true' };
+    // Both occurrences changed: the card shows both, not the one the arguments name.
+    const both = antigravityToolInput('Edit', {
+      rawInput: args,
+      content: [{ type: 'diff', path: '/p/flags.txt', oldText: text(rows), newText: text(rows.map((row) => (row === 'flag=false' ? 'flag=true' : row))) }],
+    });
+    assert.equal(String(both.old_string).split('flag=false').length - 1, 2);
+    assert.equal(String(both.new_string).split('flag=true').length - 1, 2);
+    assert.ok(String(both.old_string).startsWith('row 2\n') && String(both.old_string).endsWith('row 33\n'));
+    // The named passage changed and so did another line.
+    const more = antigravityToolInput('Edit', {
+      rawInput: args,
+      content: [{ type: 'diff', path: '/p/flags.txt', oldText: text(rows), newText: text(rows.map((row, index) => (index === 5 ? 'flag=true' : index === 20 ? 'row twenty' : row))) }],
+    });
+    assert.ok(String(more.new_string).includes('flag=true') && String(more.new_string).includes('row twenty'));
+    // Only the first occurrence changed: that one replacement is the whole edit.
+    const first = antigravityToolInput('Edit', {
+      rawInput: args,
+      content: [{ type: 'diff', path: '/p/flags.txt', oldText: text(rows), newText: text(rows.map((row, index) => (index === 5 ? 'flag=true' : row))) }],
+    });
+    assert.equal(first.old_string, 'flag=false');
+    assert.equal(first.new_string, 'flag=true');
+    // Only the second occurrence changed: the arguments would point at the wrong line.
+    const second = antigravityToolInput('Edit', {
+      rawInput: args,
+      content: [{ type: 'diff', path: '/p/flags.txt', oldText: text(rows), newText: text(rows.map((row, index) => (index === 30 ? 'flag=true' : row))) }],
+    });
+    assert.equal(second.old_string, 'row 27\nrow 28\nrow 29\nflag=false\nrow 31\nrow 32\nrow 33\n');
+  }
+
+  // ── The ACP client: a response before the lines that follow it ───────────
+  {
+    const { AcpJsonRpcClient } = await import('../../src/electron/libs/provider/acp-json-rpc-client');
+    const { EventEmitter } = await import('node:events');
+    const heardIn = async (options?: { responsesFirst?: boolean }) => {
+      const order: string[] = [];
+      const stdout = Object.assign(new EventEmitter(), { setEncoding() {} });
+      const proc = Object.assign(new EventEmitter(), { stdout, stdin: { writable: true, write() {} } });
+      const rpc = new AcpJsonRpcClient(proc as never, (method) => order.push(method), () => undefined, () => undefined, options);
+      const answered = rpc.request('session/prompt').then(() => order.push('the caller'));
+      // One read: the response, two notifications, another response, a notification.
+      const later = rpc.request('session/set_mode').then(() => order.push('the second caller'));
+      stdout.emit(
+        'data',
+        '{"jsonrpc":"2.0","id":1,"result":{}}\n{"jsonrpc":"2.0","method":"first"}\n{"jsonrpc":"2.0","method":"second"}\n{"jsonrpc":"2.0","id":2,"result":{}}\n{"jsonrpc":"2.0","method":"third"}\n{"jsonrpc":"2.0","method":"cut'
+      );
+      stdout.emit('data', ' off"}\n');
+      await Promise.all([answered, later]);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return order;
+    };
+    assert.deepEqual(await heardIn({ responsesFirst: true }), ['the caller', 'first', 'second', 'the second caller', 'third', 'cut off']);
+    // Every other agent's client reads as it always did.
+    assert.deepEqual(await heardIn(), ['first', 'second', 'third', 'cut off', 'the caller', 'the second caller']);
   }
 
   // ── Tools agy names differently, thinking, plans, its own title and mode ─

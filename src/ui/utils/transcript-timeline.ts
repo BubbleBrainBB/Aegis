@@ -215,7 +215,45 @@ function opensWokenTurn(item: TranscriptTimelineItem, turnFinished: boolean): bo
   );
 }
 
-function markAssistantMessagePresentation(items: TranscriptTimelineItem[]): void {
+/**
+ * Where the turn that may still be running begins: the latest prompt bubble
+ * (steered or not, the transcript splits the work at every bubble), or, later
+ * than that, the mark that opens a turn the agent started by itself. Work
+ * above it belongs to turns that are over, and the live timer counts from it.
+ */
+export function findActiveTurnStartIndex(messages: StreamMessage[]): number {
+  let start = -1;
+  let turnFinished = false;
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (!message || message.parentToolUseId) continue;
+    if (message.type === 'user_prompt') {
+      start = index;
+      turnFinished = false;
+    } else if (opensWokenTurn({ type: 'message', message, originalIndex: index }, turnFinished)) {
+      start = index;
+      turnFinished = false;
+    } else if (message.type === 'result') {
+      turnFinished = true;
+    }
+  }
+  return start;
+}
+
+/**
+ * The same kind of turn in a transcript that has no mark for it: the agent's
+ * own work or words after a turn's result, with no prompt between. When it
+ * began, if the item says.
+ */
+function unmarkedWokenTurnStart(item: TranscriptTimelineItem, turnFinished: boolean): { startedAt?: number } | null {
+  if (!turnFinished) return null;
+  if (item.type === 'work') {
+    return { startedAt: item.group.messages.map(getMessageCreatedAt).find((at) => at !== undefined) };
+  }
+  return item.message.type === 'assistant' ? { startedAt: getMessageCreatedAt(item.message) } : null;
+}
+
+function markAssistantMessagePresentation(items: TranscriptTimelineItem[], unmarkedWokenTurns = false): void {
   let currentTurnAssistantItems: Array<
     Extract<TranscriptTimelineItem, { type: 'message' }> & { message: AssistantMessage }
   > = [];
@@ -235,6 +273,11 @@ function markAssistantMessagePresentation(items: TranscriptTimelineItem[]): void
   let turnFinished = false;
 
   for (const item of items) {
+    if (unmarkedWokenTurns && unmarkedWokenTurnStart(item, turnFinished)) {
+      flushTurn();
+      currentRunBoundaryKey = null;
+      turnFinished = false;
+    }
     if (item.type !== 'message') {
       continue;
     }
@@ -357,6 +400,13 @@ interface CollapseTurnOptions {
   trailingTurn?: boolean;
   /** tool_use ids that received a tool_result anywhere in the transcript. */
   resolvedToolUseIds?: ReadonlySet<string>;
+  /** See deriveTranscriptTimelineItems. */
+  unmarkedWokenTurns?: boolean;
+  /**
+   * This turn is one the agent started by itself, from a transcript with no
+   * mark for it and so no result either. It ended on its own: nobody stopped it.
+   */
+  unmarkedWokenTurn?: boolean;
 }
 
 function collapseTurnWorkBeforeAnswer(
@@ -385,6 +435,7 @@ function collapseTurnWorkBeforeAnswer(
   const continued = options.continuedAt !== undefined;
   const interruptedTurn =
     !continued &&
+    options.unmarkedWokenTurn !== true &&
     options.trailingTurn === true &&
     options.sessionRunning !== true &&
     !hasTurnResult(turnItems) &&
@@ -500,7 +551,9 @@ function collapseTurnWorkBeforeAnswer(
     // collapsing it on the stop press would make the work the user was
     // watching vanish into the disclosure toggle.
     defaultExpanded: activeWork || interruptedTurn,
-    canCollapse: !interruptedTurn && (hasTerminalAnswer || hasTurnResult(turnItems) || continued),
+    canCollapse:
+      !interruptedTurn &&
+      (hasTerminalAnswer || hasTurnResult(turnItems) || continued || options.unmarkedWokenTurn === true),
     disclosureResetKey: combinedWorkGroup.id,
   };
 
@@ -612,7 +665,7 @@ function collapseWorkBeforeTerminalAnswers(
   // only the final turn can be the one a stop press interrupted.
   type Chunk =
     | { kind: 'passthrough'; item: TranscriptTimelineItem }
-    | { kind: 'turn'; items: TranscriptTimelineItem[]; startedAt?: number; startedBySteer?: boolean; continuedAt?: number };
+    | { kind: 'turn'; items: TranscriptTimelineItem[]; startedAt?: number; startedBySteer?: boolean; continuedAt?: number; unmarkedWoken?: boolean };
   const chunks: Chunk[] = [];
   let currentTurnItems: TranscriptTimelineItem[] = [];
   let currentTurnStartedAt: number | undefined;
@@ -621,6 +674,7 @@ function collapseWorkBeforeTerminalAnswers(
   // The current chunk already holds a `result` (kept as a flag: scanning the
   // chunk per item would be quadratic in long turns).
   let currentTurnFinished = false;
+  let currentTurnUnmarkedWoken = false;
 
   const flushTurn = (continuedAt?: number) => {
     if (currentTurnItems.length === 0) {
@@ -632,10 +686,12 @@ function collapseWorkBeforeTerminalAnswers(
       startedAt: currentTurnStartedAt,
       ...(currentTurnStartedBySteer ? { startedBySteer: true } : {}),
       ...(continuedAt !== undefined ? { continuedAt } : {}),
+      ...(currentTurnUnmarkedWoken ? { unmarkedWoken: true } : {}),
     });
     currentTurnItems = [];
     endedGoalTurn = false;
     currentTurnFinished = false;
+    currentTurnUnmarkedWoken = false;
   };
 
   let currentRunBoundaryKey: string | null = null;
@@ -654,6 +710,15 @@ function collapseWorkBeforeTerminalAnswers(
     if (item.type === 'message' && opensWokenTurn(item, currentTurnFinished)) {
       flushTurn();
       currentTurnStartedAt = getMessageCreatedAt(item.message);
+      currentTurnStartedBySteer = false;
+      currentRunBoundaryKey = null;
+      hasAssistantRunBoundary = false;
+    }
+    const unmarked = options.unmarkedWokenTurns ? unmarkedWokenTurnStart(item, currentTurnFinished) : null;
+    if (unmarked) {
+      flushTurn();
+      currentTurnUnmarkedWoken = true;
+      currentTurnStartedAt = unmarked.startedAt;
       currentTurnStartedBySteer = false;
       currentRunBoundaryKey = null;
       hasAssistantRunBoundary = false;
@@ -712,6 +777,7 @@ function collapseWorkBeforeTerminalAnswers(
         turnStartedAt: chunk.startedAt,
         startedBySteer: chunk.startedBySteer,
         continuedAt: chunk.continuedAt,
+        unmarkedWokenTurn: chunk.unmarkedWoken,
         trailingTurn: index === lastTurnChunkIndex,
       })
     );
@@ -748,6 +814,14 @@ export function deriveTranscriptTimelineItems(
      * so grandchild activity is not lost. Default (undefined) is unchanged.
      */
     subagentScopeId?: string;
+    /**
+     * The agent can go on by itself after a turn ended (Antigravity, once a
+     * background command finishes), and transcripts stored before such turns
+     * were marked have nothing to open them: there, work that follows a
+     * turn's result with no prompt between is a turn of its own, not more of
+     * the turn above it.
+     */
+    unmarkedWokenTurns?: boolean;
   } = {}
 ): TranscriptTimelineItem[] {
   const items: TranscriptTimelineItem[] = [];
@@ -883,7 +957,7 @@ export function deriveTranscriptTimelineItems(
   }
 
   flushPendingWork();
-  markAssistantMessagePresentation(items);
+  markAssistantMessagePresentation(items, options.unmarkedWokenTurns);
   attachCompletedGoals(items, messages);
   const timeline = collapseWorkBeforeTerminalAnswers(items, {
     ...options,

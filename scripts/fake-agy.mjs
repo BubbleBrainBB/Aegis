@@ -13,9 +13,25 @@
  * - session/cancel ends the running prompt with stopReason `cancelled`;
  * - the process exits by itself when its input closes.
  *
- * What a turn does is chosen by words in the prompt (WRITE, RUN, THINK, SLOW,
- * CRASH, EXIT_AFTER, REFUSE, FAIL, PLAN, SWITCH_MODE, TITLE); anything else
- * is echoed. Environment:
+ * - an edit's `diff` entry holds the whole file before and after it, while the
+ *   arguments name the passage (`Target` → `Replacement`): a real session's
+ *   stored calls had a 29-character Target beside two 536 KB texts;
+ * - a command that outlives its wait goes on in the background: the prompt
+ *   turn ends with its call still in progress, and when the command is done
+ *   agy goes on by itself, with thoughts, calls and text outside any prompt
+ *   (a real session's stored rows show such work after three of five turns).
+ *   Every model step ends with a usage_update, sent just before its tool call;
+ *
+ * What a turn does is chosen by words in the prompt (WRITE, RUN, EDIT,
+ * WHOLEFILE, WHOLEDIFF, BACKGROUND, THINK, SLOW, CRASH, EXIT_AFTER, REFUSE,
+ * FAIL, PLAN, SWITCH_MODE, TITLE); anything else is echoed. After BACKGROUND,
+ * WAKE_HOLD stops the work agy does by itself in the middle of a step,
+ * WAKE_CRASH ends the process there, and WAKE_TWICE has it speak once more
+ * after a pause. WAKE_NOW sends the first of that work in the same write as
+ * the prompt's response; WAKE_RESEND repeats the command's tool_call before
+ * it reports back; WAKE_PARALLEL runs a quick and a slow call in one step;
+ * WAKE_RETITLE ends with an update that only renames a finished call; and
+ * WAKE_EDIT has agy edit a large file, whole-file diff and all. Environment:
  *   FAKE_AGY_LOG            jsonl file that receives every request
  *   FAKE_AGY_AUTH_REQUIRED  session/new and session/resume fail with ACP's auth_required
  *   FAKE_AGY_FAIL_RESUME    session/resume fails (the session is gone)
@@ -23,8 +39,15 @@
  *   FAKE_AGY_NO_ACP         `acp --help` fails (a CLI too old for ACP)
  *   FAKE_AGY_SLOW_INIT      initialize answers after 400ms
  *   FAKE_AGY_SESSION_ID     id of the next new session
+ *   FAKE_AGY_WAKE_MS        how long a BACKGROUND command runs after its turn (80)
+ *   FAKE_AGY_GATE_DIR       a folder: where the script would pause for a while
+ *                           (before WAKE_TWICE's second note, before
+ *                           WAKE_PARALLEL's slow call ends) it logs
+ *                           `{ reached: <name> }` and waits until a file of
+ *                           that name is there, so a test decides the order
+ *                           of events instead of racing a timer
  */
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, existsSync } from 'node:fs';
 
 const args = process.argv.slice(2);
 const LOG = process.env.FAKE_AGY_LOG;
@@ -70,9 +93,29 @@ const MODES = [
 const sessions = new Map();
 const freshState = () => ({ model: 'gemini-4-neon', level: 'high', mode: 'default', used: 0 });
 
-const send = (message) => process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`);
+/** Lines held to go out in one write, so they reach the client in one read. */
+let held = null;
+const send = (message) => {
+  const line = `${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`;
+  if (held) held.push(line);
+  else process.stdout.write(line);
+};
+const inOneWrite = (work) => {
+  held = [];
+  work();
+  const lines = held.join('');
+  held = null;
+  process.stdout.write(lines);
+};
 const update = (sessionId, payload) => send({ method: 'session/update', params: { sessionId, update: payload } });
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/** A pause of `ms`, or with FAKE_AGY_GATE_DIR a wait for the test to open the gate `name`. */
+const pauseAt = async (name, ms) => {
+  const dir = process.env.FAKE_AGY_GATE_DIR;
+  if (!dir) return sleep(ms);
+  log({ reached: name });
+  while (!existsSync(`${dir}/${name}`)) await sleep(5);
+};
 
 const configOptions = (state) => {
   const model = MODELS.find((entry) => entry.value === state.model);
@@ -118,6 +161,12 @@ const usage = (state, output) => {
   return { inputTokens: 12000, outputTokens: output, cachedReadTokens: 8000, cachedWriteTokens: 0, thoughtTokens: 0, totalTokens: 20000 + output };
 };
 
+/** A 14,000-line source file (about 600 KB), and the same file with one line changed. */
+const BIG_FILE_LINES = 14000;
+const bigFileLine = (index) => `  const entry${index} = table[${index}] ?? fallback;`;
+const bigFile = (changed) =>
+  `${Array.from({ length: BIG_FILE_LINES }, (_, index) => changed?.[index] ?? bigFileLine(index)).join('\n')}\n`;
+
 async function toolCall(sessionId, call, { diff, output }) {
   const base = { toolCallId: call.id, name: call.name, args: call.args, kind: call.kind, title: call.title, rawInput: call.args };
   update(sessionId, { sessionUpdate: 'tool_call', ...base, status: 'in_progress' });
@@ -145,6 +194,76 @@ async function toolCall(sessionId, call, { diff, output }) {
     content: diff ? [diff] : [{ type: 'content', content: { type: 'text', text: output } }],
   });
   return true;
+}
+
+/**
+ * What agy does by itself once the background command of a BACKGROUND turn is
+ * done. `finishPrompt`: with WAKE_NOW, the prompt's response, sent together
+ * with the first of this work.
+ */
+async function wake(sessionId, state, build, text, finishPrompt) {
+  const has = (word) => new RegExp(`\\b${word}\\b`).test(text);
+  const pause = Number(process.env.FAKE_AGY_WAKE_MS || 80);
+  const think = (chunk) => update(sessionId, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: chunk } });
+  const say = (chunk) => update(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: chunk } });
+  const stepEnds = () => update(sessionId, { sessionUpdate: 'usage_update', used: (state.used += 5000), size: 1048576 });
+  const reportsBack = () =>
+    update(sessionId, { sessionUpdate: 'tool_call_update', ...build, status: 'completed', rawOutput: { output: 'built in 63s', exit_code: 0 } });
+  if (finishPrompt) {
+    inOneWrite(() => {
+      finishPrompt();
+      reportsBack();
+      think('The build ');
+    });
+  } else {
+    await sleep(pause);
+    // agy repeats the call it is still running, as it does when a call changes state.
+    if (has('WAKE_RESEND')) update(sessionId, { sessionUpdate: 'tool_call', ...build, status: 'in_progress' });
+    // The command reports back, and the model takes it from there.
+    reportsBack();
+    think('The build ');
+  }
+  await sleep(10);
+  think('finished.');
+  stepEnds();
+  const check = { toolCallId: `call_check_${++callSeq}`, name: 'run_command', kind: 'execute', title: 'ls dist', rawInput: { CommandLine: 'ls dist' } };
+  update(sessionId, { sessionUpdate: 'tool_call', ...check, status: 'in_progress' });
+  const slow = { toolCallId: `call_slow_${callSeq + 1}`, name: 'run_command', kind: 'execute', title: 'codesign app', rawInput: { CommandLine: 'codesign app' } };
+  if (has('WAKE_PARALLEL')) {
+    callSeq += 1;
+    update(sessionId, { sessionUpdate: 'tool_call', ...slow, status: 'in_progress' });
+  }
+  await sleep(10);
+  update(sessionId, { sessionUpdate: 'tool_call_update', ...check, status: 'completed', rawOutput: { output: 'app.dmg', exit_code: 0 } });
+  if (has('WAKE_PARALLEL')) {
+    // The model still waits for the slow call, far longer than for the quick one.
+    await pauseAt('slow', pause * 8);
+    update(sessionId, { sessionUpdate: 'tool_call_update', ...slow, status: 'completed', rawOutput: { output: 'signed', exit_code: 0 } });
+  }
+  if (has('WAKE_EDIT')) {
+    const file = `${process.cwd()}/big.ts`;
+    const replacement = '  const entry9000 = changed;';
+    const edit = { toolCallId: `call_edit_${++callSeq}`, name: 'replace_file_content', kind: 'edit', title: 'Edit big.ts', rawInput: { Path: file, Target: bigFileLine(9000), Replacement: replacement } };
+    update(sessionId, { sessionUpdate: 'tool_call', ...edit, status: 'in_progress' });
+    update(sessionId, { sessionUpdate: 'tool_call_update', ...edit, status: 'completed', rawOutput: {}, content: [{ type: 'diff', path: file, oldText: bigFile(), newText: bigFile({ 9000: replacement }) }] });
+  }
+  say('Checking the artefact. ');
+  if (has('WAKE_HOLD')) return;
+  if (has('WAKE_CRASH')) {
+    console.error('panic: fake agy crashed');
+    await sleep(20);
+    process.exit(3);
+  }
+  await sleep(10);
+  say('The build is done: app.dmg.');
+  stepEnds();
+  // A call that finished long ago gets a new title: no status, nothing new.
+  if (has('WAKE_RETITLE')) update(sessionId, { sessionUpdate: 'tool_call_update', toolCallId: check.toolCallId, title: 'ls dist (done)' });
+  if (has('WAKE_TWICE')) {
+    await pauseAt('note', pause * 5);
+    say('One more note.');
+    stepEnds();
+  }
 }
 
 async function prompt(id, params) {
@@ -235,7 +354,46 @@ async function prompt(id, params) {
     update(sessionId, { sessionUpdate: 'tool_call', ...base, status: 'in_progress', locations: [{ path: file }] });
     update(sessionId, { sessionUpdate: 'tool_call_update', ...base, status: 'completed', rawOutput: {}, content: [{ type: 'diff', path: file, oldText: 'hello\n', newText: 'goodbye\n' }] });
   }
-  say(/\bWRITE\b|\bRUN\b|\bEDIT\b/.test(text) ? 'done' : `echo: ${text}`);
+  if (/\bBACKGROUND\b/.test(text)) {
+    // A command that outlives its wait: the turn ends with its call open.
+    const build = { toolCallId: `call_bg_${++callSeq}`, name: 'run_command', kind: 'execute', title: 'npm run build', rawInput: { CommandLine: 'npm run build', WaitMsBeforeAsync: 10000 } };
+    update(sessionId, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'I will start the build.' } });
+    update(sessionId, { sessionUpdate: 'usage_update', used: state.used + 5000, size: 1048576 });
+    update(sessionId, { sessionUpdate: 'tool_call', ...build, status: 'in_progress' });
+    await sleep(10);
+    say('Started the build; waiting for it to finish.');
+    update(sessionId, { sessionUpdate: 'usage_update', used: state.used + 10000, size: 1048576 });
+    if (/\bWAKE_NOW\b/.test(text)) {
+      void wake(sessionId, state, build, text, () => finish('end_turn'));
+      return;
+    }
+    finish('end_turn');
+    void wake(sessionId, state, build, text);
+    return;
+  }
+  if (/\bWHOLEFILE\b/.test(text)) {
+    // An edit of one line: the passage in the arguments, the whole file in the diff.
+    const file = `${process.cwd()}/big.ts`;
+    const replacement = '  const entry9000 = changed;';
+    const allowed = await toolCall(
+      sessionId,
+      { id: `call_whole_${++callSeq}`, name: 'replace_file_content', kind: 'edit', title: 'Edit big.ts', args: { Path: file, Target: bigFileLine(9000), Replacement: replacement } },
+      { diff: { type: 'diff', path: file, oldText: bigFile(), newText: bigFile({ 9000: replacement }) } }
+    );
+    if (turn.cancelled) return;
+    if (!allowed) {
+      finish('end_turn', 20);
+      return;
+    }
+  }
+  if (/\bWHOLEDIFF\b/.test(text)) {
+    // The same edit from a tool that describes it by its diff alone.
+    const file = `${process.cwd()}/big.ts`;
+    const base = { toolCallId: `call_diff_${++callSeq}`, name: 'apply_change', kind: 'edit', title: 'Edit big.ts', rawInput: { TargetFile: file } };
+    update(sessionId, { sessionUpdate: 'tool_call', ...base, status: 'in_progress', locations: [{ path: file }] });
+    update(sessionId, { sessionUpdate: 'tool_call_update', ...base, status: 'completed', rawOutput: {}, content: [{ type: 'diff', path: file, oldText: bigFile(), newText: bigFile({ 9000: '  const entry9000 = changed;' }) }] });
+  }
+  say(/\bWRITE\b|\bRUN\b|\bEDIT\b|\bWHOLEFILE\b|\bWHOLEDIFF\b/.test(text) ? 'done' : `echo: ${text}`);
   update(sessionId, { sessionUpdate: 'usage_update', used: state.used + 10000, size: 1048576 });
   finish('end_turn');
   if (/\bEXIT_AFTER\b/.test(text)) {

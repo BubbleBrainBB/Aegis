@@ -50,11 +50,40 @@ export class AcpJsonRpcError extends Error {
   }
 }
 
+/**
+ * How long a process's output is waited for after it has exited. A child of
+ * the process that kept the pipe open would otherwise hold its `close` back
+ * for as long as that child lives.
+ */
+const OUTPUT_AFTER_EXIT_MS = 500;
+
+/**
+ * Runs `done` once a process has exited AND what it wrote has been read. Its
+ * `exit` can be reported while the last of its output is still in the pipe;
+ * `close` comes after the streams have ended. Whoever ends a turn at the
+ * exit itself loses that output, a call's final outcome for one.
+ */
+export function afterOutputEnds(proc: ChildProcessWithoutNullStreams, done: () => void): void {
+  let pending = true;
+  const finish = () => {
+    if (!pending) return;
+    pending = false;
+    done();
+  };
+  proc.once('close', finish);
+  proc.once('exit', () => {
+    const timer = setTimeout(finish, OUTPUT_AFTER_EXIT_MS);
+    timer.unref?.();
+  });
+}
+
 export class AcpJsonRpcClient {
   private nextId = 1;
   private buffer = '';
   /** The process exited or failed: nothing will ever answer a new request. */
   private closed = false;
+  /** Lines after a response wait for the request's caller (see `responsesFirst`). */
+  private paused = false;
   private readonly pending = new Map<
     number,
     { method: string; resolve: (value: unknown) => void; reject: (error: Error) => void }
@@ -64,14 +93,29 @@ export class AcpJsonRpcClient {
     private readonly proc: ChildProcessWithoutNullStreams,
     private readonly onNotification: (method: string, params?: Record<string, unknown>) => void,
     private readonly onRequest: (request: AcpJsonRpcIncomingRequest) => void,
-    private readonly onParseError: (line: string, error: Error) => void
+    private readonly onParseError: (line: string, error: Error) => void,
+    /**
+     * `responsesFirst`: when one read holds a response and lines after it,
+     * the code awaiting that response runs before those lines are handled.
+     * Without it they are handled first, in the same pass, and a client that
+     * ends a turn at the response sees what followed as part of that turn.
+     *
+     * `failAfterOutput`: pending requests fail once the exited process's
+     * output has been read (see afterOutputEnds), not at the exit itself, so
+     * the updates still in its pipe reach the turn they belong to before the
+     * turn fails. New requests are refused from the exit on either way.
+     */
+    private readonly options: { responsesFirst?: boolean; failAfterOutput?: boolean } = {}
   ) {
     this.proc.stdout.setEncoding('utf8');
     this.proc.stdout.on('data', (chunk) => this.handleChunk(String(chunk)));
     this.proc.on('exit', () => {
       this.closed = true;
-      this.rejectAll(new Error('ACP process exited'));
+      if (!this.options.failAfterOutput) this.rejectAll(new Error('ACP process exited'));
     });
+    if (this.options.failAfterOutput) {
+      afterOutputEnds(this.proc, () => this.rejectAll(new Error('ACP process exited')));
+    }
     this.proc.on('error', (error) => {
       this.closed = true;
       this.rejectAll(error instanceof Error ? error : new Error(String(error)));
@@ -111,18 +155,30 @@ export class AcpJsonRpcClient {
 
   private handleChunk(chunk: string): void {
     this.buffer += chunk;
+    if (!this.paused) this.drain();
+  }
+
+  private drain(): void {
     let idx = this.buffer.indexOf('\n');
     while (idx >= 0) {
       const line = this.buffer.slice(0, idx).trim();
       this.buffer = this.buffer.slice(idx + 1);
-      if (line) {
-        this.handleLine(line);
+      if (line && this.handleLine(line) && this.options.responsesFirst) {
+        // The awaiting caller was queued when its promise settled; this is
+        // queued behind it, so it has run by the time the next line is read.
+        this.paused = true;
+        queueMicrotask(() => {
+          this.paused = false;
+          this.drain();
+        });
+        return;
       }
       idx = this.buffer.indexOf('\n');
     }
   }
 
-  private handleLine(line: string): void {
+  /** True when the line answered a pending request. */
+  private handleLine(line: string): boolean {
     let parsed: AcpJsonRpcResponse & {
       method?: string;
       params?: Record<string, unknown>;
@@ -131,23 +187,23 @@ export class AcpJsonRpcClient {
       parsed = JSON.parse(line) as typeof parsed;
     } catch (error) {
       this.onParseError(line, error as Error);
-      return;
+      return false;
     }
 
     if ((typeof parsed.id === 'number' || typeof parsed.id === 'string') && parsed.method) {
       this.onRequest({ id: parsed.id, method: parsed.method, params: parsed.params });
-      return;
+      return false;
     }
 
     if (parsed.method) {
       this.onNotification(parsed.method, parsed.params);
-      return;
+      return false;
     }
 
     if (typeof parsed.id === 'number') {
       const pending = this.pending.get(parsed.id);
       if (!pending) {
-        return;
+        return false;
       }
       this.pending.delete(parsed.id);
       if (parsed.error) {
@@ -160,10 +216,12 @@ export class AcpJsonRpcClient {
             message
           )
         );
-        return;
+        return true;
       }
       pending.resolve(parsed.result);
+      return true;
     }
+    return false;
   }
 
   private rejectAll(error: Error): void {

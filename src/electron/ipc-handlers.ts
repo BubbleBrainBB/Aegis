@@ -10909,6 +10909,13 @@ async function startSession(
 
 // 继续会话
 const sessionDispatchLeases = new Set<string>();
+/**
+ * Tasks whose message, already shown, was stopped before it was sent: Stop
+ * came while handleSessionContinue awaited its last checks. The send ends
+ * there. Without this it found its runner gone, took that for a runner in
+ * need of a restart, and ran the stopped message on a new one.
+ */
+const stoppedDispatches = new Set<string>();
 async function handleSessionContinue(
   mainWindow: BrowserWindow,
   payload: SessionContinuePayload,
@@ -10940,7 +10947,10 @@ async function handleSessionContinue(
     prepareMainBotTurn(payload.sessionId);
     return await handleSessionContinueImpl(mainWindow, payload, internal);
   }
-  finally { sessionDispatchLeases.delete(payload.sessionId); }
+  finally {
+    sessionDispatchLeases.delete(payload.sessionId);
+    stoppedDispatches.delete(payload.sessionId);
+  }
 }
 
 async function handleSessionContinueImpl(
@@ -11393,6 +11403,17 @@ async function handleSessionContinueImpl(
     sessions.updateSessionTeam(sessionId, nextTeamMode, nextTeamId);
   }
 
+  // Antigravity can be at work by itself when the message is sent (a
+  // background command just ended). That work ends here, before the prompt is
+  // stored and shown: its words go above the prompt, and its result cannot
+  // arrive while the checks below are awaited and mark this turn finished.
+  if (session.provider === 'antigravity' && nextProvider === 'antigravity') {
+    getProviderService().yieldToPrompt(sessionId);
+  }
+  // From here the message is shown, and a Stop is a Stop of this message. One
+  // pressed earlier stopped the turn before it.
+  stoppedDispatches.delete(sessionId);
+
   // 更新状态
   sessions.updateSessionStatus(sessionId, 'running');
   const hideGoalPrompt = internal?.hideGoalPrompt && nextProvider === 'claude' && parseGoalInput(prompt, false).isGoal;
@@ -11508,7 +11529,7 @@ async function handleSessionContinueImpl(
   // between planning and dispatch (see claudePlan).
   if (nextProvider === 'opencode') {
     const runtimeStatus = await getOpencodeRuntimeStatus();
-    if (!runtimeStatus.ready) {
+    if (!runtimeStatus.ready && !stoppedDispatches.has(sessionId)) {
       sessions.updateSessionStatus(sessionId, 'error');
       broadcast(mainWindow, {
         type: 'runner.error',
@@ -11521,7 +11542,7 @@ async function handleSessionContinueImpl(
     }
   } else if (nextProvider === 'kimi') {
     const runtimeStatus = await getKimiRuntimeStatus();
-    if (!runtimeStatus.ready) {
+    if (!runtimeStatus.ready && !stoppedDispatches.has(sessionId)) {
       sessions.updateSessionStatus(sessionId, 'error');
       broadcast(mainWindow, {
         type: 'runner.error',
@@ -11534,7 +11555,7 @@ async function handleSessionContinueImpl(
     }
   } else if (nextProvider === 'grok') {
     const runtimeStatus = await getGrokRuntimeStatus();
-    if (!runtimeStatus.ready) {
+    if (!runtimeStatus.ready && !stoppedDispatches.has(sessionId)) {
       sessions.updateSessionStatus(sessionId, 'error');
       broadcast(mainWindow, {
         type: 'runner.error',
@@ -11547,7 +11568,7 @@ async function handleSessionContinueImpl(
     }
   } else if (nextProvider === 'deepseek') {
     const runtimeStatus = getDeepseekRuntimeStatus();
-    if (!runtimeStatus.ready) {
+    if (!runtimeStatus.ready && !stoppedDispatches.has(sessionId)) {
       sessions.updateSessionStatus(sessionId, 'error');
       broadcast(mainWindow, {
         type: 'runner.error',
@@ -11560,7 +11581,7 @@ async function handleSessionContinueImpl(
     }
   } else if (nextProvider === 'devin') {
     const runtimeStatus = await getDevinRuntimeStatus();
-    if (!runtimeStatus.ready) {
+    if (!runtimeStatus.ready && !stoppedDispatches.has(sessionId)) {
       sessions.updateSessionStatus(sessionId, 'error');
       broadcast(mainWindow, {
         type: 'runner.error',
@@ -11573,7 +11594,7 @@ async function handleSessionContinueImpl(
     }
   } else if (nextProvider === 'mimo') {
     const runtimeStatus = await getMimoRuntimeStatus();
-    if (!runtimeStatus.ready) {
+    if (!runtimeStatus.ready && !stoppedDispatches.has(sessionId)) {
       sessions.updateSessionStatus(sessionId, 'error');
       broadcast(mainWindow, {
         type: 'runner.error',
@@ -11586,7 +11607,7 @@ async function handleSessionContinueImpl(
     }
   } else if (nextProvider === 'minimax') {
     const runtimeStatus = await getMinimaxRuntimeStatus();
-    if (!runtimeStatus.ready) {
+    if (!runtimeStatus.ready && !stoppedDispatches.has(sessionId)) {
       sessions.updateSessionStatus(sessionId, 'error');
       broadcast(mainWindow, {
         type: 'runner.error',
@@ -11599,8 +11620,19 @@ async function handleSessionContinueImpl(
     }
   } else if (nextProvider === 'antigravity') {
     const runtimeStatus = await getAntigravityRuntimeStatus();
-    if (!runtimeStatus.ready) {
-      sessions.updateSessionStatus(sessionId, 'error');
+    if (!runtimeStatus.ready && !stoppedDispatches.has(sessionId)) {
+      // The prompt announced above is not coming. If agy is at work by
+      // itself, that turn goes on and the task with it: its result will set
+      // the status, and writing `error` here would leave the row and the
+      // window telling different things. Otherwise the task failed, and the
+      // window is told so; the error alone leaves it showing as running.
+      if (!getProviderService().promptWithdrawn(sessionId)) {
+        sessions.updateSessionStatus(sessionId, 'error');
+        broadcast(mainWindow, {
+          type: 'session.status',
+          payload: { sessionId, status: 'error', hiddenFromThreads: session.hidden_from_threads === 1 },
+        });
+      }
       broadcast(mainWindow, {
         type: 'runner.error',
         payload: {
@@ -11611,6 +11643,11 @@ async function handleSessionContinueImpl(
       return false;
     }
   }
+
+  // Stop was pressed while the check above was awaited. It ended the task's
+  // run and set its status; the message stays shown and is not sent. A check
+  // that failed meanwhile does not turn the Stop's `idle` into `error`.
+  if (stoppedDispatches.has(sessionId)) return false;
 
   // While a codex turn is still streaming, a follow-up send becomes a
   // turn/steer injection into that turn. Composer config drift (model /
@@ -11813,6 +11850,9 @@ async function handleSessionContinueImpl(
 
   if (nextProvider === 'claude') {
     const runtimeStatus = await getClaudeRuntimeStatusCached(nextModel || null);
+    // Stop pressed during the check: nothing after it runs, not the rebuild
+    // of the conversation below either, and a failed check stays the Stop's idle.
+    if (stoppedDispatches.has(sessionId)) return false;
     if (!runtimeStatus.ready) {
       sessions.updateSessionStatus(sessionId, 'error');
       broadcast(mainWindow, {
@@ -11887,6 +11927,8 @@ async function handleSessionContinueImpl(
       nextResumeSessionId = bootstrap.sessionId;
       startModel = normalizeModel(bootstrap.model || nextModel || undefined);
     } catch (error) {
+      // Stopped while the conversation was rebuilt: its failure is not the task's.
+      if (stoppedDispatches.has(sessionId)) return false;
       const message = error instanceof Error ? error.message : String(error);
       sessions.updateSessionStatus(sessionId, 'error');
       broadcast(mainWindow, {
@@ -11908,6 +11950,9 @@ async function handleSessionContinueImpl(
       return false;
     }
   }
+
+  // The same for a Stop pressed while Claude's conversation was rebuilt.
+  if (stoppedDispatches.has(sessionId)) return false;
 
   startRunner(
     mainWindow,
@@ -12244,6 +12289,12 @@ function startRunner(
           sessions.updateAntigravitySessionId(session.id, message.session_id);
           if (message.model) {
             sessions.updateSessionModel(session.id, message.model);
+          }
+          // agy took up work by itself (a background command finished): the
+          // task runs again until that turn's result, as after a prompt. The
+          // status sent below is read from the row.
+          if (message.selfStarted) {
+            sessions.updateSessionStatus(session.id, 'running');
           }
         } else {
           markClaudeInit(session.id);
@@ -13530,6 +13581,8 @@ function stopComputerUseSession(mainWindow: BrowserWindow, sessionId: string): v
 }
 
 function handleSessionStop(mainWindow: BrowserWindow, sessionId: string): void {
+  // A message of this task is between being shown and being sent: it is not sent.
+  if (sessionDispatchLeases.has(sessionId)) stoppedDispatches.add(sessionId);
   finishComputerUseUi(mainWindow, sessionId);
   finishBrowserUseTurn(browserManager, sessionId);
   getComputerUseGateway()?.forgetSession(sessionId, 'stop');

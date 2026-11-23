@@ -94,13 +94,15 @@ const prompts = () => calls().filter((call) => call.method === 'session/prompt')
 /** A window of the app, as far as the handlers need one: what it is sent, and what it sends. */
 function appWindow() {
   const events = [];
+  /** Called with each event as it is sent to the window, in the handlers' own tick. */
+  const tap = { onEvent: null };
   const frame = { url: 'http://127.0.0.1:10087' };
-  const webContents = { id: 1, mainFrame: frame, isDestroyed: () => false, send: (_channel, json) => { try { events.push(JSON.parse(json)); } catch { /* not an event */ } }, on() {}, once() {} };
+  const webContents = { id: 1, mainFrame: frame, isDestroyed: () => false, send: (_channel, json) => { try { const event = JSON.parse(json); events.push(event); tap.onEvent?.(event); } catch { /* not an event */ } }, on() {}, once() {} };
   const window = loose({ isDestroyed: () => false, webContents: loose(webContents), on() {}, once() {} });
   const invoke = (channel, ...args) => handlers.get(channel)({ sender: webContents, senderFrame: frame }, ...args);
   /** An event from the app's own window, as its composer sends one. */
   const send = (event) => listeners.get('client-event')({ sender: webContents, senderFrame: frame }, JSON.stringify(event));
-  return { window, events, invoke, send };
+  return { window, events, invoke, send, tap };
 }
 
 let ipc;
@@ -108,7 +110,7 @@ let passed = false;
 try {
   ipc = require(path.join(root, 'dist-electron/electron/ipc-handlers.js'));
   const store = require(path.join(root, 'dist-electron/electron/libs/session-store.js'));
-  const { window, events, invoke, send } = appWindow();
+  const { window, events, invoke, send, tap } = appWindow();
   store.initialize();
   ipc.setupIPCHandlers(window);
   const errors = () => events.filter((event) => event.type === 'runner.error').map((event) => event.payload.message);
@@ -227,6 +229,239 @@ try {
   await until(() => prompts().length === before.prompts + 1, 'agy got the next typed message');
   await idle(task.id);
   assert.equal(prompts().at(-1), 'Still here?');
+
+  // ── 4. agy goes on by itself after a turn: the task runs again, then ends. ──
+  // The typed message starts a command that outlives the turn. When it is
+  // done agy takes the work up with no prompt from anyone; the handlers set
+  // the task running for that turn, store it marked as agy's own, and finish it.
+  const statuses = () => events.filter((event) => event.type === 'session.status' && event.payload.sessionId === task.id).map((event) => event.payload.status);
+  const seenStatuses = statuses().length;
+  const seenErrors = errors().length;
+  const storedBefore = store.getSessionHistory(task.id).length;
+  await send({ type: 'session.continue', payload: { sessionId: task.id, prompt: 'Start the build in the BACKGROUND' } });
+  const turnRows = () => store.getSessionHistory(task.id).slice(storedBefore);
+  const resultRows = () => turnRows().filter((message) => message.type === 'result');
+  await until(() => resultRows().length === 1, 'the typed turn ended');
+  await until(() => turnRows().some((message) => message.type === 'system' && message.subtype === 'init' && message.selfStarted), 'agy took the work up by itself');
+  assert.equal(store.getSession(task.id).status, 'running', 'the task runs while agy works by itself');
+  assert.equal(resultRows().length, 1, 'and that turn is still open');
+  await until(() => resultRows().length === 2, 'the turn agy started ended');
+  await idle(task.id);
+  assert.equal(store.getSession(task.id).status, 'completed');
+  assert.deepEqual(statuses().slice(seenStatuses).filter((status, index, all) => status !== all[index - 1]), ['running', 'completed', 'running', 'completed']);
+  assert.equal(prompts().at(-1), 'Start the build in the BACKGROUND', 'nothing but the typed message was sent to agy');
+  // What is stored reads as two turns: the typed one, then agy's own, each with its words and its result.
+  const rowKinds = turnRows()
+    .filter((message) => !(message.type === 'system' && message.subtype === 'token_usage'))
+    .map((message) => {
+      if (message.type === 'user_prompt' || message.type === 'result') return message.type;
+      if (message.type === 'system') return message.selfStarted ? 'init by itself' : message.subtype;
+      const block = message.message.content[0];
+      return block.type === 'tool_use' ? `call ${block.id.replace(/_\d+$/, '')}` : block.type === 'tool_result' ? `result of ${block.tool_use_id.replace(/_\d+$/, '')}` : block.type;
+    });
+  assert.deepEqual(rowKinds, [
+    'user_prompt',
+    'thinking',
+    'call call_bg',
+    'text',
+    'result of call_bg',
+    'result',
+    'init by itself',
+    'thinking',
+    'call call_check',
+    'result of call_check',
+    'text',
+    'result',
+  ]);
+  const buildResult = turnRows().find((message) => message.type === 'assistant' && message.message.content[0].type === 'tool_result' && message.message.content[0].tool_use_id.startsWith('call_bg'));
+  assert.equal(buildResult.message.content[0].content, 'built in 63s', 'the command\'s card holds its real output');
+  assert.equal(errors().length, seenErrors, 'none of this is an error');
+
+  // ── 5. A message typed while agy works by itself takes that work over. ──
+  // agy's words so far are stored and shown above the new message, and from
+  // the moment the message is shown the task runs until that message's own
+  // result: nothing of the work agy had started marks it finished.
+  {
+    const from = events.length;
+    const rowsBefore = store.getSessionHistory(task.id).length;
+    await send({ type: 'session.continue', payload: { sessionId: task.id, prompt: 'Another BACKGROUND build, WAKE_HOLD' } });
+    const streamed = (text) => events.slice(from).some((event) =>
+      event.type === 'stream.message' && event.payload.message.type === 'stream_event' && String(event.payload.message.event?.delta?.text ?? '').includes(text));
+    await until(() => streamed('Checking the artefact'), 'agy is writing by itself');
+    assert.equal(store.getSession(task.id).status, 'running');
+    await send({ type: 'session.continue', payload: { sessionId: task.id, prompt: 'And then?' } });
+    await until(() => prompts().at(-1) === 'And then?', 'agy got the message');
+    await idle(task.id);
+    const seen = events.slice(from);
+    const shownAt = seen.findIndex((event) => event.type === 'stream.user_prompt' && event.payload.prompt === 'And then?');
+    const committedAt = seen.findIndex((event) =>
+      event.type === 'stream.message' && event.payload.message.type === 'assistant' && event.payload.message.message.content[0].text === 'Checking the artefact. ');
+    assert.ok(shownAt > 0 && committedAt > 0, 'both were sent to the window');
+    assert.ok(committedAt < shownAt, 'agy\'s words are committed before the new message is shown');
+    const after = seen.slice(shownAt).filter((event) => event.type === 'session.status' && event.payload.sessionId === task.id).map((event) => event.payload.status);
+    // The task was running already; once the message is shown the only change is its own end.
+    assert.deepEqual(after.filter((status, index, all) => status !== all[index - 1]), ['completed'], 'running from the message to its result');
+    const stored = store.getSessionHistory(task.id).slice(rowsBefore);
+    const lastPrompt = stored.findLastIndex((message) => message.type === 'user_prompt');
+    assert.equal(stored.slice(lastPrompt).filter((message) => message.type === 'result').length, 1, 'one result ends it');
+    assert.equal(stored.slice(0, lastPrompt).filter((message) => message.type === 'result').length, 1, 'the work agy started reported none of its own');
+  }
+
+  // ── 6. A result that replaces an earlier one keeps its place, also after a rewrite. ──
+  // A fork or an edited message rewrites a task's stored history; rows added
+  // later go below it. A message stored again under its own id is not new.
+  {
+    const row = store.createSession({ title: 'Order', cwd: project, provider: 'antigravity' });
+    const at = Date.now() - 60_000;
+    const callResult = (content) => ({ type: 'assistant', uuid: 'result-of-build', createdAt: at + 2, message: { content: [{ type: 'tool_result', tool_use_id: 'build', content, is_error: false }] } });
+    store.addMessage(row.id, { type: 'user_prompt', prompt: 'one', createdAt: at });
+    store.addMessage(row.id, { type: 'assistant', uuid: 'call-build', createdAt: at + 1, message: { content: [{ type: 'tool_use', id: 'build', name: 'Bash', input: { command: 'npm run build' } }] } });
+    store.addMessage(row.id, callResult('npm run build'));
+    store.replaceSessionHistory(row.id, store.getSessionHistory(row.id));
+    store.addMessage(row.id, { type: 'user_prompt', prompt: 'two', createdAt: at + 10 });
+    store.addMessage(row.id, { type: 'assistant', uuid: 'answer-two', createdAt: at + 11, message: { content: [{ type: 'text', text: 'later' }] } });
+    // The command reports back: the same id, the same time.
+    store.addMessage(row.id, callResult('built in 63s'));
+    const order = store.getSessionHistory(row.id).map((message) => message.uuid ?? message.prompt);
+    assert.deepEqual(order, ['one', 'call-build', 'result-of-build', 'two', 'answer-two']);
+    assert.equal(store.getSessionHistory(row.id)[2].message.content[0].content, 'built in 63s');
+    // A new message still goes below everything.
+    store.addMessage(row.id, { type: 'assistant', uuid: 'answer-three', createdAt: at + 3, message: { content: [{ type: 'text', text: 'new' }] } });
+    assert.equal(store.getSessionHistory(row.id).at(-1).uuid, 'answer-three');
+    store.deleteSession(row.id);
+  }
+
+  // ── 7. Stop pressed after a message is shown and before it is sent. ──
+  // Between showing a message and sending it the handlers await a check of
+  // the agent's CLI. A Stop in that moment ends the task's run; the message
+  // stays shown and must not be sent after all, on this runner or a new one.
+  const cli = require(path.join(root, 'dist-electron/electron/libs/antigravity-cli.js'));
+  {
+    const sent = prompts().length;
+    // Forget the cached check, so this one takes a real moment (it starts the CLI).
+    cli.noteAntigravityAuthState('login_required');
+    cli.noteAntigravityAuthState('ready');
+    tap.onEvent = (event) => {
+      if (event.type !== 'stream.user_prompt' || event.payload.prompt !== 'Do not run this') return;
+      tap.onEvent = null;
+      // On the loop's next turn: the message is shown, its check still awaited.
+      setImmediate(() => send({ type: 'session.stop', payload: { sessionId: task.id } }));
+    };
+    const from = events.length;
+    await send({ type: 'session.continue', payload: { sessionId: task.id, prompt: 'Do not run this' } });
+    await until(() => store.getSession(task.id).status === 'idle', 'the task is stopped');
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.equal(prompts().length, sent, 'the stopped message never reached agy');
+    assert.equal(store.getSession(task.id).status, 'idle');
+    const afterStop = events.slice(from).filter((event) => event.type === 'session.status' && event.payload.sessionId === task.id).map((event) => event.payload.status);
+    assert.equal(afterStop.at(-1), 'idle', 'and the task does not start running again');
+    assert.ok(store.getSessionHistory(task.id).some((message) => message.type === 'user_prompt' && message.prompt === 'Do not run this'), 'the message stays in the conversation');
+    // The next message is sent as usual.
+    await send({ type: 'session.continue', payload: { sessionId: task.id, prompt: 'This one, please' } });
+    await until(() => prompts().length === sent + 1, 'agy got the next message');
+    await idle(task.id);
+    assert.equal(prompts().at(-1), 'This one, please');
+    assert.equal(store.getSession(task.id).status, 'completed');
+  }
+
+  // ── 8. The check fails after the message is shown. ──
+  // The window is told the task failed (the error alone left it showing the
+  // task as running), agy is not prompted, and the next message works.
+  {
+    const sent = prompts().length;
+    const seenErrors = errors().length;
+    cli.noteAntigravityAuthState('login_required', 'Authentication required');
+    const from = events.length;
+    assert.equal(await send({ type: 'session.continue', payload: { sessionId: task.id, prompt: 'While signed out' } }), undefined);
+    await until(() => errors().length === seenErrors + 1, 'the reason is given');
+    assert.match(errors().at(-1), /sign[- ]?in/i);
+    const told = events.slice(from).filter((event) => event.type === 'session.status' && event.payload.sessionId === task.id).map((event) => event.payload.status);
+    assert.equal(told.at(-1), 'error', 'the window is told the task failed');
+    assert.equal(store.getSession(task.id).status, 'error');
+    assert.equal(prompts().length, sent);
+    cli.noteAntigravityAuthState('ready');
+    await send({ type: 'session.continue', payload: { sessionId: task.id, prompt: 'Signed in again' } });
+    await until(() => prompts().length === sent + 1, 'agy got the message after sign-in');
+    await idle(task.id);
+    assert.equal(store.getSession(task.id).status, 'completed');
+  }
+
+  // ── 9. The check fails while agy is at work by itself. ──
+  // The message is not sent and the reason is given, but the task is not
+  // failed: agy's own turn goes on, and the task's row and the window say
+  // the same thing about it throughout (running, until that turn ends).
+  {
+    const from = events.length;
+    await send({ type: 'session.continue', payload: { sessionId: task.id, prompt: 'One more BACKGROUND build, WAKE_HOLD' } });
+    const streamed = (text) => events.slice(from).some((event) =>
+      event.type === 'stream.message' && event.payload.message.type === 'stream_event' && String(event.payload.message.event?.delta?.text ?? '').includes(text));
+    await until(() => streamed('Checking the artefact'), 'agy is writing by itself');
+    const sent = prompts().length;
+    const seenErrors = errors().length;
+    const mark = events.length;
+    cli.noteAntigravityAuthState('login_required', 'Authentication required');
+    await send({ type: 'session.continue', payload: { sessionId: task.id, prompt: 'While signed out and busy' } });
+    await until(() => errors().length === seenErrors + 1, 'the reason is given');
+    assert.equal(prompts().length, sent, 'the message was not sent');
+    const told = events.slice(mark).filter((event) => event.type === 'session.status' && event.payload.sessionId === task.id).map((event) => event.payload.status);
+    assert.equal(told.includes('error'), false, 'the window is not told the task failed');
+    assert.equal(store.getSession(task.id).status, 'running', 'and its row says running too');
+    // What agy had written was committed before the message was shown; nothing is announced twice.
+    const inits = store.getSessionHistory(task.id).filter((message) => message.type === 'system' && message.subtype === 'init' && message.selfStarted).length;
+    cli.noteAntigravityAuthState('ready');
+    await send({ type: 'session.continue', payload: { sessionId: task.id, prompt: 'Signed in, go on' } });
+    await until(() => prompts().at(-1) === 'Signed in, go on', 'agy got the message');
+    await idle(task.id);
+    assert.equal(store.getSession(task.id).status, 'completed');
+    assert.equal(store.getSessionHistory(task.id).filter((message) => message.type === 'system' && message.subtype === 'init' && message.selfStarted).length, inits);
+  }
+
+  // ── 10. Stop first, for every agent: a check that fails after a Stop. ──
+  // The Stop guard sits in the path every agent's send takes. Claude's cold
+  // start is the one with awaits of its own; its check is replaced here by
+  // one this test answers, always "not ready", so nothing of Claude is ever
+  // started. Stopped while the check is awaited, the task stays idle and no
+  // error is reported; not stopped, the same failed check is reported as before.
+  {
+    const claudeStatus = require(path.join(root, 'dist-electron/electron/libs/claude-runtime-status.js'));
+    const realCheck = claudeStatus.getClaudeRuntimeStatusCached;
+    const notReady = { kind: 'install_required', ready: false, runtimeInstalled: false, runtimeSource: 'unknown', requiresAnthropicAuth: true, authSatisfied: false, hasApiKey: false, loggedIn: false, authMethod: null, apiProvider: null, cliPath: null, cliVersion: null, requestedModel: null, summary: 'Claude Code is not installed', detail: 'Install Claude Code to continue.', installCommand: null };
+    let asked = 0;
+    let answer = () => {};
+    claudeStatus.getClaudeRuntimeStatusCached = () => {
+      asked += 1;
+      return new Promise((resolve) => { answer = () => resolve(notReady); });
+    };
+    try {
+      const row = store.createSession({ title: 'A Claude task', cwd: project, provider: 'claude' });
+      store.addMessage(row.id, { type: 'user_prompt', prompt: 'Earlier', createdAt: Date.now() - 5000 });
+      const seenErrors = errors().length;
+      const sending = send({ type: 'session.continue', payload: { sessionId: row.id, prompt: 'Stop this one', provider: 'claude' } });
+      await until(() => asked === 1, 'Claude\'s check is awaited');
+      assert.equal(store.getSession(row.id).status, 'running');
+      await send({ type: 'session.stop', payload: { sessionId: row.id } });
+      assert.equal(store.getSession(row.id).status, 'idle');
+      answer();
+      // The window's event is not awaited by its sender: let the send run to its end.
+      await sending;
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(store.getSession(row.id).status, 'idle', 'the failed check does not turn the Stop into an error');
+      assert.equal(errors().length, seenErrors, 'and no error is reported for a message the person stopped');
+      assert.equal(asked, 1);
+
+      // Not stopped: the failed check is reported, as it always was.
+      const again = send({ type: 'session.continue', payload: { sessionId: row.id, prompt: 'And this one', provider: 'claude' } });
+      await until(() => asked === 2, 'Claude\'s check is awaited again');
+      answer();
+      await again;
+      await until(() => store.getSession(row.id).status === 'error', 'the failed check is reported');
+      assert.equal(errors().length, seenErrors + 1);
+      // The Stop of the first message does not reach the second.
+      store.deleteSession(row.id);
+    } finally {
+      claudeStatus.getClaudeRuntimeStatusCached = realCheck;
+    }
+  }
 
   passed = true;
   console.log('antigravity-human-driven: ok');

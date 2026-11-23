@@ -11,7 +11,8 @@ import {
   resolveAntigravityBinary,
 } from '../antigravity-cli';
 import { costFields, emptyCostDetails } from '../agent-cost';
-import { AcpJsonRpcClient, AcpJsonRpcError, type AcpJsonRpcIncomingRequest } from './acp-json-rpc-client';
+import { AcpJsonRpcClient, AcpJsonRpcError, afterOutputEnds, type AcpJsonRpcIncomingRequest } from './acp-json-rpc-client';
+import { trimCommonLines } from '../../../shared/unified-diff';
 import type {
   ProviderAdapter,
   ProviderAdapterCapabilities,
@@ -48,6 +49,12 @@ import type {
  * - A tool approval's toolCall carries the tool call's own id, and a `diff`
  *   content entry for edits. Options are allow / deny.
  * - The prompt response carries the turn's token usage. agy reports no cost.
+ * - A command that outlives its wait goes on in the background: the prompt
+ *   turn ends with its call still open, and when the command is done agy goes
+ *   on by itself, sending thoughts, text and tool calls outside any prompt.
+ *   ACP has no word for such a turn, so its start and end are read off the
+ *   updates (see openSelfTurn). Every model step ends with a `usage_update`;
+ *   a step that calls tools sends the first call within 60 ms of it.
  * - agy exits by itself when its input closes.
  *
  * Usage boundary (Antigravity Additional Terms, and Google's answer in
@@ -68,12 +75,28 @@ type AntigravitySessionUpdate = Record<string, unknown> & { sessionUpdate?: unkn
 interface AntigravityToolCall {
   name: string;
   title: string;
-  /** What agy sent for the call so far; the card input is derived from it. */
+  /**
+   * What agy sent for the call so far, without its `content`: a diff there
+   * holds the whole file twice, and is read once (see `edit`) and not kept.
+   */
   source: Record<string, unknown>;
+  /** The edit read off the call's diff. */
+  edit?: { oldText: string; newText: string };
   input: Record<string, unknown>;
   createdAt: number;
   output: string;
   settled: boolean;
+  /** Settled only because its turn ended: the command may still report back. */
+  placeholder?: boolean;
+  /** How the call ended, once it reported that itself. */
+  failed?: boolean;
+  resultAt?: number;
+  /**
+   * The call reported done without any output, in a turn now over. Nothing
+   * of it is kept but this entry, so that output it sends later can still
+   * replace the title its card shows.
+   */
+  awaitingOutput?: boolean;
 }
 
 export interface AntigravityTurnUsage {
@@ -93,6 +116,23 @@ interface AntigravityTurn {
   usage: AntigravityTurnUsage | null;
   done: Promise<void>;
   resolveDone: () => void;
+}
+
+interface SelfStartedTurn {
+  startedAt: number;
+  timer?: ReturnType<typeof setTimeout>;
+  /** The model's last step is over (a usage_update), and it has not spoken or called a tool since. */
+  stepEnded: boolean;
+  /** Calls the current step made that have not finished: the model waits for them. */
+  waitingFor: Set<string>;
+  /**
+   * The host has announced a prompt: the turn goes on being followed but has
+   * no deadline. The prompt's turn takes it in; if the prompt never comes it
+   * gets its deadline back (see releaseHandover).
+   */
+  held?: boolean;
+  /** The host has been told of the turn (running, a selfStarted init). One that began while held has not. */
+  announced: boolean;
 }
 
 interface ActiveAntigravitySession {
@@ -127,11 +167,23 @@ interface ActiveAntigravitySession {
   lastCommandsSignature?: string;
   lastTitle?: string;
   toolCalls: Map<string, AntigravityToolCall>;
+  /**
+   * Ids of calls that reported their own outcome in a turn now over. Only the
+   * id is kept: a frame agy repeats for one of them later must not be taken
+   * for a new call, whose stand-in result would then replace the real one.
+   */
+  finishedCalls: Set<string>;
   turn?: AntigravityTurn;
+  /** A turn agy started by itself, between prompts. */
+  selfTurn?: SelfStartedTurn;
+  /** The host said a prompt is coming (yieldToPrompt) and it has not arrived or been given up. */
+  handover?: { timer: ReturnType<typeof setTimeout> };
   /** Settles when the latest queued turn has ended; turns never overlap. */
   turnChain: Promise<void>;
   /** agy exited outside a stop; the next turn reconnects and resumes. */
   dead?: { code: number | null; signal: NodeJS.Signals | null };
+  /** After that exit: its output has been read to the end (or given up on). */
+  drained?: boolean;
   /** Sends waiting behind the running turn. */
   queued: number;
   /** A stop is waiting for the cancelled turn's usage; nothing more is reported as a result. */
@@ -163,6 +215,8 @@ interface AntigravityConnection {
 
 /** Startup state that arrives before the session is bound, applied once it is. */
 interface SessionBinding {
+  /** The process this connection reads: a session listens to its current one only. */
+  proc: ChildProcessWithoutNullStreams;
   session?: ActiveAntigravitySession;
   commands?: AntigravitySessionUpdate;
   usage?: AntigravitySessionUpdate;
@@ -186,6 +240,23 @@ const CAPABILITIES: ProviderAdapterCapabilities = {
 
 /** How long a stop waits for the cancelled turn to report what it used. */
 const STOP_GRACE_MS = 1500;
+/**
+ * A turn agy started by itself is over when a model step has ended and no
+ * tool call followed. agy sends the call within 60 ms of the step's
+ * `usage_update`; this waits much longer than that before calling it the end.
+ */
+const SELF_TURN_SETTLE_MS = 2000;
+/** With no step running a tool, this long without a word from agy ends such a turn too. */
+const SELF_TURN_IDLE_MS = 120_000;
+/**
+ * How long the host has to send the prompt it announced. Past that the prompt
+ * is taken as given up, and what agy did meanwhile becomes a turn of its own.
+ */
+const PROMPT_HANDOVER_MS = 30_000;
+/** Calls kept because they may still report back after their turn (background commands). */
+const MAX_KEPT_CALLS = 32;
+/** Ids of finished calls remembered so a repeated frame is known as one. */
+const MAX_FINISHED_CALL_IDS = 2_000;
 const STDERR_TAIL_LINES = 12;
 
 /** agy tools seen on the wire, mapped to the Claude-shaped names the transcript renders richly. */
@@ -283,6 +354,70 @@ function findDiff(content: unknown): { path: string; oldText: string | null; new
   return null;
 }
 
+/**
+ * The passage an edit replaced and what replaced it. agy's `diff` entry holds
+ * the whole file before and after the edit (two 536 KB texts for a one-line
+ * change to a 14,000-line file), which no card, stored row or approval should
+ * carry. So the passage is the one agy names in its arguments (`Target` →
+ * `Replacement`) when that one replacement is the whole edit, which is so
+ * when it turns the diff's old text into its new text. An edit that changed
+ * more (a second occurrence, another passage) is the diff cut down to the
+ * lines that changed.
+ */
+function antigravityEdit(
+  raw: Record<string, unknown>,
+  diff: ReturnType<typeof findDiff>
+): { oldText: string; newText: string } | null {
+  const target = raw.Target;
+  const replacement = raw.Replacement;
+  if (typeof target === 'string' && typeof replacement === 'string') {
+    if (!diff) return { oldText: target, newText: replacement };
+    const at = target && diff.oldText !== null ? diff.oldText.indexOf(target) : -1;
+    if (
+      at >= 0 &&
+      diff.oldText !== null &&
+      diff.oldText.length - target.length + replacement.length === diff.newText.length &&
+      diff.oldText.slice(0, at) + replacement + diff.oldText.slice(at + target.length) === diff.newText
+    ) {
+      return { oldText: target, newText: replacement };
+    }
+  }
+  return diff ? trimCommonLines(diff.oldText ?? '', diff.newText) : null;
+}
+
+/**
+ * An update folded into what is known of a call. The diff an update carries
+ * is read here and not kept: the call remembers the edit it stands for, where
+ * the file is, and a written file's text when only the diff has it.
+ */
+function mergeToolCall(
+  existing: Pick<AntigravityToolCall, 'name' | 'source' | 'edit'> | undefined,
+  update: Record<string, unknown>
+): Pick<AntigravityToolCall, 'name' | 'source' | 'edit' | 'input'> {
+  const name = existing?.name || antigravityToolName(update);
+  const { content, ...fields } = update;
+  const source: Record<string, unknown> = { ...existing?.source, ...fields };
+  const raw = getRecord(source.rawInput) ?? getRecord(source.args) ?? {};
+  const diff = findDiff(content);
+  let edit = existing?.edit;
+  if (diff) {
+    if (name === 'Edit') edit = antigravityEdit(raw, diff) ?? edit;
+    const writes = name === 'Write' && typeof raw.Content !== 'string';
+    source.content = [{ type: 'diff', path: diff.path, ...(writes ? { newText: diff.newText } : {}) }];
+  }
+  return { name, source, edit, input: antigravityToolInput(name, source, edit) };
+}
+
+/** ACP `content` with each diff entry cut down to the lines that changed. */
+function trimDiffContent(content: unknown): unknown {
+  if (!Array.isArray(content)) return content;
+  return content.map((item) => {
+    const record = getRecord(item);
+    if (record?.type !== 'diff' || typeof record.oldText !== 'string' || typeof record.newText !== 'string') return item;
+    return { ...record, ...trimCommonLines(record.oldText, record.newText) };
+  });
+}
+
 /** What the tool returned: agy's `rawOutput.output`, else the text in ACP `content`. */
 function extractToolOutput(update: Record<string, unknown>): string {
   const raw = getString(getRecord(update.rawOutput)?.output);
@@ -319,9 +454,14 @@ function firstString(record: Record<string, unknown>, keys: readonly string[]): 
  * its arguments in PascalCase (`CommandLine`, `Path`, `Content`); what it does
  * not put in the arguments comes from the standard ACP fields of the call:
  * the edited file from its `diff` entry or first location, the edit itself
- * from the diff.
+ * from the diff's changed lines (see antigravityEdit). `knownEdit`: the edit
+ * already read off a diff the call sent earlier.
  */
-export function antigravityToolInput(name: string, update: Record<string, unknown>): Record<string, unknown> {
+export function antigravityToolInput(
+  name: string,
+  update: Record<string, unknown>,
+  knownEdit?: { oldText: string; newText: string }
+): Record<string, unknown> {
   const raw = getRecord(update.rawInput) ?? getRecord(update.args) ?? {};
   const input: Record<string, unknown> = { ...raw };
   const diff = findDiff(update.content);
@@ -341,9 +481,12 @@ export function antigravityToolInput(name: string, update: Record<string, unknow
     const content = typeof raw.Content === 'string' ? raw.Content : diff?.newText;
     if (content !== undefined) input.content = content;
   }
-  if (name === 'Edit' && diff && input.old_string === undefined && input.new_string === undefined) {
-    input.old_string = diff.oldText ?? '';
-    input.new_string = diff.newText;
+  if (name === 'Edit' && input.old_string === undefined && input.new_string === undefined) {
+    const edit = knownEdit ?? antigravityEdit(raw, diff);
+    if (edit) {
+      input.old_string = edit.oldText;
+      input.new_string = edit.newText;
+    }
   }
   return input;
 }
@@ -458,15 +601,23 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
   private sessions = new Map<string, ActiveAntigravitySession>();
   private starting = new Map<string, PendingStart>();
   private readonly stopGraceMs: number;
+  private readonly selfTurnSettleMs: number;
+  private readonly selfTurnIdleMs: number;
+  private readonly promptHandoverMs: number;
   /** Tool approvals awaiting the user. */
   private pendingPermissions = new Map<
     string,
     { threadId: string; rpc: AcpJsonRpcClient; request: AcpJsonRpcIncomingRequest; options: AcpPermissionOption[] }
   >();
 
-  /** The grace period is a parameter so tests need not wait it out. */
-  constructor(options: { stopGraceMs?: number } = {}) {
+  /** The waits are parameters so tests need not sit them out. */
+  constructor(
+    options: { stopGraceMs?: number; selfTurnSettleMs?: number; selfTurnIdleMs?: number; promptHandoverMs?: number } = {}
+  ) {
     this.stopGraceMs = options.stopGraceMs ?? STOP_GRACE_MS;
+    this.selfTurnSettleMs = options.selfTurnSettleMs ?? SELF_TURN_SETTLE_MS;
+    this.selfTurnIdleMs = options.selfTurnIdleMs ?? SELF_TURN_IDLE_MS;
+    this.promptHandoverMs = options.promptHandoverMs ?? PROMPT_HANDOVER_MS;
   }
 
   /**
@@ -503,7 +654,7 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
     // A write after agy is gone must not take the app down with EPIPE.
     proc.stdin.on('error', () => undefined);
 
-    const binding: SessionBinding = {};
+    const binding: SessionBinding = { proc };
     let rpc!: AcpJsonRpcClient;
     rpc = new AcpJsonRpcClient(
       proc,
@@ -511,7 +662,12 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
       (request) => this.handleRequest(binding, rpc, request),
       (line, error) => {
         console.warn('[Antigravity ACP] failed to parse stdout line', { line: line.slice(0, 200), error: error.message });
-      }
+      },
+      // A prompt's response ends its turn before what agy sent after it is
+      // read, however the two were split into reads.
+      // And when agy exits, a turn fails only once the last of its output
+      // has been read: the outcome of a call may still be in the pipe.
+      { responsesFirst: true, failAfterOutput: true }
     );
 
     const fail = (error: unknown): never => {
@@ -622,15 +778,31 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
     session.stderrTail = connection.stderrTail;
     session.imagePrompts = connection.imagePrompts;
     session.dead = undefined;
+    session.drained = undefined;
     binding.session = session;
 
     proc.on('exit', (code, signal) => {
       if (this.sessions.get(session.threadId) !== session || session.proc !== proc) return;
       // Not a stop (that removes the session first): agy exited on its own.
-      // A running turn fails through its rejected RPC; the next send
-      // reconnects and resumes rather than writing into a dead pipe.
+      // The next send reconnects and resumes rather than writing into a dead
+      // pipe. The turn in progress is not failed yet: see below.
       session.dead = { code, signal };
       this.dismissPermissions(session.threadId);
+    });
+    // The exit can be reported before the last of agy's output is read, and
+    // the host lets go of a session the moment its turn fails. So the turn
+    // fails only after that output: a prompt's turn through its RPC (the
+    // client waits the same way), a turn agy started by itself here.
+    afterOutputEnds(proc, () => {
+      if (this.sessions.get(session.threadId) !== session || session.proc !== proc || !session.dead) return;
+      session.drained = true;
+      this.clearHandover(session);
+      // A turn the host was never told of ends without a word, its text kept.
+      if (session.selfTurn?.announced) {
+        this.endSelfTurn(session, this.describeTurnError(session, new Error('ACP process exited')));
+      } else {
+        this.closeSelfTurn(session);
+      }
     });
 
     if (binding.commands) {
@@ -673,6 +845,7 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
         stderrTail: connection.stderrTail,
         nextBlockIndex: 0,
         toolCalls: new Map(),
+        finishedCalls: new Set(),
         turnChain: Promise.resolve(),
         queued: 0,
       };
@@ -754,7 +927,66 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
         model: session.model,
       });
     }
+    // Calls of the process that is gone will never report back, nor be repeated.
+    session.toolCalls.clear();
+    session.finishedCalls.clear();
     this.bindConnection(session, connection);
+  }
+
+  /**
+   * The host is about to send a prompt. A turn agy started by itself stops
+   * counting toward its own end here: what it wrote so far is committed, so
+   * it stands above the prompt, and no result of its own can land on the
+   * turn the prompt starts. It goes on being followed, as does work agy
+   * begins from here on (which the host is not told of), and the prompt's
+   * turn takes it all in.
+   */
+  yieldToPrompt(threadId: string): void {
+    const session = this.sessions.get(threadId);
+    if (!session || session.stopping) return;
+    const selfTurn = session.selfTurn;
+    if (selfTurn) {
+      clearTimeout(selfTurn.timer);
+      selfTurn.timer = undefined;
+      selfTurn.held = true;
+      this.finalizeStreaming(session);
+    }
+    this.clearHandover(session);
+    const timer = setTimeout(() => this.releaseHandover(session), this.promptHandoverMs);
+    timer.unref?.();
+    session.handover = { timer };
+  }
+
+  /**
+   * The prompt the host announced will not be sent (its checks failed).
+   * True when agy is at work by itself: the task then goes on running.
+   */
+  promptWithdrawn(threadId: string): boolean {
+    const session = this.sessions.get(threadId);
+    return session ? this.releaseHandover(session) : false;
+  }
+
+  /**
+   * The announced prompt did not come. A turn that was waiting for it is a
+   * turn agy started by itself again: the host is told of it if it was not,
+   * and it gets the deadline its state calls for, so it ends as any such
+   * turn does, with its words committed, its calls settled and a result
+   * that sets the task's status. True when there is such a turn.
+   */
+  private releaseHandover(session: ActiveAntigravitySession): boolean {
+    if (this.sessions.get(session.threadId) !== session || !session.handover) return false;
+    this.clearHandover(session);
+    const selfTurn = session.selfTurn;
+    if (!selfTurn?.held) return false;
+    selfTurn.held = false;
+    if (!selfTurn.announced) this.announceSelfTurn(session, selfTurn);
+    this.armSelfTurnDeadline(session, selfTurn);
+    return true;
+  }
+
+  private clearHandover(session: ActiveAntigravitySession): void {
+    clearTimeout(session.handover?.timer);
+    session.handover = undefined;
   }
 
   async sendTurn(input: ProviderSendTurnInput): Promise<void> {
@@ -799,10 +1031,13 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
     };
     session.turn = turn;
     session.status = 'running';
-    session.currentAssistant = undefined;
-    session.currentThinking = undefined;
-    // The last turn's calls are all settled; a turn starts with none.
-    session.toolCalls.clear();
+    this.clearHandover(session);
+    // A prompt sent while agy was working by itself takes that work over:
+    // what it wrote is committed, and this turn's result ends both.
+    this.dropSelfTurn(session);
+    this.finalizeStreaming(session);
+    this.settleOpenToolCalls(session);
+    this.releaseFinishedCalls(session);
     this.emit({ type: 'status_change', threadId: session.threadId, status: 'running' });
 
     try {
@@ -852,6 +1087,7 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
   private endTurn(session: ActiveAntigravitySession, turn: AntigravityTurn): void {
     session.turn = undefined;
     this.settleOpenToolCalls(session);
+    this.releaseFinishedCalls(session);
     const batch = session.carry ?? { startedAt: turn.startedAt, refused: false, usage: null };
     batch.usage = addUsage(batch.usage, turn.usage);
     batch.refused ||= turn.refused;
@@ -915,14 +1151,17 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
     session.status = 'stopped';
     session.stopping = true;
     const running = session.turn;
-    // session/cancel ends a prompt turn; between turns there is none to end.
-    if (running?.promptSent && !session.dead) {
+    // session/cancel ends a prompt turn, or the work agy took up by itself;
+    // with neither there is nothing to end.
+    if ((running?.promptSent || session.selfTurn) && !session.dead) {
       try {
         session.rpc.notify('session/cancel', { sessionId: session.providerSessionId });
       } catch {
         // ignore shutdown cancellation errors
       }
     }
+    this.dropSelfTurn(session);
+    this.clearHandover(session);
     // ACP: a cancelled turn's pending approvals are answered `cancelled`.
     this.dismissPermissions(threadId);
     if (running?.promptSent && !session.dead && this.stopGraceMs > 0) {
@@ -991,9 +1230,12 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
       // that follows emits nothing.
       this.sessions.delete(threadId);
       running?.resolveDone();
+      const workingAlone = Boolean(session.selfTurn);
+      this.dropSelfTurn(session);
+      this.clearHandover(session);
       if (!session.dead) {
         // A turn still running is cancelled before the input closes.
-        if (running?.promptSent && !session.stopping) {
+        if ((running?.promptSent || workingAlone) && !session.stopping) {
           try {
             session.rpc.notify('session/cancel', { sessionId: session.providerSessionId });
           } catch {
@@ -1178,12 +1420,22 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
       else if (update.sessionUpdate === 'usage_update') binding.usage = update;
       return;
     }
+    // A process the session has moved on from has nothing more to say to it;
+    // nor has one that exited, once its output was read to the end. Until
+    // then the turn in progress is still open and takes what is read.
+    if (session.proc !== binding.proc || (session.dead && session.drained)) return;
     this.handleSessionUpdate(session, update);
   }
 
   private handleRequest(binding: SessionBinding, rpc: AcpJsonRpcClient, request: AcpJsonRpcIncomingRequest): void {
     const session = binding.session;
-    const live = Boolean(session && this.sessions.get(session.threadId) === session && !session.stopping);
+    const live = Boolean(
+      session &&
+        this.sessions.get(session.threadId) === session &&
+        !session.stopping &&
+        !session.dead &&
+        session.proc === binding.proc
+    );
     if (request.method === 'session/request_permission') {
       if (live && session) this.handlePermissionRequest(session, rpc, request);
       else rpc.respond(request.id, { outcome: { outcome: 'cancelled' } });
@@ -1218,8 +1470,7 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
       .filter((option): option is AcpPermissionOption => Boolean(option));
     // The request repeats the tool call it gates, with the edit's diff.
     const known = session.toolCalls.get(getString(toolCall.toolCallId));
-    const toolName = known?.name || antigravityToolName(toolCall);
-    const input = antigravityToolInput(toolName, { ...known?.source, ...toolCall });
+    const { name: toolName, input } = mergeToolCall(known, toolCall);
     const command = toolName === 'Bash' ? getString(input.command) : '';
     const title = getString(toolCall.title) || known?.title || command || 'Antigravity permission request';
     const requestId = `antigravity-permission:${session.threadId}:${request.id}`;
@@ -1231,7 +1482,8 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
       title,
       toolName,
       options,
-      toolCall: { ...toolCall, title, rawInput: input },
+      // The request's own diff holds the whole file twice: the card gets the changed lines.
+      toolCall: { ...toolCall, content: trimDiffContent(toolCall.content), title, rawInput: input },
     };
     this.emit({
       type: 'permission_request',
@@ -1274,6 +1526,189 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
   // ── Session updates ──────────────────────────────────────────────────────
 
   private handleSessionUpdate(session: ActiveAntigravitySession, update: AntigravitySessionUpdate): void {
+    const kind = update.sessionUpdate;
+    // Read before the update is applied: whether this is a call not seen before.
+    const callId = getString(update.toolCallId);
+    const newCall = kind === 'tool_call' && !session.toolCalls.has(callId) && !session.finishedCalls.has(callId);
+    // A process that has exited starts nothing new with the last of its
+    // output. With no turn open, only the outcome of a call an earlier turn
+    // settled with a stand-in still counts.
+    if (session.dead && !session.turn && !session.selfTurn) {
+      if (kind === 'tool_call_update' && session.toolCalls.has(callId)) this.handleToolCallUpdate(session, update);
+      return;
+    }
+    if (!session.turn && !session.selfTurn && !session.stopping && this.startsWork(update, newCall)) {
+      this.openSelfTurn(session);
+    }
+    this.routeSessionUpdate(session, update);
+    if (session.selfTurn) this.paceSelfTurn(session, update, newCall);
+  }
+
+  // ── Turns agy starts by itself ───────────────────────────────────────────
+
+  /** Whether an update is agy at work: text, a thought, or a call not seen before. */
+  private startsWork(update: AntigravitySessionUpdate, newCall: boolean): boolean {
+    switch (update.sessionUpdate) {
+      case 'agent_message_chunk':
+      case 'agent_thought_chunk':
+        return extractTextContent(update.content) !== '';
+      case 'tool_call':
+        return newCall;
+      default:
+        return false;
+    }
+  }
+
+  /**
+   * agy took up work with no prompt running (a background command finished,
+   * say). To the host it is a turn like any other: it opens with an init
+   * marked `selfStarted`, which sets the session running and gives the work
+   * its own place in the transcript, and it ends with a result.
+   */
+  private openSelfTurn(session: ActiveAntigravitySession): void {
+    const selfTurn: SelfStartedTurn = {
+      startedAt: Date.now(),
+      stepEnded: false,
+      waitingFor: new Set(),
+      held: Boolean(session.handover),
+      announced: false,
+    };
+    session.selfTurn = selfTurn;
+    // With a prompt announced the host hears of this turn only if the prompt never comes.
+    if (!selfTurn.held) this.announceSelfTurn(session, selfTurn);
+  }
+
+  private announceSelfTurn(session: ActiveAntigravitySession, selfTurn: SelfStartedTurn): void {
+    selfTurn.announced = true;
+    session.status = 'running';
+    this.emit({ type: 'status_change', threadId: session.threadId, status: 'running' });
+    this.emit({
+      type: 'message',
+      threadId: session.threadId,
+      message: {
+        type: 'system',
+        subtype: 'init',
+        session_id: session.providerSessionId,
+        model: session.model || '',
+        permissionMode: '',
+        cwd: session.cwd,
+        tools: [],
+        selfStarted: true,
+      },
+    });
+  }
+
+  /**
+   * Follows where the turn stands and sets the deadline that ends it if agy
+   * says nothing more. The turn is in one of three places:
+   * - a model step has ended and nothing followed: a tool call comes at once
+   *   or the turn is over (the short wait);
+   * - the model waits for calls its step made: no deadline, they take as long
+   *   as they take, approval included;
+   * - otherwise the model is expected to speak: a long silence ends the turn.
+   * The deadline is worked out from that state, not from the last update:
+   * one call finishing says nothing while another the model waits for runs,
+   * and an update that changes nothing (a new title, a call of an earlier
+   * step reporting back) leaves the deadline as it is.
+   *
+   * Only two things end the wait for a call: the call's own outcome, and the
+   * end of a model step, which shows the model went on without it (a command
+   * sent to the background). Text or a thought does not: agy may speak while
+   * a call still waits for approval, and a turn ended then would report done
+   * with the approval still open.
+   */
+  private paceSelfTurn(session: ActiveAntigravitySession, update: AntigravitySessionUpdate, newCall: boolean): void {
+    const selfTurn = session.selfTurn;
+    if (!selfTurn) return;
+    switch (update.sessionUpdate) {
+      case 'usage_update':
+        // The step is over. Calls still open went on without the model (a
+        // command sent to the background): it no longer waits for them.
+        selfTurn.stepEnded = true;
+        selfTurn.waitingFor.clear();
+        break;
+      case 'agent_message_chunk':
+      case 'agent_thought_chunk':
+        if (!extractTextContent(update.content)) return;
+        selfTurn.stepEnded = false;
+        break;
+      case 'tool_call':
+      case 'tool_call_update': {
+        const id = getString(update.toolCallId);
+        const status = getString(update.status);
+        const finished = status === 'completed' || status === 'failed';
+        if (newCall) {
+          selfTurn.stepEnded = false;
+          if (!finished) selfTurn.waitingFor.add(id);
+        } else if (!finished || !selfTurn.waitingFor.delete(id)) {
+          return;
+        }
+        break;
+      }
+      default:
+        // Commands, modes, titles and plans say nothing about the turn.
+        return;
+    }
+    this.armSelfTurnDeadline(session, selfTurn);
+  }
+
+  private armSelfTurnDeadline(session: ActiveAntigravitySession, selfTurn: SelfStartedTurn): void {
+    clearTimeout(selfTurn.timer);
+    selfTurn.timer = undefined;
+    // A turn the host was not told of ends with the prompt, or when that is given up.
+    if (selfTurn.held) return;
+    if (!selfTurn.stepEnded && selfTurn.waitingFor.size > 0) return;
+    selfTurn.timer = setTimeout(
+      () => {
+        if (this.sessions.get(session.threadId) === session && session.selfTurn === selfTurn) this.endSelfTurn(session);
+      },
+      selfTurn.stepEnded ? this.selfTurnSettleMs : this.selfTurnIdleMs
+    );
+    selfTurn.timer.unref?.();
+  }
+
+  /** Commits what the turn wrote and settles its calls, without reporting an end. */
+  private closeSelfTurn(session: ActiveAntigravitySession): boolean {
+    const selfTurn = session.selfTurn;
+    if (!selfTurn) return false;
+    this.dropSelfTurn(session);
+    this.finalizeStreaming(session);
+    this.settleOpenToolCalls(session);
+    this.releaseFinishedCalls(session);
+    return true;
+  }
+
+  /** Ends the turn agy started by itself: its last words, then its result. */
+  private endSelfTurn(session: ActiveAntigravitySession, error?: Error): void {
+    const startedAt = session.selfTurn?.startedAt;
+    if (!this.closeSelfTurn(session) || startedAt === undefined) return;
+    session.status = error ? 'error' : 'completed';
+    this.emit({
+      type: 'message',
+      threadId: session.threadId,
+      message: {
+        type: 'result',
+        subtype: error ? 'error' : 'success',
+        duration_ms: Date.now() - startedAt,
+        // No prompt response reports what such a turn used.
+        ...costFields(emptyCostDetails()),
+        usage: usageFields(null),
+        ...this.modelFields(session),
+      },
+    });
+    if (error) {
+      this.emit({ type: 'error', threadId: session.threadId, error });
+    } else {
+      this.emit({ type: 'status_change', threadId: session.threadId, status: 'completed' });
+    }
+  }
+
+  private dropSelfTurn(session: ActiveAntigravitySession): void {
+    clearTimeout(session.selfTurn?.timer);
+    session.selfTurn = undefined;
+  }
+
+  private routeSessionUpdate(session: ActiveAntigravitySession, update: AntigravitySessionUpdate): void {
     switch (update.sessionUpdate) {
       case 'agent_message_chunk':
         this.emitAssistantDelta(session, extractTextContent(update.content));
@@ -1419,19 +1854,21 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
 
   private handleToolCall(session: ActiveAntigravitySession, update: AntigravitySessionUpdate): void {
     const id = getString(update.toolCallId) || uuidv4();
+    // A call that ended in a turn now over is done: a frame repeated for it is not a new call.
+    if (session.finishedCalls.has(id)) return;
     const existing = session.toolCalls.get(id);
+    if (existing?.awaitingOutput) return;
     // A first-seen call closes the current prose block so narration between
     // calls keeps its own position; a repeat must not split mid-sentence.
     if (!existing) {
       this.finalizeStreaming(session);
     }
-    const source = { ...existing?.source, ...update };
-    const name = existing?.name || antigravityToolName(update);
     const call: AntigravityToolCall = {
-      name,
+      // A repeat keeps what the call already is: when it began, what it
+      // printed, and a result that only stands in for the real one.
+      ...existing,
+      ...mergeToolCall(existing, update),
       title: getString(update.title) || existing?.title || '',
-      source,
-      input: antigravityToolInput(name, source),
       createdAt: existing?.createdAt || Date.now(),
       output: existing?.output || '',
       settled: existing?.settled || false,
@@ -1445,19 +1882,29 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
     const id = getString(update.toolCallId);
     const call = id ? session.toolCalls.get(id) : undefined;
     if (!id || !call) return;
+    if (call.awaitingOutput) {
+      // Only the output it left out is still of interest.
+      this.settleToolCall(session, id, call, update);
+      return;
+    }
 
-    call.source = { ...call.source, ...update };
     // agy retitles a call as it moves between states (a relative path while
     // it runs); the card keeps its first title and follows the input only.
-    const nextInput = antigravityToolInput(call.name, call.source);
-    if (JSON.stringify(nextInput) !== JSON.stringify(call.input)) {
-      call.input = nextInput;
+    const merged = mergeToolCall(call, update);
+    call.source = merged.source;
+    call.edit = merged.edit;
+    if (JSON.stringify(merged.input) !== JSON.stringify(call.input)) {
+      call.input = merged.input;
       this.emitToolUseMessage(session, id, call);
     }
     this.settleToolCall(session, id, call, update);
   }
 
-  /** Output as it grows, and the result once the call completes or fails. */
+  /**
+   * Output as it grows, and the result once the call completes or fails. A
+   * call that already reported its outcome and now sends output it had left
+   * out gets its result again, with that output.
+   */
   private settleToolCall(
     session: ActiveAntigravitySession,
     id: string,
@@ -1466,29 +1913,55 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
   ): void {
     const status = getString(update.status);
     const output = extractToolOutput(update);
+    if (call.settled && !call.placeholder) {
+      // The call has reported its outcome. Output it had not sent yet adds
+      // to that; a progress frame repeated after the end, or an earlier
+      // snapshot of the output, takes nothing back.
+      if (status === 'in_progress' || status === 'pending' || !output || call.output.startsWith(output)) return;
+      call.output = output;
+      this.emitToolResult(session, id, call, call.failed === true, false, true);
+      return;
+    }
     if (output && output !== call.output) {
       // Growing output snapshots feed the live tool card; a settling
       // update's output rides the result.
-      if (status === 'in_progress' && output.startsWith(call.output)) {
+      if (status === 'in_progress' && !call.settled && output.startsWith(call.output)) {
         const delta = output.slice(call.output.length);
         if (delta) this.emit({ type: 'tool_output_delta', threadId: session.threadId, toolUseId: id, delta });
       }
       call.output = output;
     }
     if (status === 'completed' || status === 'failed') {
-      this.emitToolResult(session, id, call, status === 'failed');
+      call.failed = status === 'failed';
+      this.emitToolResult(session, id, call, call.failed);
     }
   }
 
-  private emitToolResult(session: ActiveAntigravitySession, id: string, call: AntigravityToolCall, isError: boolean): void {
-    if (call.settled) return;
+  /**
+   * `placeholder`: the call is settled because its turn ended, not because it
+   * finished. Its real outcome, when agy reports one later, replaces that
+   * result in place (same uuid, same time). `again`: the call's own result is
+   * sent once more because its output arrived after it.
+   */
+  private emitToolResult(
+    session: ActiveAntigravitySession,
+    id: string,
+    call: AntigravityToolCall,
+    isError: boolean,
+    placeholder = false,
+    again = false
+  ): void {
+    if (call.settled && !again && (placeholder || !call.placeholder)) return;
     call.settled = true;
+    call.placeholder = placeholder || undefined;
+    call.resultAt ??= Date.now();
     this.emit({
       type: 'message',
       threadId: session.threadId,
       message: {
         type: 'assistant',
         uuid: `antigravity-tool-result:${session.threadId}:${id}`,
+        createdAt: call.resultAt,
         message: {
           content: [
             {
@@ -1503,10 +1976,44 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
     });
   }
 
+  /**
+   * At the end of a turn, calls that reported their own outcome are let go:
+   * what they carried (arguments, file text, output) is dropped and only
+   * their id is remembered. Two kinds stay, the latest few between them,
+   * because more may come for them after the turn: calls settled with a
+   * stand-in (the command behind them may still report back), and calls that
+   * reported done without output (agy may send it after the prompt's
+   * response has ended the turn).
+   */
+  private releaseFinishedCalls(session: ActiveAntigravitySession): void {
+    const kept: Array<[string, AntigravityToolCall]> = [];
+    for (const [id, call] of session.toolCalls) {
+      if (!call.settled) continue;
+      session.toolCalls.delete(id);
+      if (call.placeholder) {
+        kept.push([id, call]);
+      } else if (!call.output) {
+        kept.push([
+          id,
+          { name: call.name, title: call.title, source: {}, input: {}, createdAt: call.createdAt, output: '', settled: true, failed: call.failed, resultAt: call.resultAt, awaitingOutput: true },
+        ]);
+      } else {
+        session.finishedCalls.add(id);
+      }
+    }
+    const dropped = Math.max(0, kept.length - MAX_KEPT_CALLS);
+    // One let go for room is done with all the same: a frame for it later is not a new call.
+    for (const [id] of kept.slice(0, dropped)) session.finishedCalls.add(id);
+    for (const [id, call] of kept.slice(dropped)) session.toolCalls.set(id, call);
+    if (session.finishedCalls.size > MAX_FINISHED_CALL_IDS) {
+      session.finishedCalls = new Set([...session.finishedCalls].slice(-MAX_FINISHED_CALL_IDS));
+    }
+  }
+
   /** A turn that ends (or dies) with calls still open must not leave spinning cards. */
   private settleOpenToolCalls(session: ActiveAntigravitySession): void {
     for (const [id, call] of session.toolCalls) {
-      if (!call.settled) this.emitToolResult(session, id, call, false);
+      if (!call.settled) this.emitToolResult(session, id, call, false, true);
     }
   }
 
