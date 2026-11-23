@@ -6,11 +6,17 @@
 // to write to, with the goal it serves and its last report. That row stays
 // after the report was taken, so the bot can look up how a piece of work went
 // without having it in its conversation. And a few values of its own.
+// And its waits (waits.ts): one row per thing outside Aegis it asked to be
+// woken for. A row is waiting until what it waits for happens or its deadline
+// comes; then it holds how it ended until the bot's conversation took that.
+// Rows that ended stay for a while: they say how often a wait was made again.
+
+import type { MainBotWaitKind, MainBotWaitStatus } from '../../../shared/main-bot';
 
 export interface MainBotDb {
   exec(sql: string): unknown;
   prepare(sql: string): {
-    run(...params: unknown[]): { changes: number | bigint };
+    run(...params: unknown[]): { changes: number | bigint; lastInsertRowid?: number | bigint };
     get(...params: unknown[]): unknown;
     all(...params: unknown[]): unknown[];
   };
@@ -53,6 +59,114 @@ export interface MainBotDispatch {
   report: { status: string; gist: string; at: number; readAt: number | null } | null;
   /** Set once the task was found deleted. */
   goneAt: number | null;
+}
+
+/** A wait Aegis keeps for the bot. What it holds as JSON is read by waits.ts. */
+export interface MainBotWait {
+  id: number;
+  label: string;
+  kind: MainBotWaitKind;
+  /** The pull request or run; null for a time alone. */
+  target: Record<string, unknown> | null;
+  /** One name per thing waited on; null for a time alone. */
+  targetKey: string | null;
+  events: string[];
+  /** Its deadline, when it has one. */
+  by: number | null;
+  /** When it ends unheard, without one. */
+  expiresAt: number | null;
+  /** What the bot noted for itself when it set it. */
+  note: string;
+  taskId: string | null;
+  taskTitle: string | null;
+  /** How often it was made again on the same thing without the person saying so. */
+  generation: number;
+  baseline: Record<string, unknown> | null;
+  progress: Record<string, unknown> | null;
+  status: MainBotWaitStatus;
+  nextCheckAt: number | null;
+  checkedAt: number | null;
+  failures: number;
+  problem: string | null;
+  outcome: Record<string, unknown> | null;
+  createdAt: number;
+  endedAt: number | null;
+  deliveredAt: number | null;
+}
+
+interface WaitRow {
+  id: number | bigint;
+  label: string;
+  kind: string;
+  target: string | null;
+  target_key: string | null;
+  events: string | null;
+  by_at: number | bigint | null;
+  expires_at: number | bigint | null;
+  note: string;
+  task_id: string | null;
+  task_title: string | null;
+  generation: number | bigint;
+  baseline: string | null;
+  progress: string | null;
+  status: string;
+  next_check_at: number | bigint | null;
+  checked_at: number | bigint | null;
+  failures: number | bigint;
+  problem: string | null;
+  outcome: string | null;
+  created_at: number | bigint;
+  ended_at: number | bigint | null;
+  delivered_at: number | bigint | null;
+}
+
+function objectFrom(text: string | null): Record<string, unknown> | null {
+  try {
+    const parsed = text ? (JSON.parse(text) as unknown) : null;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    // Unreadable: as if nothing had been kept.
+    return null;
+  }
+}
+
+const numberOrNull = (value: number | bigint | null): number | null => (value === null ? null : Number(value));
+
+function waitFromRow(row: WaitRow): MainBotWait {
+  let events: string[] = [];
+  try {
+    const parsed = row.events ? (JSON.parse(row.events) as unknown) : [];
+    if (Array.isArray(parsed)) events = parsed.filter((item): item is string => typeof item === 'string');
+  } catch {
+    // An unreadable list holds nothing: only being merged, closed or its deadline ends such a wait.
+  }
+  const kind: MainBotWaitKind = row.kind === 'pr' || row.kind === 'run' ? row.kind : 'time';
+  const status: MainBotWaitStatus = (['waiting', 'fired', 'delivered', 'cancelled', 'expired'] as const).find((entry) => entry === row.status) ?? 'cancelled';
+  return {
+    id: Number(row.id),
+    label: row.label,
+    kind,
+    target: objectFrom(row.target),
+    targetKey: row.target_key,
+    events,
+    by: numberOrNull(row.by_at),
+    expiresAt: numberOrNull(row.expires_at),
+    note: row.note,
+    taskId: row.task_id,
+    taskTitle: row.task_title,
+    generation: Number(row.generation),
+    baseline: objectFrom(row.baseline),
+    progress: objectFrom(row.progress),
+    status,
+    nextCheckAt: numberOrNull(row.next_check_at),
+    checkedAt: numberOrNull(row.checked_at),
+    failures: Number(row.failures),
+    problem: row.problem,
+    outcome: objectFrom(row.outcome),
+    createdAt: Number(row.created_at),
+    endedAt: numberOrNull(row.ended_at),
+    deliveredAt: numberOrNull(row.delivered_at),
+  };
 }
 
 interface DispatchRow {
@@ -177,6 +291,34 @@ export class MainBotStore {
       )
     `);
     db.exec('CREATE TABLE IF NOT EXISTS main_bot_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS main_bot_waits (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        label TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        target TEXT,
+        target_key TEXT,
+        events TEXT,
+        by_at INTEGER,
+        expires_at INTEGER,
+        note TEXT NOT NULL DEFAULT '',
+        task_id TEXT,
+        task_title TEXT,
+        generation INTEGER NOT NULL DEFAULT 0,
+        baseline TEXT,
+        progress TEXT,
+        status TEXT NOT NULL DEFAULT 'waiting',
+        next_check_at INTEGER,
+        checked_at INTEGER,
+        failures INTEGER NOT NULL DEFAULT 0,
+        problem TEXT,
+        outcome TEXT,
+        created_at INTEGER NOT NULL,
+        ended_at INTEGER,
+        delivered_at INTEGER
+      )
+    `);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_main_bot_waits_status ON main_bot_waits(status)');
     // Earlier builds kept only which tasks the bot had taken on.
     if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'main_bot_tasks'").get() !== undefined) {
       db.exec(`
@@ -343,5 +485,122 @@ export class MainBotStore {
   setMeta(key: string, value: string | null): void {
     if (value === null) this.db.prepare('DELETE FROM main_bot_meta WHERE key = ?').run(key);
     else this.db.prepare('INSERT INTO main_bot_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value);
+  }
+
+  // ---- Its waits ----
+
+  addWait(input: {
+    label: string;
+    kind: MainBotWaitKind;
+    target: Record<string, unknown> | null;
+    targetKey: string | null;
+    events: string[];
+    by: number | null;
+    expiresAt: number | null;
+    note: string;
+    taskId: string | null;
+    taskTitle: string | null;
+    generation: number;
+    baseline: Record<string, unknown> | null;
+    progress: Record<string, unknown> | null;
+    nextCheckAt: number | null;
+    checkedAt: number | null;
+    at: number;
+  }): MainBotWait {
+    const done = this.db
+      .prepare(
+        `INSERT INTO main_bot_waits
+           (label, kind, target, target_key, events, by_at, expires_at, note, task_id, task_title, generation, baseline, progress, next_check_at, checked_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        input.label,
+        input.kind,
+        input.target ? JSON.stringify(input.target) : null,
+        input.targetKey,
+        JSON.stringify(input.events),
+        input.by,
+        input.expiresAt,
+        input.note,
+        input.taskId,
+        input.taskTitle,
+        input.generation,
+        input.baseline ? JSON.stringify(input.baseline) : null,
+        input.progress ? JSON.stringify(input.progress) : null,
+        input.nextCheckAt,
+        input.checkedAt,
+        input.at,
+      );
+    const row = this.db.prepare('SELECT * FROM main_bot_waits WHERE id = ?').get(Number(done.lastInsertRowid ?? 0)) as WaitRow | undefined;
+    if (row) return waitFromRow(row);
+    // A driver that does not say which row it wrote: the one just made is the newest.
+    return waitFromRow(this.db.prepare('SELECT * FROM main_bot_waits ORDER BY id DESC LIMIT 1').get() as WaitRow);
+  }
+
+  wait(id: number): MainBotWait | null {
+    const row = this.db.prepare('SELECT * FROM main_bot_waits WHERE id = ?').get(id) as WaitRow | undefined;
+    return row ? waitFromRow(row) : null;
+  }
+
+  /** The waits that stand a certain way, oldest first; without one, all of them. */
+  waits(status?: MainBotWaitStatus): MainBotWait[] {
+    const rows = status
+      ? this.db.prepare('SELECT * FROM main_bot_waits WHERE status = ? ORDER BY id').all(status)
+      : this.db.prepare('SELECT * FROM main_bot_waits ORDER BY id').all();
+    return (rows as WaitRow[]).map(waitFromRow);
+  }
+
+  /** The waits that are over, the one that ended last first. */
+  endedWaits(limit: number): MainBotWait[] {
+    return (this.db.prepare("SELECT * FROM main_bot_waits WHERE status != 'waiting' ORDER BY ended_at DESC, id DESC LIMIT ?").all(limit) as WaitRow[]).map(waitFromRow);
+  }
+
+  /** The last wait made on one thing, however it ended. */
+  latestWaitOn(targetKey: string): MainBotWait | null {
+    const row = this.db.prepare('SELECT * FROM main_bot_waits WHERE target_key = ? ORDER BY id DESC LIMIT 1').get(targetKey) as WaitRow | undefined;
+    return row ? waitFromRow(row) : null;
+  }
+
+  /** A look at what a wait is for left it waiting: when, what was seen, and when to look next. */
+  noteWaitChecked(id: number, input: { checkedAt: number | null; nextCheckAt: number | null; failures: number; problem: string | null; progress?: Record<string, unknown> | null }): void {
+    if (input.progress === undefined) {
+      this.db
+        .prepare("UPDATE main_bot_waits SET checked_at = COALESCE(?, checked_at), next_check_at = ?, failures = ?, problem = ? WHERE id = ? AND status = 'waiting'")
+        .run(input.checkedAt, input.nextCheckAt, input.failures, input.problem, id);
+      return;
+    }
+    this.db
+      .prepare("UPDATE main_bot_waits SET checked_at = COALESCE(?, checked_at), next_check_at = ?, failures = ?, problem = ?, progress = ? WHERE id = ? AND status = 'waiting'")
+      .run(input.checkedAt, input.nextCheckAt, input.failures, input.problem, input.progress ? JSON.stringify(input.progress) : null, id);
+  }
+
+  /** Have every wait on GitHub looked at with the next round. */
+  dueWaitsNow(at: number): void {
+    this.db.prepare("UPDATE main_bot_waits SET next_check_at = ? WHERE status = 'waiting' AND kind != 'time'").run(at);
+  }
+
+  /** A wait is over: what it waited for happened, or its deadline came. False when it no longer waited. */
+  fireWait(id: number, outcome: Record<string, unknown>, at: number): boolean {
+    const done = this.db
+      .prepare("UPDATE main_bot_waits SET status = 'fired', outcome = ?, ended_at = ?, next_check_at = NULL, problem = NULL WHERE id = ? AND status = 'waiting'")
+      .run(JSON.stringify(outcome), at, id);
+    return Number(done.changes) > 0;
+  }
+
+  /** A wait ends without waking the bot: called off, or left unheard for too long. False when it no longer waited. */
+  endWait(id: number, status: 'cancelled' | 'expired', at: number): boolean {
+    const done = this.db.prepare("UPDATE main_bot_waits SET status = ?, ended_at = ?, next_check_at = NULL WHERE id = ? AND status = 'waiting'").run(status, at, id);
+    return Number(done.changes) > 0;
+  }
+
+  /** The bot's conversation took how these waits ended. */
+  markWaitsDelivered(ids: number[], at: number): void {
+    for (const id of ids) this.db.prepare("UPDATE main_bot_waits SET status = 'delivered', delivered_at = ? WHERE id = ? AND status = 'fired'").run(at, id);
+  }
+
+  /** Forget waits that ended long ago. */
+  pruneWaits(before: number): void {
+    this.db.prepare("UPDATE main_bot_waits SET baseline = NULL, progress = NULL WHERE status != 'waiting' AND baseline IS NOT NULL").run();
+    this.db.prepare("DELETE FROM main_bot_waits WHERE status IN ('delivered', 'cancelled', 'expired') AND ended_at IS NOT NULL AND ended_at < ?").run(before);
   }
 }

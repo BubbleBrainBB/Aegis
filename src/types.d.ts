@@ -171,6 +171,10 @@ declare global {
     mainBotWorkflowCards: () => Promise<{ tasks: string[]; held: boolean }>;
     /** Start or Cancel on such a card: for the run it shows, at the revision it shows. */
     decideMainBotWorkflow: (taskId: string, run: { id: string; revision: number }, start: boolean) => Promise<{ ok: true } | { ok: false; error: string }>;
+    /** The waits Aegis keeps for Ask Aegis: the ones still waiting, and how the others ended. */
+    mainBotWaits: () => Promise<import('./shared/main-bot').MainBotWaitView[]>;
+    /** Cancel on a wait: it ends without waking the bot. */
+    cancelMainBotWait: (id: string) => Promise<{ ok: true } | { ok: false; error: string }>;
     sessionHandoff: (payload: {
       sessionId: string;
       targetProvider: import('./shared/types').AgentProvider;

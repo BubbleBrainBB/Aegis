@@ -112,6 +112,7 @@ app.whenReady().then(async()=>{
  const decided=[];
  let cardAsks=0;
  ipcMain.handle('main-bot-workflow-cards',()=>cardAsks++===0?{tasks:[],held:true}:{tasks:['t4'],held:false});
+ ipcMain.handle('main-bot-waits',()=>[]);
  ipcMain.handle('main-bot-decide-workflow',(_e,taskId,run,start)=>{decided.push([taskId,run,start]);return taskId==='t4'?{ok:true}:{ok:false,error:'No workflow of this task waits to be started.'}});
  const win=new BrowserWindow({width:1100,height:760,show:true,webPreferences:{backgroundThrottling:false,preload:path.join(root,'dist-electron/electron/preload.cjs')}});
  const errors=[];win.webContents.on('console-message',e=>{if(e.level==='error')errors.push(e.message)});

@@ -4,7 +4,7 @@
 import { isHumanDrivenOnlyProvider } from '../../../shared/human-driven-providers';
 import { existsSync, mkdirSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import { MAIN_BOT_NAME, MAIN_BOT_ROLE, type MainBotTaskState } from '../../../shared/main-bot';
+import { MAIN_BOT_NAME, MAIN_BOT_ROLE, mainBotWaitTitles, type MainBotTaskState, type MainBotWaitView } from '../../../shared/main-bot';
 import { opensTurn } from '../../../shared/turn-boundary';
 import { parseTurnReport, turnReportTitle } from '../../../shared/turn-report';
 import type { AgentProvider, SessionContinuePayload, SessionStartPayload } from '../../../shared/types';
@@ -29,6 +29,7 @@ import { MainBotService, NOT_SIGNED_IN, claudeForModel, localTaskState, type Mai
 import { MainBotStore, type MainBotDb } from './store';
 import { remoteStartSettings } from './start';
 import { setMainBotTools } from './tools';
+import { ghWaitProbes } from './wait-probes';
 
 /** What the main process lends the bot: the same entry points the composer and the phone use. */
 export interface MainBotDeps {
@@ -61,15 +62,23 @@ export interface MainBotDeps {
    * person did not ask.
    */
   freshThread(sessionId: string, entering: boolean, automatic: boolean): boolean;
+  /** A wait of the bot ended in a way the person is to hear of: shown as a system notification that opens its conversation. */
+  waitOver?(sessionId: string, label: string, summary: string): void;
 }
 
 const AGENTS_TTL_MS = 60_000;
 /** How often tasks on other Macs are looked at while the bot waits on one. */
 const REMOTE_CHECK_MS = 5_000;
+/** How often the bot's waits are gone through. Each is looked at only when its own time has come. */
+const WAITS_CHECK_MS = 30_000;
+/** How long after the Mac wakes up before GitHub is asked: the network takes a moment to come back. */
+const WAKE_SETTLE_MS = 15_000;
 
 let service: MainBotService | null = null;
 let deps: MainBotDeps | null = null;
 let localAgents: { at: number; agents: MainBotAgent[] } | null = null;
+/** The clock the waits are gone through by: one, however often the app sets the bot up. */
+let waitsTimer: ReturnType<typeof setInterval> | null = null;
 
 export function mainBotSession(): SessionRow | undefined {
   try {
@@ -105,10 +114,10 @@ export function mainBotTurnContext(sessionId: string): string {
 }
 
 /** A turn of a conversation is about to be sent: the bot's own may have to start on a fresh context first. */
-export function prepareMainBotTurn(sessionId: string): void {
+export function prepareMainBotTurn(sessionId: string, typed = false): void {
   if (!service || mainBotSession()?.id !== sessionId) return;
   try {
-    service.beforeMainTurn();
+    service.beforeMainTurn(typed);
   } catch (error) {
     console.error('[main-bot] could not start a fresh context:', error);
   }
@@ -169,6 +178,50 @@ export function mainBotWorkflowCards(): { tasks: string[]; held: boolean } {
 export async function decideMainBotWorkflowCard(taskId: string, run: { id: string; revision: number }, start: boolean): Promise<{ ok: true } | { ok: false; error: string }> {
   if (!service) return { ok: false, error: 'Ask Aegis is not available.' };
   return service.decideWorkflowCard(taskId, run, start).catch((failure) => ({ ok: false as const, error: String(failure) }));
+}
+
+/** The bot's waits, as its conversation lists them. */
+export function mainBotWaits(): MainBotWaitView[] {
+  try {
+    return service?.waitViews() ?? [];
+  } catch (error) {
+    console.error('[main-bot] could not list the waits:', error);
+    return [];
+  }
+}
+
+/** Cancel pressed on a wait. */
+export function cancelMainBotWait(id: string): { ok: true } | { ok: false; error: string } {
+  if (!service) return { ok: false, error: 'Ask Aegis is not available.' };
+  try {
+    return service.cancelWaitByPerson(id);
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** Whether the turn of a conversation that runs, or last ran, was begun by a wait of the bot that ended. */
+export function mainBotTurnBeganWithWait(sessionId: string): boolean {
+  try {
+    return mainBotSession()?.id === sessionId && mainState()?.turn?.wait === true;
+  } catch {
+    return false;
+  }
+}
+
+function checkMainBotWaits(all: boolean): void {
+  void service?.checkWaits({ all }).catch((failure) => console.error('[main-bot] could not look at the waits:', failure));
+}
+
+/**
+ * The Mac woke up. Timers do not count the time asleep, and what a wait is
+ * for may have happened meanwhile: everything is looked at once the network
+ * has had a moment.
+ */
+export function noteMainBotResume(): void {
+  if (!service) return;
+  const timer = setTimeout(() => checkMainBotWaits(true), WAKE_SETTLE_MS);
+  timer.unref?.();
 }
 
 /** Something changed on a Mac this one controls. */
@@ -402,7 +455,9 @@ function mainState(): ReturnType<MainBotHost['main']> {
   return {
     id: row.id,
     busy: row.status === 'running',
-    turn: opener ? { startedAt: Number(opener.createdAt ?? 0), typed: !opener.workflowPrompt } : null,
+    turn: opener
+      ? { startedAt: Number(opener.createdAt ?? 0), typed: !opener.workflowPrompt, wait: Boolean(opener.workflowPrompt) && mainBotWaitTitles(opener.prompt) !== null }
+      : null,
   };
 }
 
@@ -475,12 +530,22 @@ export function setupMainBot(needs: MainBotDeps): MainBotService {
   };
   // Beside the bot's own folder, so the person can open and correct what it noted.
   const memory = new MainBotMemory(join(needs.userDataDir, 'main-bot', 'memory'));
-  const bot = new MainBotService(new MainBotStore(sessions.getDatabase() as unknown as MainBotDb), host, memory);
+  const bot = new MainBotService(new MainBotStore(sessions.getDatabase() as unknown as MainBotDb), host, memory, {
+    probes: ghWaitProbes(),
+    waitOver: (wait, outcome) => {
+      const row = mainBotSession();
+      if (row) needs.waitOver?.(row.id, wait.label, outcome.summary);
+    },
+  });
   service = bot;
   setMainBotTools(bot, () => mainBotSession()?.id ?? null);
   // Tasks whose turn ended while the app was closed report now.
   setTimeout(() => void bot.recover().catch((failure) => console.error('[main-bot] could not recover:', failure)), 3_000);
   const timer = setInterval(noteMainBotRemoteChange, REMOTE_CHECK_MS);
   timer.unref?.();
+  // Waits: gone through by the clock, since nothing outside Aegis can call it. The first look is recover()'s.
+  if (waitsTimer) clearInterval(waitsTimer);
+  waitsTimer = setInterval(() => checkMainBotWaits(false), WAITS_CHECK_MS);
+  waitsTimer.unref?.();
   return bot;
 }

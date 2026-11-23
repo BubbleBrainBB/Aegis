@@ -4,11 +4,13 @@
 // mode, so they run without asking, the way the composer's Send does.
 
 import {
+  CANCEL_WAIT_TOOL,
   CONFIRM_WORKFLOW_TOOL,
   GET_TASK_TOOL,
   LIST_HANDED_OUT_TOOL,
   LIST_PROJECTS_TOOL,
   LIST_TASKS_TOOL,
+  LIST_WAITS_TOOL,
   MAIN_BOT_BUILTIN_TOOLS,
   MAIN_BOT_INSTRUCTIONS,
   MAIN_BOT_LIMITS,
@@ -17,10 +19,12 @@ import {
   READ_MEMORY_TOOL,
   START_TASK_TOOL,
   STOP_TASK_TOOL,
+  WAIT_FOR_TOOL,
   WRITE_MEMORY_TOOL,
 } from '../../../shared/main-bot';
 import { MAIN_BOT_MEMORY_LIMITS } from './memory';
-import type { ListTasksArgs, MainBotService, StartTaskArgs, ToolOutcome } from './service';
+import type { ListTasksArgs, MainBotService, StartTaskArgs, ToolOutcome, WaitForArgs } from './service';
+import { PR_WAIT_EVENTS, RUN_WAIT_EVENTS } from './waits';
 
 let service: MainBotService | null = null;
 let mainSessionId: (() => string | null) | null = null;
@@ -161,6 +165,53 @@ const SPECS: Array<{
       },
     },
     run: (bot, args) => bot.confirmWorkflow(args as { task: string; decision: string }),
+  },
+  {
+    name: WAIT_FOR_TOOL,
+    description:
+      'Have Aegis wake you once when something outside Aegis happens, or at a time: a wait. Aegis keeps it while you do not run, also across restarts, and wakes you with a [Wait over …] message; then the wait is over. ' +
+      'With "by" alone: at that time (a reminder). With "pr": when one pull request stands as "on" says. With "run": when one GitHub Actions run finishes. "by" beside those is the deadline: you are woken then if it has not happened; without one, the wait ends unheard after a week. ' +
+      'Aegis looks at GitHub once before it takes the wait on, with the GitHub CLI and the person\'s own login on this Mac: if that had already happened you are told at once and no wait is made; if GitHub cannot be read, no wait is made either. ' +
+      'In answer to the person, or when a task you handed out reports a pull request or a run to follow.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['label'],
+      properties: {
+        label: { type: 'string', maxLength: MAIN_BOT_LIMITS.waitLabel, description: 'What you wait for, in a few words the person will recognise, such as "Checks on the export fix" or "Call Dana".' },
+        pr: { type: 'string', description: 'One pull request on github.com: its link, or owner/repo#12.' },
+        run: { type: 'string', description: 'One GitHub Actions run: its link (https://github.com/owner/repo/actions/runs/123), or its id with "repo". The exact run a task or the person named; never "the latest one".' },
+        repo: { type: 'string', description: 'owner/repo, only beside a bare pull request number or run id.' },
+        on: {
+          type: 'array',
+          items: { type: 'string', enum: [...PR_WAIT_EVENTS, ...RUN_WAIT_EVENTS] },
+          description:
+            `What ends the wait. For a pull request: ${PR_WAIT_EVENTS.join(', ')}; left out: checks_passed and checks_failed. A review or comment counts when someone other than the person wrote it; being merged or closed always ends the wait. ` +
+            `For a run: ${RUN_WAIT_EVENTS.join(', ')}; left out: finished, however it ends.`,
+        },
+        by: { type: 'string', description: 'A date and time with its offset, such as 2026-11-06T17:00:00-05:00. The note from Aegis says what the person\'s clock reads.' },
+        note: { type: 'string', maxLength: MAIN_BOT_LIMITS.waitNote, description: 'For yourself when it wakes you, when this conversation may be gone: what the person asked for and what they need to hear.' },
+        task: { type: 'string', description: 'The task it belongs to, when there is one: the id list_tasks gives, or its exact title.' },
+      },
+    },
+    run: (bot, args) => bot.waitFor(args as unknown as WaitForArgs),
+  },
+  {
+    name: LIST_WAITS_TOOL,
+    description: 'The waits Aegis keeps for you: what each waits for, until when, how it stood when last looked at, and how the latest ones ended.',
+    parameters: { type: 'object', additionalProperties: false, properties: {} },
+    run: (bot) => bot.listWaits(),
+  },
+  {
+    name: CANCEL_WAIT_TOOL,
+    description: 'Call a wait off, when the person no longer wants it. It ends without waking you.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['wait'],
+      properties: { wait: { type: 'string', description: 'The wait: the id list_waits gives (such as w12), or its exact label.' } },
+    },
+    run: (bot, args) => bot.cancelWait(args as { wait: string }),
   },
   {
     name: READ_CONVERSATION_TOOL,

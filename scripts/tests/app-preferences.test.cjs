@@ -69,6 +69,14 @@ try {
   focused = true; n.notifySessionDone(row); n.notifySessionInput(row, 'focused', true);
   assert.equal(notices.length, 2, 'completion Always does not enable foreground input alerts');
   focused = false; n.notifySessionInput(row, 'approval', false); assert.equal(notices.length, 3);
+  // A wait of the main bot that ended: the person asked to be told, so it shows also while they are in the app.
+  focused = true; n.notifyWaitOver('main', 'Checks on #12', 'checks failed');
+  assert.equal(notices.length, 4); assert.equal(notices[3].title, 'Wait over'); assert.equal(notices[3].body, 'Checks on #12: checks failed');
+  // The turn it began is not announced a second time as "finished"; a failure still is.
+  focused = false; n.notifySessionDone(row, { announced: true }); assert.equal(notices.length, 4);
+  n.notifySessionDone({ ...row, status: 'error' }, { announced: true }); assert.equal(notices.length, 5);
+  n.setNotificationSettings({ enabled: false }); n.notifyWaitOver('main', 'Call Dana', 'It is time'); assert.equal(notices.length, 5, 'notifications switched off');
+  n.setNotificationSettings({ enabled: true });
   assert(n.isQuestionRequest('Question', {})); assert(n.isQuestionRequest('AskUserQuestion', {}));
   assert(n.isQuestionRequest('custom', { questions: [] })); assert(!n.isQuestionRequest('Bash', { command: 'ls' }));
   delete require.cache[notificationPath]; n = require(notificationPath); assert.equal(n.getNotificationSettings().inputRequired, true);

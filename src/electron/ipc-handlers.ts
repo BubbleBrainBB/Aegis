@@ -46,14 +46,15 @@ import { sanitizeReviewComments } from '../shared/review-comments';
 import { designContextText } from './design/focus';
 import { chatFolderInstructions, chatsFolderInfo, createChatFolder, noteChatFolderInstructionsDelivered, takeChatFolderInstructions } from './libs/chat-folders';
 import { startTaskSession } from './libs/main-bot/start';
-import { decideMainBotWorkflowCard, ensureMainBotSession, mainBotSession, mainBotTurnContext, mainBotWorkflowCards, noteMainBotContextUsage, noteMainBotRemoteChange, noteMainBotTurnEnded, noteMainBotWorkflowChange, prepareMainBotTurn, refreshMainBotContext, setupMainBot } from './libs/main-bot';
+import { cancelMainBotWait, decideMainBotWorkflowCard, ensureMainBotSession, mainBotSession, mainBotTurnBeganWithWait, mainBotTurnContext, mainBotWaits, mainBotWorkflowCards, noteMainBotContextUsage, noteMainBotRemoteChange, noteMainBotResume, noteMainBotTurnEnded, noteMainBotWorkflowChange, prepareMainBotTurn, refreshMainBotContext, setupMainBot } from './libs/main-bot';
+import type { MainBotWaitView } from '../shared/main-bot';
 import { setDesignProjectRoot } from './design/styles';
 import { setDesignAgentNamer, setDesignPromptSource } from './design/tools';
 import { setDesignFollowUp } from './design/project/tools';
 import { initializeToolCallerAttribution } from './libs/tool-caller-attribution';
 import { PROVIDER_LABELS } from './feishu/agent-settings';
 import { disposeSessionHttpServer, primeSessionToken, releaseKimiWidgetEntrySync, writeKimiWidgetEntry } from './libs/session-http-server';
-import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, shell, systemPreferences } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, powerMonitor, shell, systemPreferences } from 'electron';
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from 'http';
 import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, watch, writeFileSync, type FSWatcher, promises as fsPromises } from 'fs';
 import { execFile } from 'child_process';
@@ -290,6 +291,7 @@ import {
   getNotificationSettings,
   notifySessionDone,
   notifySessionInput,
+  notifyWaitOver,
   isQuestionRequest,
   setNotificationSettings,
 } from './libs/notifications';
@@ -5364,7 +5366,14 @@ function setupMainBotEntry(mainWindow: BrowserWindow): void {
     isGitRepo: (cwd) => assertGitRepo(cwd).then(() => true, () => false),
     startExtras: async (provider, prompt, cwd) => (provider === 'codex' ? codexReferences(prompt, cwd) : {}),
     freshThread: (sessionId, entering, automatic) => startMainBotFreshThread(mainWindow, sessionId, entering, automatic),
+    waitOver: notifyWaitOver,
   });
+  // Timers stand still while the Mac sleeps: its waits are looked at again when it wakes.
+  powerMonitor.removeListener('resume', noteMainBotResume);
+  powerMonitor.on('resume', noteMainBotResume);
+  ipcMainHandle('main-bot-waits', async (): Promise<MainBotWaitView[]> => mainBotWaits());
+  ipcMainHandle('main-bot-cancel-wait', async (_event, id: string) =>
+    typeof id === 'string' ? cancelMainBotWait(id) : { ok: false as const, error: 'Bad request.' });
   ipcMainHandle('main-bot-refresh-context', async (): Promise<'done' | 'pending' | 'unavailable'> => refreshMainBotContext());
   ipcMainHandle('main-bot-open', async (): Promise<SessionInfo> => buildSessionInfoFromRow(ensureMainBotSession()));
   ipcMainHandle('main-bot-session-id', async (): Promise<string | null> => mainBotSession()?.id ?? null);
@@ -5726,7 +5735,7 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
       row.status !== 'running' &&
       row.hidden_from_threads !== 1
     ) {
-      notifySessionDone(row, { backgroundWork: hasSessionBackgroundWork(row.id) });
+      notifySessionDone(row, { backgroundWork: hasSessionBackgroundWork(row.id), announced: mainBotTurnBeganWithWait(row.id) });
     }
   });
 
@@ -10937,7 +10946,7 @@ async function handleSessionContinue(
   if (mainBotSession()?.id === payload.sessionId && payload.provider && payload.provider !== 'bubble') payload = { ...payload, provider: 'bubble', model: undefined };
   try {
     // Before the session row is read: a fresh context asked for mid-turn starts with this one.
-    prepareMainBotTurn(payload.sessionId);
+    prepareMainBotTurn(payload.sessionId, !payload.workflowPrompt);
     return await handleSessionContinueImpl(mainWindow, payload, internal);
   }
   finally { sessionDispatchLeases.delete(payload.sessionId); }

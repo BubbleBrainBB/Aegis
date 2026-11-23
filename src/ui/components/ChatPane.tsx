@@ -60,6 +60,7 @@ import { SubSessionCard } from './follow-up/SubSessionCard';
 import { MainBotTaskLine } from './main-bot/MainBotTaskLine';
 import { MainBotTaskChip } from './main-bot/MainBotTaskChip';
 import { MainBotWorkflowCards } from './main-bot/MainBotWorkflowCards';
+import { MainBotWaitingList } from './main-bot/MainBotWaits';
 import { DayDivider } from './main-bot/DayDivider';
 import { dayStarts } from '../utils/conversation-days';
 import { mainBotToolKind } from '../../shared/main-bot';
@@ -2182,6 +2183,7 @@ export function ChatPane({
               }
             />
           ) : null}
+          {isMainBotChat ? <MainBotWaitingList messageCount={session.messages.length} busy={session.status === 'running'} /> : null}
           <div
             ref={scrollContainerRef}
             data-chat-scroll-container

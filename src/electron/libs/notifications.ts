@@ -58,17 +58,19 @@ export function configureNotifications(input: {
   onActivate = input.onActivate;
 }
 
-function shouldNotify(kind: 'done' | 'input' | 'approval'): boolean {
+function shouldNotify(kind: 'done' | 'input' | 'approval' | 'asked'): boolean {
   const settings = getNotificationSettings();
-  if (kind === 'done' && !settings.enabled) return false;
+  if ((kind === 'done' || kind === 'asked') && !settings.enabled) return false;
   if (kind === 'input' && !settings.inputRequired) return false;
   if (kind === 'approval' && !settings.approvalRequired) return false;
   if (!Notification.isSupported()) return false;
+  // What the person asked to be told shows wherever they are: in the app they may well be in another task.
+  if (kind === 'asked') return true;
   if ((kind === 'done' ? settings.onlyWhenUnfocused : true) && isWindowFocused()) return false;
   return true;
 }
 
-function show(title: string, body: string, target: NotificationActivateTarget, kind: 'done' | 'input' | 'approval' = 'done'): void {
+function show(title: string, body: string, target: NotificationActivateTarget, kind: 'done' | 'input' | 'approval' | 'asked' = 'done'): void {
   if (!shouldNotify(kind)) return;
   try {
     const notification = new Notification({ title, body, silent: false });
@@ -95,7 +97,22 @@ export function notifySessionInput(row: SessionRow, requestId: string, question:
     { kind: 'session', sessionId: row.id }, question ? 'input' : 'approval');
 }
 
-export function notifySessionDone(row: SessionRow, options: { backgroundWork?: boolean } = {}): void {
+/**
+ * A wait of the main bot ended: what it waited for happened, or its deadline
+ * came. The person asked to be told, so it shows also while they are in the
+ * app (they may be in another task); only switching notifications off stops
+ * it. A wait that ends unheard, or is called off, never comes here.
+ */
+export function notifyWaitOver(sessionId: string, label: string, summary: string): void {
+  show('Wait over', summary && summary !== label ? `${label}: ${summary}` : label, { kind: 'session', sessionId }, 'asked');
+}
+
+/**
+ * `announced`: what the turn was about has already been shown as a
+ * notification of its own (a wait that ended), so a plain "finished" would
+ * only say it twice. A question, a blocker or a failure still shows.
+ */
+export function notifySessionDone(row: SessionRow, options: { backgroundWork?: boolean; announced?: boolean } = {}): void {
   const failed = row.status === 'error';
   // The agent's report says how the turn ended (shared/turn-report.ts): a
   // question or blocker is input the user owes; a turn with nothing to change
@@ -113,6 +130,7 @@ export function notifySessionDone(row: SessionRow, options: { backgroundWork?: b
     );
     return;
   }
+  if (options.announced && !failed) return;
   show(
     failed ? 'Agent run failed' : 'Agent run finished',
     row.title || 'Untitled thread',
