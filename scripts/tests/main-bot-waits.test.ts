@@ -54,14 +54,14 @@ function pull(over: Partial<PullRequestSnapshot> = {}): PullRequestSnapshot {
     headSha: 'aaaaaaa1111',
     mergeable: 'mergeable',
     reviewDecision: null,
-    checks: { state: 'pending', summary: '3 of 5 checks running', failing: [] },
+    checks: { state: 'pending', summary: '3 of 5 checks running', failing: [], total: 5 },
     notes: [],
     ...over,
   };
 }
 
-const failing = (): PullRequestSnapshot['checks'] => ({ state: 'failure', summary: '1 of 5 checks failing', failing: ['build'] });
-const passing = (): PullRequestSnapshot['checks'] => ({ state: 'success', summary: 'Checks successful', failing: [] });
+const failing = (): PullRequestSnapshot['checks'] => ({ state: 'failure', summary: '1 of 5 checks failing', failing: ['build'], total: 5 });
+const passing = (): PullRequestSnapshot['checks'] => ({ state: 'success', summary: 'Checks successful', failing: [], total: 5 });
 
 function run(over: Partial<RunSnapshot> = {}): RunSnapshot {
   return { repo: 'acme/app', runId: '777', name: 'Release', title: 'v1.2.0', url: RUN_LINK, status: 'in_progress', conclusion: null, attempt: 1, branch: 'main', headSha: 'bbbbbbb', failedJobs: [], ...over };
@@ -83,7 +83,7 @@ function setup() {
     tellFails: false,
     sends: [] as Array<{ taskId: string; prompt: string }>,
     starts: 0,
-    announced: [] as Array<{ id: string; label: string; kind: string; reason: string; summary: string }>,
+    announced: [] as Array<{ id: string; label: string; kind: string; reason: string; summary: string; notice: string }>,
     pulls: new Map<string, PullRequestSnapshot | Error>(),
     runs: new Map<string, RunSnapshot | Error>(),
     /** Every time GitHub was asked, by what for. */
@@ -221,9 +221,10 @@ async function main() {
     const judge = (snapshot: PullRequestSnapshot, events: readonly string[] = checks, baseline = base, login: string | null = 'me') =>
       evaluatePullRequest({ events: events as never, snapshot, baseline, login });
     assert.equal(judge(pull()), null, 'checks still running');
-    assert.equal(judge(pull({ checks: { state: 'none', summary: 'No checks', failing: [] } })), null, 'a repository with no checks never "passes"');
+    assert.equal(judge(pull({ checks: { state: 'none', summary: 'No checks', failing: [], total: 0 } })), null, 'a repository with no checks never "passes"');
     assert.deepEqual(judge(pull({ checks: failing() }))?.events, ['checks_failed']);
-    assert.match(judge(pull({ checks: failing() }))?.summary ?? '', /checks failed \(1 of 5 checks failing: build\)/);
+    assert.equal(judge(pull({ checks: failing() }))?.summary, 'checks failed (1 of 5: build)');
+    assert.equal(judge(pull({ checks: failing() }))?.notice, 'Checks failed · 1 of 5 (build)', 'the same, as a notification says it');
     assert.deepEqual(judge(pull({ checks: passing() }))?.events, ['checks_passed']);
     assert.equal(judge(pull({ checks: passing() }), ['checks_failed']), null, 'only what was asked for');
     // Merged or closed ends any wait: nothing it waits for can still come.
@@ -313,7 +314,7 @@ async function main() {
     assert.match(world.told[0].text, /\[Wait over: "Call Dana" \(w1\)\] It is past .*the time you set\./);
     assert.match(world.told[0].text, /Your note to yourself when you set it: "They asked to be reminded\."/);
     assert.doesNotMatch(world.told[0].text, /could not tell you then/, 'on time');
-    assert.deepEqual(world.announced, [{ id: 'w1', label: 'Call Dana', kind: 'time', reason: 'deadline', summary: 'It is time' }], 'the person hears of it once');
+    assert.deepEqual(world.announced, [{ id: 'w1', label: 'Call Dana', kind: 'time', reason: 'deadline', summary: 'It is time', notice: 'It is time' }], 'the person hears of it once');
     assert.equal(store.wait(1)?.status, 'delivered');
     // Over means over: nothing wakes the bot for it again.
     tick(DAY);
@@ -387,15 +388,15 @@ async function main() {
     assert.equal(world.told.length, 1);
     assert.equal(world.told[0].label, 'Wait over: Checks on #12');
     const text = world.told[0].text;
-    assert.match(text, /What you waited for happened: checks failed \(1 of 5 checks failing: build\)\./);
+    assert.match(text, /What you waited for happened: checks failed \(1 of 5: build\)\./);
     assert.match(text, /What Aegis read from GitHub at .*:\n- Pull request acme\/app#12 \(https:\/\/github\.com\/acme\/app\/pull\/12\): open, at commit aaaaaaa\.\n- Checks: 1 of 5 checks failing \(build\)\./);
     assert.match(text, /It belongs to the task "Fix the export" \(aegis:\/\/sessions\/00000000-0000-4000-8000-000000000001\)\./);
     assert.match(text, /you may send it that with message_task/);
-    assert.deepEqual(world.announced.map((entry) => [entry.id, entry.kind, entry.reason]), [['w1', 'pr', 'event']]);
+    assert.deepEqual(world.announced.map((entry) => [entry.id, entry.kind, entry.reason, entry.notice]), [['w1', 'pr', 'event', 'Checks failed · 1 of 5 (build)']]);
     assert.equal(store.wait(2)?.status, 'waiting', 'the other wait on it goes on');
     // What the app shows of a wait that ended: how, and what Aegis read then; of one still waiting, how it stands.
     const [ended, going] = bot.waitViews();
-    assert.deepEqual([ended.status, ended.ended?.summary, ended.stands], ['delivered', 'checks failed (1 of 5 checks failing: build)', null]);
+    assert.deepEqual([ended.status, ended.ended?.summary, ended.stands], ['delivered', 'checks failed (1 of 5: build)', null]);
     assert.deepEqual(ended.facts, ['Pull request acme/app#12 (https://github.com/acme/app/pull/12): open, at commit aaaaaaa.', 'Checks: 1 of 5 checks failing (build).']);
     assert.equal(typeof ended.readAt, 'number');
     assert.deepEqual([going.status, going.stands, going.facts], ['waiting', 'no review yet', []]);
@@ -609,7 +610,8 @@ async function main() {
     assert.match(text, /@dana \(comment, /);
     assert.match(text, /\[Wait over: "Checks on #13" \(w2\)\] Its deadline/);
     assert.match(text, /GitHub could not be read now \(connect ETIMEDOUT\)\. What Aegis last read, at .*:\n- Pull request acme\/app#13/);
-    assert.deepEqual(world.announced.map((entry) => [entry.id, entry.summary]), [['w1', 'Deadline came first'], ['w2', 'Deadline came first']]);
+    // The notification says how it stood, where Aegis could read that.
+    assert.deepEqual(world.announced.map((entry) => [entry.id, entry.summary, entry.notice]), [['w1', 'Deadline came first', 'Deadline came first · no review yet'], ['w2', 'Deadline came first', 'Deadline came first']]);
   }
 
   // --- GitHub cannot be read: left alone for longer each time, shown, and no one is disturbed ---
@@ -823,7 +825,7 @@ async function main() {
     assert.deepEqual(calls[0].slice(0, 4), ['api', '--hostname', 'github.com', 'graphql']);
     assert.deepEqual(calls[0].slice(-6), ['-F', 'owner=acme', '-F', 'name=app', '-F', 'number=12']);
     assert.deepEqual([snapshot.state, snapshot.draft, snapshot.mergeable, snapshot.headSha, snapshot.reviewDecision], ['open', true, 'conflicting', 'abc1234def', 'CHANGES_REQUESTED']);
-    assert.deepEqual([snapshot.checks.state, snapshot.checks.failing], ['failure', ['build']]);
+    assert.deepEqual([snapshot.checks.state, snapshot.checks.failing, snapshot.checks.total], ['failure', ['build'], 3]);
     assert.deepEqual(snapshot.notes.map((entry) => [entry.id, entry.kind, entry.author, entry.bot, entry.body]), [
       ['R1', 'review', 'sam', false, 'src/a.ts: Rename this.'],
       ['C1', 'comment', 'vercel', true, 'Preview is ready'],

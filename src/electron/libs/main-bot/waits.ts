@@ -49,7 +49,8 @@ export interface PullRequestSnapshot {
   headSha: string;
   mergeable: 'mergeable' | 'conflicting' | 'unknown';
   reviewDecision: string | null;
-  checks: { state: PullRequestCheckState; summary: string; failing: string[] };
+  /** `total`: how many checks and statuses the commit has; `failing`: the names of the ones that failed. */
+  checks: { state: PullRequestCheckState; summary: string; failing: string[]; total: number };
   notes: WaitNote[];
 }
 
@@ -119,8 +120,10 @@ export interface WaitOutcome {
   reason: 'event' | 'deadline';
   at: number;
   events: WaitEvent[];
-  /** In a few words, for the notification and the list. */
+  /** In a few words, as the conversation and the list say it: "checks failed (1 of 14: build)". */
   summary: string;
+  /** The same as a notification's body says it: "Checks failed · 1 of 14 (build)". Absent on waits that ended before it was kept. */
+  notice?: string;
   /** What Aegis read, line by line. */
   facts: string[];
   /** What others wrote since the wait was made. */
@@ -136,6 +139,7 @@ export interface WaitOutcome {
 export interface WaitHit {
   events: WaitEvent[];
   summary: string;
+  notice: string;
   othersOnly: boolean;
   quotes: WaitNote[];
 }
@@ -254,37 +258,47 @@ export function evaluatePullRequest(input: {
   const { events, snapshot, baseline, login } = input;
   const written = newNotes(snapshot, baseline, login);
   const quotes = written.slice(-MAIN_BOT_LIMITS.waitQuotes);
-  if (snapshot.state === 'merged') return { events: ['merged'], summary: 'merged', othersOnly: false, quotes };
-  if (snapshot.state === 'closed') return { events: ['closed'], summary: 'closed without merging', othersOnly: false, quotes };
+  if (snapshot.state === 'merged') return { events: ['merged'], summary: 'merged', notice: 'Merged', othersOnly: false, quotes };
+  if (snapshot.state === 'closed') return { events: ['closed'], summary: 'closed without merging', notice: 'Closed without merging', othersOnly: false, quotes };
   const hit: WaitEvent[] = [];
   const said: string[] = [];
+  // What a notification says: the same, in its own punctuation.
+  const noted: string[] = [];
+  const add = (event: WaitEvent, text: string, notice = text) => {
+    hit.push(event);
+    said.push(text);
+    noted.push(notice);
+  };
   if (events.includes('checks_failed') && snapshot.checks.state === 'failure') {
-    hit.push('checks_failed');
-    const names = snapshot.checks.failing.slice(0, 3).join(', ');
-    said.push(`checks failed (${snapshot.checks.summary}${names ? `: ${names}` : ''})`);
+    const failing = snapshot.checks.failing;
+    const names = failing.slice(0, 3).join(', ');
+    const count = `${failing.length} of ${snapshot.checks.total}`;
+    add('checks_failed', `checks failed (${count}${names ? `: ${names}` : ''})`, `checks failed · ${count}${names ? ` (${names})` : ''}`);
   }
-  if (events.includes('checks_passed') && snapshot.checks.state === 'success') {
-    hit.push('checks_passed');
-    said.push('checks passed');
-  }
-  if (events.includes('conflict') && snapshot.mergeable === 'conflicting') {
-    hit.push('conflict');
-    said.push('merge conflict with its base branch');
-  }
+  if (events.includes('checks_passed') && snapshot.checks.state === 'success') add('checks_passed', 'checks passed');
+  if (events.includes('conflict') && snapshot.mergeable === 'conflicting') add('conflict', 'merge conflict with its base branch');
   const reviews = written.filter((note) => note.kind === 'review');
   const comments = written.filter((note) => note.kind === 'comment');
   if (events.includes('review') && reviews.length) {
-    hit.push('review');
     const last = reviews[reviews.length - 1];
-    said.push(reviews.length === 1 ? `review by ${who(last)} (${verdict(last.state)})` : `${reviews.length} new reviews, the latest by ${who(last)} (${verdict(last.state)})`);
+    const one = reviews.length === 1;
+    add(
+      'review',
+      one ? `review by ${who(last)} (${verdict(last.state)})` : `${reviews.length} new reviews, the latest by ${who(last)} (${verdict(last.state)})`,
+      one ? `review by ${who(last)} · ${verdict(last.state)}` : `${reviews.length} new reviews · the latest by ${who(last)}, ${verdict(last.state)}`,
+    );
   }
   if (events.includes('comment') && comments.length) {
-    hit.push('comment');
     const last = comments[comments.length - 1];
-    said.push(comments.length === 1 ? `comment by ${who(last)}` : `${comments.length} new comments, the latest by ${who(last)}`);
+    add('comment', comments.length === 1 ? `comment by ${who(last)}` : `${comments.length} new comments, the latest by ${who(last)}`);
   }
   if (!hit.length) return null;
-  return { events: hit, summary: said.join('; '), othersOnly: hit.every((event) => event === 'review' || event === 'comment'), quotes };
+  return { events: hit, summary: said.join('; '), notice: sentence(noted.join('; ')), othersOnly: hit.every((event) => event === 'review' || event === 'comment'), quotes };
+}
+
+/** With its first letter raised, as a notification's body begins. */
+function sentence(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 const RUN_SUCCESS = new Set(['success']);
@@ -310,7 +324,7 @@ export function evaluateRun(input: { events: WaitEvent[]; snapshot: RunSnapshot 
   if (events.includes('finished')) hit.push('finished');
   if (events.includes('failed') && !RUN_NOT_FAILED.has(conclusion)) hit.push('failed');
   if (events.includes('succeeded') && RUN_SUCCESS.has(conclusion)) hit.push('succeeded');
-  return hit.length ? { events: hit, summary: runResult(snapshot), othersOnly: false, quotes: [] } : null;
+  return hit.length ? { events: hit, summary: runResult(snapshot), notice: sentence(runResult(snapshot).replace('finished: ', 'finished · ')), othersOnly: false, quotes: [] } : null;
 }
 
 /** How a pull request stands, as lines Aegis vouches for. */
@@ -336,6 +350,19 @@ export function runFacts(snapshot: RunSnapshot): string[] {
 const MINUTE = 60_000;
 /** How long after a push its checks may take to show up: until then the pull request is looked at as often as with checks running. */
 const CHECKS_START_MS = 10 * MINUTE;
+
+/**
+ * What a notification says of a wait whose deadline came first: that, and how
+ * what it waited for stands, when Aegis could read it ("still in progress").
+ */
+export function deadlineNotice(kind: MainBotWaitKind, snapshot: PullRequestSnapshot | RunSnapshot | null, events: WaitEvent[]): string {
+  if (kind === 'time') return 'It is time';
+  if (!snapshot) return 'Deadline came first';
+  const stands = kind === 'pr'
+    ? pullRequestStands(snapshot as PullRequestSnapshot, events)
+    : runFinished(snapshot as RunSnapshot) ? runResult(snapshot as RunSnapshot) : `still ${(snapshot as RunSnapshot).status.replace(/_/g, ' ')}`;
+  return `Deadline came first · ${stands}`;
+}
 
 /** How a pull request stands for what its wait is for, in a few words: "3 of 14 checks running", "no review yet". */
 function pullRequestStands(snapshot: PullRequestSnapshot, events: WaitEvent[]): string {

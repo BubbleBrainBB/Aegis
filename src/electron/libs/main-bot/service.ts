@@ -23,6 +23,7 @@ import {
   RUN_WAIT_EVENTS,
   WAIT_MIN_CHECK_MS,
   WaitProbeError,
+  deadlineNotice,
   evaluatePullRequest,
   evaluateRun,
   findWait,
@@ -190,7 +191,8 @@ export type ToolOutcome = { ok: true; text: string } | { ok: false; error: strin
 export interface MainBotOutside {
   probes: WaitProbes;
   /** A wait ended in a way the person is to hear of: what it waited for happened, or its deadline came. */
-  waitOver?(wait: { id: string; label: string; kind: MainBotWaitKind }, outcome: { reason: 'event' | 'deadline'; summary: string }): void;
+  /** `notice`: how it ended, as a notification's body says it. */
+  waitOver?(wait: { id: string; label: string; kind: MainBotWaitKind }, outcome: { reason: 'event' | 'deadline'; summary: string; notice: string }): void;
   /** The waits changed: the app's list of them is out of date. */
   waitsChanged?(): void;
 }
@@ -1574,7 +1576,7 @@ export class MainBotService {
         stands = runFacts(run);
         hit = evaluateRun({ events, snapshot: run });
         // One that finished another way than asked for is over all the same: nothing is left to wait for.
-        if (!hit && runFinished(run)) hit = { events: [], summary: `${run.conclusion ? `finished: ${run.conclusion.replace(/_/g, ' ')}` : 'finished'}, which is not what you would wait for`, othersOnly: false, quotes: [] };
+        if (!hit && runFinished(run)) hit = { events: [], summary: `${run.conclusion ? `finished: ${run.conclusion.replace(/_/g, ' ')}` : 'finished'}, which is not what you would wait for`, notice: '', othersOnly: false, quotes: [] };
         progress = runProgress(null, run, read);
       }
       if (hit) {
@@ -1776,7 +1778,7 @@ export class MainBotService {
         if (!readable || !wait.targetKey) {
           // A time alone; or a row nothing can be read for, which only its deadline or its age ends.
           if (wait.by !== null && wait.by <= now) {
-            over = this.endWaitAtDeadline(wait, { facts: [], quotes: [], readAt: null }, now) || over;
+            over = this.endWaitAtDeadline(wait, { facts: [], quotes: [], readAt: null }, null, now) || over;
             changed = true;
           } else if (wait.by === null && (wait.expiresAt ?? 0) <= now) {
             changed = this.store.endWait(wait.id, 'expired', now) || changed;
@@ -1850,11 +1852,11 @@ export class MainBotService {
     const hit = pull ? evaluatePullRequest({ events, snapshot: pull, baseline, login }) : evaluateRun({ events, snapshot: snapshot as RunSnapshot });
     const facts = pull ? pullRequestFacts(pull) : runFacts(snapshot as RunSnapshot);
     if (hit) {
-      return this.fireWait(wait, { reason: 'event', at: now, events: hit.events, summary: hit.summary, facts, quotes: hit.quotes, othersOnly: hit.othersOnly, readAt: now });
+      return this.fireWait(wait, { reason: 'event', at: now, events: hit.events, summary: hit.summary, notice: hit.notice, facts, quotes: hit.quotes, othersOnly: hit.othersOnly, readAt: now });
     }
     if (wait.by !== null && wait.by <= now) {
       const quotes = pull ? newNotes(pull, baseline, login).slice(-MAIN_BOT_LIMITS.waitQuotes) : [];
-      return this.endWaitAtDeadline(wait, { facts, quotes, readAt: now }, now);
+      return this.endWaitAtDeadline(wait, { facts, quotes, readAt: now }, snapshot, now);
     }
     if (wait.expiresAt !== null && wait.expiresAt <= now) {
       this.store.endWait(wait.id, 'expired', now);
@@ -1872,7 +1874,7 @@ export class MainBotService {
     const problem = waitProblem(failure);
     if (wait.by !== null && wait.by <= now) {
       const before = wait.progress as WaitProgress | null;
-      return this.endWaitAtDeadline(wait, { facts: before?.facts ?? [], quotes: [], readAt: wait.checkedAt, problem: problem.text }, now);
+      return this.endWaitAtDeadline(wait, { facts: before?.facts ?? [], quotes: [], readAt: wait.checkedAt, problem: problem.text }, null, now);
     }
     if (wait.expiresAt !== null && wait.expiresAt <= now) {
       this.store.endWait(wait.id, 'expired', now);
@@ -1884,12 +1886,14 @@ export class MainBotService {
     return false;
   }
 
-  private endWaitAtDeadline(wait: MainBotWait, read: Pick<WaitOutcome, 'facts' | 'quotes' | 'readAt' | 'problem'>, now: number): boolean {
+  /** `snapshot`: how what it waited for stands now, when it could be read. */
+  private endWaitAtDeadline(wait: MainBotWait, read: Pick<WaitOutcome, 'facts' | 'quotes' | 'readAt' | 'problem'>, snapshot: PullRequestSnapshot | RunSnapshot | null, now: number): boolean {
     return this.fireWait(wait, {
       reason: 'deadline',
       at: now,
       events: [],
       summary: wait.kind === 'time' ? 'It is time' : 'Deadline came first',
+      notice: deadlineNotice(wait.kind, snapshot, wait.events as WaitEvent[]),
       othersOnly: false,
       ...read,
     });
@@ -1899,7 +1903,7 @@ export class MainBotService {
   private fireWait(wait: MainBotWait, outcome: WaitOutcome): boolean {
     if (!this.store.fireWait(wait.id, { ...outcome }, outcome.at)) return false;
     try {
-      this.outside?.waitOver?.({ id: waitRef(wait.id), label: wait.label, kind: wait.kind }, { reason: outcome.reason, summary: outcome.summary });
+      this.outside?.waitOver?.({ id: waitRef(wait.id), label: wait.label, kind: wait.kind }, { reason: outcome.reason, summary: outcome.summary, notice: outcome.notice ?? outcome.summary });
     } catch (failure) {
       console.error('[main-bot] could not announce a wait that ended:', failure);
     }

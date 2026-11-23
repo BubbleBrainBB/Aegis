@@ -537,7 +537,7 @@ export function setupMainBot(needs: MainBotDeps): MainBotService {
       if (!row) return;
       // A reminder is its own news; anything else is named, with how it ended.
       if (wait.kind === 'time') needs.waitOver?.(row.id, 'Reminder', wait.label);
-      else needs.waitOver?.(row.id, wait.label, outcome.summary.charAt(0).toUpperCase() + outcome.summary.slice(1));
+      else needs.waitOver?.(row.id, wait.label, outcome.notice);
     },
   });
   service = bot;

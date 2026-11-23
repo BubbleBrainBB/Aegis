@@ -290,7 +290,8 @@ function WaitOverLine({ title, wait }: { title: string; wait: MainBotWaitView | 
         <TraceNest>
           <div className="flex flex-col gap-0.5 py-1 text-[12px] leading-5 text-[var(--text-muted)]">
             <div>Read from GitHub{wait?.readAt ? ` at ${clock(wait.readAt)}` : ''}</div>
-            {facts.map((fact) => <div key={fact} className="text-[var(--text-secondary)]">{fact}</div>)}
+            {/* The link in a fact is for the bot; the row in the Environment card opens it for the person. */}
+            {facts.map((fact) => <div key={fact} className="text-[var(--text-secondary)]">{fact.replace(/ \(https?:\/\/[^)\s]+\)/g, '')}</div>)}
           </div>
         </TraceNest>
       ) : null}
@@ -340,8 +341,10 @@ function WaitRow({ wait }: { wait: MainBotWaitView }) {
           </span>
           {wait.kind === 'time' ? null : (
             <span className="flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-[var(--text-muted)]">
-              <span className="min-w-0 truncate">{[shortWaitTarget(wait.target), wait.problem ? '' : wait.stands ?? ''].filter(Boolean).join(' · ')}</span>
-              {wait.problem ? <span className="min-w-0 truncate text-[var(--warning)]">· {shortWaitReason(wait.problem)}</span> : null}
+              <span className="min-w-0 truncate">
+                {[shortWaitTarget(wait.target), wait.problem ? '' : wait.stands ?? ''].filter(Boolean).join(' · ')}
+                {wait.problem ? <span className="text-[var(--warning)]"> · {shortWaitReason(wait.problem)}</span> : null}
+              </span>
             </span>
           )}
         </span>

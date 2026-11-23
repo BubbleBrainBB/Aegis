@@ -89,7 +89,7 @@ export function pullRequestSnapshot(repo: string, data: unknown): PullRequestSna
     headSha: text(pull.headRefOid),
     mergeable: mergeable === 'CONFLICTING' ? 'conflicting' : mergeable === 'MERGEABLE' ? 'mergeable' : 'unknown',
     reviewDecision: text(pull.reviewDecision) || null,
-    checks: { state: checks.state, summary: checks.summary, failing: checks.items.filter((item) => item.state === 'failed').map((item) => item.name) },
+    checks: { state: checks.state, summary: checks.summary, failing: checks.items.filter((item) => item.state === 'failed').map((item) => item.name), total: checks.items.length },
     notes,
   };
 }
