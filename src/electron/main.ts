@@ -19,6 +19,7 @@ import { setupIPCHandlers, cleanup } from './ipc-handlers';
 import { registerBrowserIpc, disposeBrowserIpc, runBrowserShortcut } from './browser-ipc';
 import { disposeIosSimulatorIpc } from './ios-simulator-ipc';
 import { registerDesignModeIpc } from './design-mode-ipc';
+import { applyUserDataOverride } from './libs/user-data-override';
 import { browserManager } from './browserManager';
 import { setPageBackgrounds } from './browser/page-view';
 import {
@@ -82,20 +83,21 @@ if (process.platform === 'darwin') {
 function configureUserDataPath(): void {
   // Explicit isolation for tests and fresh-user simulation. macOS resolves
   // appData through system APIs that ignore $HOME, so an env override is the
-  // only reliable way to point a launch at a sandboxed data directory.
-  const override = process.env.AEGIS_USER_DATA_DIR?.trim();
-  if (override) {
-    const resolved = path.resolve(override);
-    try {
-      fs.mkdirSync(resolved, { recursive: true });
-    } catch (error) {
-      console.warn('[main] Failed to create AEGIS_USER_DATA_DIR, using default userData:', error);
-      return;
-    }
-    app.setPath('userData', resolved);
-    console.log('[main] userData overridden via AEGIS_USER_DATA_DIR:', resolved);
-    return;
-  }
+  // only reliable way to point a launch at a sandboxed data directory. A
+  // folder that cannot be used ends the launch here, before anything reads a
+  // profile: see libs/user-data-override.ts.
+  const overridden = applyUserDataOverride(process.env.AEGIS_USER_DATA_DIR, {
+    setUserData: (dir) => app.setPath('userData', dir),
+    quit: (code) => {
+      process.exit(code);
+      // Not reached: this early, process.exit ends the process on the spot.
+      // Once the app is running Electron lets it finish its turn first, and
+      // nothing of the app may run on the default profile, so should that
+      // ever be the case here too, the process is ended from outside.
+      process.kill(process.pid, 'SIGKILL');
+    },
+  });
+  if (overridden) return;
 
   if (!isDev()) {
     return;
