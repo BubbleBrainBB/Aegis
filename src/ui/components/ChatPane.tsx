@@ -1310,7 +1310,7 @@ export function ChatPane({
         ? deriveTranscriptTimelineItems(session.messages, {
             activeTurnStartIndex,
             sessionRunning: session.status === 'running',
-            unmarkedWokenTurns: session.provider === 'antigravity',
+            groupAntigravityContinuations: session.provider === 'antigravity',
           })
         : [],
     [activeTurnStartIndex, session?.messages, session?.provider, session?.status]
@@ -1485,14 +1485,21 @@ export function ChatPane({
     }
     return map;
   }, [turnRanges, timelineItems, activeTimelineWorkId, activeTurnHasPendingTasks, session?.messages.length]);
+  // Antigravity announces a resumed run before its trace or reply reaches the
+  // timeline. The cumulative diff belongs below that reply once the run ends.
+  const pendingDiffEndIndex = session?.provider === 'antigravity'
+    && (session.status === 'running' || session.status === 'stopping')
+    ? session.messages.length - 1
+    : null;
   const turnCardByTimelineIndex = useMemo(() => {
     const map = new Map<number, TurnChangeSummary>();
     for (const [index, range] of turnEndByTimelineIndex) {
+      if (range.lastMessageIndex === pendingDiffEndIndex) continue;
       const turn = turns.find((t) => t.lastMessageIndex === range.lastMessageIndex);
       if (turn && turn.totalFiles > 0) map.set(index, turn);
     }
     return map;
-  }, [turnEndByTimelineIndex, turns]);
+  }, [turnEndByTimelineIndex, turns, pendingDiffEndIndex]);
   const designCardsByTimelineIndex = useMemo(() => {
     const map = new Map<number, DesignTurnChange[]>();
     if (!session) return map;

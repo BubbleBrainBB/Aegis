@@ -253,7 +253,7 @@ function unmarkedWokenTurnStart(item: TranscriptTimelineItem, turnFinished: bool
   return item.message.type === 'assistant' ? { startedAt: getMessageCreatedAt(item.message) } : null;
 }
 
-function markAssistantMessagePresentation(items: TranscriptTimelineItem[], unmarkedWokenTurns = false): void {
+function markAssistantMessagePresentation(items: TranscriptTimelineItem[], groupAntigravityContinuations = false): void {
   let currentTurnAssistantItems: Array<
     Extract<TranscriptTimelineItem, { type: 'message' }> & { message: AssistantMessage }
   > = [];
@@ -273,7 +273,7 @@ function markAssistantMessagePresentation(items: TranscriptTimelineItem[], unmar
   let turnFinished = false;
 
   for (const item of items) {
-    if (unmarkedWokenTurns && unmarkedWokenTurnStart(item, turnFinished)) {
+    if (groupAntigravityContinuations && unmarkedWokenTurnStart(item, turnFinished)) {
       flushTurn();
       currentRunBoundaryKey = null;
       turnFinished = false;
@@ -401,12 +401,15 @@ interface CollapseTurnOptions {
   /** tool_use ids that received a tool_result anywhere in the transcript. */
   resolvedToolUseIds?: ReadonlySet<string>;
   /** See deriveTranscriptTimelineItems. */
-  unmarkedWokenTurns?: boolean;
+  groupAntigravityContinuations?: boolean;
   /**
    * This turn is one the agent started by itself, from a transcript with no
    * mark for it and so no result either. It ended on its own: nobody stopped it.
    */
   unmarkedWokenTurn?: boolean;
+  /** Earlier Antigravity phases contribute trace entries and elapsed work, but only the last phase can supply the reply. */
+  previousPhaseItemCount?: number;
+  previousPhaseDurationMs?: number;
 }
 
 function collapseTurnWorkBeforeAnswer(
@@ -414,7 +417,7 @@ function collapseTurnWorkBeforeAnswer(
   options: CollapseTurnOptions
 ): TranscriptTimelineItem[] {
   const answerSourceIndex = (() => {
-    for (let index = turnItems.length - 1; index >= 0; index -= 1) {
+    for (let index = turnItems.length - 1; index >= (options.previousPhaseItemCount ?? 0); index -= 1) {
       const item = turnItems[index];
       if (item?.type === 'message' && item.message.type === 'assistant' && getAssistantPhase(item.message) !== 'commentary') {
         return index;
@@ -452,7 +455,7 @@ function collapseTurnWorkBeforeAnswer(
   // the reply, then a closing line) is still the answer: the texts read as one.
   let answerStartIndex = answerSourceIndex;
   if (hasTerminalAnswer) {
-    while (answerStartIndex > 0) {
+    while (answerStartIndex > (options.previousPhaseItemCount ?? 0)) {
       const item = turnItems[answerStartIndex];
       const previous = turnItems[answerStartIndex - 1];
       if (
@@ -532,14 +535,14 @@ function collapseTurnWorkBeforeAnswer(
   }
 
   const durationMs = resolveCompletedTurnDurationMs(
-    turnItems,
+    options.previousPhaseItemCount ? turnItems.slice(options.previousPhaseItemCount) : turnItems,
     options.turnStartedAt,
     hasTerminalAnswer,
     options
   );
   const completedWorkGroup: TimelineWorkGroup =
     typeof durationMs === 'number'
-      ? { ...combinedWorkGroup, durationMs }
+      ? { ...combinedWorkGroup, durationMs: durationMs + (options.previousPhaseDurationMs ?? 0) }
       : combinedWorkGroup;
 
   const activeWork = isActiveWorkGroup(completedWorkGroup, options) && !hasTerminalAnswer;
@@ -665,7 +668,7 @@ function collapseWorkBeforeTerminalAnswers(
   // only the final turn can be the one a stop press interrupted.
   type Chunk =
     | { kind: 'passthrough'; item: TranscriptTimelineItem }
-    | { kind: 'turn'; items: TranscriptTimelineItem[]; startedAt?: number; startedBySteer?: boolean; continuedAt?: number; unmarkedWoken?: boolean };
+    | { kind: 'turn'; items: TranscriptTimelineItem[]; startedAt?: number; startedBySteer?: boolean; continuedAt?: number; unmarkedWoken?: boolean; continuation?: boolean };
   const chunks: Chunk[] = [];
   let currentTurnItems: TranscriptTimelineItem[] = [];
   let currentTurnStartedAt: number | undefined;
@@ -675,6 +678,7 @@ function collapseWorkBeforeTerminalAnswers(
   // chunk per item would be quadratic in long turns).
   let currentTurnFinished = false;
   let currentTurnUnmarkedWoken = false;
+  let continuation = false;
 
   const flushTurn = (continuedAt?: number) => {
     if (currentTurnItems.length === 0) {
@@ -687,11 +691,13 @@ function collapseWorkBeforeTerminalAnswers(
       ...(currentTurnStartedBySteer ? { startedBySteer: true } : {}),
       ...(continuedAt !== undefined ? { continuedAt } : {}),
       ...(currentTurnUnmarkedWoken ? { unmarkedWoken: true } : {}),
+      continuation,
     });
     currentTurnItems = [];
     endedGoalTurn = false;
     currentTurnFinished = false;
     currentTurnUnmarkedWoken = false;
+    continuation = false;
   };
 
   let currentRunBoundaryKey: string | null = null;
@@ -709,14 +715,16 @@ function collapseWorkBeforeTerminalAnswers(
     }
     if (item.type === 'message' && opensWokenTurn(item, currentTurnFinished)) {
       flushTurn();
+      continuation = options.groupAntigravityContinuations === true;
       currentTurnStartedAt = getMessageCreatedAt(item.message);
       currentTurnStartedBySteer = false;
       currentRunBoundaryKey = null;
       hasAssistantRunBoundary = false;
     }
-    const unmarked = options.unmarkedWokenTurns ? unmarkedWokenTurnStart(item, currentTurnFinished) : null;
+    const unmarked = options.groupAntigravityContinuations ? unmarkedWokenTurnStart(item, currentTurnFinished) : null;
     if (unmarked) {
       flushTurn();
+      continuation = true;
       currentTurnUnmarkedWoken = true;
       currentTurnStartedAt = unmarked.startedAt;
       currentTurnStartedBySteer = false;
@@ -765,15 +773,32 @@ function collapseWorkBeforeTerminalAnswers(
   }
 
   const result: TranscriptTimelineItem[] = [];
+  const previousPhases: Extract<Chunk, { kind: 'turn' }>[] = [];
   for (let index = 0; index < chunks.length; index += 1) {
     const chunk = chunks[index];
     if (chunk.kind === 'passthrough') {
       result.push(chunk.item);
       continue;
     }
+    // Fold completed continuations into one disclosure. Leave the in-flight
+    // phase live below it until its result arrives, including text-only streams.
+    const next = chunks[index + 1];
+    if (next?.kind === 'turn' && next.continuation) {
+      const nextIsLive = options.sessionRunning && index + 1 === lastTurnChunkIndex;
+      if (hasTurnResult(next.items) || (next.unmarkedWoken && !nextIsLive)) {
+        previousPhases.push(chunk);
+        continue;
+      }
+    }
+    const earlierItems = previousPhases.flatMap(phase => phase.items);
+    const previousPhaseDurationMs = previousPhases.reduce((sum, phase) =>
+      sum + (resolveCompletedTurnDurationMs(phase.items, phase.startedAt, true, phase) ?? 0), 0);
     result.push(
-      ...collapseTurnWorkBeforeAnswer(chunk.items, {
+      ...collapseTurnWorkBeforeAnswer(earlierItems.length ? earlierItems.concat(chunk.items) : chunk.items, {
         ...options,
+        sessionRunning: options.sessionRunning && (!options.groupAntigravityContinuations || index === lastTurnChunkIndex),
+        previousPhaseItemCount: earlierItems.length,
+        previousPhaseDurationMs,
         turnStartedAt: chunk.startedAt,
         startedBySteer: chunk.startedBySteer,
         continuedAt: chunk.continuedAt,
@@ -781,6 +806,7 @@ function collapseWorkBeforeTerminalAnswers(
         trailingTurn: index === lastTurnChunkIndex,
       })
     );
+    previousPhases.length = 0;
   }
   return result;
 }
@@ -815,13 +841,10 @@ export function deriveTranscriptTimelineItems(
      */
     subagentScopeId?: string;
     /**
-     * The agent can go on by itself after a turn ended (Antigravity, once a
-     * background command finishes), and transcripts stored before such turns
-     * were marked have nothing to open them: there, work that follows a
-     * turn's result with no prompt between is a turn of its own, not more of
-     * the turn above it.
+     * Show one cumulative work summary for Antigravity phases answering the
+     * same prompt, including old transcripts without selfStarted markers.
      */
-    unmarkedWokenTurns?: boolean;
+    groupAntigravityContinuations?: boolean;
   } = {}
 ): TranscriptTimelineItem[] {
   const items: TranscriptTimelineItem[] = [];
@@ -957,7 +980,7 @@ export function deriveTranscriptTimelineItems(
   }
 
   flushPendingWork();
-  markAssistantMessagePresentation(items, options.unmarkedWokenTurns);
+  markAssistantMessagePresentation(items, options.groupAntigravityContinuations);
   attachCompletedGoals(items, messages);
   const timeline = collapseWorkBeforeTerminalAnswers(items, {
     ...options,

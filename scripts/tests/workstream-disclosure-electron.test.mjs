@@ -90,6 +90,31 @@ function App(){
    const messages=[{...prompt,createdAt:provider==='grok'?1005:1006},{...thought,uuid:provider+'-design-thought'},update,done,...(stage==='running'?[]:[reply]),...(stage==='completed'?[{type:'result',subtype:'success',duration_ms:19000,total_cost_usd:0,usage:{input_tokens:1,output_tokens:1}}]:[])];
    store.setState(s=>({sessions:{...s.sessions,[chatId]:{...s.sessions[chatId],provider,status:stage==='completed'?'completed':'running',messages}}}));
   },
+  prepareAntigravityDiff:()=>{
+   const message = (uuid, block) => ({type:'assistant', uuid, message:{content:[block]}});
+   const status = value => qa.store.getState().handleServerEvent({type:'session.status',payload:{sessionId:qa.chatId,status:value}});
+   const result = {type:'result',subtype:'success',duration_ms:3000,total_cost_usd:0,usage:{}};
+   const turn = (name, reply) => [
+    {type:'user_prompt',prompt:'Edit '+name},
+    message('write-'+name,{type:'tool_use',id:'write-'+name,name:'Write',input:{file_path:'/tmp/workstream-ui/'+name,content:name}}),
+    message('done-'+name,{type:'tool_result',tool_use_id:'write-'+name,content:'OK'}),
+    message('reply-'+name,{type:'text',text:reply}), {...result},
+   ];
+   const wake = {type:'system',subtype:'init',selfStarted:true,session_id:'agy',tools:[]};
+   qa.store.setState(s=>({sessions:{...s.sessions,[qa.chatId]:{...s.sessions[qa.chatId],provider:'antigravity',status:'completed',
+    messages:[...turn('historical.ts','Earlier turn done.'),...turn('current.ts','Starting the tests.'),
+     wake,message('progress',{type:'text',text:'Waiting for the tests.'}),{...result}],streaming:{isStreaming:false,text:'',thinking:''}}}}));
+   window.wokenDiff = {
+    times:()=>Array.from(document.querySelectorAll('#real-chat [data-workstream-duration]'),row=>row.textContent),
+    files:()=>Array.from(document.querySelectorAll('#real-chat li')).map(row=>row.textContent),
+    wake:()=>status('running'),
+    stream:()=>{
+     qa.emit({...wake});
+     qa.emit({type:'stream_event',event:{type:'content_block_delta',index:0,delta:{type:'text_delta',text:'The tests passed.'}}});
+    },
+    finish:()=>{qa.emit(message('final',{type:'text',text:'The tests passed.'}));qa.emit(result);status('completed')},
+   };
+  },
   readingTurn:(resolved=false)=>store.setState(s=>({sessions:{...s.sessions,[chatId]:{...s.sessions[chatId],provider:'codex',status:'running',messages:[{...prompt,createdAt:1003},thought,read,...(resolved?[result]:[])]}}})),
   stopThinking:()=>store.setState(s=>({sessions:{...s.sessions,[chatId]:{...s.sessions[chatId],messages:[prompt,thought],status:'completed'}}})),
   answer:()=>emit({type:'assistant',uuid:'answer',createdAt:2000,streaming:true,phase:'final_answer',message:{content:[{type:'text',text:'The project is ready.'}]}}),
@@ -360,6 +385,20 @@ app.whenReady().then(async()=>{
   assert((await js('document.querySelector("#real-chat").innerText')).includes('Durable reasoning before retry'),'archived thinking remains readable after history reload');
   w.webContents.invalidate();await delay(100);await shot('retry-restored-history');
   assert.deepEqual(errors,[],'renderer errors after retry tests');
+  // Antigravity can wake up without a new prompt. Its live reply is below the
+  // stored transcript until committed, while the diff covers the whole prompt.
+  await js('qa.prepareAntigravityDiff()');
+  await until('wokenDiff.files().length===2','both completed prompts have a diff');
+  await js('wokenDiff.wake()');
+  await until('wokenDiff.files().length===1 && wokenDiff.files()[0].includes("historical.ts")','only the historical diff stays when Antigravity resumes');
+  await js('wokenDiff.stream()');
+  await until('document.querySelector("#real-chat .streaming-content")?.textContent.includes("The tests passed.")','live continuation text');
+  assert.deepEqual(await js('wokenDiff.times()'),['Worked for 3s','Worked for 6s'],'one cumulative time per prompt while streaming');
+  assert.equal(await js('wokenDiff.files().length'),1,'the current diff stays hidden during streamed prose');
+  await js('wokenDiff.finish()');
+  await until('wokenDiff.files().length===2','the cumulative diff returns once');
+  assert.deepEqual(await js('wokenDiff.times()'),['Worked for 3s','Worked for 9s'],'the final phase adds its time to the same prompt');
+  assert(await js('(()=>{const reply=[...document.querySelectorAll("#real-chat p")].find(p=>p.textContent==="The tests passed.");const file=[...document.querySelectorAll("#real-chat li")].find(li=>li.textContent.includes("current.ts"));return !!(reply?.compareDocumentPosition(file)&Node.DOCUMENT_POSITION_FOLLOWING)})()'),'current diff follows the committed reply');
   console.log('workstream disclosure: lifecycle, reasoning, tool output, scrolling, keyboard and themes passed');app.exit(0);
  }catch(e){console.error(e);await shot('failure');app.exit(1)}
 });
