@@ -8,8 +8,8 @@ import type { StreamMessage } from '../../src/ui/types';
 
 // Antigravity goes on by itself after a turn whose command went to the
 // background. These checks hold how the chat lays that out: the work agy does
-// by itself is a turn of its own, live while it runs and folded once it ends,
-// and never part of the turn above it. Messages are shaped as the adapter
+// by itself stays live while it runs. Its completed phases share one summary
+// with the work that started them. Messages are shaped as the adapter
 // sends them (scripts/tests/antigravity-acp-adapter.test.ts holds that side).
 
 let clock = Date.UTC(2026, 10, 22, 11, 32, 4);
@@ -35,13 +35,13 @@ const wokeByItself = (): StreamMessage =>
 /** One line per timeline item: what it is, and how its trace is shown. */
 function layout(
   messages: StreamMessage[],
-  options: { running: boolean; unmarkedWokenTurns?: boolean; activeTurnStartIndex?: number }
+  options: { running: boolean; groupAntigravityContinuations?: boolean; activeTurnStartIndex?: number }
 ): string[] {
   const items = deriveTranscriptTimelineItems(messages, {
     // As the chat does: the live turn starts at the latest prompt or self-started turn.
     activeTurnStartIndex: options.activeTurnStartIndex ?? findActiveTurnStartIndex(messages),
     sessionRunning: options.running,
-    unmarkedWokenTurns: options.unmarkedWokenTurns ?? true,
+    groupAntigravityContinuations: options.groupAntigravityContinuations ?? true,
   });
   const entries = (item: Extract<TranscriptTimelineItem, { type: 'work' }>) =>
     item.group.messages
@@ -110,13 +110,12 @@ const wokenEnd = [text('2', 'The build is done: app.dmg.'), usage(), result(9_00
   assert.equal(findActiveTurnStartIndex([...live, { ...prompt('inner'), parentToolUseId: 'task' } as StreamMessage]), wokeAt);
   assert.equal(findActiveTurnStartIndex([]), -1);
 
-  // A turn that ended without words (calls and a result only), then agy wakes:
-  // counted from the old prompt, that finished trace came back to life.
+  // A completed phase stays folded even when old records only identify the prompt.
   const silentTurn = [prompt('Package the app'), usage(), call('call_bg_1', 'npm run dist'), callResult('call_bg_1', 'npm run dist'), result(12_000)];
   const woken = [...silentTurn, ...wokenWork];
   assert.deepEqual(layout(woken, { running: true, activeTurnStartIndex: lastPromptIndex(woken) }), [
     'prompt: Package the app',
-    'trace (live): npm run dist',
+    'trace (folded 12s): npm run dist',
     'trace (live): thinking, ls dist',
   ]);
   assert.deepEqual(layout(woken, { running: true }), [
@@ -126,19 +125,24 @@ const wokenEnd = [text('2', 'The build is done: app.dmg.'), usage(), result(9_00
   ]);
 }
 
-// ── Once it ends: a turn of its own, with its own time and answer ───────────
+// Completed phases contribute one elapsed time and keep their notes in order.
 {
   const whole = [...askedTurn, ...wokenWork, ...wokenEnd];
   const expected = [
     'prompt: Package the app',
-    'trace (folded 28s): thinking, npm run dist',
-    'answer: Started the build; waiting for it to finish.',
-    'trace (folded 9s): thinking, ls dist',
+    'trace (folded 37s): thinking, npm run dist, text, thinking, ls dist',
     'answer: The build is done: app.dmg.',
   ];
   assert.deepEqual(layout(whole, { running: false }), expected);
-  // The mark alone does it: the rule for unmarked transcripts adds nothing here.
-  assert.deepEqual(layout(whole, { running: false, unmarkedWokenTurns: false }), expected);
+  // Other providers still render an explicit wake as a separate turn.
+  assert.equal(layout(whole, { running: false, groupAntigravityContinuations: false }).filter(row => row.startsWith('trace')).length, 2);
+  const liveAgain = [...whole, wokeByItself(), thinking('3', 'Checking again.')];
+  assert.deepEqual(layout(liveAgain, { running: true }), [...expected, 'trace (live): thinking']);
+  assert.deepEqual(layout([...liveAgain, text('3', 'All done.'), result(4_000)], { running: false }), [
+    'prompt: Package the app',
+    'trace (folded 41s): thinking, npm run dist, text, thinking, ls dist, text, thinking',
+    'answer: All done.',
+  ]);
   // And the next prompt starts an ordinary turn below it.
   assert.deepEqual(
     layout([...whole, prompt('Thanks'), text('3', 'Any time.'), usage(), result(2_000)], { running: false }).slice(-2),
@@ -153,25 +157,20 @@ const wokenEnd = [text('2', 'The build is done: app.dmg.'), usage(), result(9_00
 {
   const unmarkedWork = [usage(), thinking('2', 'The build finished.'), call('call_check_2', 'ls dist'), callResult('call_check_2', 'app.dmg'), usage()];
   const stored = [...askedTurn, ...unmarkedWork];
-  assert.deepEqual(layout(stored, { running: false, unmarkedWokenTurns: false }), [
+  assert.deepEqual(layout(stored, { running: false, groupAntigravityContinuations: false }), [
     'prompt: Package the app',
     'trace (folded 28s): thinking, npm run dist, thinking, ls dist',
     'answer: Started the build; waiting for it to finish.',
   ]);
   assert.deepEqual(layout(stored, { running: false }), [
     'prompt: Package the app',
-    'trace (folded 28s): thinking, npm run dist',
-    'answer: Started the build; waiting for it to finish.',
-    // Its own trace, ended rather than stopped: nobody pressed stop.
-    'trace (folded): thinking, ls dist',
+    'trace (folded): thinking, npm run dist, text, thinking, ls dist',
   ]);
   // With words of its own, and a prompt after it.
   const later = [...stored, text('2', 'The build is done.'), usage(), prompt('Thanks'), text('3', 'Any time.'), usage(), result(2_000)];
   assert.deepEqual(layout(later, { running: false }), [
     'prompt: Package the app',
-    'trace (folded 28s): thinking, npm run dist',
-    'answer: Started the build; waiting for it to finish.',
-    'trace (folded 2s): thinking, ls dist',
+    'trace (folded 30s): thinking, npm run dist, text, thinking, ls dist',
     'answer: The build is done.',
     'prompt: Thanks',
     'answer: Any time.',
@@ -181,9 +180,9 @@ const wokenEnd = [text('2', 'The build is done: app.dmg.'), usage(), result(9_00
 // ── An ordinary turn reads the same with or without the rule ────────────────
 {
   const ordinary = [...askedTurn, prompt('And now?'), usage(), thinking('4', 'Checking.'), call('call_5', 'ls'), callResult('call_5', 'a b'), text('4', 'All there.'), usage(), result(4_000)];
-  assert.deepEqual(layout(ordinary, { running: false }), layout(ordinary, { running: false, unmarkedWokenTurns: false }));
+  assert.deepEqual(layout(ordinary, { running: false }), layout(ordinary, { running: false, groupAntigravityContinuations: false }));
   const running = ordinary.slice(0, -3);
-  assert.deepEqual(layout(running, { running: true }), layout(running, { running: true, unmarkedWokenTurns: false }));
+  assert.deepEqual(layout(running, { running: true }), layout(running, { running: true, groupAntigravityContinuations: false }));
   assert.deepEqual(layout(running, { running: true }).slice(-2), ['prompt: And now?', 'trace (live): thinking, ls']);
 }
 
