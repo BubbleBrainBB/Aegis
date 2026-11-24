@@ -63,16 +63,17 @@ app.whenReady().then(async()=>{
  const rowText=provider=>js('document.querySelector('+JSON.stringify(row(provider))+').textContent');
  const rowStatus=provider=>js('document.querySelector('+JSON.stringify(row(provider)+' .usage-status')+')?.getAttribute("title")||""');
  const ALL=13;
- const open=async()=>{await click(trigger);const u=await js('[...document.querySelectorAll("[role=menuitem]")].find(e=>e.textContent.trim()==="Usage").getBoundingClientRect().toJSON()');win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(u.x+30),y:Math.round(u.y+15)});await textClick('Usage');await until('document.querySelectorAll("[data-usage-provider]").length==='+ALL)};
+ const ring='[data-rail-usage]';
+ const open=async()=>{await click(ring);await until('document.querySelectorAll("[data-usage-provider]").length==='+ALL)};
  const outside=async()=>{win.webContents.sendInputEvent({type:'mouseMove',x:900,y:100});win.webContents.sendInputEvent({type:'mouseDown',x:900,y:100,button:'left',clickCount:1});win.webContents.sendInputEvent({type:'mouseUp',x:900,y:100,button:'left',clickCount:1});await delay(400)};
  const list='document.querySelector("[data-usage-provider]").closest(".overflow-y-auto")';
  try{
   await win.loadURL(process.env.QA_URL);await until('document.querySelector('+JSON.stringify(trigger)+')?.getAttribute("aria-label").includes("BubbleBrain")');
   assert.equal(await js('qa.calls.length'),0,'no usage requests before menu opens');
   await click(trigger);assert.equal(await js('qa.calls.length'),0,'profile menu alone does not fetch usage');
-  // Exercise a real hover into the submenu, including the gap between menus.
-  const usageTrigger=await js('[...document.querySelectorAll("[role=menuitem]")].find(e=>e.textContent.trim()==="Usage").getBoundingClientRect().toJSON()');
-  win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(usageTrigger.x+30),y:Math.round(usageTrigger.y+15)});
+  assert.equal(await js('[...document.querySelectorAll("[role=menuitem]")].some(item=>item.textContent.trim()==="Usage")'),false,'profile menu has no duplicate Usage entry');
+  await shot('profile-menu');
+  await key('Escape');await click(ring);
   // First open: plan providers are known up front; Claude is still loading.
   await until('document.querySelectorAll("[data-usage-provider]").length===4');
   await until('document.querySelector('+JSON.stringify(row('codex'))+').textContent.includes("85%")');
@@ -90,13 +91,9 @@ app.whenReady().then(async()=>{
   assert.ok((await rowText('kimi')).includes('—'),'sessions without token counts');
   assert.ok((await rowText('deepseek')).includes('—') && (await rowStatus('deepseek')).includes('Unavailable'),'unavailable usage is flagged');
   assert.deepEqual(await js('[...document.querySelectorAll(".usage-idle [data-usage-provider]")].map(e=>e.dataset.usageProvider)'),['opencode','pi','devin','mimo','minimax','antigravity'],'providers with no usage collapse into logos');
-  const submenu=await rect('[data-usage-provider="claude"]');
-  win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(usageTrigger.right+4),y:Math.round(usageTrigger.y+15)});await delay(70);
-  win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(submenu.x+30),y:Math.round(submenu.y+15)});await delay(300);
-  assert.equal(await js('document.querySelectorAll("[data-usage-provider]").length'),ALL,'pointer crosses submenu gap');
-  const menuBounds=await js('document.querySelector("[data-usage-provider]").closest("[role=menu]").getBoundingClientRect().toJSON()');
-  const parentBounds=await js('[...document.querySelectorAll("[role=menuitem]")].find(e=>e.textContent.trim()==="Usage").closest("[role=menu]").getBoundingClientRect().toJSON()');
-  assert.ok(menuBounds.x>=parentBounds.right && menuBounds.bottom<=768 && menuBounds.y>=0,'submenu opens beside parent inside viewport: '+JSON.stringify({menuBounds,parentBounds}));
+  const menuBounds=await rect('.usage-menu');
+  const ringBounds=await rect(ring);
+  assert.ok(menuBounds.x>=ringBounds.right && menuBounds.bottom<=768 && menuBounds.y>=0,'usage opens beside its ring inside the viewport');
   assert.equal(await js('(()=>{const l='+list+';return l.scrollWidth<=l.clientWidth})()'),true,'no horizontal overflow');
   await shot('usage-light');
   // Sample geometry every animation frame while mounted queries refresh, fail and recover.
@@ -163,12 +160,11 @@ app.whenReady().then(async()=>{
   await js('qa.store.getState().setShowSettings(false)');await delay(150);
   await click(trigger);await js('[...document.querySelectorAll("[role=menuitem]")].find(e=>e.textContent.startsWith("Settings")).click()');await delay(150);assert.equal(await js('qa.store.getState().showSettings'),true,'Settings still opens');
   await js('qa.store.getState().setShowSettings(false)');await delay(150);
-  await js('document.querySelector('+JSON.stringify(trigger)+').focus()');await key('Return');await key('Right');await until('document.querySelectorAll("[data-usage-provider]").length==='+ALL);
-  await key('Escape');assert.equal(await js('document.querySelectorAll("[data-usage-provider]").length'),0);assert.equal(await js('document.querySelectorAll("[role=menu]").length'),1);
+  await js('document.querySelector('+JSON.stringify(ring)+').focus()');await key('Return');await until('document.querySelectorAll("[data-usage-provider]").length==='+ALL);
   await key('Escape');assert.equal(await js('document.querySelectorAll("[role=menu]").length'),0);
   win.setSize(760,480);await delay(200);await open();
   const small=await js('document.querySelector("[data-usage-provider]").closest("[role=menu]").getBoundingClientRect().toJSON()');
-  assert.ok(small.y>=0 && small.bottom<=448,'small window clamps submenu height');
+  assert.ok(small.y>=0 && small.bottom<=448,'small window clamps menu height');
   assert.equal(await js('(()=>{const l='+list+';return l.scrollHeight>l.clientHeight})()'),true,'provider list scrolls');
   await shot('usage-small-window');
   await js(list+'.scrollTop=100');
@@ -186,7 +182,7 @@ app.whenReady().then(async()=>{
   assert.deepEqual(await js('[...document.querySelectorAll("[data-usage-agent]")].map(e=>e.dataset.usageAgent+": "+e.querySelector("[data-usage-agent-own]").textContent)'),
    ['claude: 7.8M tokens','kimi: 2 sessions','bubble: 12M tokens'],'agents without dollars show their own unit; one that failed to load is left out');
   await js('qa.detailObserver.disconnect();qa.store.getState().setShowSettings(false)');await delay(150);
-  assert.deepEqual(errors,[]);console.log('PASS: lazy/independent usage with loading skeleton, plan windows with tiers and tones, token ledger and idle logos, hover and keyboard submenus, every provider routes, prefetched/persistent yearly details without loading flashes, shared quotas, cache reopen/failure, All agents prefetch, stable geometry throughout refresh/failure/recovery, Settings and small window scrolling');app.exit(0);
+  assert.deepEqual(errors,[]);console.log('PASS: lazy/independent usage with loading skeleton, plan windows with tiers and tones, token ledger and idle logos, dedicated usage ring and keyboard access, every provider routes, prefetched/persistent yearly details without loading flashes, shared quotas, cache reopen/failure, All agents prefetch, stable geometry throughout refresh/failure/recovery, Settings and small window scrolling');app.exit(0);
  }catch(e){console.error(e,errors);await shot('failure');app.exit(1)}
 });
 `;

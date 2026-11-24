@@ -3,7 +3,6 @@ import { useUserProfile } from '../../hooks/useUserProfile';
 import { useAppPreferences } from '../../store/useAppPreferences';
 import { avatarColorFor, initialsOf } from '../../utils/user-avatar';
 import { Settings } from '../icons';
-import { SidebarUsageMenu } from './SidebarUsageMenu';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -72,7 +71,6 @@ export function SidebarProfileMenu({
           </div>
         </div>
         <DropdownMenuSeparator />
-        <SidebarUsageMenu />
         <DropdownMenuItem onSelect={onOpenSettings} className="gap-2 px-2 text-[13px] text-[var(--text-secondary)]">
           <Settings className="h-4 w-4 text-[var(--text-muted)]" />
           <span>Settings</span>

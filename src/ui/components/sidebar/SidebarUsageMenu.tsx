@@ -10,10 +10,9 @@ import {
   type UsageBalance, type UsagePlan, type UsageWindow,
 } from '../../utils/usage-menu-model';
 import { ProviderIcon } from '../AgentModelPicker';
-import { AlertTriangle, ChartColumn, ChevronRight } from '../icons';
+import { AlertTriangle, ChevronRight } from '../icons';
 import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent,
-  DropdownMenuSubTrigger, DropdownMenuTrigger,
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 
 // DeepSeek Harness has no plan; its row is the API account's balance.
@@ -38,23 +37,6 @@ function staleStatus(error: string | null, fetchedAt: number | undefined): strin
 }
 
 const USAGE_MENU_CLASS = 'usage-menu relative flex max-h-[min(580px,var(--available-height))] w-[336px] max-w-[calc(100vw-16px)] flex-col';
-
-/** The profile menu's Usage entry: the usage menu as its submenu. */
-export function SidebarUsageMenu() {
-  const [open, setOpen] = useState(false);
-  return (
-    <DropdownMenuSub open={open} onOpenChange={setOpen}>
-      <DropdownMenuSubTrigger openOnHover delay={120} closeDelay={200} className="gap-2 px-2 py-2 text-[var(--text-secondary)]">
-        <ChartColumn className="h-4 w-4 text-[var(--text-muted)]" />
-        <span>Usage</span>
-        <ChevronRight className="ml-auto h-3.5 w-3.5 text-[var(--text-muted)]" />
-      </DropdownMenuSubTrigger>
-      <DropdownMenuSubContent side="right" align="end" sideOffset={8} className={USAGE_MENU_CLASS}>
-        <UsageMenuBody open={open} />
-      </DropdownMenuSubContent>
-    </DropdownMenuSub>
-  );
-}
 
 const RING_RADIUS = 9;
 const RING_LENGTH = 2 * Math.PI * RING_RADIUS;
@@ -139,7 +121,7 @@ function tightestLimit(plan: UsagePlan | null): { label: string; remaining: numb
   );
 }
 
-/** What the usage menu shows, in whichever menu hosts it. Loads only while `open`. */
+/** Load usage details while the ring menu is open. */
 function UsageMenuBody({ open }: { open: boolean }) {
   const selectedProvider = useAppStore((state) => state.usageSettingsProvider);
   // The page "Usage details" opens on: one agent's year, or every agent's for the overview.
