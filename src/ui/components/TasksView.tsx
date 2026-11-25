@@ -612,7 +612,6 @@ const SessionItem = memo(function SessionItem({
   variant: 'row' | 'card';
 }) {
   const unread = useSessionOrganizationStore(s => s.sessions[session.id]?.unread);
-  const rowRef = useRef<HTMLDivElement>(null);
   const { openMenu, menuOpen, worktreeAction } = useSessionActionsMenu(session, nest);
   // The PR list replaces the session preview while it is open.
   const [pullRequestsOpen, setPullRequestsOpen] = useState(false);
@@ -679,7 +678,6 @@ const SessionItem = memo(function SessionItem({
       sideOffset={isCard ? 8 : 2}
       trigger={
         <div
-          ref={rowRef}
           data-session-id={session.id}
           data-task-state={state ?? undefined}
           role="button"
@@ -711,7 +709,7 @@ const SessionItem = memo(function SessionItem({
             <>
               <span className="flex items-start gap-2">
                 <span className="flex h-5 flex-shrink-0 items-center">
-                  <TaskStatusMenu session={session} state={state} naturalState={naturalState} failed={attention?.tone === 'error'} rowRef={rowRef} />
+                  <TaskStatusMenu session={session} state={state} naturalState={naturalState} failed={attention?.tone === 'error'} />
                 </span>
                 {session.titlePending ? (
                   <span className="flex h-5 min-w-0 flex-1 items-center"><TaskTitleLoading /></span>
@@ -734,7 +732,7 @@ const SessionItem = memo(function SessionItem({
             </>
           ) : (
             <>
-              <TaskStatusMenu session={session} state={state} naturalState={naturalState} failed={attention?.tone === 'error'} rowRef={rowRef} />
+              <TaskStatusMenu session={session} state={state} naturalState={naturalState} failed={attention?.tone === 'error'} />
               <span className={`flex min-w-0 items-center gap-2 ${summary ? 'max-w-[60%] flex-shrink-0' : 'flex-1'}`}>
                 {session.titlePending ? (
                   <TaskTitleLoading />
