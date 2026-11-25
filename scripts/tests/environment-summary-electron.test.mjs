@@ -81,10 +81,15 @@ function Harness(){
  const [diffPanel,setDiffPanel]=useState(false);qa.setDiffPanel=setDiffPanel;
  const [sessionId,setSessionId]=useState('fixture');qa.setSessionId=setSessionId;
  const [mode,setMode]=useState('local');const [patch,setPatch]=useState({});const [narrow,setNarrow]=useState(false);qa.setMode=value=>{setPatch({});setMode(value)};qa.patch=setPatch;qa.setNarrow=setNarrow;
- const repo=!['local','local-extras','loading','error','draft'].includes(mode);
+ const repo=!['local','local-grant','local-live','loading','error','draft'].includes(mode);
  const session={...base,id:sessionId,cwd:repo?'/projects/aegis':'/projects/podcast',envMode:mode==='worktree'?'worktree':'local',worktreePath:mode==='worktree'?'/projects/aegis-wt':null,status:mode==='running'?'running':'idle',associatedWorktreeBranch:'stale/session-branch'};
- if(mode==='local-extras')session.computerUseGrants=[{app:'Test app'}];
- const context={paneId:'main',paneLabel:'Main',sessionId,session,title:'Fixture',projectCwd:session.cwd,effectiveCwd:session.worktreePath||session.cwd,envMode:session.envMode,worktreePath:session.worktreePath,isRunning:mode==='running',isDraft:false,isDm:false,contextKey:mode,unavailableReason:mode==='draft'?'Choose a workspace to inspect its environment.':null};
+ if(mode==='local-grant')session.computerUseGrants=[{app:'Test app'}];
+ if(mode==='local-live'){
+   session.status='running';
+   session.computerUseLive={threadId:sessionId,toolUseId:'observe',label:'Reading window',app:'Test app',tool:'get_app_state',mutating:false,
+     media:{sessionId,sha256:'1'.repeat(64),mimeType:'image/png',sizeBytes:100},hasFreshMedia:true,at:Date.now()};
+ }
+ const context={paneId:'main',paneLabel:'Main',sessionId,session,title:'Fixture',projectCwd:session.cwd,effectiveCwd:session.worktreePath||session.cwd,envMode:session.envMode,worktreePath:session.worktreePath,isRunning:session.status==='running',isDraft:false,isDm:false,contextKey:mode,unavailableReason:mode==='draft'?'Choose a workspace to inspect its environment.':null};
  const overview={ok:repo,error:mode==='error'?'git-error':repo?null:'not-a-repo',hasRepo:repo,repoRoot:repo?session.cwd:null,repository:repo?{fullName:'aegis/desktop',webUrl:'https://github.com/aegis/desktop',defaultBranch:'main'}:null,branch:repo?'feature/card':null,upstream:'origin/feature/card',hasUpstream:true,aheadCount:1,behindCount:0,hasOriginRemote:true,isGitHubRemote:true,isDefaultBranch:false,totalChanges:2,insertions:24,deletions:6,branchChanges:repo?{baseRef:'origin/main',files:5,insertions:120,deletions:30}:null,prStatus:'not_found',pr:null};
  if(mode==='loading')overview.error=null;
  if(mode==='branch-loading')overview.branch=null;
@@ -134,7 +139,8 @@ app.whenReady().then(async()=>{
  assert.match(await visible(),/Changes/);assert.doesNotMatch(await visible(),/Project folders|shared-assets/);await snap('git-without-project-folders');
  await click('Open environment panel');
  await js('qa.organization.setState({projectSources:{}})');await delay(100);
- await mode('local-extras');await click('Open environment panel');assert.match(await visible(),/Computer Use/);assert.doesNotMatch(await visible(),/Local|Changes|Commit or push/);await snap('non-git-extras');
+ await mode('local-grant');assert.equal(await js('!!document.querySelector("button[title=Environment]")'),false,'an idle grant alone does not show a preview');
+ await mode('local-live');await click('Open environment panel');assert.match(await visible(),/Picture in Picture/);assert.doesNotMatch(await visible(),/Local|Changes|Commit or push/);await snap('non-git-extras');
  await mode('loading');assert.match(await visible(),/Checking environment/);assert.doesNotMatch(await visible(),/HEAD|stale/);
  await mode('branch-loading');assert.doesNotMatch(await visible(),/HEAD|stale|feature/);
  assert.equal(await js('[...document.querySelectorAll("button")].find(e=>e.textContent.trim()==="Commit or push").disabled'),true,'unknown branch cannot enable mutations');

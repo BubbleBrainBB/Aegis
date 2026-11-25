@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import { useAppStore } from '../../store/useAppStore';
 import { useSessionOrganization } from '../../store/useSessionOrganizationStore';
 import { useSidebarPullRequests, useSidebarPullRequestStore } from '../../store/useSidebarPullRequests';
@@ -104,7 +104,6 @@ const ActiveTaskRow = memo(function ActiveTaskRow({
   pullRequests?: GitPullRequestSummary[];
   nested?: boolean;
 }) {
-  const rowRef = useRef<HTMLDivElement>(null);
   const selected = useAppStore(
     (s) => s.activeSessionId === session.id && s.activeWorkspace === 'chat' && !s.showSettings
   );
@@ -123,7 +122,6 @@ const ActiveTaskRow = memo(function ActiveTaskRow({
       sideOffset={8}
       trigger={
         <div
-          ref={rowRef}
           role="button"
           tabIndex={0}
           data-session-id={session.id}
@@ -150,7 +148,7 @@ const ActiveTaskRow = memo(function ActiveTaskRow({
           }`}
           style={nested ? { marginLeft: CHILD_INDENT } : undefined}
         >
-          <TaskStatusMenu session={session} state={state} naturalState={naturalState} failed={failed} rowRef={rowRef} />
+          <TaskStatusMenu session={session} state={state} naturalState={naturalState} failed={failed} />
           {session.titlePending ? (
             <span className="flex min-w-0 flex-1 items-center"><TaskTitleLoading /></span>
           ) : (

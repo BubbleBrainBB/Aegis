@@ -268,36 +268,26 @@ app.whenReady().then(async()=>{
   await js('qa.view.getState().toggleGroupCollapsed("sub-sessions:parent");0');await until('!!'+listRow('child-b'));
   await js(sideRow('review')+'.querySelector("[data-task-status-trigger]").click()');await until('!!'+statusMenu);
   assert.deepEqual(await js('[...'+statusMenu+'.querySelectorAll("[data-task-status-option]")].map(e=>[e.dataset.taskStatusOption,e.hasAttribute("data-disabled"),e.textContent])'),
-   [['needs-input',true,'Needs input'],['running',true,'Running'],['review',false,'Ready for review1'],['completed',false,'Completed2']]);
+   [['needs-input',true,'Needs input'],['running',true,'Running'],['review',false,'Ready for review'],['completed',false,'Completed']]);
   assert.equal(await js('!!'+statusMenu+'.querySelector("[data-task-status-option=review] [aria-label=Current]")'),true,'the current state is checked');
+  assert.equal(await js('!!'+statusMenu+'.querySelector("kbd")'),false);
+  await key('1');await key('2');assert.equal(await js('!!'+statusMenu),true,'number keys leave the menu open');
   await shot('status-menu');
   await js(statusMenu+'.querySelector("[data-task-status-option=completed]").click()');await until('!'+sideRow('review'));
   assert.deepEqual(qaLast(await js('qa.changes')),{kind:'status',sessionId:'review',status:'completed'});
   assert.equal(await js('qa.store.getState().activeWorkspace'),'tasks','picking a status does not open the task');
   assert.equal(await js('document.querySelector("[data-task-list] [data-session-id=review] [role=img]").getAttribute("aria-label")'),'Completed');
-  // Back to review from the list, with the keyboard: S on the focused row, then 1. It is where the task would be anyway, so the hand-set status goes.
-  await js('document.querySelector("[data-task-list] [data-session-id=review]").focus()');await key('s');await until('!!'+statusMenu);
-  await key('1');await until('!!'+sideRow('review'));
+  // The same status menu is available from the task list.
+  await js(listRow('review')+'.focus()');await key('s');
+  assert.equal(await js('!!'+statusMenu),false,'S does not open the menu');
+  await js(listRow('review')+'.querySelector("[data-task-status-trigger]").click()');await until('!!'+statusMenu);
+  await js(statusMenu+'.querySelector("[data-task-status-option=review]").click()');await until('!!'+sideRow('review'));
   assert.deepEqual(qaLast(await js('qa.changes')),{kind:'status',sessionId:'review',status:null});
-  // S also works on the row under the pointer.
-  await js('document.activeElement.blur()');
   assert.equal(await js('!!'+sideRow('waiting')+'.querySelector("[data-task-status-trigger]")'),false,'an approval the agent waits on is answered, not closed');
-  await js(sideRow('failed')+'.scrollIntoView({block:"nearest"})');await delay(60);
-  const r=await rect(sideRow('failed'));win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(r.x+60),y:Math.round(r.y+8)});await delay(120);
-  await key('s');await until('!!'+statusMenu);
-  await key('2');await until('!'+sideRow('failed'));
+  await js(sideRow('failed')+'.querySelector("[data-task-status-trigger]").click()');await until('!!'+statusMenu);
+  await js(statusMenu+'.querySelector("[data-task-status-option=completed]").click()');await until('!'+sideRow('failed'));
   assert.deepEqual(qaLast(await js('qa.changes')),{kind:'status',sessionId:'failed',status:'completed'});
   assert.equal(await js(nav('My Tasks')+'.textContent.trim()'),'My Tasks1','a task closed by hand stops counting as waiting on you');
-  // S keeps working on the row under the pointer after that row re-renders.
-  await js(sideRow('review')+'.scrollIntoView({block:"nearest"})');await delay(60);
-  const hovered=await rect(sideRow('review'));win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(hovered.x+60),y:Math.round(hovered.y+8)});await delay(120);
-  await js('qa.store.setState(s=>({sessions:{...s.sessions,review:{...s.sessions.review,title:"Move Search below New Task again"}}}))');await delay(120);
-  await key('s');await until('!!'+statusMenu);await key('Escape');await until('!'+statusMenu);
-  // A key something else already handled is left alone.
-  await js('window.__claimS=e=>{if(e.key==="s")e.preventDefault()};window.addEventListener("keydown",window.__claimS,true)');
-  await key('s');await delay(200);
-  assert.equal(await js('!!'+statusMenu),false,'S handled elsewhere does not open the menu');
-  await js('window.removeEventListener("keydown",window.__claimS,true)');
   // A hand-set state the task later reaches on its own still clears when you pick it.
   await js('document.querySelector("[data-task-list] [data-session-id=done] [data-task-status-trigger]").click()');await until('!!'+statusMenu);
   await js(statusMenu+'.querySelector("[data-task-status-option=review]").click()');await until('!!'+sideRow('done'));
