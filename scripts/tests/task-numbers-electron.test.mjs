@@ -17,6 +17,7 @@ import {Tooltip} from '@base-ui-components/react/tooltip';
 import {Toaster} from 'sonner';
 import {PromptInput} from '/src/ui/components/PromptInput.tsx';
 import {NewSessionView} from '/src/ui/components/NewSessionView.tsx';
+import {MessageCard} from '/src/ui/components/MessageCard.tsx';
 import {SessionTitleActions} from '/src/ui/components/SessionTitleActions.tsx';
 import {useAppStore} from '/src/ui/store/useAppStore.ts';
 import '/src/ui/index.css';
@@ -43,7 +44,7 @@ function Harness(){
  const s=useAppStore();const session=s.sessions[id];
  return <Tooltip.Provider><div style={{height:'100vh',display:'flex',flexDirection:'column',background:'var(--bg-primary)',color:'var(--text-primary)',padding:24}}>
  <header style={{display:'flex',alignItems:'center',fontSize:13}}><SessionTitleActions session={session} showMenu={false} className="text-[13px] font-medium text-[var(--text-primary)]"/></header>
- {fresh?<NewSessionView/>:<><div style={{flex:1}}/><PromptInput sessionId={id}/></>}
+ {fresh?<NewSessionView/>:<><div style={{flex:1}}>{session.messages.filter(m=>m.type==="user_prompt").map((m,i)=><MessageCard key={i} sessionId={id} message={m} toolStatusMap={new Map()} toolResultsMap={new Map()}/>)}</div><PromptInput sessionId={id}/></>}
  <Toaster/></div></Tooltip.Provider>;
 }
 createRoot(document.getElementById('root')).render(<Harness/>);
@@ -66,6 +67,11 @@ app.whenReady().then(async()=>{
  ipcMain.handle('get-antigravity-thought-levels',()=>({model:null,levels:[],defaultLevel:null}));
  for(const provider of ['claude','codex','kimi','grok','opencode','pi','bubble','qoder','deepseek','devin','mimo','minimax','antigravity'])ipcMain.handle('get-'+provider+'-model-config',()=>({defaultModel:'gpt-5.6-sol',options:['gpt-5.6-sol'],availableModels:[{name:'gpt-5.6-sol',enabled:true,isDefault:true}]}));
  for(const [channel,value] of [['get-git-branches',{branches:[],currentBranch:null}],['get-agent-runtime-directory',null],['codex-list-plugins',{plugins:[]}],['get-project-tree',[]],['set-theme',null],['get-recent-cwds',[]],['get-session-user-prompts',[]],['codex-list-skills',{skills:[]}],['get-bubble-providers-config',{providers:[]}],['get-provider-composer-capabilities',{}]])ipcMain.handle(channel,()=>value);
+ let opened;ipcMain.handle('open-external-url',(_e,url)=>{opened=url;return {ok:true}});
+ ipcMain.handle('get-session-organization',()=>({sessions:{},sections:[],projectSources:{}}));
+ ipcMain.handle('list-settled-worktree-sessions',()=>[]);
+ ipcMain.handle('list-sidebar-pull-requests',()=>({}));
+ ipcMain.handle('workflow-list',()=>[]);
  let sent=[];let started=0;ipcMain.on('client-event',(_e,json)=>{const event=JSON.parse(json);if(event.type==='session.start')started++;if(event.type==='session.continue'){sent.push(event.payload.prompt);win.webContents.send('server-event',JSON.stringify({type:'stream.user_prompt',payload:{sessionId:event.payload.sessionId,prompt:event.payload.prompt,createdAt:Date.now()}}));}});
  const js=code=>win.webContents.executeJavaScript(code,true);
  const until=async(code,label)=>{for(let i=0;i<160;i++){if(await js(code))return;await delay(60);}throw new Error('Timed out: '+label+' (rows '+JSON.stringify(await js('qa.rows()'))+', text '+JSON.stringify(await js('qa.editor()?.textContent'))+')');};
@@ -108,7 +114,8 @@ app.whenReady().then(async()=>{
   assert.deepEqual(await rows(),[128,12],'both start with 1: the newer first');
   await press('Down','qa.selected()===12','highlight moved');
   await press('Enter','qa.chips().length===1','picked with Enter');
-  assert.deepEqual(await js('qa.chips()'),[[A,'↗Sidebar search row']]);
+  assert.deepEqual(await js('qa.chips()'),[[A,'Sidebar search row']]);
+  assert.equal(await js('getComputedStyle(qa.editor().querySelector(".task-reference-title")).textDecorationLine'),'underline');
   assert.deepEqual(await rows(),[]);
   assert.equal(sent.length,1);
   await snap('3-chip');
@@ -116,6 +123,13 @@ app.whenReady().then(async()=>{
   await type('first');
   await press('Enter','qa.editor().textContent===""','sent with a reference');
   assert.equal(sent[1],'see aegis://sessions/'+A+' first');
+  const sentLink='document.querySelector(".user-message-content .task-reference")';
+  await until(sentLink,'sent task reference');
+  assert.equal(await js(sentLink+'.textContent'),'Sidebar search row');
+  assert.equal(await js(sentLink+'.getAttribute("href")'),'aegis://sessions/'+A);
+  assert.equal(await js(sentLink+'.parentElement.textContent'),'see Sidebar search row first');
+  await js(sentLink+'.click()');await delay(100);
+  assert.equal(opened,'aegis://sessions/'+A);
 
   // Tab picks at once; titles match, and text written without spaces can lead.
   await type('接着#palette');
@@ -194,7 +208,7 @@ app.whenReady().then(async()=>{
   await until('qa.rows().length===1','menu in the new task composer');
   await snap('4-new-task');
   await press('Tab','qa.chips().length===1','picked in the new task composer');
-  assert.deepEqual(await js('qa.chips()'),[[B,'↗Search palette ranking']]);
+  assert.deepEqual(await js('qa.chips()'),[[B,'Search palette ranking']]);
 
   // Switching the project to one on another Mac afterwards holds the start back.
   await js('qa.store.setState({projectCwd:"/aegis-remote/abcdef012345/p1/coworker"})');await delay(300);

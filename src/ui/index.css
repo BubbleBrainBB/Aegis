@@ -424,6 +424,47 @@
   font-weight: 600;
 }
 
+.composer-task-reference {
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: middle;
+  line-height: 1;
+  user-select: none;
+}
+
+.task-reference {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: min(100%, 28ch);
+  vertical-align: middle;
+  color: inherit;
+  font: inherit;
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.task-reference > :first-child {
+  width: 1em;
+  height: 1em;
+  flex: none;
+}
+
+.task-reference-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.45;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
+  text-underline-offset: 0.17em;
+}
+
+a.task-reference:hover .task-reference-title,
+a.task-reference:focus-visible .task-reference-title {
+  text-decoration-color: currentColor;
+}
+
 .composer-inline-chip--large {
   min-height: 24px;
   padding-inline: 8px;
