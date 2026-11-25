@@ -8,10 +8,12 @@ import {
   useMemo,
   useReducer,
   useRef,
+  useState,
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
 import { parseSessionLink } from '../../shared/session-links';
-import { useAppStore } from '../store/useAppStore';
+import { createPortal } from 'react-dom';
+import { TaskReference } from './TaskReference';
 import { getFileTypeIconVisual } from './FileTypeIcon';
 import { extractProjectFileMentions } from '../utils/project-file-mentions';
 import { extractKnownSiteLinkTokens } from '../utils/known-site-links';
@@ -505,17 +507,13 @@ function createLinkNode(url: string, labelText: string, rawText: string): HTMLSp
   const referencedSessionId = parseSessionLink(url);
   if (referencedSessionId) {
     chip.dataset.sessionReference = referencedSessionId;
-    const session = useAppStore.getState().sessions[referencedSessionId];
-    labelText = session?.title || labelText;
-    const icon = document.createElement('span');
-    icon.className = 'composer-inline-chip__icon';
-    icon.textContent = '↗';
-    icon.setAttribute('aria-hidden', 'true');
-    chip.append(icon);
+    chip.className = 'composer-task-reference';
+    chip.removeAttribute('title');
+    return chip;
   }
   let hostname = '';
   try {
-    hostname = referencedSessionId ? '' : new URL(url).hostname.toLowerCase().replace(/^www\./, '');
+    hostname = new URL(url).hostname.toLowerCase().replace(/^www\./, '');
   } catch {
     // Malformed URLs render without an icon.
   }
@@ -805,6 +803,7 @@ export const ComposerPromptEditor = forwardRef<
   const plainText = useAppPreferences(s => s.plainTextComposer);
   const lastPlainText = useRef(plainText);
   const editorRef = useRef<HTMLDivElement | null>(null);
+  const [taskHosts, setTaskHosts] = useState<HTMLElement[]>([]);
   const isComposingRef = useRef(false);
   const isApplyingSelectionRef = useRef(false);
   const didAutoFocusRef = useRef(false);
@@ -890,6 +889,15 @@ export const ComposerPromptEditor = forwardRef<
       lastRenderedSlashDisplayLabelsRef.current = props.slashDisplayLabels;
     }
 
+    // The editor owns the atomic token and its raw value. React keeps the
+    // title and status inside it current without moving the caret.
+    if (needsRender || taskHosts.length || view.parts.some(part =>
+      part.type === 'chip' && part.segment.type === 'link' && part.segment.site === 'aegis-session'
+    )) {
+      const hosts = Array.from(editorRef.current.querySelectorAll<HTMLElement>('[data-session-reference]'));
+      if (hosts.length !== taskHosts.length || hosts.some((host, i) => host !== taskHosts[i])) setTaskHosts(hosts);
+    }
+
     // Chromium does not lay out an empty line after a terminal text newline.
     // Keep a non-serialized BR there so the native caret has a position
     // on that line. Remove it when typing fills the line.
@@ -941,6 +949,7 @@ export const ComposerPromptEditor = forwardRef<
     });
   }, [
     compositionRevision,
+    taskHosts,
     view,
     plainText,
     props.cursorIndex,
@@ -1158,6 +1167,7 @@ export const ComposerPromptEditor = forwardRef<
           syncAfterComposition();
         }}
       />
+      {taskHosts.map((host, index) => createPortal(<TaskReference sessionId={host.dataset.sessionReference!} />, host, String(index)))}
     </div>
   );
 });

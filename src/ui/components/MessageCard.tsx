@@ -42,6 +42,7 @@ import type { DesignSelectionRef } from '../../shared/types';
 import type { ReviewComment } from '../../shared/review-comments';
 import { ReviewCommentPills } from './ReviewComments';
 import { openReviewComment } from '../store/useReviewCommentStore';
+import { TaskReferenceText } from './TaskReference';
 import { isImeComposing } from '../utils/ime';
 
 type UserPromptPrefixDisplay = PromptPrefixDisplay;
@@ -504,7 +505,7 @@ function UserPromptCard({
 
                 {(!promptPrefixDisplay || promptPrefixDisplay.remainder) && (
                   <span className="user-message-content whitespace-pre-wrap break-words [overflow-wrap:anywhere] align-middle">
-                    {promptPrefixDisplay ? promptPrefixDisplay.remainder : displayPrompt}
+                    <TaskReferenceText text={promptPrefixDisplay ? promptPrefixDisplay.remainder : displayPrompt} />
                   </span>
                 )}
               </div>
