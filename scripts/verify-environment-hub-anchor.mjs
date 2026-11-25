@@ -46,24 +46,11 @@ assert.ok(
   'EnvironmentHub: the card must not be position:fixed to the viewport'
 );
 
-// 4. Computer Use screenshots live as a section inside this card, not a
-//    right-utility filmstrip. Preview loads go through the opaque artifact IPC.
-assert.ok(
-  hub.includes('EnvironmentComputerUseSection'),
-  'EnvironmentHub: must mount a Computer Use screenshot section'
-);
-const filmstrip = read('src/ui/components/environment/EnvironmentComputerUseSection.tsx');
-assert.ok(
-  filmstrip.includes('openComputerUsePreview'),
-  'EnvironmentComputerUseSection: must open screenshots in the Aegis child preview'
-);
-assert.ok(
-  filmstrip.includes('Pop out'),
-  'EnvironmentComputerUseSection: must offer Pop out into an Aegis child window'
-);
-assert.ok(
-  !filmstrip.includes('readAttachmentPreview'),
-  'EnvironmentComputerUseSection: must not take arbitrary screenshot paths'
-);
+// The card hosts the live Picture in Picture control. The preview integration
+// test exercises opening the native window from the shared live HUD.
+assert.ok(hub.includes('EnvironmentComputerUseSection'), 'EnvironmentHub must mount the Computer Use section');
+const section = read('src/ui/components/environment/EnvironmentComputerUseSection.tsx');
+assert.ok(section.includes('ComputerUseLiveHud'), 'The card must use the shared live preview');
+assert.ok(!section.includes('readAttachmentPreview'), 'The card must not take arbitrary screenshot paths');
 
 console.log('environment-hub-anchor: all checks passed');
