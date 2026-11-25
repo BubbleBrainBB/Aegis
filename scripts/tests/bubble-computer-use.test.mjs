@@ -23,7 +23,7 @@ setEnv('AEGIS_COMPUTER_USE_SETTINGS_PATH', join(home, 'computer-use.json'));
 setEnv('AEGIS_COMPUTER_USE_ENABLED', undefined);
 // A file that answers `--version` as the pinned driver: enough for "the driver is there".
 const fakeDriver = join(home, 'cua-driver');
-writeFileSync(fakeDriver, '#!/bin/sh\necho "cua-driver 0.57.0"\n');
+writeFileSync(fakeDriver, '#!/bin/sh\necho "cua-driver 0.61.2"\n');
 chmodSync(fakeDriver, 0o755);
 setEnv('AEGIS_CUA_DRIVER_PATH', fakeDriver);
 
@@ -34,7 +34,7 @@ const settings = require('../../dist-electron/electron/libs/computer-use/setting
 const { CUA_DRIVER_VERSION } = require('../../dist-electron/electron/libs/computer-use/driver-binary.js');
 const { computerUseLease } = require('../../dist-electron/electron/libs/codex-computer-use.js');
 const { computerUseGrants } = require('../../dist-electron/electron/libs/codex-computer-use-grants.js');
-assert.equal(CUA_DRIVER_VERSION, '0.57.0', 'the stand-in above answers as the pinned version');
+assert.equal(CUA_DRIVER_VERSION, '0.61.2', 'the stand-in above answers as the pinned version');
 
 const CLICK = 'mcp__aegis-computer-use__click';
 const GET_APP_STATE = 'mcp__aegis-computer-use__get_app_state';
@@ -256,7 +256,7 @@ try {
       assert.equal(f.driver.of('click').length, 0, 'nothing is sent before the answer');
       card.answer({ allow: true, untilRevoked: false });
       await f.finished();
-      assert.equal(f.registered(0).length, 9);
+      assert.equal(f.registered(0).length, 13);
       assert.deepEqual(f.bubbleCards, [], "Bubble's own approval layer shows nothing for the gateway's tools");
       assert.equal(f.mcp.runs, 0, 'the MCP tool of the same name is shadowed, not run');
       assert.deepEqual(f.driver.of('click')[0].args, {
@@ -288,7 +288,7 @@ try {
       await reached.promise;
       await f.send('And this picture', { attachments: [{ kind: 'image', path: image, name: 'shot.png', mimeType: 'image/png' }] });
       await until(() => f.asked.runTurn.length === 2, 'the queued turn to be handed to the SDK');
-      assert.equal(f.registered(1).length, 9, 'the queued turn was given the tools');
+      assert.equal(f.registered(1).length, 13, 'the queued turn was given the tools');
       settings.setComputerUseEnabled(false);
       await f.gateway.shutdown('disabled');
       answering.open();

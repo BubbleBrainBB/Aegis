@@ -512,6 +512,25 @@ const { OpenCodeServeManager } = require('../dist-electron/electron/libs/provide
     m.state = { client: new OpenCodeV2Client(baseUrl, 'pw'), password: 'pw', process: { close() {}, exited: new Promise(() => {}) }, events: new AbortController() };
     return m;
   };
+  // A settings change during server startup must reach the caller joining that startup.
+  const pendingManager = new OpenCodeServeManager();
+  const oldState = makeManager().state;
+  const nextState = makeManager().state;
+  let starts = 0;
+  pendingManager.canRestart = () => true;
+  pendingManager.startServer = async () => {
+    starts += 1;
+    // This stand-in captured an old Computer Use entry before the switch went off.
+    if (starts === 1) return { ...oldState, computerUse: { dispose() {} } };
+    return nextState;
+  };
+  const starting = pendingManager.ensureServer();
+  const joining = Promise.all([pendingManager.getClient(), pendingManager.getClient()]);
+  await starting;
+  assert.deepEqual(await joining, [nextState.client, nextState.client]);
+  assert.equal(starts, 2);
+  await pendingManager.close();
+
   const interrupts = async () => (await takeRequests()).filter((r) => r.method === 'POST' && r.url.endsWith('/interrupt')).map((r) => r.url);
   let m = makeManager();
   m.dispatch({ type: 'session.execution.started', data: { sessionID: 'ses_run' } });
@@ -542,6 +561,22 @@ const { OpenCodeServeManager } = require('../dist-electron/electron/libs/provide
   const again = Date.now();
   await m.loadModels('/proj');
   assert.ok(Date.now() - again < 1_000, 'a loaded catalog is read straight away');
+  m.state.computerUse = { dispose() {} };
+  m.canRestart = () => true;
+  const replacement = makeManager().state;
+  m.startServer = async () => replacement;
+  const original = m.state.client;
+  m.dispatch({ type: 'session.execution.started', data: {sessionID: 'in-flight'} });
+  assert.equal(await m.getClient(), original, 'a settings change cannot stop an active turn');
+  m.dispatch({ type: 'session.execution.succeeded', data: {sessionID: 'in-flight'} });
+  const catalog = m.loadModels('/refresh');
+  const clients = Promise.all([m.getClient(), m.getClient()]);
+  await sleep(40);
+  assert.equal(m.state.client, original, 'catalog requests finish on their original client');
+  m.dispatch({type: 'model.updated', location: {directory: '/refresh'}, data: {}});
+  assert.equal((await catalog).models.length, 1);
+  assert.deepEqual(await clients, [replacement.client, replacement.client]);
+  await m.close();
   await worker.terminate();
   console.log('  ✓ client: data unwrap, location query, auth, typed errors; SSE framing');
   console.log('  ✓ shutdown interrupts running turns (sync quit path and close())');

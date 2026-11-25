@@ -4,7 +4,7 @@
 // API mock and a scripted cua-driver. No desktop is touched and no model is
 // called (scripts/verify-computer-use-live.ts runs the real driver).
 //
-// What it pins: the runtime is handed the gateway's nine tools under their
+// What it pins: the runtime is handed the gateway's thirteen tools under their
 // transcript names, bound to its one session; a look returns the tree and the
 // screenshot to the model; an action asks with the COMPUTER USE card of that
 // session and takes the shared lease; another agent (Bubble's host tools)
@@ -48,7 +48,7 @@ process.env.DEEPSEEK_API_KEY = 'local-computer-use-test';
 // A stand-in that answers the version probe as the pinned driver. It is
 // never started: the gateway below is given a scripted driver.
 const standIn = join(temp, 'cua-driver');
-writeFileSync(standIn, '#!/bin/sh\necho "cua-driver 0.57.0"\n');
+writeFileSync(standIn, '#!/bin/sh\necho "cua-driver 0.61.2"\n');
 chmodSync(standIn, 0o755);
 process.env.AEGIS_CUA_DRIVER_PATH = standIn;
 process.env.AEGIS_COMPUTER_USE_ENABLED = '1';
@@ -66,7 +66,7 @@ const { setWorkflowSessionPolicy, clearWorkflowSessionPolicy } = lib('workflow/s
 const { disposeBrowserUseHttpServer } = lib('browser-use-http-server.js');
 const { disposeSessionHttpServer } = lib('session-http-server.js');
 const { CUA_DRIVER_VERSION } = lib('computer-use/driver-binary.js');
-assert.equal(CUA_DRIVER_VERSION, '0.57.0', 'the stand-in above answers as the pinned driver');
+assert.equal(CUA_DRIVER_VERSION, '0.61.2', 'the stand-in above answers as the pinned driver');
 
 const TREE = [
   '- [0] AXWindow "Calculator" [id=main actions=[raise]]',
@@ -164,7 +164,7 @@ writeFileSync(join(home, '.aegis', 'deepseek-mcp.json'), JSON.stringify({
   mcpServers: { 'aegis-computer-use': { type: 'http', url: `http://127.0.0.1:${decoy.address().port}/mcp` } },
 }));
 
-const GATEWAY_TOOLS = ['list_apps', 'get_app_state', 'click', 'perform_secondary_action', 'set_value', 'scroll', 'drag', 'press_key', 'type_text']
+const GATEWAY_TOOLS = ['list_apps', 'get_app_state', 'click', 'perform_secondary_action', 'set_value', 'scroll', 'drag', 'press_key', 'type_text', 'list_windows', 'verify_state', 'zoom', 'invoke_menu']
   .map((tool) => `mcp__aegis-computer-use__${tool}`);
 const adapter = new DeepseekSdkAdapter();
 // The transcript as ipc-handlers gets it: through the agent loop's annotator.
@@ -250,7 +250,7 @@ try {
     await start('ds-1', 'Press equals in Calculator.');
     assert.equal(await settled, 'completed');
 
-    // The model was offered the nine tools, named as the transcript names them.
+    // The model was offered the thirteen tools, named as the transcript names them.
     const offered = toolNames(requests[0]);
     for (const name of GATEWAY_TOOLS) assert.ok(offered.includes(name), `offered ${name}: ${offered.join(', ')}`);
     assert.equal(offered.filter((name) => name.includes('aegis-computer-use')).length, GATEWAY_TOOLS.length, 'and no other tool of that server');

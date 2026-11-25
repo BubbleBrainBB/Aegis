@@ -15,7 +15,10 @@ import {Toaster,toast} from 'sonner';
 import {Tooltip} from '@base-ui-components/react/tooltip';
 import '/src/ui/index.css';
 window.qa={store:useAppStore,toast,calls:[],profile:{displayName:'Test User',handle:'test'},permissions:{enabled:true,origins:{}},feishu:{connection:'connected',enabled:true,configured:true,appId:'cli_test',domain:'feishu',botName:'Aegis',hasOwner:true,defaultCwd:'/tmp/example',projects:[{path:'/tmp/example',name:'example'}],allowedUsers:[{openId:'ou_ann',name:'Ann'}],allowedChats:[],bindings:[{scope:'oc_1',chatId:'oc_1',topic:false,sessionId:'s1',title:'Fix login'}]},cookieStatus:{importedAt:null,profileName:null,cookieCount:0,domains:[]}};
+qa.computerUse={enabled:false,enabledByEnvironment:false,driverPath:'',driver:{state:'ready',source:'bundled',version:'test'},permissions:{accessibility:true,screenRecording:false}};
 window.electron={
+ getComputerUseSettings:async()=>qa.computerUse,
+ setComputerUseEnabled:async enabled=>qa.computerUse={...qa.computerUse,enabled},
  getBrowserUsePermissions:async()=>{if(qa.failBrowser)throw Error('Browser unavailable');return qa.permissions;},
  setBrowserUseEnabled:async enabled=>qa.permissions={...qa.permissions,enabled},
  listChromeCookieProfiles:async()=>({platformSupported:true,chromeRunning:true,profiles:[{profileName:'Personal',profilePath:'/tmp/profile-1',hasCookies:true},{profileName:'Work',profilePath:'/tmp/profile-2',hasCookies:true}]}),
@@ -29,7 +32,7 @@ window.electron={
  getUserProfile:async()=>qa.profile,saveUserProfile:async profile=>qa.profile={...qa.profile,...profile},
  getBubbleProvidersConfig:async()=>({providers:[{id:'openai',name:'OpenAI',configured:true,enabled:true,hasApiKey:true,isDefault:true},{id:'google',name:'Google',configured:false,enabled:false,hasApiKey:false}],defaultProviderId:'openai'}),
  getDeepseekKeyStatus:async()=>({hasApiKey:false}),getAgentRuntimeDirectory:async()=>({checkedAt:Date.now(),entries:[]}),
- getAgentUsageReport:async provider=>({rangeDays:365,costMode:'actual',totals:{inputTokens:8000,outputTokens:2000,totalTokens:10000,totalCostUsd:1.25,sessionCount:2,cacheReadTokens:1000,cacheHitRate:.125},models:[],daily:[{date:'2026-09-12',inputTokens:8000,outputTokens:2000,totalTokens:10000,totalCostUsd:1.25,sessionCount:2,cacheReadTokens:1000}]}),
+ getAgentUsageReport:async provider=>({rangeDays:365,costMode:'actual',totals:{inputTokens:8000,outputTokens:2000,totalTokens:10000,totalCostUsd:1.25,sessionCount:2,cacheReadTokens:1000,cacheHitRate:.125},models:[],daily:[{date:'2026-09-12',byModel:{},inputTokens:8000,outputTokens:2000,totalTokens:10000,totalCostUsd:1.25,sessionCount:2,cacheReadTokens:1000}]}),
  getCodexRateLimits:async()=>({rateLimits:null,rateLimitsByLimitId:{}}),getClaudePlanUsage:async()=>{throw Error('No subscription');},getGrokPlanUsage:async()=>{throw Error('No subscription');},getQoderPlanUsage:async()=>{throw Error('No subscription');},
  getKimiModelConfig:async()=>({defaultModel:null,options:[],availableModels:[]}),
  listCodexMcpStatus:async()=>({ok:true,servers:[{name:'calendar',authStatus:'notLoggedIn',toolNames:[]}]}),
@@ -71,6 +74,15 @@ app.whenReady().then(async()=>{
   await js('Array.from(document.querySelectorAll("[role=menuitem]")).find(e=>e.textContent.includes("Work")).click()');await delay(100);
   await button('Import','[role=dialog]');assert.equal(await js('qa.calls.find(c=>c.type==="cookies").input.profilePath'),'/tmp/profile-2');
   await button('Clear');assert.equal(await js('qa.cookieStatus.cookieCount'),0);
+  assert.equal(await js('!!document.querySelector("[data-computer-use-driver]")'),false);
+  await button('Computer Use','nav [aria-label="Integrations"]');
+  assert.equal(await js('document.querySelector("main h1").textContent'),'Computer Use');
+  assert.equal(await js("!!document.querySelector('[aria-label=\"Toggle browser use\"]')"),false);
+  await click('[aria-label="Toggle Computer use"]');
+  assert.equal(await js('qa.computerUse.enabled'),true);
+  await button('Browser','nav [aria-label="Integrations"]');
+  await search('cua-driver','Computer UseComputer Use');
+  assert.equal(await js('document.activeElement.dataset.settingsLabel'),'Computer Use');
   await nav('bridge');await until('!!document.querySelector("[aria-label=\\"App ID\\"]")');await shot('bridge-light');
   await click('[aria-label="Allow messages from Feishu"]');assert.equal(await js('qa.feishu.enabled'),false);
   await click('[aria-label="Choose a folder"]');await delay(100);assert.equal(await js('qa.feishu.defaultCwd'),'/tmp/new-project');
@@ -99,11 +111,11 @@ app.whenReady().then(async()=>{
   await js('qa.toast.dismiss();qa.store.getState().setTheme("dark")');await nav('bridge');await shot('bridge-dark');
   // A window this narrow collapses the sidebar, Settings nav included: each page alone must fit.
   win.setContentSize(390,850);
-  for(const tab of ['bridge','browser','mcp','usage','profile']){await nav(tab);await shot(tab+'-narrow');assert.equal(await js('document.querySelector("main").scrollWidth>document.querySelector("main").clientWidth'),false,tab+' does not overflow');}
+  for(const tab of ['bridge','browser','computer-use','mcp','usage','profile']){await nav(tab);await shot(tab+'-narrow');assert.equal(await js('document.querySelector("main").scrollWidth>document.querySelector("main").clientWidth'),false,tab+' does not overflow');}
   await js('qa.failBrowser=true');await nav('profile');await nav('browser');await until('!!document.querySelector("[role=alert]")');await js('qa.failBrowser=false');await button('Retry');await until('!!document.querySelector("[aria-label=\\"Toggle browser use\\"]")');
   await js('qa.failBridge=true');await nav('bridge');await until('!!document.querySelector("[role=alert]")');assert.equal(await js('document.querySelector("[aria-label=\\"App ID\\"]")'),null);await js('qa.failBridge=false');await button('Retry');await until('!!document.querySelector("[aria-label=\\"App ID\\"]")');
   assert.deepEqual(errors,[]);console.log(JSON.stringify({ok:true,captures:process.env.QA_CAPTURE}));app.exit(0);
- }catch(error){console.error(error);await shot('failure');app.exit(1);}
+ }catch(error){console.error(error,errors);await shot('failure');app.exit(1);}
 });
 `;
 let server;

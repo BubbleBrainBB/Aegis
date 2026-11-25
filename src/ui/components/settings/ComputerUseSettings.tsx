@@ -48,7 +48,7 @@ export function ComputerUseSettings() {
 
   if (loadError) {
     return (
-      <SettingsGroup title="Computer use">
+      <SettingsGroup>
         <div role="alert" className="px-4 py-3 text-[13px]">
           Could not load Computer use settings.{' '}
           <button className="settings-button" onClick={() => setRetry((value) => value + 1)}>
@@ -60,7 +60,7 @@ export function ComputerUseSettings() {
   }
   if (!view) {
     return (
-      <SettingsGroup title="Computer use">
+      <SettingsGroup>
         <div className="px-4 py-2.5 text-[13px] text-[var(--text-muted)]">Loading…</div>
       </SettingsGroup>
     );
@@ -74,10 +74,7 @@ export function ComputerUseSettings() {
   const pathChanged = pathDraft.trim() !== view.driverPath;
 
   return (
-    <SettingsGroup
-      title="Computer use"
-      description="Lets agents look at and operate apps on this Mac: Bubble, Claude, DeepSeek Harness, Qoder, Devin, MiniMax Code, MiMo Code, Grok Build, Pi and OpenCode. They can read any window except Aegis's own; every click, key press or typed text asks you first unless the conversation runs in Full Access. Codex has its own Computer use, which this switch does not change."
-    >
+    <SettingsGroup>
       <SettingsRow
         variant="card"
         label="Enable Computer use"

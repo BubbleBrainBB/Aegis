@@ -80,6 +80,8 @@
     "probe:computer-use-acp": "npm run transpile:electron && node scripts/probe-computer-use-acp.mjs",
     "probe:computer-use-adapters": "npm run transpile:electron && node scripts/probe-computer-use-adapters.mjs",
     "verify:bubble-computer-use": "npm run transpile:electron && node scripts/tests/bubble-computer-use.test.mjs",
+    "verify:computer-use-preview": "npm run build && node scripts/tests/workstream-disclosure-electron.test.mjs --computer-use-preview",
+    "verify:computer-use-windows-live": "npm run transpile:electron && node scripts/tests/computer-use-windows-live.mjs",
     "verify:computer-use-live": "npx tsx scripts/verify-computer-use-live.ts",
     "fetch:cua-driver": "node scripts/fetch-cua-driver.mjs",
     "verify:codex-computer-use-e2e": "npm run transpile:electron && node scripts/tests/codex-computer-use.e2e.mjs",

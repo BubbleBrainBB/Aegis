@@ -39,7 +39,7 @@ export function TurnStatusLine({ model }: { model: WorkstreamModel }) {
   const elapsed = model.startedAt != null && now - model.startedAt >= 1000 ? formatWorkstreamElapsed(now - model.startedAt) : null;
   const waiting = activity.kind === 'waiting';
   // The retry banner reports a stalled stream itself.
-  if (model.retrying) return null;
+  if (model.retrying || step?.kind === 'computer_use') return null;
 
   return (
     <div className="turn-status" data-turn-status>

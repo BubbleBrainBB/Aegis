@@ -328,7 +328,7 @@ export function EnvironmentHub({
   const previewOpen = Boolean(context.sessionId) && previewSessionId === context.sessionId;
   const knownNonGit = !context.unavailableReason && !overview.hasRepo && (overview.error === 'not-a-repo' || overview.ok);
   const subagents = useMemo(() => context.session ? deriveSubagentSummaries(context.session.messages) : [], [context.session?.messages]);
-  const hasComputerUse = environmentHasComputerUseSection({ frames: context.session?.computerUseFrames, grants: context.session?.computerUseGrants });
+  const hasComputerUse = environmentHasComputerUseSection(context.session);
 
 
   useEffect(() => {

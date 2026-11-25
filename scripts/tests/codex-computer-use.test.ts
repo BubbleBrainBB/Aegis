@@ -64,6 +64,18 @@ function testClassification() {
     'Clicking in Finder'
   );
 
+  for (const [tool, pending, done] of [
+    ['list_windows', 'Listing windows', 'Listed windows'],
+    ['verify_state', 'Checking window state', 'Checked window state'],
+    ['zoom', 'Inspecting window detail', 'Inspected window detail'],
+    ['invoke_menu', 'Using app menu', 'Used app menu'],
+  ]) {
+    const action = classifyComputerUseAction({ server: 'aegis-computer-use', tool })!;
+    assert.equal(formatComputerUseLabel(action, 'pending'), pending);
+    assert.equal(formatComputerUseLabel(action, 'success'), done);
+    assert.match(formatComputerUseLabel(action, 'error'), /^Failed to /);
+    assert.match(formatComputerUseLabel(action, 'interrupted'), /^Interrupted /);
+  }
   const script = classifyComputerUseAction({
     toolName: 'mcp__node_repl__js',
     title: 'Inspect apps',
@@ -689,7 +701,7 @@ function testHydrateFramesFromHistory() {
   assert.equal(hydrated[0]?.media?.sha256, shaA);
   assert.equal(hydrated[1]?.media?.sha256, shaB);
   assert.equal(hydrated[0]?.app, 'Notes');
-  assert.equal(environmentHasComputerUseSection({ frames: hydrated, grants: [] }), true);
+  assert.equal(environmentHasComputerUseSection({ status: 'completed', computerUseLive: null }), false);
 
   const live = {
     threadId: 'session-1',
@@ -705,30 +717,12 @@ function testHydrateFramesFromHistory() {
   const merged = mergeHydratedComputerUseFrames([live], hydrated);
   assert.equal(merged.length, 2);
   assert.equal(merged.find((frame) => frame.media?.sha256 === shaB)?.label, 'Clicking in Notes');
-  assert.equal(environmentHasComputerUseSection({ frames: [], grants: [] }), false);
+  assert.equal(environmentHasComputerUseSection({ status: 'running' }), false);
 }
 
 function testEnvironmentFilmstripVisibility() {
-  assert.equal(environmentHasComputerUseSection({ frames: [], grants: [] }), false);
-  assert.equal(environmentHasComputerUseSection({ frames: [{ media: null }], grants: [] }), false);
-  assert.equal(
-    environmentHasComputerUseSection({
-      frames: [
-        {
-          media: { sessionId: 's1', sha256: 'abc', mimeType: 'image/png', sizeBytes: 12 },
-        },
-      ],
-      grants: [],
-    }),
-    true
-  );
-  assert.equal(
-    environmentHasComputerUseSection({
-      frames: [],
-      grants: [{ key: 'g1' }],
-    }),
-    true
-  );
+  assert.equal(environmentHasComputerUseSection(undefined), false);
+  assert.equal(environmentHasComputerUseSection({ status: 'running' }), false);
   assert.equal(
     formatComputerUseScreenshotFileName({ app: 'Notes', mimeType: 'image/png', index: 1 }),
     'Notes-1.png'
@@ -760,6 +754,8 @@ function testLiveFrameMerge() {
     media: { sessionId: 's1', sha256: 'b'.repeat(64), mimeType: 'image/png', sizeBytes: 8 },
     at: 2,
   };
+  assert.equal(environmentHasComputerUseSection({ status: 'running', computerUseLive: first }), true);
+  assert.equal(environmentHasComputerUseSection({ status: 'completed', computerUseLive: first }), false);
   const labelOnly = {
     ...second,
     hasFreshMedia: false,
@@ -770,13 +766,18 @@ function testLiveFrameMerge() {
   const frames = appendComputerUseLiveFrame(appendComputerUseLiveFrame([], first), second);
   assert.equal(frames.length, 2);
   assert.equal(appendComputerUseLiveFrame(frames, labelOnly).length, 2);
+  const sameWindow = { ...second, previewWindowId: 11 };
+  const pending = { ...labelOnly, media: null, previewWindowId: 11 };
+  assert.equal(mergeComputerUseLiveFrame(sameWindow, pending).media, second.media);
+  assert.equal(mergeComputerUseLiveFrame(sameWindow, { ...pending, previewWindowId: 12 }).media, null);
+  assert.equal(mergeComputerUseLiveFrame(sameWindow, { ...pending, app: 'Notes' }).media, null);
   assert.equal(mergeComputerUseLiveFrame(second, labelOnly).label, 'Clicked in Finder');
   assert.equal(mergeComputerUseLiveFrame(second, labelOnly).media?.sha256, 'b'.repeat(64));
 }
 
 function testPreviewWindowPolicy() {
   const policy = computerUsePreviewWindowPolicy();
-  assert.equal(policy.alwaysOnTop, false);
+  assert.equal(policy.alwaysOnTop, true);
   assert.equal(policy.fullscreenable, false);
   assert.equal(policy.modal, false);
   assert.equal(policy.type, null);
@@ -805,7 +806,7 @@ function testPreviewSourceWiring() {
   assert.match(mainUi, /isComputerUsePreviewHash/);
 
   const hud = readFileSync(join(root, 'src/ui/components/ComputerUseLiveHud.tsx'), 'utf8');
-  assert.match(hud, /Pop out/);
+  assert.match(hud, /Move to floating window/);
   assert.match(hud, /openComputerUsePreview/);
   assert.match(hud, /stopComputerUse/);
 
@@ -813,11 +814,8 @@ function testPreviewSourceWiring() {
   assert.match(previewApp, /stopComputerUse/);
 
   const env = readFileSync(join(root, 'src/ui/components/environment/EnvironmentComputerUseSection.tsx'), 'utf8');
-  assert.match(env, /Pop out/);
-  assert.match(env, /openComputerUsePreview/);
-  assert.match(env, /formatComputerUseScreenshotFileName/);
-  assert.equal(env.includes('ComputerUseFilmstrip'), false);
-  assert.equal(env.includes('ComputerUseSelectedFrame'), false);
+  assert.match(env, /Picture in Picture/);
+  assert.doesNotMatch(env, /formatComputerUseScreenshotFileName|computerUseFrames/);
 
   const store = readFileSync(join(root, 'src/ui/store/useAppStore.ts'), 'utf8');
   assert.match(
@@ -833,17 +831,12 @@ function testPreviewSourceWiring() {
   const ipc = readFileSync(join(root, 'src/electron/ipc-handlers.ts'), 'utf8');
   const finish = ipc.slice(ipc.indexOf('function finishComputerUseUi'));
   const stoppedAt = finish.indexOf("type: 'computerUse.stopped'");
-  const closeAt = finish.indexOf('stopComputerUsePreviewIfSession');
+  const closeAt = finish.indexOf('clearComputerUseLive(sessionId)');
   assert.ok(stoppedAt >= 0 && closeAt >= 0 && stoppedAt < closeAt, 'Stop must hide HUD before closing the preview window');
   assert.match(ipc, /read-computer-use-app-icon/);
 
   const workstream = readFileSync(join(root, 'src/ui/components/AssistantWorkstream.tsx'), 'utf8');
-  assert.match(workstream, /ComputerUseAppIcon/);
-  assert.equal(
-    /kind === 'computer_use'\) return <Monitor/.test(workstream),
-    false,
-    'Computer Use rows should use the target app icon, not a generic monitor'
-  );
+  assert.match(workstream, /kind === 'computer_use'\) return <Monitor/);
 }
 
 testClassification();

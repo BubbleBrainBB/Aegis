@@ -5,7 +5,7 @@ import { AppearanceControls } from './AppearanceControls';
 import { findSettings, type SettingsSearchEntry } from './settings-search';
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { create } from 'zustand';
-import { Keyboard, Server, Settings as SettingsIcon, Sun, ChartColumn, User, PlugZap, Bot, Image, Trash2, Globe, Monitor } from '../icons';
+import { Keyboard, Server, Settings as SettingsIcon, Sun, ChartColumn, User, PlugZap, Bot, Image, Trash2, Globe, Monitor, MousePointer } from '../icons';
 import { useAppStore } from '../../store/useAppStore';
 import { ClaudeUsageSettingsContent } from './ClaudeUsageSettings';
 import { AgentRuntimeSettings } from './AgentRuntimeSettings';
@@ -42,6 +42,12 @@ const SETTINGS_TABS = {
     description: '',
     icon: <Globe className="w-4 h-4" />,
   },
+  'computer-use': {
+    label: 'Computer Use',
+    title: 'Computer Use',
+    description: '',
+    icon: <MousePointer className="w-4 h-4" />,
+  },
   mcp: {
     label: 'MCP Servers',
     title: 'MCP Servers',
@@ -73,7 +79,7 @@ type SettingsTabKey = keyof typeof SETTINGS_TABS;
 
 const SETTINGS_NAV_GROUPS: { label: string; tabs: SettingsTabKey[] }[] = [
   { label: 'Personal', tabs: ['general', 'appearance', 'shortcuts', 'profile', 'usage'] },
-  { label: 'Integrations', tabs: ['connections', 'browser', 'mcp', 'providers', 'bridge'] },
+  { label: 'Integrations', tabs: ['connections', 'browser', 'computer-use', 'mcp', 'providers', 'bridge'] },
 ];
 
 function isSettingsTabKey(value: string): value is SettingsTabKey {
@@ -287,7 +293,7 @@ export function Settings() {
     <div className="aegis-settings flex h-full min-h-0 min-w-0 flex-1 flex-col">
       <main ref={mainRef} className="aegis-settings-panel min-h-0 min-w-0 flex-1 overflow-y-auto select-none [&_input]:select-text [&_textarea]:select-text [&_[contenteditable]]:select-text">
         <div
-          className={`aegis-settings-content ${['mcp', 'browser', 'bridge', 'usage', 'profile'].includes(resolvedActiveSettingsTab) ? 'settings-standard' : ''} mx-auto w-full px-8 pb-12 pt-11 ${resolvedActiveSettingsTab === 'usage' ? 'max-w-[1000px]' : 'max-w-[792px]'}`}
+          className={`aegis-settings-content ${['mcp', 'browser', 'computer-use', 'bridge', 'usage', 'profile'].includes(resolvedActiveSettingsTab) ? 'settings-standard' : ''} mx-auto w-full px-8 pb-12 pt-11 ${resolvedActiveSettingsTab === 'usage' ? 'max-w-[1000px]' : 'max-w-[792px]'}`}
         >
           {/* The MCP page renders its own header (runtime name). */}
           {resolvedActiveSettingsTab !== 'mcp' ? (
@@ -317,9 +323,9 @@ export function Settings() {
           {resolvedActiveSettingsTab === 'browser' && (
             <div className="space-y-5">
               <BrowserUseSettings />
-              <ComputerUseSettings />
             </div>
           )}
+          {resolvedActiveSettingsTab === 'computer-use' && <ComputerUseSettings />}
           {resolvedActiveSettingsTab === 'mcp' && (
             <div className="space-y-5">
               <McpSettingsContent key={target?.tab === 'mcp' ? `${target.runtime}:${target.id ?? target.label}` : 'mcp'} />

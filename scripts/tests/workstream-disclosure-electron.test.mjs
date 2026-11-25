@@ -12,6 +12,9 @@ import React, {useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {WorkstreamDisclosure} from '/src/ui/components/ToolExecutionBatch';
 import {ChatPane} from '/src/ui/components/ChatPane';
+import {EnvironmentComputerUseSection} from '/src/ui/components/environment/EnvironmentComputerUseSection';
+import {EnvironmentPanelProvider,useEnvironmentPanelLayout} from '/src/ui/components/environment/EnvironmentPanelLayout';
+import {createPortal} from 'react-dom';
 import {WorkstreamActivityLabel} from '/src/ui/components/WorkstreamPrimitives';
 import {Tooltip} from '@base-ui-components/react/tooltip';
 import {useAppPreferences} from '/src/ui/store/useAppPreferences';
@@ -52,6 +55,13 @@ const tool = (id, status='success') => ({id,type:'tool',toolName:'mcp__docs__rea
 const model = (entries, running=true, durationMs) => ({state:running?'running':'completed',title:'Working',summary:'Work',entries,previewEntries:entries,
   toolCount:entries.filter(e=>e.type==='tool').length,noteCount:entries.filter(e=>e.type==='thinking'||e.type==='note').length,
   hiddenEntryCount:0,startedAt:1000,durationMs,todoProgress:null});
+function PreviewTestSidebar() {
+ const session = store(s => s.sessions[chatId]);
+ const layout = useEnvironmentPanelLayout();
+ const setRequested = layout?.setRequested;
+ React.useEffect(()=>{setRequested?.(true);return ()=>setRequested?.(false)},[setRequested]);
+ return layout?.surface ? createPortal(<aside className="environment-panel-pinned"><EnvironmentComputerUseSection session={session} sessionId={chatId} previewOpen={false}/></aside>,layout.surface) : null;
+}
 function App(){
  const [n,setN]=useState(10),[running,setRunning]=useState(true),[turn,setTurn]=useState(1),[states,setStates]=useState(false),[chat,setChat]=useState(false),[label,setLabel]=useState('Reading first.ts'),[labelActive,setLabelActive]=useState(true),[shellDone,setShellDone]=useState(false);
  window.qa={emit,
@@ -123,6 +133,7 @@ function App(){
    reduced:()=>useAppPreferences.setState({reduceMotion:'on'}),
    dark:()=>useAppStore.getState().setTheme('dark')};
  const entries=Array.from({length:n},(_,i)=>tool('step-'+i,running&&i===n-1?'pending':'success'));
+ if(chat && window.previewTest) return <EnvironmentPanelProvider><div id="real-chat" style={{height:'100vh',display:'flex'}}><ChatPane paneId="qa" sessionId={chatId} isActive onActivate={()=>{}} codexModelConfig={config}/><PreviewTestSidebar/></div></EnvironmentPanelProvider>;
  if(chat) return <div id="real-chat" style={{height:'100vh',display:'flex'}}><ChatPane paneId="qa" sessionId={chatId} isActive onActivate={()=>{}} codexModelConfig={config} /></div>;
  if(states) return <main>
    <section id="stopped"><WorkstreamDisclosure model={model([tool('stopped','interrupted')],false)} isRunning={false}/></section>
@@ -159,6 +170,10 @@ app.whenReady().then(async()=>{
  const shot=async(name)=>{fs.mkdirSync(process.env.QA_CAPTURE,{recursive:true});fs.writeFileSync(path.join(process.env.QA_CAPTURE,name+'.png'),(await w.webContents.capturePage()).toPNG())};
  try{
   await w.loadURL(process.env.QA_URL);await until('!!window.qa','renderer');await delay(500);
+  if(process.env.QA_COMPUTER_USE_PREVIEW === '1') {
+   await require(path.join(process.cwd(),'scripts/tests/fixtures/computer-use/preview-ui.cjs'))({w,js,until,click,shot});
+   app.exit(0);return;
+  }
   await js('qa.label("Reading second.ts")');await delay(80);
   assert.equal(await js('document.querySelector("#cadence").textContent.includes("Reading first.ts")'),true,'rapid summaries retain the previous activity');
   await js('qa.label("Read 2 files",false)');await delay(60);
@@ -409,7 +424,8 @@ try {
  await writeFile(path.join(dir,'main.cjs'),main);
  server=await createServer({root,configFile:path.join(root,'vite.config.ts'), cacheDir: path.join(dir, 'vite-cache'),server:{host:'127.0.0.1',port:0,strictPort:false}});
  await server.listen();
- const env={...process.env,QA_URL:new URL(path.relative(root,dir)+'/index.html',server.resolvedUrls.local[0]).href,QA_CAPTURE:path.join(root,'output/playwright/workstream-disclosure')};
+ const previewOnly = process.argv.includes('--computer-use-preview') || process.env.QA_COMPUTER_USE_PREVIEW === '1';
+ const env={...process.env,QA_COMPUTER_USE_PREVIEW:previewOnly?'1':'0',QA_URL:new URL(path.relative(root,dir)+'/index.html',server.resolvedUrls.local[0]).href,QA_CAPTURE:path.join(root,'output/playwright',previewOnly ? 'computer-use-preview' : 'workstream-disclosure')};
  delete env.ELECTRON_RUN_AS_NODE;
  await new Promise((resolve,reject)=>{
   const child=spawn(path.join(root,'node_modules/.bin/electron'),[path.join(dir,'main.cjs')],{env,stdio:'inherit'});

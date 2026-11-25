@@ -98,6 +98,7 @@ export class OpenCodeServeManager {
   private readonly listeners = new Map<string, Set<OpenCodeEventListener>>();
   /** Sessions with a turn in flight on our server (an execution claim in OpenCode's DB). */
   private readonly activeExecutions = new Set<string>();
+  private readonly catalogReads = new Set<Promise<unknown>>();
   /** Directories whose provider/model catalog has finished loading. */
   private readonly loadedCatalogs = new Set<string>();
   private readonly catalogWaiters = new Map<string, Set<() => void>>();
@@ -116,17 +117,24 @@ export class OpenCodeServeManager {
   }
 
   async getClient(): Promise<OpenCodeClient> {
-    const running = this.state;
-    if (
-      running &&
-      (Boolean(running.browserUse) !== isBrowserUseEnabled() ||
-        Boolean(running.computerUse) !== isComputerUseAvailableNow()) &&
+    // The switch can change while a catalog request is starting the server.
+    // Inspect the actual server configuration after that startup has settled.
+    const running = await this.ensureServer();
+    while (
+      running === this.state &&
       this.activeExecutions.size === 0 &&
-      this.canRestart()
+      this.canRestart() &&
+      (Boolean(running.browserUse) !== isBrowserUseEnabled() ||
+        Boolean(running.computerUse) !== isComputerUseAvailableNow())
     ) {
-      // The Browser Use or Computer use setting changed since start and
-      // nothing uses this server: restart it with the current config.
+      // Catalog reads use this exact client for several requests. Let them finish,
+      // then check again in case another caller restarted or began a turn.
+      if (this.catalogReads.size > 0) {
+        await Promise.allSettled(this.catalogReads);
+        continue;
+      }
       await this.close();
+      break;
     }
     return (await this.ensureServer()).client;
   }
@@ -137,7 +145,18 @@ export class OpenCodeServeManager {
    * model) until it announces the full one with `model.updated`.
    */
   async loadModels(directory: string): Promise<{ models: OpenCodeModelInfo[]; defaultModel: OpenCodeModelInfo | null }> {
-    const client = await this.getClient();
+    const read = this.readModels(directory);
+    this.catalogReads.add(read);
+    try {
+      return await read;
+    } finally {
+      this.catalogReads.delete(read);
+    }
+  }
+
+  private async readModels(directory: string) {
+    // Model discovery is independent of the Computer Use and Browser Use tool lists.
+    const { client } = await this.ensureServer();
     const loaded = this.waitForCatalog(directory);
     const early = await client.listModels(directory); // also starts the load
     await loaded;

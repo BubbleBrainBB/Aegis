@@ -132,17 +132,8 @@ const { ComputerUseGrantRegistry } = grantsMod.default ?? grantsMod;
   assert.equal(frames.length, 1);
   assert.equal(frames[0]?.app, 'Notes');
   assert.equal(frames[0]?.media?.sha256, persisted.mediaRefs[0].sha256);
-  assert.equal(environmentHasComputerUseSection({ frames, grants: [] }), true);
-  const rebuiltWithoutCopy = { computerUseFrames: [] };
-  const preservedAcrossSessionList = { computerUseFrames: frames };
-  assert.equal(
-    environmentHasComputerUseSection({ frames: rebuiltWithoutCopy.computerUseFrames, grants: [] }),
-    false
-  );
-  assert.equal(
-    environmentHasComputerUseSection({ frames: preservedAcrossSessionList.computerUseFrames, grants: [] }),
-    true
-  );
+  const restored = { status: 'completed', computerUseFrames: frames };
+  assert.equal(environmentHasComputerUseSection(restored), false);
   console.log('codex computer-use hydrate e2e passed');
 }
 

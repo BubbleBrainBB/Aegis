@@ -1,7 +1,7 @@
 // UI 层类型定义
 
 // Settings 标签类型
-export type SettingsTab = 'connections' | 'mcp' | 'general' | 'shortcuts' | 'appearance' | 'browser' | 'providers' | 'usage' | 'profile' | 'bridge';
+export type SettingsTab = 'connections' | 'mcp' | 'general' | 'shortcuts' | 'appearance' | 'browser' | 'computer-use' | 'providers' | 'usage' | 'profile' | 'bridge';
 /** Agent runtime whose MCP servers the settings pane is showing. */
 export type McpSettingsRuntime = 'claude' | 'codex' | 'opencode' | 'kimi' | 'qoder' | 'bubble' | 'deepseek';
 /** What Settings > Usage shows: every agent added together, or one agent's own page. */

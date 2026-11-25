@@ -20,6 +20,7 @@ import {
   Globe,
   Brain,
   Lightbulb,
+  Monitor,
   Plug,
   ShieldAlert,
   SquareTerminal,
@@ -49,7 +50,6 @@ import {
 } from '../utils/unified-diff';
 import { DiffHunkView } from './UnifiedDiffView';
 import { InlineEditDiff } from './InlineEditDiff';
-import { ComputerUseAppIcon } from './ComputerUseAppIcon';
 import { TodoProgressCard } from './TodoProgressCard';
 import { DiffStatLabel } from './DiffStatLabel';
 import { useTurnDiffContext } from './TurnDiffContext';
@@ -145,8 +145,10 @@ export function AssistantWorkstream({
     return null;
   }
 
+  const last = model.entries.at(-1);
+  const desktopAction = live && last?.type === 'tool' && last.kind === 'computer_use' && last.status === 'pending';
   return (
-    <div className={`my-2 ${className}`.trim()}>
+    <div className={`my-2 ${className}`.trim()} data-computer-use-trace={desktopAction || undefined}>
       {groups.map((group, idx) => {
         const groupKey = group.kind === 'compact' ? group.entries[0].id
           : group.kind === 'draft' ? `widget:${group.draft.toolUseId}`
@@ -398,6 +400,7 @@ function StageRow({
   return (
     <div
       data-workstream-stage={stage.id}
+      data-computer-use-action={stage.kind === 'computer_use' || undefined}
       data-workstream-tool-ids={stage.entries.map((entry) => entry.id).join(' ')}
       data-denied-action={denied || undefined}
       data-workstream-stage-open={(expanded && canExpand) || undefined}
@@ -410,7 +413,7 @@ function StageRow({
         tone={tone}
         hint={stage.files.length === 1 ? stage.files[0].filePath : stage.commands.length === 1 ? stage.commands[0].command : undefined}
         icon={<StageKindIcon stage={stage} />}
-        title={<WorkstreamActivityLabel active={isPending}>{stage.title}</WorkstreamActivityLabel>}
+        title={<WorkstreamActivityLabel active={isPending && stage.kind !== 'computer_use'}>{stage.title}</WorkstreamActivityLabel>}
         meta={<>
           <WorkstreamElapsed {...execution} running={isPending} />
           {stage.kind === 'edit' ? (
@@ -433,7 +436,7 @@ function StageKindIcon({ stage }: { stage: WorkstreamStage }) {
   if (kind === 'edit') return <FileDiff />;
   if (kind === 'command') return <SquareTerminal />;
   if (kind === 'approval') return <ShieldAlert />;
-  if (kind === 'computer_use') return <ComputerUseAppIcon app={stage.computerUseApp} className="" />;
+  if (kind === 'computer_use') return <Monitor />;
   if (kind === 'error') return <CircleX />;
   if (kind === 'web') return <Globe />;
   if (kind === 'memory') return <Brain />;
@@ -453,6 +456,7 @@ function StageStatusGlyph({
   expanded: boolean;
   canExpand: boolean;
 }) {
+  if (stage.kind === 'computer_use' && canExpand) return <TraceChevron expanded={expanded} />;
   if (stage.status === 'pending') return <TraceSpinner />;
   if (stage.status === 'interrupted') return <CircleDashed />;
   // A waiting stage already says so in its amber icon and title.
