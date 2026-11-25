@@ -4,7 +4,7 @@
 // two share the lease and the grant registry, so "one session at a time"
 // holds across all of them.
 //
-// A provider gets nine tools (tools.ts) over its own channel: Bubble as host
+// A provider gets the gateway tools (tools.ts) over its own channel: Bubble as host
 // tools, Pi as custom tools, the rest over the gateway's MCP bridge
 // (mcp-bridge.ts). Each call lands here, bound to its Aegis session, and goes
 // through the same steps before anything reaches cua-driver:
@@ -49,7 +49,7 @@ import {
   type ComputerUseDriver,
   type DriverToolResult,
 } from './driver-host';
-import { fixedDriverInputArgs } from './policy';
+import { fixedDriverInputArgs, REVISION_INPUT_TOOLS } from './policy';
 import {
   computerUseToolDefinition,
   normalizeSecondaryAction,
@@ -128,7 +128,7 @@ export const COMPUTER_USE_SESSION_GONE_MESSAGE =
 export function computerUsePermissionsMessage(missing: string[]): string {
   return `Aegis needs ${missing.join(' and ')} to use your computer. Ask the user to turn ${
     missing.length > 1 ? 'them' : 'it'
-  } on for Aegis in System Settings → Privacy & Security (Settings → Browser → Computer use in Aegis has the links), then restart Aegis.`;
+  } on for Aegis in System Settings → Privacy & Security (Settings → Computer Use in Aegis has the links), then restart Aegis.`;
 }
 
 const TREE_TEXT_LIMIT = 40_000;
@@ -206,6 +206,7 @@ type AppState = {
   windowTitle: string;
   snapshotId: string | null;
   tree: string;
+  revision?: number;
   /** The driver process that gave the pid, window and snapshot. They mean nothing to another. */
   instance: number;
 };
@@ -250,6 +251,20 @@ function asString(value: unknown): string {
 function asNumber(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) return Number(value);
+  return null;
+}
+
+// Some adapters deliver scalar arguments as strings. Keep missing and malformed distinct.
+function integerArg(value: unknown): number | undefined | null {
+  if (value === undefined) return undefined;
+  const n = asNumber(value);
+  return Number.isSafeInteger(n) ? n : null;
+}
+
+function booleanArg(value: unknown): boolean | undefined | null {
+  if (value === undefined) return undefined;
+  if (value === true || value === 'true') return true;
+  if (value === false || value === 'false') return false;
   return null;
 }
 
@@ -339,6 +354,7 @@ export class ComputerUseGateway {
   private readonly turns = new Map<string, number>();
   /** Ends when the switch goes off or the driver is changed. */
   private epoch = 0;
+  private readonly stoppedForTurn = new Set<string>();
 
   constructor(
     private readonly host: ComputerUseGatewayHost,
@@ -406,6 +422,7 @@ export class ComputerUseGateway {
    * refused, as it would have been a moment earlier.
    */
   finishTurn(sessionId: string): void {
+    this.stoppedForTurn.delete(sessionId);
     this.turns.set(sessionId, (this.turns.get(sessionId) ?? 0) + 1);
     const ending = [...this.active].filter((context) => context.call.sessionId === sessionId);
     for (const context of ending) context.controller.abort();
@@ -432,6 +449,11 @@ export class ComputerUseGateway {
         ? this.driver.call('end_session', { session: label }).then(() => undefined)
         : Promise.resolve();
     this.driverQueue = this.driverQueue.then(tidy, tidy).catch(() => undefined);
+  }
+
+  stopForTurn(sessionId: string, turnRunning: boolean): void {
+    this.forgetSession(sessionId, 'computer-use-stopped');
+    if (turnRunning) this.stoppedForTurn.add(sessionId);
   }
 
   /** The session was stopped or deleted: its turn ends and the gateway's grants for it go. */
@@ -492,6 +514,7 @@ export class ComputerUseGateway {
     const { call } = context;
     const { sessionId } = call;
     if (!this.host.isEnabled()) return fail(COMPUTER_USE_OFF_MESSAGE);
+    if (this.stoppedForTurn.has(sessionId)) return fail('The user stopped Computer Use for this turn. Continue without desktop actions.');
     const definition = computerUseToolDefinition(call.tool);
     if (!definition) return fail(`Unknown Computer use tool "${call.tool}".`);
     const facts = this.host.getSession(sessionId);
@@ -521,7 +544,7 @@ export class ComputerUseGateway {
     if (status.state !== 'ready') return fail(status.message || "Computer use isn't available in this build.");
 
     if (definition.name === 'list_apps') return this.listApps(context);
-    if (definition.name === 'get_app_state') return this.getAppState(context, facts, appQuery);
+    if (definition.name === 'get_app_state' || definition.name === 'list_windows') return this.getAppState(context, facts, appQuery);
     return this.act(context, definition, appQuery);
   }
 
@@ -620,13 +643,35 @@ export class ComputerUseGateway {
     if ('error' in match) return fail(match.error);
     const app = match.app;
     if (this.isOwnApp(app)) return fail(COMPUTER_USE_DENIED_TARGET_MESSAGE);
+    if (call.tool === 'list_windows') {
+      const windows = app.running ? await this.windowsForApp(context, app.pid, instance) : [];
+      return { text: JSON.stringify(windows.map(w => ({ window_id: w.windowId, title: w.title }))), images: [], isError: false };
+    }
+    const requested = integerArg(call.args.window_id);
+    if (requested === null || (requested !== undefined && requested <= 0)) return fail('Expected a positive window_id from list_windows.');
+    const query = call.args.query;
+    const limit = integerArg(call.args.max_elements);
+    const screenshot = booleanArg(call.args.include_screenshot);
+    if (query !== undefined && (typeof query !== 'string' || !query.trim() || query.length > 512)) return fail('Expected a query of 1–512 characters.');
+    if (limit === null || (limit !== undefined && (limit < 1 || limit > 2000))) return fail('max_elements must be between 1 and 2000.');
+    if (screenshot === null) return fail('include_screenshot must be a boolean.');
     // Looking again replaces what was known of the app. Until this look has
     // succeeded nothing is known: when it finds no window, the indexes of
     // the earlier look are not left behind for a later click to use.
     this.states.get(sessionId)?.delete(stateKey(app));
 
+    const observation = {
+      ...(query !== undefined ? { query } : {}),
+      ...(limit !== undefined ? { max_elements: limit } : {}),
+      ...(screenshot !== undefined ? { include_screenshot: screenshot } : {}),
+    };
+    const pick = async (pid: number, retryDriverError = false) => {
+      const windows = await this.windowsForApp(context, pid, instance, retryDriverError);
+      return requested === undefined ? windows[0] : windows.find(w => w.windowId === requested);
+    };
     let pid = app.running ? app.pid : 0;
-    let window = pid ? await this.pickWindow(context, pid, instance) : null;
+    let window = pid ? await pick(pid) : null;
+    if (requested !== undefined && !window) return fail('That window is no longer available in this app. Use list_windows again.');
     let opened = false;
     if (!window) {
       // Not running, or running without a window: opening it is an action.
@@ -656,7 +701,7 @@ export class ComputerUseGateway {
       if (this.host.ownProcessIds().includes(pid)) return fail(COMPUTER_USE_DENIED_TARGET_MESSAGE);
       opened = true;
     } else {
-      this.emitPending(call, 'get_app_state', app.name);
+      this.emitPending(call, 'get_app_state', app.name, screenshot === false ? undefined : window.windowId);
     }
 
     // A window can be listed before the app has finished putting it up: for
@@ -671,7 +716,7 @@ export class ComputerUseGateway {
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       if (attempt > 0) await delay(this.windowWaitMs, signal);
       // Picked again each time: the window that is there first is not always the one that stays.
-      if (attempt > 0 || !window) window = await this.pickWindow(context, pid, instance);
+      if (attempt > 0 || !window) window = await pick(pid, attempt + 1 < attempts);
       if (!window) {
         candidate = null;
         continue;
@@ -687,8 +732,10 @@ export class ComputerUseGateway {
         tree: '',
         instance,
       };
-      candidate = { state, read: await this.readWindow(context, state) };
+      candidate = { state, read: await this.readWindow(context, state, observation) };
       if (isSettledWindow(candidate.read)) break;
+      // A filtered tree may legitimately contain zero matching elements.
+      if (query !== undefined && !candidate.read.isError && !candidate.read.structured?.degraded_reason) break;
     }
     const noWindow = `${app.name} is open but has no window to look at yet. Try get_app_state again.`;
     if (!candidate) return fail(noWindow);
@@ -696,13 +743,13 @@ export class ComputerUseGateway {
     if (!settled) {
       // A read without a tree is handed back (with its screenshot) only for a
       // window that is still there: looked for once more, by its id.
-      const still = await this.pickWindow(context, pid, instance);
+      const still = await pick(pid);
       if (!still || still.windowId !== candidate.state.windowId) return fail(noWindow);
     }
     const snapshot = this.present(context, candidate.state, candidate.read);
     if (snapshot.isError) return snapshot;
     this.statesOf(sessionId).set(stateKey(app), candidate.state);
-    return settled
+    return settled || (query !== undefined && !candidate.read.structured?.degraded_reason)
       ? snapshot
       : {
           ...snapshot,
@@ -710,13 +757,17 @@ export class ComputerUseGateway {
         };
   }
 
-  private async pickWindow(
+  private async windowsForApp(
     context: CallContext,
     pid: number,
-    instance: number
-  ): Promise<{ windowId: number; title: string } | null> {
+    instance: number,
+    retryDriverError = false
+  ) {
     const { result } = await this.drive(context, false, 'list_windows', { pid }, instance);
-    if (result.isError) return null;
+    if (result.isError) {
+      if (retryDriverError) return [];
+      throw new Error(result.text || 'Could not list windows.');
+    }
     const windows = (Array.isArray(result.structured?.windows) ? result.structured.windows : []).flatMap((item) => {
       if (!item || typeof item !== 'object') return [];
       const record = item as Record<string, unknown>;
@@ -735,7 +786,7 @@ export class ComputerUseGateway {
     });
     // The key window: on screen first, then frontmost, then largest.
     windows.sort((a, b) => Number(b.onScreen) - Number(a.onScreen) || b.z - a.z || b.area - a.area);
-    return windows[0] ?? null;
+    return windows;
   }
 
   /** Reads the window: the tree for the agent, the screenshot for the agent, the HUD and the session's files. */
@@ -743,12 +794,12 @@ export class ComputerUseGateway {
     return this.present(context, state, await this.readWindow(context, state), preface);
   }
 
-  private async readWindow(context: CallContext, state: AppState): Promise<DriverToolResult> {
+  private async readWindow(context: CallContext, state: AppState, observation: Record<string, unknown> = {}): Promise<DriverToolResult> {
     const { result } = await this.drive(
       context,
       false,
       'get_window_state',
-      { pid: state.pid, window_id: state.windowId, screenshot_format: 'jpeg' },
+      { pid: state.pid, window_id: state.windowId, screenshot_format: 'jpeg', ...observation },
       state.instance
     );
     return result;
@@ -765,6 +816,7 @@ export class ComputerUseGateway {
       return fail([preface, result.text || `Could not read ${state.name}.`].filter(Boolean).join('\n\n'));
     }
     const structured = result.structured || {};
+    state.revision = asNumber(structured.ui_tree_revision) ?? undefined;
     state.snapshotId = asString(structured.snapshot_id) || null;
     state.tree = typeof structured.tree_markdown === 'string' ? structured.tree_markdown : stripDriverHeader(result.text);
     const size =
@@ -779,7 +831,7 @@ export class ComputerUseGateway {
       preface,
       [
         `App: ${state.name}${state.bundleId ? ` [${state.bundleId}]` : ''}`,
-        `Window: "${state.windowTitle || state.name}"${size}`,
+        `Window: "${state.windowTitle || state.name}" (ID ${state.windowId})${size}`,
         'Each element you can act on has an [index]: pass it as element_index. Coordinates are pixels of the screenshot.',
         ...(structured.truncated === true ? ['The tree is partial: the window has more elements than were read.'] : []),
       ].join('\n'),
@@ -787,7 +839,37 @@ export class ComputerUseGateway {
     ]
       .filter(Boolean)
       .join('\n\n');
-    this.publishMedia(context.call, state.name, result.images);
+    this.publishMedia(context.call, state.name, result.images, state.windowId);
+    return { text, images: result.images, isError: false };
+  }
+
+  private async inspectWindow(context: CallContext, state: AppState, tool: 'verify_state' | 'zoom'): Promise<ComputerUseToolResult> {
+    const { args } = context.call;
+    const target = { pid: state.pid, window_id: state.windowId };
+    let params: Record<string, unknown>;
+    if (tool === 'zoom') {
+      const [x1, y1, x2, y2] = [args.x1, args.y1, args.x2, args.y2].map(integerArg);
+      if (x1 == null || y1 == null || x2 == null || y2 == null || x1 < 0 || y1 < 0 || x2 <= x1 || y2 <= y1) {
+        return fail('Give a positive rectangle in full-window screenshot pixels.');
+      }
+      params = { ...target, x1, y1, x2, y2 };
+    } else {
+      const { label, role, value_equals } = args;
+      const selected = booleanArg(args.selected);
+      const enabled = booleanArg(args.enabled);
+      if ((!asString(label) && !asString(role)) ||
+          [label, role, value_equals].some(v => v !== undefined && typeof v !== 'string') ||
+          selected === null || enabled === null) {
+        return fail('Give a control label or role and valid expected properties.');
+      }
+      const selector = { label_contains: label, role };
+      params = { ...target, expect: [{ element: { selector, exists: true, value_equals, selected, enabled } }] };
+    }
+    this.emitPending(context.call, tool, state.name, state.windowId);
+    const { result } = await this.drive(context, false, tool, params, state.instance);
+    if (result.isError) return fail(result.text);
+    this.publishMedia(context.call, state.name, result.images, state.windowId);
+    const text = tool === 'verify_state' && result.structured ? JSON.stringify(result.structured) : result.text;
     return { text, images: result.images, isError: false };
   }
 
@@ -810,6 +892,12 @@ export class ComputerUseGateway {
     ) {
       return fail(COMPUTER_USE_DENIED_TARGET_MESSAGE);
     }
+    if (call.args.window_id !== undefined && integerArg(call.args.window_id) !== state.windowId) {
+      return fail('The last observed window does not match window_id. Read that exact window with get_app_state first.');
+    }
+    if (definition.name === 'verify_state' || definition.name === 'zoom') {
+      return this.inspectWindow(context, state, definition.name);
+    }
     const planned = planDriverCall(definition.name, call.args, state);
     if ('error' in planned) return fail(planned.error);
     const facts = this.host.getSession(call.sessionId);
@@ -824,8 +912,11 @@ export class ComputerUseGateway {
     });
     if (refused) return refused;
 
-    this.emitPending(call, definition.name, state.name);
-    const { result } = await this.drive(context, true, planned.tool, planned.args, state.instance);
+    this.emitPending(call, definition.name, state.name, state.windowId);
+    const { result } = await this.drive(context, true, planned.tool, {
+      ...planned.args,
+      ...(state.revision !== undefined && REVISION_INPUT_TOOLS.has(planned.tool) ? { ui_tree_revision: state.revision } : {}),
+    }, state.instance);
     const outcome = result.text || (result.isError ? `${definition.name} failed.` : 'Done.');
     if (result.isError) return fail(outcome);
     // Every action returns what the window looks like now.
@@ -1020,7 +1111,7 @@ export class ComputerUseGateway {
     return label;
   }
 
-  private emitPending(call: ComputerUseCall, tool: string, app: string | null): void {
+  private emitPending(call: ComputerUseCall, tool: string, app: string | null, previewWindowId?: number): void {
     const action = classifyComputerUseAction({ server: AEGIS_COMPUTER_USE_SERVER_NAME, tool, app });
     if (!action) return;
     this.host.emitLive(call.sessionId, {
@@ -1031,12 +1122,13 @@ export class ComputerUseGateway {
       tool: action.tool,
       mutating: action.mutating,
       media: null,
+      previewWindowId,
       hasFreshMedia: false,
       at: Date.now(),
     });
   }
 
-  private publishMedia(call: ComputerUseCall, app: string, images: DriverToolResult['images']): void {
+  private publishMedia(call: ComputerUseCall, app: string, images: DriverToolResult['images'], previewWindowId?: number): void {
     if (images.length === 0) return;
     const persisted = persistComputerUseMedia({
       userDataDir: this.host.userDataDir(),
@@ -1054,6 +1146,7 @@ export class ComputerUseGateway {
       tool: 'get_app_state',
       mutating: false,
       media: persisted.mediaRefs[0],
+      previewWindowId,
       hasFreshMedia: true,
       at: Date.now(),
     });
@@ -1083,6 +1176,8 @@ function actionPhrase(tool: string): string {
       return 'click';
     case 'perform_secondary_action':
       return 'perform an action';
+    case 'invoke_menu':
+      return 'use the menu';
     case 'set_value':
       return 'set a value';
     case 'scroll':
@@ -1151,6 +1246,13 @@ function planInput(
     elementToken ? null : { error: 'element_index is required: an [index] from the tree get_app_state returned.' };
 
   switch (tool) {
+    case 'invoke_menu': {
+      const path = args.path;
+      if (!Array.isArray(path) || path.length < 1 || path.length > 16 || !path.every(v => typeof v === 'string' && v.trim() && v.length <= 200)) {
+        return { error: 'Give 1–16 menu labels in path.' };
+      }
+      return { tool, args: { ...windowTarget, path }, paramLines: [{ label: 'menu', value: path.join(' → ') }] };
+    }
     case 'click': {
       const x = asNumber(args.x);
       const y = asNumber(args.y);

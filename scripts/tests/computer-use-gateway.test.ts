@@ -130,6 +130,8 @@ class ScriptedDriver implements ComputerUseDriver {
   windowIds: Array<number | null> = [];
   /** How many next reads of a window fail outright. */
   failedReads = 0;
+  failedWindowListings = 0;
+  treeRevision?: number;
   /** What happened to the driver, in order: `start:1`, `list_apps@1`, `stop`. */
   log: string[] = [];
   private snapshots = 0;
@@ -213,6 +215,10 @@ class ScriptedDriver implements ComputerUseDriver {
           ],
         });
       case 'list_windows':
+        if (this.failedWindowListings > 0) {
+          this.failedWindowListings--;
+          return { isError: true, text: 'window list temporarily unavailable', structured: null, images: [] };
+        }
         if (args.pid === 600 && this.lateWindow > 0) {
           this.lateWindow -= 1;
           return ok('windows', { windows: [] });
@@ -250,6 +256,7 @@ class ScriptedDriver implements ComputerUseDriver {
         return ok(`window_id=71 pid=500 snapshot_id=${id}\n${TREE}`, {
           snapshot_id: id,
           tree_markdown: TREE,
+          ui_tree_revision: this.treeRevision,
           screenshot_width: 460,
           screenshot_height: 816,
         }, [{ mimeType: 'image/jpeg', data: Buffer.from(`shot-${this.snapshots}`).toString('base64') }]);
@@ -459,6 +466,7 @@ async function testObserveAndDeniedTargets() {
   assert.equal(fresh.length, 1);
   assert.equal(fresh[0].label, 'Looked at Calculator');
   assert.equal(fresh[0].threadId, 's1');
+  assert.equal(fresh[0].previewWindowId, 71, 'the preview follows the window the driver actually read');
   assert.ok(resolveComputerUseArtifact(h.userDataDir, 's1', fresh[0].media!.sha256));
   assert.equal(h.frames[h.frames.length - 2].label, 'Looking at Calculator');
   const refs = h.gateway.takeMediaRefs('s1', h.lastToolUseId());
@@ -936,6 +944,13 @@ async function testStopEndsWhatIsOnItsWay() {
  * the HUD or on disk, no success.
  */
 async function testWindowThatGoesAway() {
+  const transient = harness({ answer: () => ALLOW });
+  transient.driver.failedWindowListings = 1;
+  assert.equal((await transient.call('s1', 'get_app_state', {app: 'TextEdit'})).isError, false);
+  assert.equal(transient.driver.of('launch_app').length, 1);
+  transient.driver.failedWindowListings = 1;
+  assert.match((await transient.call('s1', 'list_windows', {app: 'Calculator'})).text, /temporarily unavailable/);
+  transient.dispose();
   // Listed once, read as a placeholder, gone at every later look.
   const gone = harness({ answer: () => ALLOW });
   gone.driver.unsettledReads = 1000;
@@ -1071,7 +1086,7 @@ async function testNothingNewReachesTheOldDriver() {
  * driver process is gone. Until then nobody else gets the desktop.
  */
 async function testLeaseHandedBackAfterTheActionEnded() {
-  for (const how of ['stop', 'turn-end', 'switch-off'] as const) {
+  for (const how of ['stop', 'desktop-stop', 'turn-end', 'switch-off'] as const) {
     const f = harness({ facts: { s1: { fullAccess: true } } });
     await f.call('s1', 'get_app_state', { app: 'Calculator' });
     const held = f.driver.holdNext('drag');
@@ -1080,6 +1095,7 @@ async function testLeaseHandedBackAfterTheActionEnded() {
     await held.entered.promise;
     let off: Promise<void> | null = null;
     if (how === 'stop') f.gateway.forgetSession('s1', 'stop');
+    if (how === 'desktop-stop') f.gateway.stopForTurn('s1', true);
     if (how === 'turn-end') f.gateway.finishTurn('s1');
     if (how === 'switch-off') off = f.gateway.shutdown('disabled');
     await settle();
@@ -1309,9 +1325,10 @@ async function testGrantsAreExact() {
 
 async function testActionMapping() {
   const h = harness({ facts: { s1: { fullAccess: true } } });
+  h.driver.treeRevision = 23;
   await h.call('s1', 'get_app_state', { app: 'Calculator' });
   const window = { pid: 500, window_id: 71 };
-  const session = { session: 'aegis-s1-1' };
+  const session = { session: 'aegis-s1-1', ui_tree_revision: 23 };
   const background = { delivery_mode: 'background', scope: 'window' };
   const last = (tool: string) => h.driver.of(tool).slice(-1)[0]?.args;
 
@@ -1320,8 +1337,9 @@ async function testActionMapping() {
   await h.call('s1', 'click', { app: 'Calculator', element_index: '20', mouse_button: 'right' });
   assert.equal(last('click')?.button, 'right');
   // A count written as a digit is the count; the double click of an element is the driver's own call.
-  await h.call('s1', 'click', { app: 'Calculator', element_index: '6', click_count: '2' });
+  await h.call('s1', 'click', { app: 'Calculator', element_index: '6', click_count: '2', toolTitle: '打开计算器菜单' });
   assert.equal(h.driver.of('double_click').length, 2);
+  assert.equal(h.driver.of('double_click')[1].args.toolTitle, undefined);
   assert.equal(h.driver.of('double_click')[1].args.element_token, 's00000003:6');
   await h.call('s1', 'click', { app: 'Calculator', x: 5, y: 6, click_count: 3 });
   assert.deepEqual(last('click'), { ...window, x: 5, y: 6, button: 'left', count: 3, ...background, ...session });
@@ -1343,10 +1361,13 @@ async function testActionMapping() {
   await h.call('s1', 'type_text', { app: 'Calculator', text: '6*7' });
   assert.deepEqual(last('type_text'), { ...window, text: '6*7', ...background, ...session });
 
+  await h.call('s1', 'invoke_menu', { app: 'Calculator', path: ['Document', 'Inspect'] });
+  assert.ok(last('invoke_menu'));
   // Every input call says where and how it is delivered; none leaves it to the driver's default.
   for (const call of h.driver.calls) {
     const fixed = DRIVER_INPUT_TOOLS[call.tool];
     if (!fixed) continue;
+    assert.equal(call.args.ui_tree_revision, call.tool === 'invoke_menu' ? undefined : 23, call.tool);
     for (const [name, value] of Object.entries(fixed)) assert.equal(call.args[name], value, `${call.tool}.${name}`);
     assert.ok(!('target' in call.args), `${call.tool} names its window by pid and id only`);
   }
@@ -1813,6 +1834,43 @@ function testVersionProbeEnvironment() {
   }
 }
 
+async function testExactWindowAndTakeover() {
+  const h = harness();
+  const app = 'Calculator';
+  const { text } = await h.call('s1', 'list_windows', { app });
+  assert.deepEqual(JSON.parse(text), [{ window_id: 71, title: app }]);
+  assert.equal((await h.call('s1', 'get_app_state', { app, window_id: 71, query: 'Equals', include_screenshot: false })).isError, false);
+  assert.equal(h.driver.of('get_window_state').at(-1)?.args.query, 'Equals');
+  assert.equal((await h.call('s1', 'get_app_state', { app, window_id: 0 })).isError, true);
+  assert.equal((await h.call('s1', 'get_app_state', { app, query: [] })).isError, true);
+  assert.equal((await h.call('s1', 'get_app_state', { app, max_elements: '1.5' })).isError, true);
+  assert.equal((await h.call('s1', 'verify_state', { app, window_id: '71', role: 'AXButton', enabled: 'false' })).isError, false);
+  assert.equal((await h.call('s1', 'zoom', { app, x1: 5, y1: 0, x2: 0, y2: 5 })).isError, true);
+  assert.equal((await h.call('s1', 'verify_state', { app, enabled: true })).isError, true);
+  assert.equal((await h.call('s1', 'invoke_menu', { app, path: ['File', '  '] })).isError, true);
+  assert.equal(h.cards.length, 0);
+  assert.equal(h.driver.of('verify_state').length, 1);
+  assert.equal(h.driver.of('zoom').length + h.driver.of('invoke_menu').length, 0);
+  assert.equal((await h.call('s1', 'zoom', { app, window_id: '71', x1: '1', y1: '2', x2: '8', y2: '9' })).isError, false);
+  assert.equal(h.driver.of('zoom')[0].args.x1, 1);
+  assert.equal((await h.call('s1', 'get_app_state', { app, window_id: '71', max_elements: '12' })).isError, false);
+  assert.equal(h.driver.of('get_window_state').at(-1)?.args.max_elements, 12);
+  assert.equal((await h.call('s1', 'click', { app, window_id: 72, element_index: '20' })).isError, true);
+  assert.equal((await h.call('s1', 'get_app_state', { app, window_id: 72 })).isError, true);
+  assert.equal(h.driver.of('launch_app').length, 0);
+  assert.equal((await h.call('s1', 'click', { app, element_index: '20' })).isError, true);
+  h.gateway.stopForTurn('s1', true);
+  assert.equal((await h.call('s1', 'list_apps')).isError, true);
+  await h.gateway.shutdown('driver-changed');
+  assert.equal((await h.call('s1', 'list_apps')).isError, true, 'changing driver does not reauthorize a stopped turn');
+  assert.equal((await h.call('other', 'list_apps')).isError, false, 'the Stop belongs only to its calling session');
+  h.gateway.finishTurn('other');
+  h.gateway.finishTurn('s1');
+  h.gateway.stopForTurn('s1', false); // A still-open preview sent Stop between turns.
+  assert.equal((await h.call('s1', 'list_apps')).isError, false);
+  h.dispose();
+}
+
 function testBubbleTools() {
   const tools = createBubbleComputerUseTools('s1') as Array<{
     name: string; readOnly: boolean; requiresApproval: boolean; description: string;
@@ -1821,7 +1879,10 @@ function testBubbleTools() {
   assert.deepEqual(tools.filter((tool) => tool.readOnly).map((tool) => tool.name), [
     'mcp__aegis-computer-use__list_apps',
     'mcp__aegis-computer-use__get_app_state',
-  ], 'Bubble refuses the seven action tools in Plan mode by itself');
+    'mcp__aegis-computer-use__list_windows',
+    'mcp__aegis-computer-use__verify_state',
+    'mcp__aegis-computer-use__zoom',
+  ], 'Bubble exposes only observation tools in Plan mode');
   assert.ok(tools.every((tool) => tool.requiresApproval === !tool.readOnly));
   // The list is what the gateway can do: no tool is offered that only ever answers "not supported".
   assert.equal(COMPUTER_USE_TOOL_DEFINITIONS.length, COMPUTER_USE_GATEWAY_TOOLS.length);
@@ -1908,10 +1969,10 @@ async function testMcpBridgeTransport() {
 
   const deepseek = await mcpClient(inline);
   const listed = await deepseek.client.listTools();
-  assert.deepEqual(listed.tools.map((tool) => tool.name), [...COMPUTER_USE_GATEWAY_TOOLS], 'the gateway’s nine tools, under their own names');
+  assert.deepEqual(listed.tools.map((tool) => tool.name), [...COMPUTER_USE_GATEWAY_TOOLS], 'the gateway’s thirteen tools, under their own names');
   assert.deepEqual(
     listed.tools.filter((tool) => tool.annotations?.readOnlyHint).map((tool) => tool.name),
-    ['list_apps', 'get_app_state']
+    ['list_apps', 'get_app_state', 'list_windows', 'verify_state', 'zoom']
   );
   for (const tool of listed.tools) {
     const definition = COMPUTER_USE_TOOL_DEFINITIONS.find((item) => item.name === tool.name)!;
@@ -2488,6 +2549,7 @@ async function main() {
   testDriverSetup();
   await testDriverHostProcesses();
   testVersionProbeEnvironment();
+  await testExactWindowAndTakeover();
   testBubbleTools();
   await testMcpBridgeTransport();
   await testCrossAgentLease();

@@ -42,8 +42,10 @@ export function getTurnActivity(entries: WorkstreamEntry[]): TurnActivity {
  */
 export function getLiveTraceVisibleEntries(entries: WorkstreamEntry[]): WorkstreamEntry[] {
   const latestNote = [...entries].reverse().find((entry) => entry.type === 'note');
+  const activity = getTurnActivity(entries);
+  const desktopStep = activity.kind === 'step' && activity.step.kind === 'computer_use' ? activity.step : null;
   return entries.filter((entry) =>
-    entry === latestNote
+    entry === desktopStep || entry === latestNote
     || (entry.type === 'approval' && entry.state === 'waiting')
     || isWidgetEntry(entry)
     || isWorkflowEntry(entry)

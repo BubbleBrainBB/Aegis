@@ -9,7 +9,7 @@
 // or macOS attributes its checks to something else. Embedded, it never shows
 // a system prompt of its own.
 //
-// What was measured on the pinned version (0.57.0), and is relied on here:
+// What was measured on the pinned version (0.61.2), and is relied on here:
 // - The daemon watches its parent only with `--parent-liveness-stdio`: then
 //   it exits when its stdin closes, which is what happens when this process
 //   dies however it dies.

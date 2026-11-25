@@ -8,6 +8,7 @@ export const SETTINGS_SEARCH_ENTRIES: SettingsSearchEntry[] = [
   ...[
     ['connections', 'Connections', 'iphone mobile pairing devices remote 手机 移动端 配对 连接 远程'],
     ['general', 'General', 'preferences 通用'], ['profile', 'Profile', 'account avatar name 个人资料 头像'], ['appearance', 'Appearance', 'theme 外观'],
+    ['computer-use', 'Computer Use', 'desktop control cua-driver accessibility screen recording 电脑操作 桌面控制 驱动 辅助功能 屏幕录制'],
     ['browser', 'Browser', 'cookies browsing 浏览器'], ['providers', 'Providers', 'api key models 模型 密钥'],
     ['mcp', 'MCP Servers', 'tools 工具'], ['usage', 'Usage', 'cost tokens 费用 用量'], ['bridge', 'Bridge', 'channels remote 远程'],
   ].map(([tab, label, keywords]) => ({ tab: tab as SettingsTab, label, keywords })),

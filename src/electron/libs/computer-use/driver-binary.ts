@@ -19,7 +19,7 @@ import { baseCuaDriverEnv } from './driver-env';
 import { getComputerUseSettings, isComputerUsePlatformSupported } from './settings';
 
 /** The one cua-driver release Aegis runs. Change it together with scripts/fetch-cua-driver.mjs. */
-export const CUA_DRIVER_VERSION = '0.57.0';
+export const CUA_DRIVER_VERSION = '0.61.2';
 
 const BINARY_NAME = 'cua-driver';
 /** The folder in the app's resources that holds the driver: `to` of its extraResources entry in electron-builder.json. */

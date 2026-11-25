@@ -7,11 +7,21 @@ import { rendererStateStorage } from '../utils/renderer-state-storage';
 // The docked card starts open for every session; closing it only lasts for
 // that session until the app restarts, so it is not persisted.
 export const useEnvironmentPanelStore = create<{
+  computerUsePlacement: Record<string, 'sidebar' | 'floating' | 'hidden'>;
+  placeComputerUse: (sessionId: string, placement: 'sidebar' | 'floating' | 'hidden') => void;
   overlayBySession: Record<string, boolean>;
   dockedClosedBySession: Record<string, boolean>;
   setOverlayOpen: (sessionId: string, open: boolean) => void;
   setDockedOpen: (sessionId: string, open: boolean) => void;
 }>()(persist((set) => ({
+  computerUsePlacement: {},
+  placeComputerUse: (id, placement) => set(state => ({
+    computerUsePlacement: { ...state.computerUsePlacement, [id]: placement },
+    ...(placement === 'sidebar' && {
+      overlayBySession: { ...state.overlayBySession, [id]: true },
+      dockedClosedBySession: { ...state.dockedClosedBySession, [id]: false },
+    }),
+  })),
   overlayBySession: {},
   dockedClosedBySession: {},
   setOverlayOpen: (sessionId, open) => set(state => ({

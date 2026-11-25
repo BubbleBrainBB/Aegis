@@ -2177,9 +2177,7 @@ export function ChatPane({
             <ComputerUseLiveHud
               sessionId={sessionId}
               frame={session?.computerUseLive || null}
-              frames={session?.computerUseFrames || []}
-              grants={session?.computerUseGrants || []}
-              isForeground={activeSessionId === sessionId}
+              isForeground={isActive && activeSessionId === sessionId}
               detached={computerUsePreviewSessionId === sessionId}
             />
           ) : null}
@@ -2633,6 +2631,10 @@ export function ChatPane({
           ) : (
             <ImageStudioComposerHome sessionId={sessionId!}>
             <div className="aegis-chat-composer px-8 pb-4">
+              {sessionId && session.computerUseLive && !session.computerUseLive.media && (
+                <button type="button" className="mb-1 text-xs text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                  onClick={() => void window.electron.stopComputerUse(sessionId)}>Stop Computer Use</button>
+              )}
               {sessionId ? <ComputerUseGrantBadge sessionId={sessionId} grants={session?.computerUseGrants || []} /> : null}
               {!activePermissionRequest && activePlanMessage ? <CodexActivePlanCard explanation={activePlanMessage.explanation} steps={activePlanMessage.steps} /> : null}
               <PromptInput sessionId={sessionId} approvalPending={!!activePermissionRequest}

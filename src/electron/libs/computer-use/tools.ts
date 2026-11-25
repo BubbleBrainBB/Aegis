@@ -1,10 +1,4 @@
-// The gateway's tools: the names and argument shapes agents already have with
-// Codex's own Computer use (list_apps, get_app_state and seven actions,
-// addressed by app name and element index), so the approval card, the
-// grants, the labels and the HUD treat both backends alike. The gateway
-// translates each call to cua-driver's (pid, window, element token) calls.
-// Only what the driver can do is offered: Codex's select_text has no
-// counterpart there and is left out.
+// Desktop tools exposed to agents. The gateway binds driver arguments to the observed app and window.
 
 import { COMPUTER_USE_GATEWAY_TOOLS } from '../../../shared/computer-use';
 
@@ -26,8 +20,10 @@ const APP = {
   description: 'App name, full app path, or unambiguous bundle identifier',
 } as const;
 
+const WINDOW_ID = { type: 'integer', minimum: 1, description: 'Exact window ID returned by list_windows.' };
 function schema(properties: Record<string, unknown>, required: string[]): Record<string, unknown> {
-  return { type: 'object', additionalProperties: false, properties, required };
+  const toolTitle = { type: 'string', maxLength: 120, description: "Short progress label in the user's language describing this action in the chat." };
+  return { type: 'object', additionalProperties: false, properties: { ...properties, toolTitle }, required };
 }
 
 export const COMPUTER_USE_TOOL_DEFINITIONS: readonly ComputerUseToolDefinition[] = [
@@ -42,8 +38,13 @@ export const COMPUTER_USE_TOOL_DEFINITIONS: readonly ComputerUseToolDefinition[]
   {
     name: 'get_app_state',
     description:
-      "Get the state of an app's key window: its accessibility tree, where each element you can act on has an [index], and a screenshot. Opens the app in the background first when it is not running (the user is asked). Call this once per turn before acting on an app; every action returns the window's new state, so you rarely need to call it again.",
-    parameters: schema({ app: APP }, ['app']),
+      "Read a specific window_id from list_windows or, if omitted, the app's key window: its accessibility tree, where each element you can act on has an [index], and a screenshot. Opens the app in the background first when it is not running (the user is asked). Call this once per turn before acting on an app; every action returns the window's new state, so you rarely need to call it again.",
+    parameters: schema({
+      app: APP, window_id: WINDOW_ID,
+      query: { type: 'string', minLength: 1, maxLength: 512, description: 'Filter the accessibility tree by text.' },
+      max_elements: { type: 'integer', minimum: 1, maximum: 2000 },
+      include_screenshot: { type: 'boolean', description: 'Set false for a text-only read.' },
+    }, ['app']),
     mutating: false,
     risk: 'medium',
   },
@@ -53,7 +54,7 @@ export const COMPUTER_USE_TOOL_DEFINITIONS: readonly ComputerUseToolDefinition[]
       'Click an element by its index from the accessibility tree, or at pixel coordinates in the latest screenshot. Prefer the index: it works on a window in the background and moves no pointer.',
     parameters: schema(
       {
-        app: APP,
+        app: APP, window_id: WINDOW_ID,
         element_index: { type: 'string', description: 'Element index to click' },
         x: { type: 'number', description: 'X coordinate in screenshot pixel coordinates' },
         y: { type: 'number', description: 'Y coordinate in screenshot pixel coordinates' },
@@ -78,7 +79,7 @@ export const COMPUTER_USE_TOOL_DEFINITIONS: readonly ComputerUseToolDefinition[]
       'Invoke another accessibility action an element lists in the tree (its `actions=[…]`), for example show_menu, pick, confirm, cancel, increment or decrement.',
     parameters: schema(
       {
-        app: APP,
+        app: APP, window_id: WINDOW_ID,
         element_index: { type: 'string', description: 'Element identifier' },
         action: { type: 'string', description: 'Secondary accessibility action name' },
       },
@@ -93,7 +94,7 @@ export const COMPUTER_USE_TOOL_DEFINITIONS: readonly ComputerUseToolDefinition[]
       'Set the value of a settable accessibility element: a text field, slider, stepper, or the option of a popup button.',
     parameters: schema(
       {
-        app: APP,
+        app: APP, window_id: WINDOW_ID,
         element_index: { type: 'string', description: 'Element identifier' },
         value: { type: 'string', description: 'Value to assign' },
       },
@@ -107,7 +108,7 @@ export const COMPUTER_USE_TOOL_DEFINITIONS: readonly ComputerUseToolDefinition[]
     description: 'Scroll an element in a direction by a number of pages.',
     parameters: schema(
       {
-        app: APP,
+        app: APP, window_id: WINDOW_ID,
         element_index: { type: 'string', description: 'Element identifier' },
         direction: { type: 'string', description: 'Scroll direction: up, down, left, or right' },
         pages: { type: 'number', description: 'Number of pages to scroll. Fractional values are supported. Defaults to 1' },
@@ -122,7 +123,7 @@ export const COMPUTER_USE_TOOL_DEFINITIONS: readonly ComputerUseToolDefinition[]
     description: 'Drag from one point to another using pixel coordinates in the latest screenshot.',
     parameters: schema(
       {
-        app: APP,
+        app: APP, window_id: WINDOW_ID,
         from_x: { type: 'number', description: 'Start X coordinate' },
         from_y: { type: 'number', description: 'Start Y coordinate' },
         to_x: { type: 'number', description: 'End X coordinate' },
@@ -138,7 +139,7 @@ export const COMPUTER_USE_TOOL_DEFINITIONS: readonly ComputerUseToolDefinition[]
     description:
       'Press a key or key combination, including modifier and navigation keys, in xdotool `key` syntax. Examples: "a", "Return", "Tab", "super+c", "Up", "KP_0".',
     parameters: schema(
-      { app: APP, key: { type: 'string', description: 'Key or key combination to press' } },
+      { app: APP, window_id: WINDOW_ID, key: { type: 'string', description: 'Key or key combination to press' } },
       ['app', 'key']
     ),
     mutating: true,
@@ -147,9 +148,30 @@ export const COMPUTER_USE_TOOL_DEFINITIONS: readonly ComputerUseToolDefinition[]
   {
     name: 'type_text',
     description: 'Type literal text into the focused element of the app. Does not press Return: use press_key for that.',
-    parameters: schema({ app: APP, text: { type: 'string', description: 'Literal text to type' } }, ['app', 'text']),
+    parameters: schema({ app: APP, window_id: WINDOW_ID, text: { type: 'string', description: 'Literal text to type' } }, ['app', 'text']),
     mutating: true,
     risk: 'medium',
+  },
+  {
+    name: 'list_windows', description: 'List the open windows of one app with titles and IDs. Select one with get_app_state.',
+    parameters: schema({ app: APP }, ['app']), mutating: false, risk: 'low',
+  },
+  {
+    name: 'verify_state', description: 'Check a control in the last observed window. Check the returned verdict before reporting success.',
+    parameters: schema({
+      app: APP, window_id: WINDOW_ID, label: { type: 'string' }, role: { type: 'string' },
+      value_equals: { type: 'string' }, selected: { type: 'boolean' }, enabled: { type: 'boolean' },
+    }, ['app']), mutating: false, risk: 'low',
+  },
+  {
+    name: 'zoom', description: 'Inspect part of the last observed window. Coordinates refer to the full window screenshot, including for subsequent actions.',
+    parameters: schema({ app: APP, window_id: WINDOW_ID, x1: { type: 'integer' }, y1: { type: 'integer' }, x2: { type: 'integer' }, y2: { type: 'integer' } },
+      ['app', 'x1', 'y1', 'x2', 'y2']), mutating: false, risk: 'low',
+  },
+  {
+    name: 'invoke_menu', description: 'Send the native menu command by its full path in the observed window. macOS can refuse a background document. Check fresh window state for the command’s effect.',
+    parameters: schema({ app: APP, window_id: WINDOW_ID, path: { type: 'array', minItems: 1, maxItems: 16, items: { type: 'string', minLength: 1, maxLength: 200 } } },
+      ['app', 'path']), mutating: true, risk: 'medium',
   },
 ];
 

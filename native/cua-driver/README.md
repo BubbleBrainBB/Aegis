@@ -11,9 +11,9 @@ gateway; which agents do, and how, is in
 
 | | |
 | --- | --- |
-| Version | `0.57.0` (GitHub release `cua-driver-rs-v0.57.0`, 2026-11-22) |
-| Asset | `cua-driver-rs-0.57.0-darwin-universal-binary.tar.gz` (x86_64 + arm64) |
-| SHA-256 | `917dfccdbbd5cbd90774cfa46292551b9a9e86bc719b878dbd21af14e38bb76b` (from that release's `SHA256SUMS`) |
+| Version | `0.61.2` (GitHub release `cua-driver-rs-v0.61.2`, 2026-11-24) |
+| Asset | `cua-driver-rs-0.61.2-darwin-universal-binary.tar.gz` (x86_64 + arm64) |
+| SHA-256 | `9ce972c9fd8fe1d19b1732b833c4e0a36892d737f17f57f4e7994b2a6b179eb5` (from that release's `SHA256SUMS`) |
 | Upstream signature | Developer ID, team `YCK386LBJ7`, hardened runtime |
 
 Aegis runs this version and no other: a binary that reports a different
@@ -50,7 +50,7 @@ In this order; the first place that holds the pinned version is run:
 
 1. `<app resources>/cua-driver/cua-driver`, the copy the app ships with
 2. `AEGIS_CUA_DRIVER_PATH`
-3. the path set in Settings → Browser → Computer use
+3. the path set in Settings → Computer Use
 4. `native/cua-driver/dist/cua-driver`, what the fetch leaves in a checkout
 
 The shipped copy is first, so an installed app runs the driver it was signed
@@ -86,7 +86,7 @@ with:
   tool has it);
 - stderr in `driver.log` beside the socket.
 
-Measured on 0.57.0, and relied on in `driver-host.ts`:
+Measured on 0.61.2, and relied on in `driver-host.ts`:
 
 - The daemon exits with Aegis only with `--parent-liveness-stdio` (a hidden
   flag), and only if its stderr is not a pipe to Aegis: with a pipe, its last

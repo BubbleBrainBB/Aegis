@@ -21,9 +21,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const VERSION = '0.57.0';
+export const VERSION = '0.61.2';
 export const ASSET = `cua-driver-rs-${VERSION}-darwin-universal-binary.tar.gz`;
-export const SHA256 = '917dfccdbbd5cbd90774cfa46292551b9a9e86bc719b878dbd21af14e38bb76b';
+export const SHA256 = '9ce972c9fd8fe1d19b1732b833c4e0a36892d737f17f57f4e7994b2a6b179eb5';
 export const URL = `https://github.com/trycua/cua/releases/download/cua-driver-rs-v${VERSION}/${ASSET}`;
 /** The daemon and the cursor overlay it draws; the SDK library and Node binding in the archive are not used. */
 const FILES = ['cua-driver', 'cua-cursor-theme'];

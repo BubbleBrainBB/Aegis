@@ -373,7 +373,7 @@ async function main() {
       const viaMcp = (name: string, args: Record<string, unknown> = {}) =>
         client.callTool({ name, arguments: args }, undefined, { timeout: 60_000 }) as Promise<Answer>;
       const text = (answer: Answer) => answer.content.filter((block) => block.type === 'text').map((block) => block.text).join('\n');
-      assert.equal((await client.listTools()).tools.length, 9);
+      assert.equal((await client.listTools()).tools.length, 13);
       const mcpLook = await viaMcp('get_app_state', { app: CALCULATOR });
       assert.equal(mcpLook.isError ?? false, false, text(mcpLook));
       assert.match(text(mcpLook), /AXStaticText = "0"/, 'the real tree, over MCP');

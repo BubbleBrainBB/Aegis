@@ -983,8 +983,8 @@ contextBridge.exposeInMainWorld('electron', {
     return ipcRenderer.invoke('get-computer-use-preview-state');
   },
 
-  setComputerUsePreviewParked: (sha256: string | null) => {
-    return ipcRenderer.invoke('set-computer-use-preview-parked', sha256);
+  fitComputerUsePreview: (width: number, height: number) => {
+    ipcRenderer.send('fit-computer-use-preview', width, height);
   },
 
   stopComputerUse: (sessionId: string) => {

@@ -36,7 +36,7 @@ process.env.USERPROFILE = home;
 process.env.AEGIS_BROWSER_USE_TEST_MODE = '1';
 process.env.AEGIS_COMPUTER_USE_SETTINGS_PATH = path.join(temp, 'computer-use.json');
 const standIn = path.join(temp, 'cua-driver');
-writeFileSync(standIn, '#!/bin/sh\necho "cua-driver 0.57.0"\n');
+writeFileSync(standIn, '#!/bin/sh\necho "cua-driver 0.61.2"\n');
 chmodSync(standIn, 0o755);
 process.env.AEGIS_CUA_DRIVER_PATH = standIn;
 process.env.AEGIS_COMPUTER_USE_ENABLED = '1';
@@ -302,16 +302,16 @@ async function testSdkRuntimesAndNativeTools({ offered, cards, driverCalls, know
   known.add('pi-1');
   const names = piComputerUseToolNames('pi-1');
   const tools = createPiComputerUseTools('pi-1');
-  assert.equal(tools.length, 9);
+  assert.equal(tools.length, 13);
   assert.deepEqual(tools.map((tool) => tool.name), names);
   assert.ok(names.every((name) => name.startsWith('mcp__aegis-computer-use__')), 'named as the transcript, the cards and the HUD know them');
   const tool = (name: string) => tools.find((item) => item.name === `mcp__aegis-computer-use__${name}`)!;
-  assert.deepEqual(Object.keys((tool('click').parameters as { properties: object }).properties), ['app', 'element_index', 'x', 'y', 'click_count', 'mouse_button']);
+  assert.deepEqual(Object.keys((tool('click').parameters as { properties: object }).properties), ['app', 'window_id', 'element_index', 'x', 'y', 'click_count', 'mouse_button', 'toolTitle']);
   const state = await tool('get_app_state').execute('pi-call-1', { app: 'Calculator' });
   assert.deepEqual(state.content.map((block) => block.type), ['text', 'image'], 'Pi hands tool images to the model');
   const cardsBefore = cards.length;
   const clicksBefore = driverCalls.filter((call) => call.tool === 'click').length;
-  await tool('click').execute('pi-call-2', { app: 'Calculator', element_index: '20' });
+  await tool('click').execute('pi-call-2', { app: 'Calculator', element_index: '20', toolTitle: '按下等号' });
   assert.deepEqual(cards.slice(cardsBefore), [{ sessionId: 'pi-1', toolName: 'click', app: 'Calculator' }], 'Pi has no approval of its own: the gateway asks');
   assert.equal(driverCalls.filter((call) => call.tool === 'click').length, clicksBefore + 1);
   assert.equal(computerUseLease.currentOwner()?.threadId, 'pi-1');
@@ -503,7 +503,7 @@ async function main(): Promise<void> {
       // The agent got the gateway's entry for this session, as an http server.
       assert.ok((entry('servers')!.names as string[]).includes('aegis-computer-use'), `${kind}: handed the entry`);
       assert.equal(entry('servers')!.type, 'http');
-      assert.equal((entry('tools')!.names as string[]).length, 9, `${kind}: the nine tools`);
+      assert.equal((entry('tools')!.names as string[]).length, 13, `${kind}: the thirteen tools`);
 
       // Its calls ran as this session's: the look, then the click behind the gateway's card.
       assert.equal(entry('look')!.isError, false, String(entry('look')!.text));

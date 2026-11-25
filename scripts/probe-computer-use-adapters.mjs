@@ -32,7 +32,7 @@ const temp = mkdtempSync(join(tmpdir(), 'aegis-cu-live-'));
 process.env.AEGIS_BROWSER_USE_TEST_MODE = '1';
 process.env.AEGIS_COMPUTER_USE_SETTINGS_PATH = join(temp, 'computer-use.json');
 const standIn = join(temp, 'cua-driver');
-writeFileSync(standIn, '#!/bin/sh\necho "cua-driver 0.57.0"\n'); chmodSync(standIn, 0o755);
+writeFileSync(standIn, '#!/bin/sh\necho "cua-driver 0.61.2"\n'); chmodSync(standIn, 0o755);
 process.env.AEGIS_CUA_DRIVER_PATH = standIn;
 process.env.AEGIS_COMPUTER_USE_ENABLED = '1';
 const root = resolve('.');

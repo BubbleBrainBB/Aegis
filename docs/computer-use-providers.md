@@ -11,6 +11,23 @@ reaches that gateway, and which ones do not.
 No provider is handed `cua-driver` or its MCP server, and no provider has a
 gateway of its own. `verify:computer-use-providers` pins that.
 
+## Working in a background window
+
+Use `list_windows` to find the document title, then pass its `window_id` to `get_app_state` and subsequent actions.
+An explicit ID that no longer exists fails the read. Supply `query`, `max_elements` or `include_screenshot: false` to narrow a read.
+`zoom` returns a crop in full-window pixel coordinates. `invoke_menu` takes a native menu path and requires background delivery.
+`verify_state` checks the selected window for a control and returns the driver's verdict. Check for `satisfied` before reporting success.
+macOS resolves native menu commands through the application's document menu. A background window outside that context can be refused. Verify the resulting document state after dispatch.
+Stopping Computer Use releases the gateway's desktop control for the rest of the turn. The agent can continue its conversation.
+
+The chat shows the current Computer Use action under the assistant's message. The picture-in-picture preview streams the observed macOS window after a screenshot arrives. If capture is unavailable or a provider supplies only screenshots, it shows the latest frame. Hover or focus the preview for placement and Stop controls. Click the image to open the floating preview. When the turn ends, its preview controls disappear. Saved screenshots can be viewed by expanding the corresponding tool result in the chat.
+
+Run `npm run verify:computer-use-preview` on macOS to exercise the chat and detached preview against an isolated window, including live changes, resizing, docking and Stop.
+Run `npm run verify:computer-use-windows-live` on macOS for the two-document acceptance test.
+Append `-- <provider>` to exercise a real model on its configured account against the same isolated windows.
+For the signed macOS build, run `ELECTRON_RUN_AS_NODE=1 "$APP/Contents/MacOS/Aegis" scripts/tests/computer-use-windows-live.mjs` from the repository.
+Run `node scripts/tests/computer-use-windows-live.mjs signed-ui "$APP/Contents/MacOS/Aegis"` for the signed application's Settings IPC, approval and Stop flow with Claude. Append `opencode` to run the same flow with OpenCode. The test uses a temporary profile and project, checks both documents after each turn, and presses Stop between turns to verify that the next approved edit succeeds.
+
 ## The three ways in
 
 | Way in | Who | Where |
@@ -26,7 +43,7 @@ none; the reasons are below.
 ### The MCP bridge
 
 `ComputerUseMcpBridge` is a transport and nothing else: `tools/list` gives the
-gateway's nine tools with the gateway's own schemas, and `tools/call` is
+gateway's thirteen tools with the gateway's own schemas, and `tools/call` is
 `gateway.call(...)`. What it adds is the one thing the gateway cannot know by
 itself, which session is calling:
 
@@ -99,24 +116,22 @@ through, so the adapter answers the provider's own question for gateway tools
 
 ## Per provider
 
-"Live" means a real model turn through the provider's real CLI or SDK against
-the app's bridge and gateway with a scripted driver (no desktop touched), run
-by hand with the probes below. The real driver is covered by
-`npm run verify:computer-use-live`, which now also drives Calculator through
-the bridge.
+The two-window test exercises a real model, Aegis's tool binding, and the macOS driver.
+The provider fixture restricts calls to the synthetic target, checks the model's three successful calls, and independently rereads both documents. Gateway and bridge tests exercise wrong window IDs and cross-session requests directly.
+The older adapter probes use a scripted driver. Codex uses its own client.
 
 | Provider | Way in | Binding | Own approval for MCP tools | Screenshot to the model | Plan | Full Access | Verified |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Bubble | host tools | closure | answered by the adapter (PR #208) | image | yes | yes | PR #208 |
-| DeepSeek | bridge, per runtime (`cordis.yml` of that runtime) | capability | none (no approval channel) | image, when the model takes images; the file path always | no Plan mode | `danger-full-access` | CI: real Harness runtime + its MCP client, mock model (`verify:deepseek-computer-use`). No live model turn: the API balance on the test machine was exhausted. |
-| MiniMax Code | bridge, ACP `session/new` | capability | none seen (mcode 0.6.12, Ask mode) | file path | yes | `bypassPermissions` | live (`probe:computer-use-acp minimax`) + CI with a scripted agent |
-| MiMo Code | bridge, ACP `session/new` | capability | none (Aegis's permission config asks for edit/bash/webfetch only) | file path | yes | `build` | live + CI with a scripted agent |
-| Devin | bridge, ACP `session/new` | capability | **asks for every MCP call, reads too**: answered by the adapter | file path | yes | `bypass` | live + CI with a scripted agent |
-| Grok Build | bridge, ACP `session/new` | capability | unknown; the adapter answers if it asks | file path | yes | card always | CI with a scripted agent only. **Not live**: the account's balance was exhausted (HTTP 402). |
-| Qoder | bridge, `query({ mcpServers })` | capability | **asks for every MCP call**: answered by the adapter (not in Don't Ask, which denies) | file path | yes | `bypassPermissions` | live with the real adapter (`probe:computer-use-adapters qoder`) |
-| Claude | bridge, `query({ mcpServers })` | capability | `canUseTool` lets MCP tools through | image | yes | Full access | live at SDK level (same `mcpServers` shape as `runner.ts`); the runner path itself only by source check |
-| Pi | custom tools | closure | none (Pi has no approval) | image | no Plan mode | card always | live with the real adapter (`probe:computer-use-adapters pi`) |
-| OpenCode | bridge, the server's inline config | resolver: `_meta['ai.opencode/sessionID']`, as Browser Use | none expected (asks are limited to edit/shell/webfetch) | file path | yes | card always | CI for the entry and the resolver only. **Not live**: no model on the test machine had usable credentials. |
+| Bubble | host tools | closure | answered by the adapter (PR #208) | image | yes | yes | Two-window test passed |
+| DeepSeek | bridge, per runtime (`cordis.yml` of that runtime) | capability | none (no approval channel) | image, when the model takes images; the file path always | no Plan mode | `danger-full-access` | Two-window test passed |
+| MiniMax Code | bridge, ACP `session/new` | capability | none seen (mcode 0.6.12, Ask mode) | file path | yes | `bypassPermissions` | Two-window test passed |
+| MiMo Code | bridge, ACP `session/new` | capability | none (Aegis's permission config asks for edit/bash/webfetch only) | file path | yes | `build` | Scripted-driver probe passed previously. Real-driver model turn blocked by an invalid API key. |
+| Devin | bridge, ACP `session/new` | capability | **asks for every MCP call, reads too**: answered by the adapter | file path | yes | `bypass` | Two-window test passed |
+| Grok Build | bridge, ACP `session/new` | capability | unknown; the adapter answers if it asks | file path | yes | card always | Scripted-agent integration passed. Real-model request returned HTTP 402 (exhausted balance). |
+| Qoder | bridge, `query({ mcpServers })` | capability | **asks for every MCP call**: answered by the adapter (not in Don't Ask, which denies) | file path | yes | `bypassPermissions` | Two-window test passed |
+| Claude | bridge, `query({ mcpServers })` | capability | `canUseTool` lets MCP tools through | image | yes | Full access | Two-window SDK test passed. Signed app passed switch, Stop, approval and grant revocation across four turns. |
+| Pi | custom tools | closure | none (Pi has no approval) | image | no Plan mode | card always | Two-window test passed |
+| OpenCode | bridge, the server's inline config | resolver: `_meta['ai.opencode/sessionID']`, as Browser Use | none expected (asks are limited to edit/shell/webfetch) | file path | yes | card always | Two-window test passed with deepseek/deepseek-flash. The same model passed the four-turn signed app test. |
 | Codex | its own client | — | — | — | — | — | unchanged |
 | **Kimi** | **none** | — | — | — | — | — | not supported for now, see below |
 | **Antigravity** | **none** | — | — | — | — | — | not supported, see below |

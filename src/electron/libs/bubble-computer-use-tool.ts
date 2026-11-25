@@ -3,7 +3,7 @@
 // MCP option of its own to carry them, and host tools hand screenshots to the
 // model as images.
 //
-// Bubble treats the seven action tools as actions: it refuses them in Plan
+// Bubble treats the mutating tools as actions: it refuses them in Plan
 // mode and asks its approval controller before each call. Aegis answers that
 // request itself, but only for a turn these tools were really registered in
 // (see bubbleComputerUseToolNames): the gateway asks the user with the

@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Monitor, X } from './icons';
+import { ExternalLink, PanelRight, Square, X } from './icons';
+import { useEnvironmentPanelStore } from '../store/useEnvironmentPanelStore';
+import { ComputerUseWindowPreview } from './ComputerUseWindowPreview';
 import { sendEvent } from '../hooks/useIPC';
 import type { ComputerUseGrantView, ComputerUseLiveFrame } from '../../shared/computer-use';
 
@@ -31,150 +32,28 @@ export function ComputerUseGrantBadge({
 }
 
 export function ComputerUseLiveHud({
-  sessionId,
-  frame,
-  frames,
-  grants,
-  isForeground,
-  detached,
+  sessionId, frame, isForeground, detached, inSidebar = false,
 }: {
   sessionId: string;
   frame: ComputerUseLiveFrame | null;
-  frames: ComputerUseLiveFrame[];
-  grants: ComputerUseGrantView[];
   isForeground: boolean;
   detached: boolean;
+  inSidebar?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
-  const [pinned, setPinned] = useState(false);
-  const [parkedSha256, setParkedSha256] = useState<string | null>(null);
-  const [unseen, setUnseen] = useState(0);
-  const [preview, setPreview] = useState<string | null>(null);
-
-  const latestSha = frame?.media?.sha256 || null;
-  useEffect(() => {
-    if (!isForeground) return;
-    if (frame) setOpen(true);
-  }, [frame?.at, isForeground]);
-
-  useEffect(() => {
-    if (parkedSha256 && latestSha && parkedSha256 !== latestSha && frame?.hasFreshMedia) {
-      setUnseen((count) => count + 1);
-    }
-  }, [latestSha, parkedSha256, frame?.hasFreshMedia]);
-
-  const shown = useMemo(() => {
-    if (parkedSha256) {
-      return frames.find((item) => item.media?.sha256 === parkedSha256) || frame;
-    }
-    return frame;
-  }, [frame, frames, parkedSha256]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const media = shown?.media;
-    if (!media) {
-      setPreview(null);
-      return;
-    }
-    void window.electron.readComputerUseArtifact(media.sessionId, media.sha256).then((dataUrl) => {
-      if (!cancelled) setPreview(dataUrl);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [shown?.media?.sessionId, shown?.media?.sha256]);
-
-  const popOut = () => {
-    void window.electron.openComputerUsePreview({
-      sessionId,
-      parkedSha256,
-      live: frame,
-      frames,
-      grants,
-    });
-  };
-
-  if (!isForeground || (!open && !pinned && !detached) || (!shown && !detached)) return null;
-
-  if (detached) {
-    return (
-      <div className="pointer-events-none absolute bottom-3 right-3 z-[80]">
-        <div className="pointer-events-auto flex items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-[12px] shadow-[0_16px_40px_rgba(15,23,42,0.16)]">
-          <Monitor className="h-3.5 w-3.5 text-[var(--text-muted)]" />
-          <span className="text-[var(--text-secondary)]">Preview popped out</span>
-          <button
-            type="button"
-            onClick={() => void window.electron.closeComputerUsePreview()}
-            className="text-[11px] font-medium text-[var(--text-primary)]"
-          >
-            Dock
-          </button>
-        </div>
-      </div>
-    );
-  }
-
+  const placement = useEnvironmentPanelStore(s => s.computerUsePlacement[sessionId] ?? 'floating');
+  const place = useEnvironmentPanelStore(s => s.placeComputerUse);
+  if (!isForeground || detached || !frame?.media || placement === 'hidden' || (placement === 'sidebar') !== inSidebar) return null;
+  const open = () => void window.electron.openComputerUsePreview({ sessionId });
   return (
-    <div className="pointer-events-none absolute bottom-3 right-3 z-[80]">
-      <div className="pointer-events-auto w-[320px] overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-primary)] shadow-[0_16px_40px_rgba(15,23,42,0.16)]">
-        <div className="flex items-center gap-2 px-3 py-2">
-          <Monitor className="h-3.5 w-3.5 text-[var(--text-muted)]" />
-          <div className="min-w-0 flex-1 truncate text-[12px] text-[var(--text-primary)]">{shown?.label}</div>
-          <button type="button" onClick={popOut} className="text-[10px] uppercase tracking-[0.08em] text-[var(--text-muted)]">
-            Pop out
-          </button>
-          <button type="button" onClick={() => setPinned((value) => !value)} className="text-[10px] uppercase tracking-[0.08em] text-[var(--text-muted)]">
-            {pinned ? 'Pinned' : 'Pin'}
-          </button>
-          <button type="button" onClick={() => { setOpen(false); setPinned(false); }} className="text-[var(--text-muted)]">
-            <X className="h-3.5 w-3.5" />
-          </button>
-        </div>
-        {preview ? (
-          <img src={preview} alt="" className="max-h-44 w-full object-contain bg-[var(--bg-secondary)]" />
-        ) : (
-          <div className="px-3 py-6 text-center text-[11px] text-[var(--text-muted)]">Waiting for a screenshot</div>
-        )}
-        {unseen > 0 && parkedSha256 ? (
-          <button
-            type="button"
-            onClick={() => {
-              setParkedSha256(null);
-              setUnseen(0);
-            }}
-            className="w-full border-t border-[var(--border)] px-3 py-1.5 text-[11px] text-[var(--text-primary)]"
-          >
-            Show latest ({unseen})
-          </button>
-        ) : null}
-        {grants.length > 0 ? (
-          <div className="flex items-center justify-between gap-2 border-t border-[var(--border)] px-3 py-2 text-[11px]">
-            <span className="truncate text-[var(--text-secondary)]">
-              Allowed until revoked · {grants.map((grant) => grant.app).join(', ')}
-            </span>
-            <button
-              type="button"
-              onClick={() => sendEvent({ type: 'computerUse.revoke', payload: { sessionId } })}
-              className="font-medium text-amber-700"
-            >
-              Revoke
-            </button>
-          </div>
-        ) : null}
-        <div className="flex justify-end gap-2 border-t border-[var(--border)] px-3 py-2">
-          <button
-            type="button"
-            onClick={() => {
-              setOpen(false);
-              setPinned(false);
-              void window.electron.stopComputerUse(sessionId);
-            }}
-            className="rounded-md bg-[var(--text-primary)] px-2 py-1 text-[11px] font-medium text-[var(--bg-primary)]"
-          >
-            Stop Computer Use
-          </button>
-        </div>
+    <div className="computer-use-pip" data-placement={placement}>
+      <button type="button" className="computer-use-pip-image" aria-label="Open Computer Use preview" onClick={open}>
+        <ComputerUseWindowPreview frame={frame} />
+      </button>
+      <div className="computer-use-pip-controls">
+        <button type="button" title="Move to floating window" aria-label="Move to floating window" onClick={open}><ExternalLink /></button>
+        <button type="button" title={inSidebar ? 'Move to chat' : 'Move to sidebar'} aria-label={inSidebar ? 'Move to chat' : 'Move to sidebar'} onClick={() => place(sessionId, inSidebar ? 'floating' : 'sidebar')}><PanelRight /></button>
+        <button type="button" title="Stop Computer Use" aria-label="Stop Computer Use" onClick={() => void window.electron.stopComputerUse(sessionId)}><Square /></button>
+        <button type="button" title="Hide picture in picture" aria-label="Hide picture in picture" onClick={() => place(sessionId, 'hidden')}><X /></button>
       </div>
     </div>
   );

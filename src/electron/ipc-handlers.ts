@@ -119,15 +119,14 @@ import {
   setComputerUseEnabled,
 } from './libs/computer-use/settings';
 import {
+  activeGatewayPreviewSessions,
+  clearComputerUseLive,
   attachComputerUsePreviewHost,
   closeComputerUsePreviewWindow,
-  forgetComputerUseSession,
   getComputerUsePreviewSnapshot,
   openComputerUsePreviewWindow,
-  rememberComputerUseGrants,
   rememberComputerUseLive,
-  setComputerUsePreviewParked,
-  stopComputerUsePreviewIfSession,
+  fitComputerUsePreview,
 } from './libs/computer-use-preview-window';
 import {
   getDelegateMirrorTarget,
@@ -4028,20 +4027,18 @@ function flushDeepseekRunners(): void {
 /**
  * Providers whose runtime is handed the Computer use tools when it starts
  * (an MCP entry, or custom tools) and keeps that list for its whole life.
- * Bubble takes its tools per turn; Codex has its own client; OpenCode's one
- * server restarts itself when it is idle; Kimi gets none.
+ * OpenCode's shared server refreshes once its last bound session drains.
+ * Bubble takes its tools per turn. Codex uses its own client.
  */
 const COMPUTER_USE_FIXED_AT_START: ReadonlySet<string> = new Set([
-  'claude', 'deepseek', 'devin', 'grok', 'mimo', 'minimax', 'pi', 'qoder',
+  'claude', 'deepseek', 'devin', 'grok', 'mimo', 'minimax', 'opencode', 'pi', 'qoder',
 ]);
 
 /**
  * The Computer use switch or its driver changed: runtimes that were started
  * with the other answer are retired, so each session's next turn starts one
  * with the tools it should have now. A session in the middle of a turn keeps
- * its runtime until the turn ends (Claude and DeepSeek then retire theirs;
- * the others at their next restart). Until then the gateway answers for the
- * switch itself: a call made after it went off is refused.
+ * its runtime until the turn ends. The gateway checks the switch on every call.
  */
 function flushComputerUseRunners(): void {
   for (const [id, entry] of runnerHandles) {
@@ -4050,11 +4047,12 @@ function flushComputerUseRunners(): void {
       ? (entry.inFlightTurns ?? 0) > 0
       : sessions.getSession(id)?.status === 'running';
     if (running) {
-      if (entry.provider === 'claude' || entry.provider === 'deepseek') entry.doomed = true;
+      entry.doomed = true;
       continue;
     }
     clearStopFallbackTimer(entry);
-    entry.handle.abort();
+    if (entry.handle.dispose) entry.handle.dispose();
+    else entry.handle.abort();
     runnerHandles.delete(id);
   }
 }
@@ -5568,7 +5566,6 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
   });
   attachComputerUsePreviewHost(mainWindow);
   computerUseGrants.on('change', ({ threadId, grants, reason }) => {
-    rememberComputerUseGrants(threadId, grants);
     broadcast(mainWindow, {
       type: 'computerUse.grants',
       payload: { sessionId: threadId, grants, reason },
@@ -5988,7 +5985,11 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
     // Off means off: calls on their way and open approval cards end, the
     // driver stops and the gateway's grants go. (Not when the environment
     // keeps it on: then nothing was turned off.)
-    if (!isComputerUseEnabled()) await getComputerUseGateway()?.shutdown('disabled');
+    if (!isComputerUseEnabled()) {
+      const closing = getComputerUseGateway()?.shutdown('disabled');
+      for (const id of activeGatewayPreviewSessions()) finishComputerUseUi(mainWindow, id);
+      await closing;
+    }
     // Most runtimes are handed their tools when they start: the switch
     // reaches a session with its next turn.
     flushComputerUseRunners();
@@ -5998,7 +5999,9 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
     setComputerUseDriverPath(typeof driverPath === 'string' ? driverPath : '');
     // Another binary is another driver: what stood on the old one (calls,
     // approval cards, grants) ends, and the next call starts the new one.
-    await getComputerUseGateway()?.shutdown('driver-changed');
+    const closing = getComputerUseGateway()?.shutdown('driver-changed');
+    for (const id of activeGatewayPreviewSessions()) finishComputerUseUi(mainWindow, id);
+    await closing;
     // A driver that is there now, or no longer: the tools follow.
     flushComputerUseRunners();
     return computerUseSettingsView();
@@ -7870,10 +7873,10 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
     return getComputerUsePreviewSnapshot();
   });
 
-  ipcMainHandle('set-computer-use-preview-parked', async (_event, sha256: string | null) => {
-    setComputerUsePreviewParked(sha256);
-    return getComputerUsePreviewSnapshot();
+  ipcMainOn('fit-computer-use-preview', (event, width: number, height: number) => {
+    fitComputerUsePreview(event.sender.id, width, height);
   });
+
 
   ipcMainHandle('stop-computer-use', async (_event, sessionId: string) => {
     stopComputerUseSession(mainWindow, sessionId);
@@ -10051,6 +10054,7 @@ async function handleClientEvent(
 
     case 'computerUse.revoke':
       computerUseGrants.revoke(event.payload.sessionId, event.payload.grantKey);
+      finishComputerUseUi(mainWindow, event.payload.sessionId);
       break;
 
     case 'computerUse.stop':
@@ -12721,6 +12725,7 @@ function startRunner(
           finishBrowserUseTurn(browserManager, session.id);
           // And the desktop is free for another session.
           getComputerUseGateway()?.finishTurn(session.id);
+          clearComputerUseLive(session.id);
           // Design comments the turn worked on are answered or reopened.
           settleDesignTurn(session.id, PROVIDER_LABELS[provider]);
           if (provider === 'claude') {
@@ -12763,12 +12768,12 @@ function startRunner(
             // — or kill a live follow-up whose status update a stopped
             // result just suppressed.
             if ((currentEntry.inFlightTurns ?? 0) === 0) finishDrainedClaudeRunner(session.id, currentEntry);
-          } else if (provider === 'deepseek' && currentEntry.doomed) {
-            // MCP configuration is captured by the Cordis process at spawn.
-            // A save during an active DeepSeek turn lets that activity finish,
-            // then retires the runtime so the next turn resumes natively with
-            // the newly generated MCP composition.
-            currentEntry.handle.abort();
+          } else if (currentEntry.doomed && COMPUTER_USE_FIXED_AT_START.has(provider)) {
+            // Startup-bound tools are refreshed once the current turn has drained.
+            // A drained adapter owns no current turn. Release it without sending
+            // a late interrupt to the session the next runner will resume.
+            if (currentEntry.handle.dispose) currentEntry.handle.dispose();
+            else currentEntry.handle.abort();
             runnerHandles.delete(session.id);
           }
         }
@@ -12899,6 +12904,7 @@ function startRunner(
         settleWorkflowTurn(session.id, 'error', message);
         finishBrowserUseTurn(browserManager, session.id);
         getComputerUseGateway()?.finishTurn(session.id);
+        clearComputerUseLive(session.id);
         settleDesignTurn(session.id, PROVIDER_LABELS[provider]);
         // dispose, not abort: the session already errored, so a stopSession
         // here would emit a spurious stop_settled — but plain detach leaks
@@ -13093,7 +13099,6 @@ function startRunner(
       });
     },
     onComputerUseGrants: (grants, reason) => {
-      rememberComputerUseGrants(session.id, grants);
       broadcast(mainWindow, {
         type: 'computerUse.grants',
         payload: { sessionId: session.id, grants, reason },
@@ -13573,10 +13578,18 @@ function finishComputerUseUi(mainWindow: BrowserWindow, sessionId: string): void
     type: 'computerUse.stopped',
     payload: { sessionId },
   });
-  stopComputerUsePreviewIfSession(sessionId);
+  clearComputerUseLive(sessionId);
 }
 
 function stopComputerUseSession(mainWindow: BrowserWindow, sessionId: string): void {
+  const gateway = getComputerUseGateway();
+  const session = sessions.getSession(sessionId);
+  if (!session) return;
+  if (gateway && session.provider !== 'codex') {
+    gateway.stopForTurn(sessionId, session.status === 'running');
+    finishComputerUseUi(mainWindow, sessionId);
+    return;
+  }
   handleSessionStop(mainWindow, sessionId);
 }
 
@@ -13826,7 +13839,7 @@ function handleSessionDelete(mainWindow: BrowserWindow, sessionId: string): void
   }
 
   // 广播删除事件（幂等）
-  forgetComputerUseSession(sessionId);
+  clearComputerUseLive(sessionId);
   broadcast(mainWindow, {
     type: 'session.deleted',
     payload: { sessionId },

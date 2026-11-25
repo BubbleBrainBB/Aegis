@@ -24,6 +24,7 @@ export const COMPUTER_USE_TOOLS = [
 
 export type ComputerUseActionKind =
   | (typeof COMPUTER_USE_TOOLS)[number]
+  | (typeof COMPUTER_USE_GATEWAY_TOOLS)[number]
   | 'script'
   | 'unknown';
 
@@ -62,6 +63,8 @@ export interface ComputerUseLiveFrame {
   tool: string | null;
   mutating: boolean;
   media: ComputerUseMediaRef | null;
+  /** Native window observed by the gateway. Only live events can start a preview stream. */
+  previewWindowId?: number;
   hasFreshMedia: boolean;
   at: number;
 }
@@ -71,23 +74,16 @@ export const COMPUTER_USE_PREVIEW_HASH = 'computer-use-preview';
 
 export interface ComputerUsePreviewSnapshot {
   sessionId: string;
-  parkedSha256: string | null;
   live: ComputerUseLiveFrame | null;
-  frames: ComputerUseLiveFrame[];
-  grants: ComputerUseGrantView[];
 }
 
 export interface ComputerUsePreviewOpenInput {
   sessionId: string;
-  parkedSha256?: string | null;
-  live?: ComputerUseLiveFrame | null;
-  frames?: ComputerUseLiveFrame[];
-  grants?: ComputerUseGrantView[];
 }
 
 export function computerUsePreviewWindowPolicy() {
   return {
-    alwaysOnTop: false as const,
+    alwaysOnTop: true as const,
     fullscreenable: false as const,
     modal: false as const,
     type: null,
@@ -120,15 +116,10 @@ export function mergeComputerUseLiveFrame(
   frame: ComputerUseLiveFrame
 ): ComputerUseLiveFrame {
   if (frame.hasFreshMedia) return frame;
-  if (!current) return frame;
+  if (!current || current.app !== frame.app || current.previewWindowId !== frame.previewWindowId) return frame;
   return {
-    ...current,
-    label: frame.label,
-    app: frame.app,
-    tool: frame.tool,
-    mutating: frame.mutating,
-    at: frame.at,
-    hasFreshMedia: false,
+    ...frame,
+    media: current.media,
   };
 }
 
@@ -255,13 +246,11 @@ export function shouldAcceptComputerUseLive(status: string | null | undefined): 
   return status === 'running';
 }
 
-export function environmentHasComputerUseSection(input: {
-  frames?: Array<{ media?: ComputerUseMediaRef | null }> | null;
-  grants?: unknown[] | null;
-}): boolean {
-  const frames = input.frames || [];
-  const grants = input.grants || [];
-  return frames.some((frame) => Boolean(frame.media)) || grants.length > 0;
+export function environmentHasComputerUseSection(session: {
+  status: string;
+  computerUseLive?: ComputerUseLiveFrame | null;
+} | null | undefined): boolean {
+  return session?.status === 'running' && Boolean(session.computerUseLive?.media);
 }
 
 export function computerUseScreenshotExtension(mimeType: string | null | undefined): 'png' | 'jpg' {
@@ -478,10 +467,11 @@ export function classifyComputerUseAction(input: {
     };
   }
 
-  const kind = isComputerUseActionKind(tool) ? tool : 'unknown';
+  const gatewayTool = server === AEGIS_COMPUTER_USE_SERVER_NAME && (COMPUTER_USE_GATEWAY_TOOLS as readonly string[]).includes(tool ?? '');
+  const kind = gatewayTool ? tool as ComputerUseActionKind : isComputerUseActionKind(tool) ? tool : 'unknown';
   return {
     kind,
-    mutating: kind === 'unknown' ? true : isComputerUseMutatingTool(kind),
+    mutating: kind === 'unknown' || kind === 'invoke_menu' || isComputerUseMutatingTool(kind),
     app: input.app || null,
     title: input.title || null,
     server,
@@ -516,6 +506,14 @@ export function formatComputerUseLabel(
   switch (action.kind) {
     case 'list_apps':
       return progressive ? 'Listing apps' : `${prefix}${done ? 'Listed apps' : 'list apps'}`;
+    case 'list_windows':
+      return progressive ? 'Listing windows' : `${prefix}${done ? 'Listed windows' : 'list windows'}`;
+    case 'verify_state':
+      return progressive ? 'Checking window state' : `${prefix}${done ? 'Checked window state' : 'check window state'}`;
+    case 'zoom':
+      return progressive ? 'Inspecting window detail' : `${prefix}${done ? 'Inspected window detail' : 'inspect window detail'}`;
+    case 'invoke_menu':
+      return progressive ? 'Using app menu' : `${prefix}${done ? 'Used app menu' : 'use app menu'}`;
     case 'get_app_state':
       return app
         ? progressive
@@ -661,6 +659,10 @@ export const COMPUTER_USE_GATEWAY_TOOLS = [
   'drag',
   'press_key',
   'type_text',
+  'list_windows',
+  'verify_state',
+  'zoom',
+  'invoke_menu',
 ] as const;
 
 /** A gateway tool under the name agents and the transcript know it by. */

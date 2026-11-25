@@ -1,28 +1,18 @@
-import { BrowserWindow, type BrowserWindowConstructorOptions, shell } from 'electron';
+import { BrowserWindow, type BrowserWindowConstructorOptions, screen, shell } from 'electron';
 import {
   COMPUTER_USE_PREVIEW_HASH,
-  appendComputerUseLiveFrame,
   computerUsePreviewWindowPolicy,
-  isComputerUseArtifactSha256,
   mergeComputerUseLiveFrame,
-  type ComputerUseGrantView,
   type ComputerUseLiveFrame,
   type ComputerUsePreviewOpenInput,
   type ComputerUsePreviewSnapshot,
 } from '../../shared/computer-use';
 import { DEV_SERVER_URL, getPreloadPath, getUIPath, isDev } from '../util';
 
-type SessionCache = {
-  live: ComputerUseLiveFrame | null;
-  frames: ComputerUseLiveFrame[];
-  grants: ComputerUseGrantView[];
-};
-
 let hostWindow: BrowserWindow | null = null;
 let previewWindow: BrowserWindow | null = null;
 let previewSessionId: string | null = null;
-let parkedSha256: string | null = null;
-const sessionCache = new Map<string, SessionCache>();
+const liveFrames = new Map<string, ComputerUseLiveFrame>();
 
 export function attachComputerUsePreviewHost(win: BrowserWindow): void {
   hostWindow = win;
@@ -42,10 +32,14 @@ export function buildComputerUsePreviewWindowOptions(
     parent,
     modal: policy.modal,
     show: false,
-    width: 420,
-    height: 560,
-    minWidth: 320,
-    minHeight: 280,
+    width: 200,
+    height: 113,
+    minWidth: 32,
+    minHeight: 32,
+    frame: false,
+    transparent: true,
+    hasShadow: true,
+    skipTaskbar: true,
     title: 'Computer Use',
     alwaysOnTop: policy.alwaysOnTop,
     fullscreenable: policy.fullscreenable,
@@ -61,37 +55,21 @@ export function buildComputerUsePreviewWindowOptions(
 }
 
 export function rememberComputerUseLive(sessionId: string, frame: ComputerUseLiveFrame): void {
-  const current = sessionCache.get(sessionId) || { live: null, frames: [], grants: [] };
-  const next: SessionCache = {
-    live: mergeComputerUseLiveFrame(current.live, frame),
-    frames: appendComputerUseLiveFrame(current.frames, frame),
-    grants: current.grants,
-  };
-  sessionCache.set(sessionId, next);
+  liveFrames.set(sessionId, mergeComputerUseLiveFrame(liveFrames.get(sessionId) ?? null, frame));
   if (previewSessionId === sessionId) pushPreviewSnapshot();
 }
 
-export function rememberComputerUseGrants(sessionId: string, grants: ComputerUseGrantView[]): void {
-  const current = sessionCache.get(sessionId) || { live: null, frames: [], grants: [] };
-  sessionCache.set(sessionId, { ...current, grants });
-  if (previewSessionId === sessionId) pushPreviewSnapshot();
+export function activeGatewayPreviewSessions(): string[] {
+  return [...liveFrames].filter(([, frame]) => frame.previewWindowId != null).map(([id]) => id);
 }
 
-export function forgetComputerUseSession(sessionId: string): void {
-  sessionCache.delete(sessionId);
-  if (previewSessionId === sessionId) closeComputerUsePreviewWindow();
+export function clearComputerUseLive(sessionId: string): void {
+  liveFrames.delete(sessionId);
+  stopComputerUsePreviewIfSession(sessionId);
 }
 
 export function getComputerUsePreviewSnapshot(): ComputerUsePreviewSnapshot | null {
-  if (!previewSessionId) return null;
-  const cached = sessionCache.get(previewSessionId) || { live: null, frames: [], grants: [] };
-  return {
-    sessionId: previewSessionId,
-    parkedSha256,
-    live: cached.live,
-    frames: cached.frames,
-    grants: cached.grants,
-  };
+  return previewSessionId ? { sessionId: previewSessionId, live: liveFrames.get(previewSessionId) ?? null } : null;
 }
 
 export function isComputerUsePreviewOpen(): boolean {
@@ -108,16 +86,15 @@ export async function openComputerUsePreviewWindow(
     return { ok: false, open: false, sessionId, message: 'Main window is gone.' };
   }
 
-  seedSessionCache(sessionId, input);
+  if (!liveFrames.get(sessionId)?.media) {
+    return { ok: false, open: false, sessionId, message: 'No active Computer Use preview.' };
+  }
   previewSessionId = sessionId;
-  parkedSha256 = sanitizeSha256(input.parkedSha256);
-
   if (previewWindow && !previewWindow.isDestroyed()) {
     pushPreviewSnapshot();
     notifyHostPreview(true);
     if (previewWindow.isMinimized()) previewWindow.restore();
-    previewWindow.show();
-    previewWindow.focus();
+    previewWindow.showInactive();
     return { ok: true, open: true, sessionId };
   }
 
@@ -131,28 +108,32 @@ export async function openComputerUsePreviewWindow(
   win.once('ready-to-show', () => {
     if (win.isDestroyed()) return;
     positionBesideParent(win, parent);
-    win.show();
+    win.showInactive();
     pushPreviewSnapshot();
   });
   win.on('closed', () => {
     if (previewWindow === win) {
       previewWindow = null;
       previewSessionId = null;
-      parkedSha256 = null;
       notifyHostPreview(false);
     }
   });
 
-  await loadComputerUsePreviewUi(win);
-  notifyHostPreview(true);
-  return { ok: true, open: true, sessionId };
+  try {
+    await loadComputerUsePreviewUi(win);
+  } catch (error) {
+    if (previewWindow !== win || win.isDestroyed()) return { ok: true, open: false, sessionId };
+    closeComputerUsePreviewWindow();
+    throw error;
+  }
+  if (previewWindow === win && !win.isDestroyed()) notifyHostPreview(true);
+  return { ok: true, open: previewWindow === win, sessionId };
 }
 
 export function closeComputerUsePreviewWindow(): void {
   const win = previewWindow;
   previewWindow = null;
   previewSessionId = null;
-  parkedSha256 = null;
   if (win && !win.isDestroyed()) win.close();
   notifyHostPreview(false);
 }
@@ -161,9 +142,14 @@ export function stopComputerUsePreviewIfSession(sessionId: string): void {
   if (previewSessionId === sessionId) closeComputerUsePreviewWindow();
 }
 
-export function setComputerUsePreviewParked(sha256: string | null): void {
-  parkedSha256 = sanitizeSha256(sha256);
-  pushPreviewSnapshot();
+export function fitComputerUsePreview(senderId: number, width: number, height: number): void {
+  const win = previewWindow;
+  if (!win || win.isDestroyed() || win.webContents.id !== senderId) return;
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return;
+  const scale = 200 / Math.max(width, height);
+  const size = [Math.max(32, Math.round(width * scale)), Math.max(32, Math.round(height * scale))];
+  const [w, h] = win.getContentSize();
+  if (w !== size[0] || h !== size[1]) win.setContentSize(size[0], size[1]);
 }
 
 async function loadComputerUsePreviewUi(win: BrowserWindow): Promise<void> {
@@ -179,54 +165,10 @@ async function loadComputerUsePreviewUi(win: BrowserWindow): Promise<void> {
   await win.loadFile(getUIPath(), { hash: COMPUTER_USE_PREVIEW_HASH });
 }
 
-function seedSessionCache(sessionId: string, input: ComputerUsePreviewOpenInput): void {
-  const current = sessionCache.get(sessionId) || { live: null, frames: [], grants: [] };
-  const frames = Array.isArray(input.frames)
-    ? input.frames.map((frame) => sanitizeFrame(sessionId, frame)).filter((frame): frame is ComputerUseLiveFrame => Boolean(frame))
-    : current.frames;
-  const live = input.live ? sanitizeFrame(sessionId, input.live) : current.live;
-  const grants = Array.isArray(input.grants) ? input.grants : current.grants;
-  sessionCache.set(sessionId, {
-    live: live || current.live,
-    frames: frames.length > 0 ? frames.slice(-12) : current.frames,
-    grants,
-  });
-}
-
-function sanitizeFrame(sessionId: string, frame: ComputerUseLiveFrame): ComputerUseLiveFrame | null {
-  if (!frame || typeof frame !== 'object') return null;
-  const media =
-    frame.media &&
-    frame.media.sessionId === sessionId &&
-    isComputerUseArtifactSha256(frame.media.sha256)
-      ? {
-          sessionId,
-          sha256: frame.media.sha256.trim().toLowerCase(),
-          mimeType: typeof frame.media.mimeType === 'string' ? frame.media.mimeType : 'image/png',
-          sizeBytes: Number(frame.media.sizeBytes) || 0,
-        }
-      : null;
-  return {
-    threadId: String(frame.threadId || ''),
-    toolUseId: String(frame.toolUseId || ''),
-    label: String(frame.label || 'Computer Use'),
-    app: frame.app ? String(frame.app) : null,
-    tool: frame.tool ? String(frame.tool) : null,
-    mutating: Boolean(frame.mutating),
-    media,
-    hasFreshMedia: Boolean(frame.hasFreshMedia && media),
-    at: Number(frame.at) || Date.now(),
-  };
-}
-
 function sanitizeSessionId(value: string | null | undefined): string | null {
   const raw = (value || '').trim();
   if (!raw || raw.includes('/') || raw.includes('\\') || raw.includes('..')) return null;
   return raw;
-}
-
-function sanitizeSha256(value: string | null | undefined): string | null {
-  return isComputerUseArtifactSha256(value) ? String(value).trim().toLowerCase() : null;
 }
 
 function pushPreviewSnapshot(): void {
@@ -251,5 +193,10 @@ function notifyHostPreview(open: boolean): void {
 
 function positionBesideParent(win: BrowserWindow, parent: BrowserWindow): void {
   const bounds = parent.getBounds();
-  win.setPosition(Math.round(bounds.x + bounds.width - 48), Math.round(bounds.y + 72));
+  const area = screen.getDisplayMatching(bounds).workArea;
+  const [width, height] = win.getSize();
+  win.setPosition(
+    Math.max(area.x, Math.min(bounds.x + bounds.width - 48, area.x + area.width - width)),
+    Math.max(area.y, Math.min(bounds.y + 72, area.y + area.height - height))
+  );
 }

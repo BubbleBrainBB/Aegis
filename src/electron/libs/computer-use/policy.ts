@@ -12,7 +12,7 @@
 // what the driver would do when it is left out is the driver's to change.
 
 /** Driver tools the gateway calls with any arguments: observation and its own bookkeeping. */
-export const DRIVER_OPEN_TOOLS = ['check_permissions', 'list_apps', 'list_windows', 'end_session'] as const;
+export const DRIVER_OPEN_TOOLS = ['check_permissions', 'list_apps', 'list_windows', 'end_session', 'verify_state', 'zoom'] as const;
 
 /**
  * Driver tools the gateway calls for input, and the arguments each one is
@@ -20,6 +20,7 @@ export const DRIVER_OPEN_TOOLS = ['check_permissions', 'list_apps', 'list_window
  * rejects unknown arguments).
  */
 export const DRIVER_INPUT_TOOLS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  invoke_menu: { delivery_mode: 'background' },
   click: { delivery_mode: 'background', scope: 'window' },
   double_click: { delivery_mode: 'background' },
   set_value: {},
@@ -29,6 +30,11 @@ export const DRIVER_INPUT_TOOLS: Readonly<Record<string, Readonly<Record<string,
   hotkey: { delivery_mode: 'background', scope: 'window' },
   type_text: { delivery_mode: 'background', scope: 'window' },
 };
+
+// From the pinned driver's input schemas. New tools opt in after their schema is checked.
+export const REVISION_INPUT_TOOLS: ReadonlySet<string> = new Set([
+  'click', 'double_click', 'set_value', 'scroll', 'drag', 'press_key', 'hotkey', 'type_text',
+]);
 
 /** The arguments an input call to the driver always carries. */
 export function fixedDriverInputArgs(tool: string): Record<string, string> {
