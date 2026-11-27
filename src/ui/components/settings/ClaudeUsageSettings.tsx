@@ -535,10 +535,9 @@ function UsageRangeSwitch({ value, onChange }: { value: ClaudeUsageRangeDays; on
 
 const LEDGER_VISIBLE_MODELS = 5;
 
-/** The cost column says what the figures are: billed, API-equivalent, estimated or partial. */
 function costColumnLabel(report: ClaudeUsageReport): string {
   if (report.costMode === 'partial') return 'Priced usage only';
-  if (report.costBasis === 'api-standard') return 'API equivalent cost';
+  if (report.costBasis === 'api-standard') return 'Cost';
   if (report.costMode === 'unavailable' || report.costMode === 'estimated') return 'Estimated cost';
   return 'Total cost';
 }
@@ -712,7 +711,6 @@ function ModelLedger({ report, yearDaily }: { report: ClaudeUsageReport; yearDai
               <col />
               <col className="w-[124px]" />
               <col className="w-[60px]" />
-              {/* The cost label is long ("API equivalent cost"); a message count needs far less. */}
               <col className={billing ? 'w-[84px]' : 'w-[136px]'} />
               {billing && showCredits ? <col className="w-[68px]" /> : null}
               <col className="w-[72px]" />
