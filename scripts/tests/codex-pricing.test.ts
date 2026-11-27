@@ -3,6 +3,7 @@ import { estimateCodexUsageCost as cost, getCodexPriceEntry } from '../../src/el
 const close = (actual: number | null, expected: number) => assert(actual !== null && Math.abs(actual - expected) < 1e-10, `${actual} != ${expected}`);
 // Independent official-rate examples: uncached 60K, cached 30K, writes 10K, output 2K.
 for (const [model, expected] of [
+  ['gpt-6.2-astra', .672], ['gpt-6.2-sol', .168],
   ['gpt-6.1-sol', .168], ['gpt-6.1-terra', .084], ['gpt-6-sol', .171], ['gpt-6-luna', .00855],
   ['gpt-6-astra', .855], ['gpt-5.6-sol', .342], ['gpt-5.6-terra', .175], ['gpt-5.6-luna', .0175],
 ] as const) {
@@ -11,6 +12,8 @@ for (const [model, expected] of [
 close(cost('gpt-5.6-sol', { inputTokens: 272000, cachedInputTokens: 100000, outputTokens: 1000 }), .748);
 close(cost('gpt-5.6-sol', { inputTokens: 272001, cachedInputTokens: 100000, outputTokens: 1000 }), 1.486008);
 close(cost('gpt-6-astra', { inputTokens: 300000, cachedInputTokens: 200000, cacheWriteInputTokens: 50000, outputTokens: 1000 }), 2.725);
+close(cost('gpt-6.2-astra', { inputTokens: 300000, cachedInputTokens: 200000, cacheWriteInputTokens: 50000, outputTokens: 1000 }), 2.02);
+close(cost('gpt-6.2-sol', { inputTokens: 300000, cachedInputTokens: 200000, cacheWriteInputTokens: 50000, outputTokens: 1000 }), .505);
 close(cost('gpt-6.1-sol', { inputTokens: 300000, cachedInputTokens: 200000, cacheWriteInputTokens: 50000, outputTokens: 1000 }), .505);
 close(cost('gpt-5.5', { inputTokens: 300000, cachedInputTokens: 200000, outputTokens: 1000 }), 1.245);
 close(cost('gpt-5.5-pro', { inputTokens: 100000, cachedInputTokens: 0, outputTokens: 1000 }), 3.18);
