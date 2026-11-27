@@ -563,9 +563,10 @@ app.whenReady().then(async()=>{
   const load=async (report,provider='codex')=>{await js('qa.load('+JSON.stringify(report)+','+JSON.stringify(provider)+')');await wait(100)};
   const shot=async name=>{fs.mkdirSync(process.env.QA_CAPTURE,{recursive:true});fs.writeFileSync(path.join(process.env.QA_CAPTURE,name+'.png'),(await win.webContents.capturePage()).toPNG())};
   await win.loadURL(process.env.QA_URL);await until('!!window.qa');
-  await load(current);await until('document.body.innerText.includes("API equivalent cost")');
+  const costHeader='document.querySelector("[data-usage-cost-label]")?.textContent === "Cost"';
+  await load(current);await until(costHeader);
   let copy=await js('document.body.innerText');
-  assert(copy.includes('API equivalent cost'));assert(copy.includes('≈$1.69'));
+  assert(copy.includes('≈$1.69'));
   assert(!copy.includes('tokens excluded'));assert(!copy.includes('Standard API rates'));
   assert(!(await js('!!document.querySelector("[data-usage-api-basis], [data-usage-cost-note], [data-usage-cost-coverage]")')));
   await shot('api-equivalent-light');await js('qa.dark()');await wait(100);await shot('api-equivalent-dark');
@@ -576,7 +577,7 @@ app.whenReady().then(async()=>{
   assert(!copy.includes('Cost covers only'));
   await load(unknown);assert((await js('document.body.innerText')).includes('Unavailable'));
   assert(!(await js('document.body.innerText')).includes('$0'),'unknown-only usage never appears free');
-  await load(priced);assert((await js('document.body.innerText')).includes('API equivalent cost'));
+  await load(priced);assert(await js(costHeader));
   assert(!(await js('!!document.querySelector("[data-usage-cost-coverage]")')),'fully priced usage has no missing-price notice');
   await load(combined);assert((await js('document.body.innerText')).includes('Estimated cost'));
   await load(nativeOnly);assert((await js('document.body.innerText')).includes('Total cost'));
@@ -592,7 +593,7 @@ app.whenReady().then(async()=>{
   // Every cost label stays on one line: the cost header is as tall as its neighbours.
   const oneLine='(()=>{const c=document.querySelector("[data-usage-cost-label]"),m=c.parentElement.firstElementChild;return c.getBoundingClientRect().height===m.getBoundingClientRect().height})()';
   assert(await js(oneLine),'Estimated cost fits on one line');await shot('minimax-estimated');
-  await load(current);await until('document.body.innerText.includes("API equivalent cost")');assert(await js(oneLine),'API equivalent cost fits on one line');
+  await load(current);await until(costHeader);assert(await js(oneLine),'Cost fits on one line');
   await load(mixed);await until('document.body.innerText.includes("Priced usage only")');assert(await js(oneLine),'Priced usage only fits on one line');
   // Devin: messages and credits replace the cost columns. No By day table: the model table and the activity map cover it.
   await load(devinReport,'devin');await until('document.body.innerText.includes("7 agent messages")');
