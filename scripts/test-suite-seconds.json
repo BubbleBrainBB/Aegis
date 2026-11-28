@@ -76,6 +76,7 @@
   "verify:antigravity": 2,
   "verify:antigravity-settings": 10,
   "verify:antigravity-human-driven": 12,
+  "verify:send-runtime-check-failed": 2,
   "verify:shell-environment": 2,
   "verify:stored-row-passes": 8,
   "verify:warm-send-options": 0,
