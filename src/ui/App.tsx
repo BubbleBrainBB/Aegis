@@ -68,6 +68,7 @@ import {
   BrowserNativeOverlayContext,
   useBrowserNativeOverlayRegistration,
 } from './components/browser/browser-native-overlay';
+import { closeRightTerminalPaneTab } from './terminal/terminal-tabs';
 import { useIosSimulatorStore } from './store/useIosSimulatorStore';
 import { iosSimulatorTabId, iosSimulatorTabUdid } from '../shared/ios-simulator';
 import { SubagentAvatar } from './components/SubagentAvatar';
@@ -686,6 +687,11 @@ export function App() {
       const browserSessionId = getBrowserUtilitySessionId(activeSessionId, target);
       void window.electron.browser.close({ sessionId: browserSessionId }).catch(() => {});
       removeBrowserSessionState(browserSessionId);
+    }
+    if (kind === 'terminal') {
+      // Leaving a terminal tab (another session, Settings) keeps its shells
+      // running, so closing it is what ends them.
+      closeRightTerminalPaneTab(activeSessionId, target);
     }
     closeRightUtilityTabInStore(target);
   }, [activeSessionId, closeRightUtilityTabInStore, destroySideChat, removeBrowserSessionState, sideChats]);

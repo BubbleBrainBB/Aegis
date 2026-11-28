@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { SquareTerminal, X } from './icons';
 import { SessionTerminal } from './SessionTerminal';
+import { rightTerminalScopeId } from '../terminal/terminal-tabs';
 
 const MIN_PANEL_WIDTH = 360;
 const MAX_PANEL_WIDTH = 1200;
@@ -32,9 +33,7 @@ export function RightTerminalPanel({
   const resizingRef = useRef(false);
   const startXRef = useRef(0);
   const startWidthRef = useRef(width);
-  // The first, plain `terminal` tab keeps the scope it always had.
-  const scopeSuffix = tabId === 'terminal' ? 'right-terminal' : `right-${tabId}`;
-  const terminalScopeId = sessionId ? `${sessionId}:${scopeSuffix}` : cwd ? `project:${cwd}:${scopeSuffix}` : null;
+  const terminalScopeId = rightTerminalScopeId(sessionId, cwd, tabId);
 
   useEffect(() => {
     if (!collapsed) {

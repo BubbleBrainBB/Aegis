@@ -4,6 +4,7 @@ import {
   DEFAULT_TERMINAL_ID,
   isManagedTerminalAgentKind,
   normalizeTerminalSize,
+  terminalScopeBelongsTo,
   validateTerminalClearInput,
   validateTerminalCloseInput,
   validateTerminalOpenInput,
@@ -48,6 +49,8 @@ const failure = (error: unknown): TerminalRpcResult => ({ ok: false, message: er
  */
 export class TerminalManager {
   private readonly sessions = new Map<string, PtySession>();
+  /** Owner id → earlier ids (drafts) whose shells it took over. */
+  private readonly adopted = new Map<string, Set<string>>();
   private poller: ReturnType<typeof setInterval> | null = null;
   private polling = false;
   private clock = 0;
@@ -63,9 +66,11 @@ export class TerminalManager {
     const launchFor = (session: PtySession) =>
       isManagedTerminalAgentKind(input.agentKind) ? session.launchCommands[input.agentKind] || input.agentKind : undefined;
 
-    // Reattach to a live shell in the same directory instead of starting over.
+    // Reattach to a live shell instead of starting over. It stays in the
+    // directory it was started in, even when the caller now asks for another:
+    // whatever runs in it matters more than following the folder.
     const existing = this.sessions.get(key);
-    if (existing?.running && existing.cwd === input.cwd) {
+    if (existing?.running) {
       this.touch(existing);
       this.resizeSession(existing, size.cols, size.rows);
       await settle();
@@ -226,6 +231,36 @@ export class TerminalManager {
     }
     if (terminalId && deleteHistory) deleteTerminalHistory(threadId, terminalId);
     return { ok: true };
+  }
+
+  /**
+   * Shells started under `fromOwnerId` (a draft) now belong to `toOwnerId`
+   * (the session it became). They keep their scope; closeOwner finds them.
+   */
+  adoptOwner(fromOwnerId: string, toOwnerId: string): void {
+    if (!fromOwnerId || !toOwnerId || fromOwnerId === toOwnerId) return;
+    const earlier = this.adopted.get(toOwnerId) ?? new Set<string>();
+    earlier.add(fromOwnerId);
+    for (const id of this.adopted.get(fromOwnerId) ?? []) earlier.add(id);
+    this.adopted.delete(fromOwnerId);
+    this.adopted.set(toOwnerId, earlier);
+  }
+
+  /**
+   * Ends every shell of an owner (a session that is being deleted), in all
+   * of its scopes, and removes their saved history. Returns how many ended.
+   */
+  closeOwner(ownerId: string): number {
+    if (!ownerId) return 0;
+    const owners = [ownerId, ...(this.adopted.get(ownerId) ?? [])];
+    this.adopted.delete(ownerId);
+    const owned = [...this.sessions.values()].filter((session) =>
+      owners.some((owner) => terminalScopeBelongsTo(session.scope, owner))
+    );
+    for (const session of owned) {
+      this.close({ threadId: session.scope, terminalId: session.tabId, deleteHistory: true });
+    }
+    return owned.length;
   }
 
   stop(threadId: string): TerminalRpcResult {
