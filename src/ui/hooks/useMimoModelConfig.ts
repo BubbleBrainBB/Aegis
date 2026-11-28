@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import type { MimoModelConfig } from '../types';
 
 const FALLBACK_CONFIG: MimoModelConfig = {
@@ -7,8 +7,7 @@ const FALLBACK_CONFIG: MimoModelConfig = {
   availableModels: [],
 };
 
-// Every composer mounts this hook; share one catalog read (a `mimo models`
-// run in the main process) across all of them.
+// A cold catalog read runs `mimo models`. Share it across interested pickers.
 let sharedRequest: Promise<MimoModelConfig> | null = null;
 
 function normalizeMimoModelConfig(raw: Partial<MimoModelConfig> | null | undefined): MimoModelConfig {
@@ -29,25 +28,17 @@ function normalizeMimoModelConfig(raw: Partial<MimoModelConfig> | null | undefin
 export function useMimoModelConfig() {
   const [config, setConfig] = useState<MimoModelConfig>(FALLBACK_CONFIG);
 
-  useEffect(() => {
-    let cancelled = false;
-    sharedRequest ??= window.electron.getMimoModelConfig().then((next) => {
-      const normalized = normalizeMimoModelConfig(next);
-      // A failed read (CLI missing) must not stick for the session.
-      if (normalized.options.length === 0) sharedRequest = null;
-      return normalized;
-    });
-    sharedRequest
-      .then((nextConfig) => {
-        if (!cancelled) setConfig(nextConfig);
-      })
-      .catch(() => {
-        sharedRequest = null;
+  const load = useCallback(() => {
+    sharedRequest ??= window.electron.getMimoModelConfig()
+      .then(normalizeMimoModelConfig)
+      .catch(() => FALLBACK_CONFIG)
+      .then(next => {
+        // A missing CLI or empty catalog can be retried on the next open.
+        if (next.options.length === 0) sharedRequest = null;
+        return next;
       });
-    return () => {
-      cancelled = true;
-    };
+    void sharedRequest.then(setConfig);
   }, []);
 
-  return config;
+  return { config, load };
 }

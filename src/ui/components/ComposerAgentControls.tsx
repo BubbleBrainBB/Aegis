@@ -998,6 +998,7 @@ export function ComposerAgentModelPicker({
   devinThoughtLevels,
   devinThoughtLevel,
   onDevinThoughtLevelChange,
+  onRequestMimoModels,
   mimoReasoningEfforts,
   mimoReasoningEffort,
   onMimoReasoningEffortChange,
@@ -1039,6 +1040,7 @@ export function ComposerAgentModelPicker({
   devinThoughtLevels?: DevinThoughtLevels | null;
   devinThoughtLevel?: string | null;
   onDevinThoughtLevelChange?: (level: string) => void;
+  onRequestMimoModels?: () => void;
   mimoReasoningEfforts?: string[];
   mimoReasoningEffort?: string | null;
   onMimoReasoningEffortChange?: (effort: string | null) => void;
@@ -1061,6 +1063,9 @@ export function ComposerAgentModelPicker({
   /** True while the first Bubble catalog load is in flight. */
   bubbleModelsLoading?: boolean;
 }) {
+  useEffect(() => {
+    if (agentProvider === 'mimo') onRequestMimoModels?.();
+  }, [agentProvider, onRequestMimoModels]);
   const pickerTrigger = useStablePickerTrigger();
   const { entries } = useAgentReadiness(null, true);
   const readinessByProvider = useMemo(() => {
@@ -1384,7 +1389,12 @@ export function ComposerAgentModelPicker({
 
             if (provider === 'mimo') {
               return (
-                <DropdownMenu.Sub key={provider}>
+                <DropdownMenu.Sub
+                  key={provider}
+                  onOpenChange={open => {
+                    if (open) onRequestMimoModels?.();
+                  }}
+                >
                   <DropdownMenu.SubTrigger className="flex cursor-default items-center gap-2 rounded-[var(--radius-lg)] px-2.5 py-2 outline-none transition-colors data-[highlighted]:bg-[var(--bg-tertiary)]">
                     <AgentIcon provider={provider} />
                     <span className="min-w-0 flex-1">

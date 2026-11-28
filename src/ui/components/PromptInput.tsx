@@ -2128,6 +2128,7 @@ export function PromptInput({
                 devinThoughtLevels={agentSelection.devinThoughtLevels}
                 devinThoughtLevel={agentSelection.devinThoughtLevel}
                 onDevinThoughtLevelChange={agentSelection.setDevinThoughtLevel}
+                onRequestMimoModels={agentSelection.loadMimoModels}
                 mimoReasoningEfforts={agentSelection.mimoReasoningEfforts}
                 mimoReasoningEffort={agentSelection.mimoReasoningEffort}
                 onMimoReasoningEffortChange={agentSelection.setMimoReasoningEffort}
