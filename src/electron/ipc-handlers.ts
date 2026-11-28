@@ -9474,6 +9474,7 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
         branch,
         newBranch: input.newBranch ?? null,
         path: input.path ?? null,
+        bootstrap: getAppPreferences().copyWorktreeEnvironment,
       });
       return { ok: true, worktree };
     } catch (error) {
@@ -9654,6 +9655,7 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
                 cwd: projectCwd,
                 branch,
                 newBranch,
+                bootstrap: getAppPreferences().copyWorktreeEnvironment,
               });
           if (!input.worktreePath) {
             createdWorktreePath = worktree.path;

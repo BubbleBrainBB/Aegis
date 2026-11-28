@@ -16,6 +16,7 @@ export const SETTINGS_SEARCH_ENTRIES: SettingsSearchEntry[] = [
     ['Default open destination', 'editor finder vscode folder 默认 打开 编辑器'],
     ['Terminal shell', 'bash zsh powershell terminal 终端'],
     ['Prevent sleep while running', 'awake power sleep 防休眠'],
+    ['Copy local files into new worktrees', 'worktree env node_modules worktreeinclude copy clone 工作树 复制 环境'],
     ['Plain text input', 'composer links text 纯文本'],
     ['Show context usage', 'tokens ring context 上下文'],
     ['Send with', 'enter keyboard multiline send 发送 快捷键'],

@@ -235,7 +235,8 @@
     "ios:device": "zsh apps/ios/scripts/device.sh",
     "ios:test": "npm run transpile:electron && node apps/ios/core/build.mjs && node --test apps/ios/core/core.test.mjs && swift test --package-path apps/ios/AegisKit",
     "verify:question-answers": "npx tsx scripts/tests/question-answers.test.ts",
-    "verify:answer-fold": "npx tsx scripts/tests/answer-after-bookkeeping.test.ts"
+    "verify:answer-fold": "npx tsx scripts/tests/answer-after-bookkeeping.test.ts",
+    "verify:worktree-bootstrap": "npx tsx scripts/tests/worktree-bootstrap.test.ts"
   },
   "testSuites": [
     "validate:terminal",
@@ -319,6 +320,7 @@
     "verify:decision-panel",
     "verify:question-answers",
     "verify:answer-fold",
+    "verify:worktree-bootstrap",
     "verify:mimo-acp-adapter",
     "verify:minimax-acp-adapter",
     "verify:antigravity-acp-adapter",
@@ -434,6 +436,7 @@
     "verify:devin-acp-adapter",
     "verify:question-answers",
     "verify:answer-fold",
+    "verify:worktree-bootstrap",
     "verify:mimo-acp-adapter",
     "verify:minimax-acp-adapter",
     "verify:antigravity-acp-adapter",
