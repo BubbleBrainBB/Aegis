@@ -15,6 +15,7 @@ const steps = [
   'node scripts/build-widget-libs.mjs',
   'node scripts/remote/build-crypto.mjs',
   'node scripts/build-liquid-glass.mjs',
+  'node scripts/build-apfs-clone.mjs',
 ];
 
 for (const step of steps) {

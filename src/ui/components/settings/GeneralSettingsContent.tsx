@@ -89,7 +89,7 @@ export function GeneralSettingsContent() {
   };
   const disabled = !loaded || saving;
   const completion = notifications?.enabled ? notifications.onlyWhenUnfocused ? 'unfocused' : 'always' : 'off';
-  const toggle = (key: 'preventSleep' | 'showContextUsage' | 'plainTextComposer', label: string) => <SettingsToggle ariaLabel={label} checked={preferences[key]} disabled={disabled} onChange={value => void save({ [key]: value })} />;
+  const toggle = (key: 'preventSleep' | 'showContextUsage' | 'plainTextComposer' | 'copyWorktreeEnvironment', label: string) => <SettingsToggle ariaLabel={label} checked={preferences[key]} disabled={disabled} onChange={value => void save({ [key]: value })} />;
   return <div className="space-y-10 pb-8">
     {error && <div role="alert" className="text-[13px] text-[var(--error)]">Could not load preferences: {error} <button className="underline" onClick={() => setRetry(value => value + 1)}>Retry</button></div>}
     <SettingsGroup title="General">
@@ -106,6 +106,7 @@ export function GeneralSettingsContent() {
           if (dir) await save({ chatsFolder: dir });
         }}>Change…</button>
       </SettingsRow>
+      <SettingsRow variant="card" label="Copy local files into new worktrees" description="Copies ignored files like .env and node_modules from the main checkout as they are now. Folders are only copied when the disk supports instant copies; list anything else in .worktreeinclude.">{toggle('copyWorktreeEnvironment', 'Copy local files into new worktrees')}</SettingsRow>
     </SettingsGroup>
     <SettingsGroup title="Composer">
       <SettingsRow variant="card" label="Plain text input" description="Keep links and Markdown as literal text while writing messages.">{toggle('plainTextComposer', 'Plain text input')}</SettingsRow>

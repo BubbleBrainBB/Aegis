@@ -20,6 +20,8 @@ export interface AppPreferences {
   chatsFolder: string;
   /** The agy executable to run for Antigravity; empty means detect it. */
   antigravityCliPath: string;
+  /** Copy gitignored local files (.env, node_modules, builds) into new worktrees. */
+  copyWorktreeEnvironment: boolean;
 }
 
 export const DEFAULT_APP_PREFERENCES: AppPreferences = {
@@ -31,6 +33,7 @@ export const DEFAULT_APP_PREFERENCES: AppPreferences = {
   fontSmoothing: true, pointerCursors: true, diffMarkers: 'color',
   chatsFolder: '',
   antigravityCliPath: '',
+  copyWorktreeEnvironment: true,
 };
 
 export function normalizeAppPreferences(value: unknown): AppPreferences {
@@ -38,7 +41,7 @@ export function normalizeAppPreferences(value: unknown): AppPreferences {
   if (!value || typeof value !== 'object') return result;
   const input = value as Record<string, unknown>;
   result.keyboardShortcuts = normalizeShortcutOverrides(input.keyboardShortcuts);
-  for (const key of ['preventSleep', 'showContextUsage', 'plainTextComposer', 'fontSmoothing', 'pointerCursors'] as const) {
+  for (const key of ['preventSleep', 'showContextUsage', 'plainTextComposer', 'fontSmoothing', 'pointerCursors', 'copyWorktreeEnvironment'] as const) {
     if (typeof input[key] === 'boolean') result[key] = input[key];
   }
   for (const key of ['defaultEditor', 'terminalShell'] as const) {

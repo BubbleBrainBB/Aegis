@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { dirname, isAbsolute, join } from 'path';
 import { promisify } from 'util';
 import type { GitBranchInfo, GitWorktree } from '../../shared/types';
+import { bootstrapWorktreeEnvironment } from './worktree-bootstrap';
 
 const execFileAsync = promisify(execFile);
 const GIT_TIMEOUT_MS = 30_000;
@@ -320,6 +321,7 @@ export async function createWorktree(input: {
   branch: string;
   newBranch?: string | null;
   path?: string | null;
+  bootstrap?: boolean;
 }): Promise<GitWorktree> {
   await assertGitRepo(input.cwd);
   const repoRoot = await getGitTopLevel(input.cwd);
@@ -333,6 +335,24 @@ export async function createWorktree(input: {
     ? ['worktree', 'add', '-b', newBranch, worktreePath, branch]
     : ['worktree', 'add', worktreePath, branch];
   await runGit(input.cwd, args, 120_000);
+  if (input.bootstrap !== false) {
+    try {
+      const result = await bootstrapWorktreeEnvironment({
+        sourceRoot: repoRoot,
+        worktreePath,
+      });
+      console.info(
+        `[WorktreeBootstrap] copied ${result.copied.length} local entries from ${repoRoot} into ${worktreePath} ` +
+          `(${result.copyOnWrite ? 'copy-on-write' : 'small files and .worktreeinclude only'}, ${result.durationMs}ms)`
+      );
+      if (result.failed.length > 0) {
+        console.warn(`[WorktreeBootstrap] ${result.failed.length} entries failed:`, result.failed.slice(0, 5));
+      }
+    } catch (error) {
+      // Bootstrapping local ignored files is best-effort and must never fail worktree creation.
+      console.warn('[WorktreeBootstrap] failed to populate local environment:', error);
+    }
+  }
   return {
     path: worktreePath,
     branch: newBranch || branch,

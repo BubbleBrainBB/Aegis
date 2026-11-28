@@ -1,6 +1,7 @@
 // Session-first 的"隔离副本"流：worktree 是 thread 的一个属性，不是导航对象。
 // 三个动作对应用户心智的三句话——"开个安全模式让它试 / 试好了收下 / 试砸了扔掉"。
 import { v4 as uuidv4 } from 'uuid';
+import { getAppPreferences } from './app-preferences';
 import * as sessions from './session-store';
 import {
   assertGitRepo,
@@ -66,7 +67,12 @@ export async function provisionIsolatedWorkspace(
   let lastError: unknown = null;
   for (const branch of candidates) {
     try {
-      const worktree = await createWorktree({ cwd: repoRoot, branch: baseRef, newBranch: branch });
+      const worktree = await createWorktree({
+        cwd: repoRoot,
+        branch: baseRef,
+        newBranch: branch,
+        bootstrap: getAppPreferences().copyWorktreeEnvironment,
+      });
       return { repoRoot, worktreePath: worktree.path, branch, baseRef };
     } catch (error) {
       // 同名分支已存在（同一句提示词重复开）→ 带短后缀重试一次
