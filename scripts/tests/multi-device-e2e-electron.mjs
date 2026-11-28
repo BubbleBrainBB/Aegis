@@ -231,6 +231,7 @@ app.whenReady().then(async () => {
       await delay(400);
       await fire('[data-composer-control="permission"]');
       await until(() => press('Full Access'), 'full access option', 10000);
+      await until(() => press('Confirm'), 'confirm full access', 5000);
       await until(() => js('document.querySelector("[data-composer-control=permission]").textContent.includes("Full Access")'), 'full access chosen', 5000);
       await delay(300);
       await shot('8b-remote-full-access');

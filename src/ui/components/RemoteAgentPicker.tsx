@@ -101,6 +101,8 @@ export function RemotePermissionControl({ selection, disabled }: { selection: Re
   if (!provider) return null;
   return (
     <PermissionModePicker
+      provider={provider}
+      isRemote
       value={settings.plan ? 'plan' : settings.permissionMode ?? REMOTE_DEFAULT_PERMISSION[provider]}
       options={options}
       onChange={setPermission}

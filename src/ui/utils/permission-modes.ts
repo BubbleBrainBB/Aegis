@@ -18,9 +18,11 @@ import type {
  * below, and the component itself is provider-agnostic.
  *
  * Option semantics:
- * - `tone: 'full-access'` renders the orange trigger with the shield icon
- *   (bypass/full-access modes); `tone: 'danger'` renders the red trigger
- *   without an icon (kimi's YOLO).
+ * - `tone: 'full-access'` renders the brick-orange warning text on trigger and
+ *   tints the entire option row (label, description, and check) in the menu;
+ *   `tone: 'danger'` does the same in red (kimi's YOLO).
+ * - Icons on the trigger appear only when the composer collapses to compact
+ *   width (<=475px), matching Codex's text-only wide trigger.
  * - `hidden: true` keeps the mode resolvable for the trigger label but out of
  *   the menu — plan modes that enter via /plan and exit via their pill.
  */

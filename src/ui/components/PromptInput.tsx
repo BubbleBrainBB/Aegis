@@ -1890,6 +1890,7 @@ export function PromptInput({
               {!hideLocalControls && (<>
               {agentSelection.provider === 'codex' && (
                 <PermissionModePicker
+                  provider={agentSelection.provider}
                   value={agentSelection.codexPermissionMode}
                   options={CODEX_PERMISSION_MODE_OPTIONS}
                   onChange={agentSelection.setCodexPermissionMode}
@@ -1910,6 +1911,7 @@ export function PromptInput({
               )}
               {agentSelection.provider === 'claude' && (
                 <PermissionModePicker
+                  provider={agentSelection.provider}
                   value={agentSelection.claudePermissionMode}
                   options={CLAUDE_PERMISSION_MODE_OPTIONS}
                   onChange={(mode) => {
@@ -1948,6 +1950,7 @@ export function PromptInput({
               )}
               {agentSelection.provider === 'opencode' && (
                 <PermissionModePicker
+                  provider={agentSelection.provider}
                   value={agentSelection.opencodePermissionMode}
                   options={OPENCODE_PERMISSION_MODE_OPTIONS}
                   onChange={agentSelection.setOpencodePermissionMode}
@@ -1957,6 +1960,7 @@ export function PromptInput({
               )}
               {(agentSelection.provider === 'kimi' || agentSelection.provider === 'grok') && (
                 <PermissionModePicker
+                  provider={agentSelection.provider}
                   value={agentSelection.kimiPermissionMode}
                   options={KIMI_PERMISSION_MODE_OPTIONS}
                   onChange={agentSelection.setKimiPermissionMode}
@@ -1966,6 +1970,7 @@ export function PromptInput({
               )}
               {agentSelection.provider === 'qoder' && (
                 <PermissionModePicker
+                  provider={agentSelection.provider}
                   value={agentSelection.qoderPermissionMode}
                   options={QODER_PERMISSION_MODE_OPTIONS}
                   onChange={agentSelection.setQoderPermissionMode}
@@ -1984,6 +1989,7 @@ export function PromptInput({
               )}
               {agentSelection.provider === 'deepseek' && (
                 <PermissionModePicker
+                  provider={agentSelection.provider}
                   value={agentSelection.deepseekPermissionMode}
                   options={DEEPSEEK_PERMISSION_MODE_OPTIONS}
                   onChange={agentSelection.setDeepseekPermissionMode}
@@ -1993,6 +1999,7 @@ export function PromptInput({
               )}
               {agentSelection.provider === 'devin' && (
                 <PermissionModePicker
+                  provider={agentSelection.provider}
                   value={agentSelection.devinPermissionMode}
                   options={DEVIN_PERMISSION_MODE_OPTIONS}
                   onChange={agentSelection.setDevinPermissionMode}
@@ -2002,6 +2009,7 @@ export function PromptInput({
               )}
               {agentSelection.provider === 'mimo' && (
                 <PermissionModePicker
+                  provider={agentSelection.provider}
                   value={agentSelection.mimoPermissionMode}
                   options={MIMO_PERMISSION_MODE_OPTIONS}
                   onChange={agentSelection.setMimoPermissionMode}
@@ -2011,6 +2019,7 @@ export function PromptInput({
               )}
               {agentSelection.provider === 'minimax' && (
                 <PermissionModePicker
+                  provider={agentSelection.provider}
                   value={agentSelection.minimaxPermissionMode}
                   options={MINIMAX_PERMISSION_MODE_OPTIONS}
                   onChange={agentSelection.setMinimaxPermissionMode}
@@ -2020,6 +2029,7 @@ export function PromptInput({
               )}
               {agentSelection.provider === 'antigravity' && (
                 <PermissionModePicker
+                  provider={agentSelection.provider}
                   value={agentSelection.antigravityPermissionMode}
                   options={agentSelection.antigravityPermissionModeOptions}
                   onChange={agentSelection.setAntigravityPermissionMode}
@@ -2029,6 +2039,7 @@ export function PromptInput({
               )}
               {agentSelection.provider === 'bubble' && (
                 <PermissionModePicker
+                  provider={agentSelection.provider}
                   value={agentSelection.bubblePermissionMode}
                   options={BUBBLE_PERMISSION_MODE_OPTIONS}
                   onChange={agentSelection.setBubblePermissionMode}

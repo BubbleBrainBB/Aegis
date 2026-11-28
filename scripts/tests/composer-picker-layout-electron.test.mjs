@@ -63,7 +63,8 @@ app.whenReady().then(async()=>{
   await js('qa.width(240)');await delay(100);
   await js('document.querySelector("[data-composer-control=permission]").click()');await delay(150);
   assert(await js('[...document.querySelectorAll("[role=menuitem]")].some(e=>e.textContent.includes("Full Access"))'),'permission menu available');
-  await js('[...document.querySelectorAll("[role=menuitem]")].find(e=>e.textContent.includes("Full Access")).click()');await delay(120);
+  await js('[...document.querySelectorAll("[role=menuitem]")].find(e=>e.textContent.includes("Full Access")).click()');await delay(150);
+  if(await js('!!document.querySelector("[data-testid=confirm-full-access]")')){await js('document.querySelector("[data-testid=confirm-full-access]").click()');await delay(150);}
   assert.match(await js('document.querySelector("[data-composer-control=permission]").getAttribute("aria-label")'),/Full Access/);
   await check(mode+' full access');
   await js('document.querySelector("[data-composer-control=model]").click()');await delay(200);
@@ -81,12 +82,23 @@ app.whenReady().then(async()=>{
  // Claude session): only events from here on belong to the running checks.
  const eventCursor=await js('qa.events.length');
  const running=async(provider,patch)=>{await js('qa.store.setState(s=>({sessions:{...s.sessions,[qa.id]:{...s.sessions[qa.id],provider:'+JSON.stringify(provider)+',status:"running",...'+JSON.stringify(patch||{})+'}}}))');await delay(250)};
- for(const [provider,patch,label] of [['codex',{codexPermissionMode:'defaultPermissions'},'Full Access'],['claude',{claudeAccessMode:'default',claudeExecutionMode:'execute'},'Full Access'],['opencode',{opencodePermissionMode:'defaultPermissions'},'Full Access'],['qoder',{},'Full Access'],['deepseek',{},'Full Access'],['bubble',{bubblePermissionMode:'default'},'Full Access']]){
+ for(const [provider,patch,label,expectedAgent] of [['codex',{codexPermissionMode:'defaultPermissions'},'Full Access','Codex'],['claude',{claudeAccessMode:'default',claudeExecutionMode:'execute'},'Full Access','Claude Code'],['opencode',{opencodePermissionMode:'defaultPermissions'},'Full Access','OpenCode'],['kimi',{kimiPermissionMode:'default'},'YOLO','Kimi Code'],['qoder',{},'Full Access','Qoder'],['deepseek',{},'Full Access','DeepSeek Harness'],['bubble',{bubblePermissionMode:'default'},'Full Access','Bubble']]){
   await running(provider,patch);
   assert.equal(await js('document.querySelector("[data-composer-control=permission]").disabled'),false,provider+' permission picker enabled while running');
   await js('document.querySelector("[data-composer-control=permission]").click()');await delay(200);
   assert(await js('[...document.querySelectorAll("[role=menuitem]")].some(e=>e.textContent.includes('+JSON.stringify(label)+'))'),provider+' permission menu opens while running');
   await js('[...document.querySelectorAll("[role=menuitem]")].find(e=>e.textContent.includes('+JSON.stringify(label)+')).click()');await delay(150);
+  assert(await js('!!document.querySelector("[data-testid=full-access-confirm-dialog]")'),provider+' confirmation dialog opens for '+label);
+  const dialogText=await js('document.querySelector("[data-testid=full-access-confirm-dialog]").innerText');
+  assert(dialogText.includes('Turn on '+label+'?')&&dialogText.includes(expectedAgent+' will be able to run commands'),provider+' confirmation dialog personalizes title and agent: '+dialogText);
+  if(provider==='codex'){
+   await shot('full-access-confirm-dialog');
+   await js('document.querySelector("[data-testid=cancel-full-access]").click()');await delay(150);
+   assert.match(await js('document.querySelector("[data-composer-control=permission]").getAttribute("aria-label")'),/Default/,'canceling keeps Default');
+   await js('document.querySelector("[data-composer-control=permission]").click()');await delay(150);
+   await js('[...document.querySelectorAll("[role=menuitem]")].find(e=>e.textContent.includes('+JSON.stringify(label)+')).click()');await delay(150);
+  }
+  await js('document.querySelector("[data-testid=confirm-full-access]").click()');await delay(150);
   assert.match(await js('document.querySelector("[data-composer-control=permission]").getAttribute("aria-label")'),new RegExp(label),provider+' permission switched while running');
  }
  // Claude: the pick reached the session row and went to the main process.
@@ -112,6 +124,7 @@ app.whenReady().then(async()=>{
  await running('claude',{isDraft:true,status:'completed',claudeAccessMode:'default',claudeExecutionMode:'execute'});
  await js('document.querySelector("[data-composer-control=permission]").click()');await delay(200);
  await js('[...document.querySelectorAll("[role=menuitem]")].find(e=>e.textContent.includes("Full Access")).click()');await delay(150);
+ await js('document.querySelector("[data-testid=confirm-full-access]").click()');await delay(150);
  assert.equal(await js('qa.events.slice('+draftCursor+').filter(e=>e.type==="session.setClaudeMode").length'),0,'a draft pick stays in the renderer');
  await running('claude',{isDraft:false});
  assert.deepEqual(errors,[]);console.log('PASS: new/chat composer controls at 180–760px with a wide window and Browser pane; no overlap, text wrapping, or clipping; compact menus and restored labels; permission pickers usable while running, locked while a start is pending');app.exit(0);

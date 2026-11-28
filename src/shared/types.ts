@@ -1,5 +1,6 @@
 import type { ComputerUseGrantView, ComputerUseLiveFrame, ComputerUseMediaRef } from './computer-use';
-import type { ReviewComment } from './review-comments';
+import type { ReviewComment, ReviewCommentSide } from './review-comments';
+export type { ReviewComment, ReviewCommentSide };
 
 // 共享类型定义（可导出）
 
