@@ -26,8 +26,11 @@ export class AegisDbHistorySource implements SessionHistorySource {
   // messages ride along with their slice so a chatty Task can't fill a page
   // with rows the transcript never renders. See page-boundaries.ts.
   async loadLatest(session: UnifiedSessionRecord, limit: number): Promise<UnifiedHistoryPage> {
-    const messages = getRenderableMessages(session.id);
     const safeLimit = Math.max(1, limit);
+    const fastPage = sessions.getRenderableMessagesPageFast(session.id, safeLimit);
+    if (fastPage) return fastPage;
+
+    const messages = getRenderableMessages(session.id);
     const start = startIndexForTopLevelCount(messages, messages.length, safeLimit);
     return {
       messages: messages.slice(start),
@@ -37,9 +40,12 @@ export class AegisDbHistorySource implements SessionHistorySource {
   }
 
   async loadBefore(session: UnifiedSessionRecord, cursor: string, limit: number): Promise<UnifiedHistoryPage> {
-    const messages = getRenderableMessages(session.id);
     const offset = Math.max(0, decodeCursor(cursor));
     const safeLimit = Math.max(1, limit);
+    const fastPage = sessions.getRenderableMessagesPageFast(session.id, safeLimit, offset);
+    if (fastPage) return fastPage;
+
+    const messages = getRenderableMessages(session.id);
     const start = startIndexForTopLevelCount(messages, offset, safeLimit);
     return {
       messages: messages.slice(start, offset),
@@ -74,5 +80,13 @@ export class AegisDbHistorySource implements SessionHistorySource {
 
   async loadAll(session: UnifiedSessionRecord) {
     return getRenderableMessages(session.id);
+  }
+
+  async loadUserPrompts(session: UnifiedSessionRecord) {
+    return sessions.getSessionHistoryByTypes(session.id, ['user_prompt']);
+  }
+
+  async loadOutlineMessages(session: UnifiedSessionRecord) {
+    return sessions.getSessionHistoryByTypes(session.id, ['user_prompt', 'assistant']);
   }
 }

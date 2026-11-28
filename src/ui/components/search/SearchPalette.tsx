@@ -100,8 +100,11 @@ export function SearchPalette(props: SearchPaletteProps) {
   }, [open]);
 
   const results = useMemo(
-    () => searchPalette({ actions: props.actions, projects: props.projects, threads: props.threads }, query),
-    [props.actions, props.projects, props.threads, query]
+    () =>
+      open
+        ? searchPalette({ actions: props.actions, projects: props.projects, threads: props.threads }, query)
+        : { actions: [], projects: [], threads: [] },
+    [open, props.actions, props.projects, props.threads, query]
   );
 
   // Close first: the callbacks move focus and switch views.

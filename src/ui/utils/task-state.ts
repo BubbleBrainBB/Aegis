@@ -1,6 +1,7 @@
 import type { SessionOrganizationSnapshot } from '../../shared/session-organization';
 import type { GitPullRequestSummary } from '../../shared/types';
 import { useAppStore } from '../store/useAppStore';
+import { useSessionOrganizationStore } from '../store/useSessionOrganizationStore';
 import { isWorktreeSettled, primaryPullRequest } from '../store/useSidebarPullRequests';
 import type { SessionView } from '../types';
 import { deriveSidebarSessionState, type SidebarSessionState } from './sidebar-view';
@@ -58,9 +59,18 @@ export function openTaskBeside(sessionId: string, event?: { metaKey: boolean; ct
 /** Opens a task's chat from a list. */
 export function openTask(sessionId: string) {
   const app = useAppStore.getState();
-  app.setShowSettings(false);
-  app.setActiveSession(sessionId);
-  app.setShowNewSession(false);
-  app.setActiveWorkspace('chat');
-  app.setChatSidebarView('threads');
+  if (app.showSettings) app.setShowSettings(false);
+  const needsSessionActivation =
+    app.activeSessionId !== sessionId ||
+    app.activeWorkspace !== 'chat' ||
+    app.showNewSession ||
+    Boolean(useSessionOrganizationStore.getState().sessions[sessionId]?.unread) ||
+    Boolean(app.sessions[sessionId]?.runtimeNotice);
+  if (needsSessionActivation) {
+    app.setActiveSession(sessionId);
+  }
+  const next = useAppStore.getState();
+  if (next.showNewSession) next.setShowNewSession(false);
+  if (next.activeWorkspace !== 'chat') next.setActiveWorkspace('chat');
+  if (next.chatSidebarView !== 'threads') next.setChatSidebarView('threads');
 }

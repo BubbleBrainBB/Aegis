@@ -22,6 +22,7 @@ import { ErrorBoundary } from '../components/ErrorBoundary';
 import { FileTypeIcon } from '../components/FileTypeIcon';
 import { HighlightedCode } from '../components/HighlightedCode';
 import { MermaidDiagramView, chatScrollerAtEnd, useMermaidDiagram } from '../components/MermaidDiagram';
+import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
 import { openDesignLink } from '../store/useDesignStore';
 import { MainBotTaskStateIcon } from '../components/main-bot/MainBotTaskChip';
@@ -33,6 +34,7 @@ import { resolveProjectFileReference } from '../utils/project-file-navigation';
 import { pickProjectFileMatch } from '../components/ProjectFileMatchDialog';
 import { resolveTranscriptFileReference } from '../utils/transcript-file-paths';
 import {
+  EMPTY_GENERATED_MEDIA,
   extractGeneratedMediaFromMessages,
   findGeneratedMediaForPath,
   resolveGeneratedMediaPath,
@@ -239,23 +241,26 @@ function getInlineProjectFileCode(text: string): ProjectFileLink | null {
 }
 
 function useProjectFileNavigation(sessionOverride?: string | null) {
-  const {
-    activeSessionId,
-    sessions,
-    projectCwd,
-    projectTree,
-    projectTreeCwd,
-    openRightUtilityTab,
-    openProjectFileInRightPanel,
-  } = useAppStore();
-  const session = sessionOverride ? sessions[sessionOverride] : activeSessionId ? sessions[activeSessionId] : null;
-  const cwd = session?.cwd || projectCwd || null;
+  const { cwd, sessionProjectCwd } = useAppStore(
+    useShallow((state) => {
+      const targetId = sessionOverride ?? state.activeSessionId;
+      const session = targetId ? state.sessions[targetId] : null;
+      return {
+        cwd: session?.cwd || state.projectCwd || null,
+        sessionProjectCwd: session?.projectCwd || null,
+      };
+    })
+  );
   // worktree 会话的 cwd 指向隔离检出，但模型引用常用主工作区（项目根）的
   // 绝对路径——两个根都参与相对化
-  const roots = [cwd, session?.projectCwd || null];
+  const roots = useMemo(() => [cwd, sessionProjectCwd], [cwd, sessionProjectCwd]);
 
-  const openProjectFile = (projectFile: ProjectFileLink) => {
-    if (!cwd && !projectFile.external) return;
+  const openProjectFile = useCallback((projectFile: ProjectFileLink) => {
+    const state = useAppStore.getState();
+    const targetId = sessionOverride ?? state.activeSessionId;
+    const session = targetId ? state.sessions[targetId] : null;
+    const currentCwd = session?.cwd || state.projectCwd || null;
+    if (!currentCwd && !projectFile.external) return;
     void (async () => {
       try {
         const transcriptHit = session
@@ -273,20 +278,22 @@ function useProjectFileNavigation(sessionOverride?: string | null) {
           : transcriptHit
             ? {
                 status: 'resolved' as const,
-                cwd: cwd || dirnameOfPath(resolveGeneratedMediaPath(cwd, transcriptHit.path)),
-                path: resolveGeneratedMediaPath(cwd, transcriptHit.path),
+                cwd: currentCwd || dirnameOfPath(resolveGeneratedMediaPath(currentCwd, transcriptHit.path)),
+                path: resolveGeneratedMediaPath(currentCwd, transcriptHit.path),
               }
           : await resolveProjectFileReference({
               requestedPath: projectFile.path,
-              primaryRoots: [cwd, session?.projectCwd],
+              primaryRoots: [currentCwd, session?.projectCwd],
               workspaceRoots: [
-                ...Object.values(sessions).flatMap((item) => [item.cwd, item.projectCwd]),
+                ...Object.values(state.sessions).flatMap((item) => [item.cwd, item.projectCwd]),
                 ...await window.electron.getRecentCwds(20),
               ],
-              loadTree: async (root) =>
-                projectTreeCwd === root && projectTree
-                  ? projectTree
-                  : window.electron.getProjectTree(root),
+              loadTree: async (root) => {
+                const latest = useAppStore.getState();
+                return latest.projectTreeCwd === root && latest.projectTree
+                  ? latest.projectTree
+                  : window.electron.getProjectTree(root);
+              },
               statFile: statProjectFile,
             });
         // In no workspace: the transcript may say where the file really is.
@@ -311,19 +318,20 @@ function useProjectFileNavigation(sessionOverride?: string | null) {
           : resolved;
         if (!target) return;
 
+        const latest = useAppStore.getState();
         // HTML references in agent responses are result-oriented and open in
         // the built-in browser after resolving through the same workspace path.
-        if (activeSessionId && isHtmlFilePath(target.path)) {
+        if (latest.activeSessionId && isHtmlFilePath(target.path)) {
           await openHtmlFileInBrowserTab({
             cwd: target.cwd,
             filePath: target.path,
-            sessionId: activeSessionId,
+            sessionId: latest.activeSessionId,
           });
-          openRightUtilityTab('browser', { instantReveal: true });
+          latest.openRightUtilityTab('browser', { instantReveal: true });
           return;
         }
 
-        const insideProject = isUnderRoot(cwd, target.path) || isUnderRoot(session?.projectCwd, target.path);
+        const insideProject = isUnderRoot(currentCwd, target.path) || isUnderRoot(session?.projectCwd, target.path);
         if (insideProject) {
           try {
             const tree = await window.electron.getProjectTree(target.cwd);
@@ -333,8 +341,8 @@ function useProjectFileNavigation(sessionOverride?: string | null) {
           }
         }
 
-        openProjectFileInRightPanel({
-          cwd: insideProject ? (cwd || target.cwd) : dirnameOfPath(target.path),
+        useAppStore.getState().openProjectFileInRightPanel({
+          cwd: insideProject ? (currentCwd || target.cwd) : dirnameOfPath(target.path),
           path: target.path,
           external: projectFile.external || !insideProject,
           lineStart: projectFile.line,
@@ -343,7 +351,7 @@ function useProjectFileNavigation(sessionOverride?: string | null) {
         toast.error(`Failed to open file: ${String(error)}`);
       }
     })();
-  };
+  }, [sessionOverride]);
 
   return { cwd, roots, openProjectFile };
 }
@@ -899,14 +907,10 @@ const components: Components = {
 const chatRemarkPlugins = [...markdownRemarkPlugins, remarkMermaidFences];
 
 function MDContentImpl({ content, className = '', allowHtml = false }: MDContentProps) {
-  const sessionMessages = useAppStore((state) => {
+  const generatedMedia = useAppStore((state) => {
     const session = state.activeSessionId ? state.sessions[state.activeSessionId] : null;
-    return session?.messages;
+    return session ? extractGeneratedMediaFromMessages(session.messages) : EMPTY_GENERATED_MEDIA;
   });
-  const generatedMedia = useMemo(
-    () => (sessionMessages ? extractGeneratedMediaFromMessages(sessionMessages) : []),
-    [sessionMessages]
-  );
   const renderedContent = useMemo(
     () => stripGeneratedMediaEmbeds(
       renderDeliverAssets(content, (path) => Boolean(findGeneratedMediaForPath(path, generatedMedia))),

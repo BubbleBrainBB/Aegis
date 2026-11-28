@@ -6993,7 +6993,9 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
 
     const unifiedSession = toUnifiedSessionRecord(session);
     const source = getHistorySourceForSession(unifiedSession);
-    const messages = await source.loadAll(unifiedSession);
+    const messages = await (source.loadOutlineMessages
+      ? source.loadOutlineMessages(unifiedSession)
+      : source.loadAll(unifiedSession));
     return buildSessionUserPromptSummaries(messages);
   });
 
@@ -7001,7 +7003,10 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
     const session = sessions.getSession(sessionId);
     if (!session) throw new Error('Unknown session');
     const unified = toUnifiedSessionRecord(session);
-    return collectSessionSources(await getHistorySourceForSession(unified).loadAll(unified));
+    const source = getHistorySourceForSession(unified);
+    return collectSessionSources(
+      await (source.loadUserPrompts ? source.loadUserPrompts(unified) : source.loadAll(unified))
+    );
   };
   ipcMainHandle('get-session-sources', (_event, sessionId: string) => loadSessionSources(sessionId));
   ipcMainHandle('preview-session-source', async (_event, sessionId: string, filePath: string): Promise<SessionSourcePreview> => {
