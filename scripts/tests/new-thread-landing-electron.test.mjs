@@ -18,7 +18,7 @@ import {useAppStore} from '/src/ui/store/useAppStore';
 import {startLeaseFor} from '/src/ui/utils/start-lease.ts';
 import {useSessionGoalStore} from '/src/ui/hooks/useSessionGoal.ts';
 import '/src/ui/index.css';
-localStorage.setItem('cowork.preferredProvider','deepseek');
+if (!localStorage.getItem('cowork.preferredProvider')) localStorage.setItem('cowork.preferredProvider','deepseek');
 localStorage.setItem('cowork.preferredDeepseekModel','deepseek-flash');
 const Alpha='/projects/My Personal Digital Garden';
 const Beta='/projects/Beta';
@@ -36,6 +36,11 @@ window.electron={
  getSessionGoal:async id=>({sessionId:id,supported:false,goal:null,revision:0}),onSessionGoalChanged:()=>()=>{},
 };
 for(const p of ['Claude','Codex','Kimi','Grok','Opencode','Pi','Bubble','Qoder','Deepseek','Devin','Mimo','Minimax','Antigravity'])window.electron['get'+p+'ModelConfig']=async()=>({defaultModel:null,options:[],availableModels:[]});
+qa.mimoReads = 0;
+window.electron.getMimoModelConfig = async () => {
+  qa.mimoReads++;
+  return {defaultModel:null, options:['test/mimo'], availableModels:[{id:'test/mimo',label:'MiMo test model',reasoningEfforts:[]}]};
+};
 window.electron.getDevinThoughtLevels=async()=>({model:null,levels:[],defaultLevel:null});
 window.electron.getMinimaxThinkingEfforts=async()=>({model:null,levels:[],defaultLevel:null});window.electron.getAntigravityThoughtLevels=async()=>({model:null,levels:[],defaultLevel:null});
 window.electron.getDeepseekModelConfig=async()=>({defaultModel:'deepseek-flash',options:['deepseek-flash'],availableModels:[{id:'deepseek-flash',name:'DeepSeek V4.1 Flash',reasoningEfforts:['none','high','max']}]});
@@ -324,6 +329,20 @@ const win=new BrowserWindow({width:1124,height:879,show:true,webPreferences:{bac
   // A landing start (no draft) never takes a draft that is starting meanwhile.
   const landingWithDraft=await js('(()=>{const s=qa.store.getState();const b=s.createDraftSession(qa.Beta);qa.store.setState({pendingDraftSessionId:b});s.handleServerEvent({type:"session.status",payload:{sessionId:"chat-from-landing",status:"running",startId:"start-landing",title:"L",cwd:qa.Alpha,projectCwd:qa.Alpha,provider:"deepseek"}});const st=qa.store.getState();return {bKept:!!st.sessions[b]?.isDraft,pending:st.pendingDraftSessionId===b};})()');
   assert.deepEqual(landingWithDraft,{bKept:true,pending:true});
+  assert.equal(await js('qa.mimoReads'), 0, 'other providers and opening the provider list leave MiMo idle');
+  // Open MiMo from the chat composer while another agent is still selected.
+  await js('qa.setDraft()');
+  await until('!!document.querySelector("[data-composer-control=model]")','draft model picker');
+  await click('[data-composer-control=model]');
+  await js('Array.from(document.querySelectorAll("[role=menuitem][aria-haspopup=menu]")).find(item => item.textContent.includes("MiMo Code")).click()');
+  await until('qa.mimoReads === 1','MiMo submenu requests its catalog');
+  await click('[aria-label="Choose model"]');
+  await js('Array.from(document.querySelectorAll("[role=menuitem]")).find(item => item.textContent.trim() === "MiMo test model").click()');
+  await until('localStorage.getItem("cowork.preferredProvider") === "mimo"','MiMo selected');
+  assert.equal(await js('qa.mimoReads'), 1, 'selection reuses the menu request');
+  await win.loadURL(process.env.QA_URL);
+  await until('document.querySelector("[data-composer-control=model]")?.textContent.includes("MiMo test model")','saved MiMo model restored on reload');
+  assert.equal(await js('qa.mimoReads'), 1, 'a fresh renderer reads the active MiMo catalog once');
   assert.deepEqual(errors,[]);
   console.log(JSON.stringify({ok:true,initial,tall,narrow,draft,captures:process.env.QA_CAPTURE}));app.exit(0);
  }catch(e){console.error(e);await shot('failure');app.exit(1);}

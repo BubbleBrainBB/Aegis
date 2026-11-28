@@ -1,6 +1,6 @@
 import { rendererStateStorage } from '../utils/renderer-state-storage';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { AgentProvider, ClaudeModelConfig, SettingsTab } from '../types';
+import type { AgentProvider, ClaudeModelConfig, MimoModelConfig, SettingsTab } from '../types';
 import {
   resolveConfirmedListedPreference,
   resolveListedOrPendingModel,
@@ -532,7 +532,7 @@ function resolveConfiguredDevinModel(
 
 // MiMo's catalog is `mimo models` (its configured providers); reasoning
 // levels ride on each model as variants.
-function buildMimoModelOptions(config: ReturnType<typeof useMimoModelConfig>): ComposerModelOption[] {
+function buildMimoModelOptions(config: MimoModelConfig): ComposerModelOption[] {
   const defaultModel = config.availableModels.find((entry) => entry.id === config.defaultModel);
   const defaultOption: ComposerModelOption = {
     key: 'mimo:default',
@@ -554,7 +554,7 @@ function buildMimoModelOptions(config: ReturnType<typeof useMimoModelConfig>): C
 
 function resolveConfiguredMimoModel(
   requestedModel: string | null | undefined,
-  config: ReturnType<typeof useMimoModelConfig>
+  config: MimoModelConfig
 ): string | null {
   return resolveListedOrPendingModel(
     requestedModel,
@@ -825,7 +825,7 @@ export function useComposerAgentSelection(input?: {
   const qoderModelConfig = useQoderModelConfig();
   const deepseekModelConfig = useDeepseekModelConfig();
   const devinModelConfig = useDevinModelConfig();
-  const mimoModelConfig = useMimoModelConfig();
+  const { config: mimoModelConfig, load: loadMimoModels } = useMimoModelConfig();
   const minimaxModelConfig = useMinimaxModelConfig();
   const antigravityModelConfig = useAntigravityModelConfig();
   const [provider, setProviderState] = useState<AgentProvider>(() => input?.provider || loadPreferredProvider());
@@ -2036,6 +2036,7 @@ export function useComposerAgentSelection(input?: {
     setMimoPermissionMode,
     mimoReasoningEffort,
     mimoReasoningEfforts,
+    loadMimoModels,
     setMimoReasoningEffort,
     minimaxPermissionMode,
     setMinimaxPermissionMode,
