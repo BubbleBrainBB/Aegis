@@ -86,6 +86,7 @@ import {
 import { ensureProviderService, runAgentLoop } from './libs/agent-loop';
 import { browserManager } from './browserManager';
 import { getHtmlPreviewUrl } from './libs/html-preview';
+import { watchProjectTree, unwatchProjectTree, invalidateProjectTree, disposeProjectTreeWatches } from './libs/project-tree-subscriptions';
 import { readProjectTree } from './libs/project-tree';
 import {
   installClaudePlugin,
@@ -514,27 +515,8 @@ const LOCAL_PREVIEW_MIME_TYPES: Record<string, string> = {
   '.pdf': 'application/pdf',
 };
 
-const projectWatchers = new Map<
-  string,
-  { watcher: FSWatcher; timer?: NodeJS.Timeout }
->();
-const projectTreeVersions = new Map<string, number>();
-const PROJECT_TREE_REFRESH_DELAY_MS = 200;
 const PROJECT_TREE_DELETE_SETTLE_TIMEOUT_MS = 2500;
 const PROJECT_TREE_DELETE_SETTLE_INTERVAL_MS = 50;
-
-function getProjectTreeVersionKey(cwd: string): string {
-  return resolve(cwd);
-}
-
-function getProjectTreeVersion(cwd: string): number {
-  return projectTreeVersions.get(getProjectTreeVersionKey(cwd)) ?? 0;
-}
-
-function bumpProjectTreeVersion(cwd: string): void {
-  const key = getProjectTreeVersionKey(cwd);
-  projectTreeVersions.set(key, (projectTreeVersions.get(key) ?? 0) + 1);
-}
 
 function isMissingPathError(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException | undefined)?.code;
@@ -612,17 +594,6 @@ async function isReadableDirectory(path: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-function closeProjectTreeWatcher(cwd: string): void {
-  const entry = projectWatchers.get(cwd);
-  if (!entry) return;
-  if (entry.timer) {
-    clearTimeout(entry.timer);
-  }
-  entry.watcher.close();
-  projectWatchers.delete(cwd);
-  projectTreeVersions.delete(getProjectTreeVersionKey(cwd));
 }
 
 const localPreviewServers = new Map<string, {
@@ -1262,7 +1233,7 @@ async function deleteProjectEntry(
     return { ok: false, message: 'Target is outside the selected project folder.' };
   }
 
-  bumpProjectTreeVersion(projectRoot);
+  invalidateProjectTree(projectRoot);
   try {
     // Move to OS trash for safety/recoverability. shell.trashItem works for files and folders.
     await shell.trashItem(targetResolved);
@@ -1273,7 +1244,7 @@ async function deleteProjectEntry(
   } catch (error) {
     return { ok: false, message: `Failed to delete: ${String(error)}` };
   } finally {
-    bumpProjectTreeVersion(projectRoot);
+    invalidateProjectTree(projectRoot);
   }
 
   const tree = await readProjectTree(projectRoot);
@@ -4321,40 +4292,6 @@ function broadcastSessionWorkspace(mainWindow: BrowserWindow, sessionId: string)
       hiddenFromThreads: row.hidden_from_threads === 1,
     },
   });
-}
-
-async function emitProjectTree(mainWindow: BrowserWindow, cwd: string, scheduledVersion: number): Promise<void> {
-  try {
-    const tree = await readProjectTree(cwd);
-    if (!projectWatchers.has(cwd) || getProjectTreeVersion(cwd) !== scheduledVersion) {
-      return;
-    }
-    if (!tree) {
-      closeProjectTreeWatcher(cwd);
-      broadcast(mainWindow, { type: 'project.tree', payload: { cwd, tree: null } });
-      return;
-    }
-    broadcast(mainWindow, { type: 'project.tree', payload: { cwd, tree } });
-  } catch (error) {
-    console.error('Failed to read project tree:', error);
-    if (!projectWatchers.has(cwd) || getProjectTreeVersion(cwd) !== scheduledVersion) {
-      return;
-    }
-    closeProjectTreeWatcher(cwd);
-    broadcast(mainWindow, { type: 'project.tree', payload: { cwd, tree: null } });
-  }
-}
-
-function scheduleProjectTree(mainWindow: BrowserWindow, cwd: string): void {
-  const entry = projectWatchers.get(cwd);
-  if (!entry) return;
-  if (entry.timer) {
-    clearTimeout(entry.timer);
-  }
-  const scheduledVersion = getProjectTreeVersion(cwd);
-  entry.timer = setTimeout(() => {
-    void emitProjectTree(mainWindow, cwd, scheduledVersion);
-  }, PROJECT_TREE_REFRESH_DELAY_MS);
 }
 
 async function emitProjectFile(
@@ -8700,36 +8637,13 @@ export function setupIPCHandlers(mainWindow: BrowserWindow): void {
   );
 
   // RPC: 订阅项目文件树更新
-  ipcMainHandle('watch-project-tree', async (_event, cwd: string) => {
-    if (!cwd) {
-      return false;
-    }
-    if (!(await isReadableDirectory(cwd))) {
-      closeProjectTreeWatcher(cwd);
-      return false;
-    }
-    if (projectWatchers.has(cwd)) {
-      scheduleProjectTree(mainWindow, cwd);
-      return true;
-    }
-    try {
-      const watcher = watch(
-        cwd,
-        { recursive: true },
-        () => scheduleProjectTree(mainWindow, cwd)
-      );
-      projectWatchers.set(cwd, { watcher });
-      scheduleProjectTree(mainWindow, cwd);
-      return true;
-    } catch (error) {
-      console.error('Failed to watch project tree:', error);
-      return false;
-    }
-  });
+  ipcMainHandle('watch-project-tree', (_event, cwd: string) =>
+    watchProjectTree(cwd, tree => broadcast(mainWindow, { type: 'project.tree', payload: { cwd, tree } }))
+  );
 
   // RPC: 取消订阅项目文件树更新
-  ipcMainHandle('unwatch-project-tree', async (_event, cwd: string) => {
-    closeProjectTreeWatcher(cwd);
+  ipcMainHandle('unwatch-project-tree', (_event, cwd: string) => {
+    unwatchProjectTree(cwd);
     return true;
   });
 
@@ -14336,6 +14250,7 @@ function broadcastFolderChanged(mainWindow: BrowserWindow): void {
 
 // 清理资源
 export function cleanup(): void {
+  disposeProjectTreeWatches();
   // Our Kimi browser-use entry would point at a dead port after quit.
   releaseBrowserUseKimiEntrySync();
   releaseKimiWidgetEntrySync();
