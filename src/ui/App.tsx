@@ -103,13 +103,7 @@ import { openHtmlFileInBrowserTab } from './utils/html-preview';
 import { getBrowserUtilitySessionId } from './utils/browser-utility';
 import { openUrlInBrowserSession } from './utils/html-preview';
 import { resolveAddress } from '../shared/browser-address';
-import { StructuredResponse } from './components/StructuredResponse';
 import { AgentOnboardingView, useAgentOnboardingGate } from './components/onboarding/AgentOnboardingView';
-import {
-  getMessageContentBlocks,
-  normalizeToolResultBlock,
-  normalizeToolUseBlock,
-} from './utils/message-content';
 import { resolveCodexModel } from './utils/codex-model';
 import { startQueueAutoFlush } from './lib/queue-auto-flush';
 import * as DialogPrimitive from '@/ui/components/ui/dialog';
@@ -120,17 +114,8 @@ import { buildWorkspaceReviewSelection } from './utils/review-diff-selection';
 import { useWorkflowStore, workflowSessionLabel } from './store/useWorkflowStore';
 import { getDockedRightPanelMaxWidth, resolveDockedRightPanelWidth, RIGHT_PANEL_MIN_WIDTH } from './utils/right-panel-width';
 import { ResizableRightPane } from './components/ResizableRightPane';
-import {
-  deriveTurnPhase,
-  hasRunningToolInMessages,
-} from './utils/turn-utils';
-import { AssistantWorkstream } from './components/AssistantWorkstream';
-import { createStreamingWorkstreamModel } from './utils/workstream';
 import type {
-  ToolStatus,
   SessionStatus,
-  StreamMessage,
-  ContentBlock,
   ProjectUtilityPanelKind,
   ProjectUtilityPanelTarget,
   ProjectUtilityTabDescriptor,
@@ -234,9 +219,6 @@ function wait(ms: number) {
 function getDefaultWindowShellRounded(): boolean {
   return typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac');
 }
-
-// Tool result block type
-type ToolResultBlock = ContentBlock & { type: 'tool_result' };
 
 export function App() {
   useEffect(subscribeAppPreferences, []);
@@ -482,80 +464,6 @@ export function App() {
     await gitEnvironment.refresh();
   }, [gitEnvironment.refresh]);
 
-  const { partialMessage, partialThinking, isStreaming: showPartialMessage } = useMemo(() => {
-    if (!activeSession) {
-      return { partialMessage: '', partialThinking: '', isStreaming: false };
-    }
-
-    return {
-      partialMessage: activeSession.streaming.text,
-      partialThinking: activeSession.streaming.thinking,
-      isStreaming: activeSession.streaming.isStreaming,
-    };
-  }, [
-    activeSession?.streaming.text,
-    activeSession?.streaming.thinking,
-    activeSession?.streaming.isStreaming,
-  ]);
-
-
-  // Tool status and results maps
-  const { toolStatusMap, toolResultsMap } = useMemo(() => {
-    const statusMap = new Map<string, ToolStatus>();
-    const resultsMap = new Map<string, ToolResultBlock>();
-    if (!activeSession) return { toolStatusMap: statusMap, toolResultsMap: resultsMap };
-
-    for (const msg of activeSession.messages) {
-      if (msg.type !== 'assistant' && msg.type !== 'user') continue;
-      for (const block of getMessageContentBlocks(msg)) {
-        const normalizedUse = normalizeToolUseBlock(block);
-        if (normalizedUse) {
-          if (!statusMap.has(normalizedUse.id)) {
-            statusMap.set(normalizedUse.id, 'pending');
-          }
-          continue;
-        }
-        const normalizedResult = normalizeToolResultBlock(block);
-        if (normalizedResult) {
-          statusMap.set(
-            normalizedResult.tool_use_id,
-            normalizedResult.is_error ? 'error' : 'success'
-          );
-          resultsMap.set(normalizedResult.tool_use_id, {
-            type: 'tool_result',
-            tool_use_id: normalizedResult.tool_use_id,
-            content: normalizedResult.content,
-            displayContent: normalizedResult.displayContent,
-            is_error: normalizedResult.is_error,
-            ...(normalizedResult.mediaRefs ? { mediaRefs: normalizedResult.mediaRefs } : {}),
-          });
-        }
-      }
-    }
-
-    return { toolStatusMap: statusMap, toolResultsMap: resultsMap };
-  }, [activeSession?.messages]);
-
-  // Compute current turn phase
-  const turnPhase = useMemo(() => {
-    if (!activeSession) return 'complete' as const;
-
-    const isRunning = activeSession.status === 'running';
-    const hasRunningTool = hasRunningToolInMessages(activeSession.messages, toolStatusMap);
-    const isStreaming = showPartialMessage;
-
-    return deriveTurnPhase(activeSession.messages, isRunning, hasRunningTool, isStreaming);
-  }, [activeSession?.messages, activeSession?.status, toolStatusMap, showPartialMessage]);
-  const streamingWorkstreamModel = useMemo(
-    () =>
-      createStreamingWorkstreamModel({
-        partialThinking,
-        phase: turnPhase,
-        permissionRequests: activeSession?.permissionRequests || [],
-      }),
-    [activeSession?.permissionRequests, partialThinking, turnPhase]
-  );
-
   useEffect(() => {
     if (connected) {
       sendEvent({ type: 'session.list' });
@@ -563,8 +471,13 @@ export function App() {
     }
   }, [connected]);
 
+  const prevGitContextKeyRef = useRef<string | null>(null);
   useEffect(() => {
-    void gitEnvironment.refresh();
+    const contextChanged = prevGitContextKeyRef.current !== environmentContext.contextKey;
+    prevGitContextKeyRef.current = environmentContext.contextKey;
+    // Switching tasks reuses the 60s cwd cache instead of spawning git on every
+    // click; message/status updates within the same task force a fresh check.
+    void gitEnvironment.refresh({ force: !contextChanged });
   }, [
     environmentContext.contextKey,
     environmentContext.session?.messages.length,
@@ -1134,16 +1047,6 @@ export function App() {
       });
     }
   }, [globalError, clearGlobalError]);
-
-  const lastUserPromptIndex = useMemo(() => {
-    if (!activeSession) return -1;
-    for (let i = activeSession.messages.length - 1; i >= 0; i--) {
-      if (activeSession.messages[i]?.type === 'user_prompt') {
-        return i;
-      }
-    }
-    return -1;
-  }, [activeSession?.messages]);
 
   const chatSurfaceVisible =
     !showSettings &&

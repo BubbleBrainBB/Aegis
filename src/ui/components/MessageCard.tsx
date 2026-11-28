@@ -12,6 +12,7 @@ import type { ThreadGoal } from '../../shared/session-goal';
 import { WORKFLOW_REPORT_SUFFIX } from '../../shared/workflow';
 import { formatDurationLabel } from '../utils/format-duration';
 import { cn } from '@/ui/lib/utils';
+import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
 import { AttachmentChips } from './AttachmentChips';
 import { AttachmentPreviewGrid } from './AttachmentPreviewGrid';
@@ -252,13 +253,19 @@ function UserPromptCard({
   const {
     activeSessionId,
     activeWorkspace,
-    sessions,
     claudeUserSkills,
     claudeProjectSkills,
-  } = useAppStore();
+  } = useAppStore(
+    useShallow((s) => ({
+      activeSessionId: s.activeSessionId,
+      activeWorkspace: s.activeWorkspace,
+      claudeUserSkills: s.claudeUserSkills,
+      claudeProjectSkills: s.claudeProjectSkills,
+    }))
+  );
 
   const currentSessionId = sessionId ?? activeSessionId;
-  const activeSession = currentSessionId ? sessions[currentSessionId] : null;
+  const activeSession = useAppStore((s) => (currentSessionId ? s.sessions[currentSessionId] ?? null : null));
   // Goal prompts retain their command token in history for replay. Present
   // the objective in the bubble and the mode as metadata beneath it.
   const goalInput = parseGoalInput(prompt, false);
@@ -897,7 +904,7 @@ function MemoryCitationsBlock({
   block: ContentBlock & { type: 'memory_citations' };
 }) {
   const [expanded, setExpanded] = useState(false);
-  const { openProjectFileInRightPanel } = useAppStore();
+  const openProjectFileInRightPanel = useAppStore((s) => s.openProjectFileInRightPanel);
   const count = block.citations.length;
 
   const openCitation = (citation: (ContentBlock & { type: 'memory_citations' })['citations'][number]) => {

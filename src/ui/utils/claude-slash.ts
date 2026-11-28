@@ -511,7 +511,14 @@ function mergeMissingDefaultCommands(
   return [...commands, ...missing].sort((left, right) => left.name.localeCompare(right.name));
 }
 
+const EMPTY_SLASH_COMMANDS: ClaudeSlashCommand[] = Object.freeze([]) as unknown as ClaudeSlashCommand[];
+const sessionSlashCommandsCache = new WeakMap<readonly StreamMessage[], ClaudeSlashCommand[]>();
+
 export function getSessionSlashCommands(messages: StreamMessage[]): ClaudeSlashCommand[] {
+  if (messages.length === 0) return EMPTY_SLASH_COMMANDS;
+  const cached = sessionSlashCommandsCache.get(messages);
+  if (cached) return cached;
+
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (
@@ -519,18 +526,23 @@ export function getSessionSlashCommands(messages: StreamMessage[]): ClaudeSlashC
       message.subtype === 'available_commands_update' &&
       Array.isArray(message.availableCommands)
     ) {
-      return message.availableCommands
+      const result = message.availableCommands
         .map(fromAvailableCommand)
         .filter((command): command is ClaudeSlashCommand => Boolean(command))
         .sort((left, right) => left.name.localeCompare(right.name));
+      sessionSlashCommandsCache.set(messages, result);
+      return result;
     }
 
     if (message.type === 'system' && message.subtype === 'init' && Array.isArray(message.slash_commands)) {
-      return buildClaudeSlashCommands(new Set(message.slash_commands.map((command) => command.trim()).filter(Boolean)));
+      const result = buildClaudeSlashCommands(new Set(message.slash_commands.map((command) => command.trim()).filter(Boolean)));
+      sessionSlashCommandsCache.set(messages, result);
+      return result;
     }
   }
 
-  return [];
+  sessionSlashCommandsCache.set(messages, EMPTY_SLASH_COMMANDS);
+  return EMPTY_SLASH_COMMANDS;
 }
 
 export function buildClaudeSlashCommands(

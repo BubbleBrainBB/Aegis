@@ -247,31 +247,45 @@ export function ChatOutlineRail({
 }) {
   const [fetched, setFetched] = useState<SessionUserPromptSummary[]>([]);
   const [fetchedSessionId, setFetchedSessionId] = useState<string | null>(null);
-  // Refetch on session switch and when the loaded prompt count changes (new
-  // prompt sent, rewind) so the index never drifts far from the DB.
+  // Refetch on session switch and when the loaded prompt count changes after
+  // hydration (new prompt sent, rewind) so the index never drifts far from the
+  // DB, without cancelling or duplicating the initial fetch when history
+  // hydration lands (0 -> N).
   const livePromptCount = livePrompts.length;
+  const prevPromptStateRef = useRef<{ sessionId: string; count: number } | null>(null);
+  const inFlightRef = useRef<{ sessionId: string; requestId: number } | null>(null);
+  const requestSeqRef = useRef(0);
+
   useEffect(() => {
-    let cancelled = false;
+    const prev = prevPromptStateRef.current;
+    const sameSession = prev?.sessionId === sessionId;
+    prevPromptStateRef.current = { sessionId, count: livePromptCount };
+    if (sameSession && prev.count === 0 && livePromptCount > 0) {
+      return;
+    }
+
+    const requestId = ++requestSeqRef.current;
+    inFlightRef.current = { sessionId, requestId };
 
     window.electron
       .getSessionUserPrompts(sessionId)
       .then((summaries) => {
-        if (cancelled) return;
+        if (inFlightRef.current?.requestId !== requestId) return;
         setFetched(summaries);
         setFetchedSessionId(sessionId);
       })
       .catch(() => {
         // Sessions without a backing store (drafts, just-imported) simply
         // fall back to the loaded messages.
-        if (cancelled) return;
+        if (inFlightRef.current?.requestId !== requestId) return;
         setFetched([]);
         setFetchedSessionId(sessionId);
       });
-
-    return () => {
-      cancelled = true;
-    };
   }, [sessionId, livePromptCount]);
+
+  useEffect(() => () => {
+    inFlightRef.current = null;
+  }, []);
 
   const items = useMemo(() => {
     const byCreatedAt = new Map<number, SessionUserPromptSummary>();

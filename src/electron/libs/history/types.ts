@@ -39,4 +39,8 @@ export interface SessionHistorySource {
     after: number
   ): Promise<UnifiedHistoryPage>;
   loadAll(session: UnifiedSessionRecord): Promise<StreamMessage[]>;
+  /** Optional fast path for callers that only inspect `user_prompt` messages (e.g. Sources). */
+  loadUserPrompts?(session: UnifiedSessionRecord): Promise<StreamMessage[]>;
+  /** Optional fast path for callers that only inspect `user_prompt` + `assistant` messages (e.g. Outline). */
+  loadOutlineMessages?(session: UnifiedSessionRecord): Promise<StreamMessage[]>;
 }

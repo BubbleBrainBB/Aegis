@@ -23,7 +23,9 @@ import {
   SquarePen,
   Clock,
 } from './icons';
+import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
+import { openTask } from '../utils/task-state';
 import { MAIN_BOT_NAME } from '../../shared/main-bot';
 import { toggleSidebar, useSidebarCollapsed } from '../store/sidebar-collapse';
 import { SearchPalette } from './search/SearchPalette';
@@ -116,6 +118,9 @@ export function TitlebarControls() {
   );
 }
 
+const EMPTY_PALETTE_PROJECTS: PaletteProject[] = [];
+const EMPTY_PALETTE_THREADS: PaletteThread[] = [];
+
 export function Sidebar() {
   const {
     activeSessionId,
@@ -124,14 +129,11 @@ export function Sidebar() {
     activeChannelByProject,
     sessions,
     activeWorkspace,
-    setSidebarCollapsed,
     setSidebarWidth,
     setChatSidebarView,
     setProjectCwd,
     setActiveChannelForProject,
-    setActiveSession,
     setActiveWorkspace,
-    setShowNewSession,
     showNewSession,
     mainBotSessionId,
     setMainBotSessionId,
@@ -141,7 +143,30 @@ export function Sidebar() {
     openDraftSession,
     searchPaletteOpen,
     setSearchPaletteOpen,
-  } = useAppStore();
+  } = useAppStore(
+    useShallow((s) => ({
+      activeSessionId: s.activeSessionId,
+      sidebarWidth: s.sidebarWidth,
+      projectCwd: s.projectCwd,
+      activeChannelByProject: s.activeChannelByProject,
+      sessions: s.sessions,
+      activeWorkspace: s.activeWorkspace,
+      setSidebarWidth: s.setSidebarWidth,
+      setChatSidebarView: s.setChatSidebarView,
+      setProjectCwd: s.setProjectCwd,
+      setActiveChannelForProject: s.setActiveChannelForProject,
+      setActiveWorkspace: s.setActiveWorkspace,
+      showNewSession: s.showNewSession,
+      mainBotSessionId: s.mainBotSessionId,
+      setMainBotSessionId: s.setMainBotSessionId,
+      openMainBot: s.openMainBot,
+      showSettings: s.showSettings,
+      setShowSettings: s.setShowSettings,
+      openDraftSession: s.openDraftSession,
+      searchPaletteOpen: s.searchPaletteOpen,
+      setSearchPaletteOpen: s.setSearchPaletteOpen,
+    }))
+  );
   // The main bot's conversation, if one was made, so its row can show it is open.
   useEffect(() => {
     void window.electron.getMainBotSessionId().then(setMainBotSessionId).catch(() => undefined);
@@ -321,6 +346,7 @@ export function Sidebar() {
   );
 
   const paletteProjects = useMemo<PaletteProject[]>(() => {
+    if (!searchPaletteOpen) return EMPTY_PALETTE_PROJECTS;
     const map = new Map<string, PaletteProject>();
     for (const session of visibleSessions) {
       const cwd = (session.projectCwd || session.cwd)?.trim();
@@ -343,9 +369,10 @@ export function Sidebar() {
       }
     }
     return Array.from(map.values());
-  }, [visibleSessions]);
+  }, [searchPaletteOpen, visibleSessions]);
 
   const paletteThreads = useMemo<PaletteThread[]>(() => {
+    if (!searchPaletteOpen) return EMPTY_PALETTE_THREADS;
     return visibleSessions.map((session) => {
       const cwd = session.cwd?.trim() || null;
       const projectName = cwd
@@ -383,7 +410,7 @@ export function Sidebar() {
         texts,
       };
     });
-  }, [visibleSessions]);
+  }, [searchPaletteOpen, visibleSessions]);
 
   const openTasks = (project: string | null) => {
     setViewOption('project', project);
@@ -435,13 +462,9 @@ export function Sidebar() {
   };
 
   const openThreadFromPalette = (sessionId: string) => {
-    setShowSettings(false);
     // 不要 setChatLayoutMode('single')：那会把整棵平铺树坍缩成单 leaf。
-    // setActiveSession 会把会话装入当前聚焦 leaf，保留用户的分屏布局。
-    setActiveSession(sessionId);
-    setShowNewSession(false);
-    setActiveWorkspace('chat');
-    setChatSidebarView('threads');
+    // openTask -> setActiveSession 会把会话装入当前聚焦 leaf，保留用户的分屏布局。
+    openTask(sessionId);
   };
 
   const openProjectFromPalette = (projectId: string) => openTasks(projectId);

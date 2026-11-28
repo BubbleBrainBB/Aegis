@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../store/useAppStore';
 import type { ChatPaneId, SessionView } from '../../types';
 
@@ -36,16 +37,25 @@ export function useActiveEnvironmentContext(): ActiveEnvironmentContext {
   const {
     activePaneId,
     activeSessionId,
-    chatPanes,
-    sessions,
+    primaryPaneSessionId,
+    secondaryPaneSessionId,
     projectCwd,
-  } = useAppStore();
+  } = useAppStore(
+    useShallow((s) => ({
+      activePaneId: s.activePaneId,
+      activeSessionId: s.activeSessionId,
+      primaryPaneSessionId: s.chatPanes.primary?.sessionId ?? null,
+      secondaryPaneSessionId: s.chatPanes.secondary?.sessionId ?? null,
+      projectCwd: s.projectCwd,
+    }))
+  );
+
+  const paneId = activePaneId || 'primary';
+  const paneSessionId = paneId === 'secondary' ? secondaryPaneSessionId : primaryPaneSessionId;
+  const sessionId = paneSessionId || activeSessionId || null;
+  const session = useAppStore((s) => (sessionId ? s.sessions[sessionId] ?? null : null));
 
   return useMemo(() => {
-    const paneId = activePaneId || 'primary';
-    const paneSessionId = chatPanes[paneId]?.sessionId || null;
-    const sessionId = paneSessionId || activeSessionId || null;
-    const session = sessionId ? sessions[sessionId] || null : null;
     const resolvedProjectCwd = session?.projectCwd || session?.cwd || projectCwd || null;
     const effectiveCwd = session?.agentWorktreePath || session?.worktreePath || session?.cwd || resolvedProjectCwd || null;
     const envMode = session?.envMode === 'worktree' && session?.worktreePath ? 'worktree' : 'local';
@@ -84,5 +94,5 @@ export function useActiveEnvironmentContext(): ActiveEnvironmentContext {
       ].join(':'),
       unavailableReason,
     };
-  }, [activePaneId, activeSessionId, chatPanes, projectCwd, sessions]);
+  }, [paneId, projectCwd, session, sessionId]);
 }

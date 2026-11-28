@@ -36,7 +36,7 @@ import { SessionTitleActions } from './SessionTitleActions';
 import { buildSessionUserPromptSummaries } from '../../shared/outline-summary';
 import { ToolExecutionBatch, WorkstreamDisclosure, type WorkstreamReveal } from './ToolExecutionBatch';
 import { GeneratedMediaGallery } from './GeneratedMediaGallery';
-import { extractGeneratedMediaFromMessages } from '../utils/generated-media';
+import { EMPTY_GENERATED_MEDIA, extractGeneratedMediaFromMessages } from '../utils/generated-media';
 import { StructuredResponse } from './StructuredResponse';
 import { LiveWidgetDrafts, WorkingFooter } from './AssistantWorkstream';
 import { PromptInput } from './PromptInput';
@@ -1347,6 +1347,11 @@ export function ChatPane({
     [activeTimelineWorkId]
   );
 
+  const sessionHasGeneratedMedia = useMemo(
+    () => (session ? extractGeneratedMediaFromMessages(session.messages).length > 0 : false),
+    [session?.messages]
+  );
+
   const { turns, changeRecordByToolUseId, changeRecordsByToolUseId } = useMemo(
     () =>
       session
@@ -2279,32 +2284,33 @@ export function ChatPane({
                 ) : null}
                 {timelineItems.map((item, idx) => {
                   const nextItem = timelineItems[idx + 1];
-                  const turnEndIndex = item.type === 'work'
-                    ? Math.max(...item.group.originalIndices)
-                    : item.originalIndex;
-                  let turnStartIndex = 0;
-                  for (let cursor = turnEndIndex; cursor >= 0; cursor -= 1) {
-                    if (session.messages[cursor]?.type === 'user_prompt') {
-                      turnStartIndex = cursor;
-                      break;
-                    }
-                  }
-                  const turnMessages = session.messages.slice(turnStartIndex, turnEndIndex + 1);
-                  const turnMedia = extractGeneratedMediaFromMessages(turnMessages);
                   const previousItem = timelineItems[idx - 1];
                   const workStillActive = previousItem?.type === 'work' && previousItem.active;
                   const answerFollows = nextItem?.type === 'message'
                     && nextItem.assistantPresentation === 'answer';
+                  const needsWorkMedia = item.type === 'work' && (item.active || !answerFollows);
+                  const needsAnswerMedia = item.type === 'message'
+                    && item.assistantPresentation === 'answer'
+                    && !workStillActive;
+                  let turnMedia = EMPTY_GENERATED_MEDIA;
+                  if (sessionHasGeneratedMedia && (needsWorkMedia || needsAnswerMedia)) {
+                    const turnEndIndex = item.type === 'work'
+                      ? Math.max(...item.group.originalIndices)
+                      : item.originalIndex;
+                    let turnStartIndex = 0;
+                    for (let cursor = turnEndIndex; cursor >= 0; cursor -= 1) {
+                      if (session.messages[cursor]?.type === 'user_prompt') {
+                        turnStartIndex = cursor;
+                        break;
+                      }
+                    }
+                    const turnMessages = session.messages.slice(turnStartIndex, turnEndIndex + 1);
+                    turnMedia = extractGeneratedMediaFromMessages(turnMessages);
+                  }
                   // One gallery only: keep it in the live workstream until that
                   // trace is no longer active, then move it above the answer.
-                  const workMedia = item.type === 'work' && (item.active || !answerFollows)
-                    ? turnMedia
-                    : [];
-                  const answerMedia = item.type === 'message'
-                    && item.assistantPresentation === 'answer'
-                    && !workStillActive
-                    ? turnMedia
-                    : [];
+                  const workMedia = needsWorkMedia ? turnMedia : EMPTY_GENERATED_MEDIA;
+                  const answerMedia = needsAnswerMedia ? turnMedia : EMPTY_GENERATED_MEDIA;
                   const turnMediaGallery = answerMedia.length > 0
                     ? <GeneratedMediaGallery items={answerMedia} cwd={session.cwd ?? null} />
                     : null;

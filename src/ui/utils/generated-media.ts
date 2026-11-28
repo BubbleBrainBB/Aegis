@@ -38,7 +38,16 @@ function preferMediaItem(current: GeneratedMediaItem | undefined, next: Generate
   return current;
 }
 
+export const EMPTY_GENERATED_MEDIA: GeneratedMediaItem[] = Object.freeze([]) as unknown as GeneratedMediaItem[];
+const extractedMediaCache = new WeakMap<readonly StreamMessage[], GeneratedMediaItem[]>();
+const extractedMediaByPathCache = new WeakMap<readonly StreamMessage[], GeneratedMediaItem[]>();
+
 export function extractGeneratedMediaFromMessages(messages: StreamMessage[], options?: { identity: 'path' }): GeneratedMediaItem[] {
+  if (messages.length === 0) return EMPTY_GENERATED_MEDIA;
+  const cache = options?.identity === 'path' ? extractedMediaByPathCache : extractedMediaCache;
+  const cached = cache.get(messages);
+  if (cached) return cached;
+
   const byIdentity = new Map<string, GeneratedMediaItem>();
   const toolMeta = new Map<string, { name: string; prompt?: string }>();
 
@@ -81,7 +90,9 @@ export function extractGeneratedMediaFromMessages(messages: StreamMessage[], opt
     }
   }
 
-  return Array.from(byIdentity.values());
+  const result = byIdentity.size === 0 ? EMPTY_GENERATED_MEDIA : Array.from(byIdentity.values());
+  cache.set(messages, result);
+  return result;
 }
 
 export function isGeneratedMediaPath(filePath: string): boolean {

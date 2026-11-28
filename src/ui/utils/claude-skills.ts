@@ -46,15 +46,25 @@ export function parseSelectedSkillPrompt(
   return { skill, remainder: token.remainder, prefix: token.prefix };
 }
 
+const EMPTY_SKILL_NAMES = new Set<string>();
+const sessionSkillNamesCache = new WeakMap<readonly StreamMessage[], Set<string>>();
+
 export function getSessionSkillNames(messages: StreamMessage[]): Set<string> {
+  if (messages.length === 0) return EMPTY_SKILL_NAMES;
+  const cached = sessionSkillNamesCache.get(messages);
+  if (cached) return cached;
+
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (message.type === 'system' && message.subtype === 'init' && Array.isArray(message.skills)) {
-      return new Set(message.skills.map((skill) => skill.trim()).filter(Boolean));
+      const names = new Set(message.skills.map((skill) => skill.trim()).filter(Boolean));
+      sessionSkillNamesCache.set(messages, names);
+      return names;
     }
   }
 
-  return new Set();
+  sessionSkillNamesCache.set(messages, EMPTY_SKILL_NAMES);
+  return EMPTY_SKILL_NAMES;
 }
 
 function rankSkill(skill: ClaudeSkillSummary, query: string): number {

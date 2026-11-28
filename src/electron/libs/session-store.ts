@@ -676,6 +676,8 @@ export function initialize(): void {
 
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id);
+    CREATE INDEX IF NOT EXISTS idx_messages_session_order ON messages(session_id, COALESCE(sort_key, created_at), created_at);
+    CREATE INDEX IF NOT EXISTS idx_messages_session_type ON messages(session_id, message_type);
     CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);
     CREATE INDEX IF NOT EXISTS idx_messages_sort_key ON messages(sort_key);
     CREATE INDEX IF NOT EXISTS idx_messages_message_type ON messages(message_type);
@@ -3036,24 +3038,119 @@ export function getLatestUserPrompts(sessionId: string, limit = 20): Array<Extra
   });
 }
 
+function decodeStoredMessageRow(row: { data: string; created_at: number }): StreamMessage {
+  try {
+    return readStoredMessagePayload(row.data, row.created_at);
+  } catch (error) {
+    return buildUnavailableStoredMessage(
+      row.created_at,
+      error instanceof Error ? error.message : 'unknown storage error'
+    );
+  }
+}
+
 /** The conversation as transcript, agents and copies see it: accounting-only usage records are not part of it. */
 export function getSessionHistory(sessionId: string): StreamMessage[] {
   const stmt = getDb().prepare(`
     SELECT data, created_at FROM messages WHERE session_id = ? AND message_type IS NOT 'usage_record'
-    ORDER BY COALESCE(sort_key, created_at) ASC, created_at ASC
+    ORDER BY COALESCE(sort_key, created_at) ASC, created_at ASC, rowid ASC
   `);
   const rows = stmt.all(sessionId) as { data: string; created_at: number }[];
+  return rows.map(decodeStoredMessageRow);
+}
 
-  return rows.map((row) => {
-    try {
-      return readStoredMessagePayload(row.data, row.created_at);
-    } catch (error) {
-      return buildUnavailableStoredMessage(
-        row.created_at,
-        error instanceof Error ? error.message : 'unknown storage error'
-      );
+/**
+ * Targeted chronological history read filtered by `message_type` in SQL so
+ * lightweight consumers (sources, outline) do not deserialize full transcripts
+ * or large tool-result rows.
+ */
+export function getSessionHistoryByTypes(
+  sessionId: string,
+  types: readonly StreamMessage['type'][]
+): StreamMessage[] {
+  if (types.length === 0) return [];
+  const typeSet = new Set<string>(types);
+  const placeholders = types.map(() => '?').join(', ');
+  const stmt = getDb().prepare(`
+    SELECT data, created_at FROM messages
+    WHERE session_id = ? AND (message_type IN (${placeholders}) OR message_type IS NULL)
+    ORDER BY COALESCE(sort_key, created_at) ASC, created_at ASC, rowid ASC
+  `);
+  const rows = stmt.all(sessionId, ...types) as { data: string; created_at: number }[];
+  const result: StreamMessage[] = [];
+  for (const row of rows) {
+    const message = decodeStoredMessageRow(row);
+    if (typeSet.has(message.type)) {
+      result.push(message);
     }
-  });
+  }
+  return result;
+}
+
+/**
+ * Read a single page of renderable messages (excluding `usage_record` and
+ * `stream_event`) by iterating backwards in SQLite and parsing only the rows
+ * needed to satisfy `limit` top-level messages (plus interleaved subagent rows).
+ * Returns `null` when legacy NULL `message_type` rows exist so the caller can
+ * fall back to a full scan.
+ */
+export function getRenderableMessagesPageFast(
+  sessionId: string,
+  limit: number,
+  endOffset?: number
+): { messages: StreamMessage[]; cursor: string | null; hasMore: boolean } | null {
+  const counts = getDb().prepare(`
+    SELECT
+      COUNT(*) AS total,
+      SUM(CASE WHEN message_type IS NULL THEN 1 ELSE 0 END) AS nullCount
+    FROM messages
+    WHERE session_id = ?
+      AND (message_type IS NULL OR message_type NOT IN ('usage_record', 'stream_event'))
+  `).get(sessionId) as { total: number; nullCount: number | null } | undefined;
+
+  if (!counts || (counts.nullCount ?? 0) > 0) {
+    return null;
+  }
+
+  const total = counts.total;
+  const effectiveEnd =
+    endOffset === undefined
+      ? total
+      : Math.max(0, Math.min(total, Math.floor(endOffset)));
+
+  if (effectiveEnd === 0) {
+    return { messages: [], cursor: null, hasMore: false };
+  }
+
+  const safeLimit = Math.max(1, limit);
+  const skipFromEnd = total - effectiveEnd;
+  const stmt = getDb().prepare(`
+    SELECT data, created_at FROM messages
+    WHERE session_id = ?
+      AND message_type IS NOT 'usage_record'
+      AND message_type IS NOT 'stream_event'
+    ORDER BY COALESCE(sort_key, created_at) DESC, created_at DESC, rowid DESC
+    LIMIT -1 OFFSET ?
+  `);
+
+  const reversed: StreamMessage[] = [];
+  let remaining = safeLimit;
+  for (const row of stmt.iterate(sessionId, skipFromEnd) as IterableIterator<{ data: string; created_at: number }>) {
+    const message = decodeStoredMessageRow(row);
+    reversed.push(message);
+    if (!(message as { parentToolUseId?: string | null }).parentToolUseId) {
+      remaining -= 1;
+      if (remaining === 0) break;
+    }
+  }
+
+  reversed.reverse();
+  const start = Math.max(0, effectiveEnd - reversed.length);
+  return {
+    messages: reversed,
+    cursor: start > 0 ? String(start) : null,
+    hasMore: start > 0,
+  };
 }
 
 export function addArtifact(params: {
