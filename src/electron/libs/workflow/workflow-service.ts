@@ -23,6 +23,7 @@ import {
   type WorkflowActionResult,
   type WorkflowNeedsInput,
   type WorkflowParent,
+  type WorkflowPlanner,
   type WorkflowRunStatus,
   type WorkflowRunView,
   type WorkflowStartRequest,
@@ -32,9 +33,9 @@ import {
 } from '../../../shared/workflow';
 import { AegisWorkflowHost, type HostEvent, type RunControl, type SessionBridge } from './aegis-host';
 import { isGroupAlive, processStartTime, terminateGroup } from './check-executor';
-import { buildMemberConfigs, declarationFor, declarationForAgent, memberSessionPayload, withEffortLevels } from './member-configs';
+import { buildMemberConfigs, declarationFor, declarationForAgent, memberSessionPayload, readEffortLevels, withEffortLevels } from './member-configs';
 import { loadModelCatalogs } from './model-catalogs';
-import { planWorkflow, readProjectScripts } from './planner';
+import { pickPlannerAgent, planWorkflow, readProjectScripts } from './planner';
 import { setWorkflowSessionPolicy } from './session-hooks';
 import { captureTree, headTree, repoInfo, retainTree } from './workspace-snapshot';
 import * as store from './workflow-store';
@@ -188,6 +189,7 @@ export class WorkflowService {
     cwd: string;
     request: string;
     context?: string;
+    planner: WorkflowPlanner;
     availableAgents: string[];
   }): Promise<WorkflowActionResult> {
     const context = input.context?.trim();
@@ -198,6 +200,7 @@ export class WorkflowService {
       permissionModes: this.defaults.permissionModes,
       availableAgents: input.availableAgents,
       location: 'current',
+      planner: input.planner,
       parent: input.parent,
     });
   }
@@ -219,6 +222,28 @@ export class WorkflowService {
     const id = randomUUID();
     const available = request.availableAgents.filter((agent) => declarationFor(agent));
     if (available.length === 0) return { ok: false, error: 'No agent is available for a workflow.' };
+    const needsPlanner = !request.template && !request.spec;
+    if (needsPlanner && parent && !request.planner) {
+      return { ok: false, error: 'Ask the user which planning agent, model and reasoning effort to use.' };
+    }
+    const requestedAgent = request.planner?.agent?.trim().toLowerCase() ?? request.plannerAgent ?? null;
+    const plannerAgent = needsPlanner ? pickPlannerAgent(requestedAgent, available) : null;
+    if (needsPlanner && !plannerAgent) {
+      const capable = available.filter(agent => declarationFor(agent)?.readOnly);
+      const error = capable.length
+        ? `Ask the user to choose an available read-only planning agent (${capable.join(', ')}), its model and reasoning effort.`
+        : 'No available agent supports read-only workflow planning.';
+      return { ok: false, error };
+    }
+    let planner: WorkflowPlanner | undefined;
+    if (plannerAgent && request.planner) {
+      const selection = await this.resolvePlanner(plannerAgent, request.planner);
+      if (!selection.ok) return selection;
+      planner = selection.planner;
+    }
+    // Concurrent deliveries can finish their repository and catalog reads in either order.
+    const alreadyStarted = store.findRunByRequestId(request.requestId);
+    if (alreadyStarted) return { ok: true, run: this.view(alreadyStarted.id)! };
     store.createRun({
       id,
       clientRequestId: request.requestId,
@@ -237,10 +262,11 @@ export class WorkflowService {
         adoptions: {},
         extraAgentSteps: 0,
         availableAgents: available,
+        planner,
         planOnly: request.planOnly === true,
         parent,
       },
-      plannerAgent: request.template || request.spec ? null : this.pickPlanner(request.plannerAgent ?? null, available),
+      plannerAgent,
       appGeneration: this.deps.appGeneration,
     });
     this.publish(id);
@@ -248,10 +274,33 @@ export class WorkflowService {
     return { ok: true, run: this.view(id)! };
   }
 
-  private pickPlanner(requested: string | null, available: string[]): string {
-    const capable = available.filter((a) => declarationFor(a)?.readOnly);
-    if (requested && capable.includes(requested)) return requested;
-    return capable.find((a) => a === 'claude') ?? capable.find((a) => a === 'codex') ?? capable[0] ?? available[0];
+  private async resolvePlanner(agent: string, choice: WorkflowPlanner): Promise<{ ok: true; planner: WorkflowPlanner } | { ok: false; error: string }> {
+    if (!declarationFor(agent)?.effortField) {
+      return { ok: false, error: `${agent} has no configurable reasoning effort. Ask the user to choose a planner that supports it.` };
+    }
+    const model = choice.model?.trim();
+    const effort = choice.reasoningEffort?.trim();
+    if (!choice.agent?.trim() || !model || !effort) {
+      return { ok: false, error: 'Ask the user for the missing planning agent, model or reasoning effort.' };
+    }
+    const catalogs = this.deps.modelCatalog ? await loadModelCatalogs([agent], this.deps.modelCatalog) : {};
+    const models = catalogs[agent] ?? [];
+    if (!models.length) return { ok: false, error: `No models are listed for ${agent}. Check its model catalog and retry.` };
+    const byName = models.filter(m => m.label?.toLowerCase() === model.toLowerCase());
+    const selected = models.find(m => m.id === model) ?? (byName.length === 1 ? byName[0] : undefined);
+    if (!selected) {
+      return { ok: false, error: `Ask the user to choose an exact planner model ID for ${agent}. "${model}" could not be resolved. Available IDs: ${(byName.length ? byName : models).map(m => m.id).join(', ')}.` };
+    }
+    const levels = this.deps.effortLevels && await readEffortLevels(this.deps.effortLevels, agent, selected.id);
+    if (!levels) return { ok: false, error: `Could not verify reasoning effort for ${agent} / ${selected.id}. Check the model's effort settings and retry.` };
+    const reasoningEffort = levels.find(level => level.toLowerCase() === effort.toLowerCase());
+    if (!reasoningEffort) {
+      const error = levels.length
+        ? `Ask the user to choose a reasoning effort for ${agent} / ${selected.id} (${levels.join(', ')}).`
+        : `${agent} / ${selected.id} has no reasoning effort setting. Ask the user to choose another planning model.`;
+      return { ok: false, error };
+    }
+    return { ok: true, planner: { agent, model: selected.id, reasoningEffort } };
   }
 
   private async validationContext(runId: string): Promise<ValidationContext> {
@@ -275,6 +324,7 @@ export class WorkflowService {
   private async plan(runId: string, template: WorkflowTemplateRequest | null, given: WorkflowSpec | null = null) {
     const run = store.getRun(runId)!;
     const context = await this.validationContext(runId);
+    if (store.getRun(runId)?.status !== 'planning') return;
     let spec: WorkflowSpec;
     let report;
     let raw: string | null = null;
@@ -290,6 +340,7 @@ export class WorkflowService {
         runId,
         goal: run.goal,
         plannerAgent: run.plannerAgent!,
+        planner: run.options.planner,
         projectCwd: run.projectCwd,
         workDir: path.join(this.artifactsDir(runId), 'planner'),
         context,
@@ -303,11 +354,19 @@ export class WorkflowService {
       });
       if (store.getRun(runId)?.status !== 'planning') return;
       if (!result.ok) {
+        const planner = run.options.planner;
+        const detail = planner
+          ? [
+              `Selected planner · ${planner.agent} · ${planner.model} · ${planner.reasoningEffort}`,
+              result.error,
+              'Retry with these settings, or cancel and choose new planner settings in chat.',
+            ].join('\n')
+          : result.error;
         store.updateRun(runId, {
           status: 'needs_input',
           plannedRaw: result.raw,
           error: result.error,
-          needsInput: needs('plan-invalid', result.error, null, null, ['replan', 'cancel']),
+          needsInput: needs(planner ? 'planning-paused' : 'plan-invalid', detail, null, null, ['replan', 'cancel']),
         });
         this.publish(runId);
         return;
@@ -463,7 +522,10 @@ export class WorkflowService {
         this.publish(runId);
         return { ok: true, run: this.view(runId)! };
       case 'replan':
-        store.updateRun(runId, { status: 'planning', needsInput: null, error: null });
+        if (run.options.parent && !run.options.planner) {
+          return this.reject(runId, 'This older workflow has no explicit planner settings. Start a new workflow in chat with the planning agent, model and reasoning effort.');
+        }
+        store.updateRun(runId, { status: 'planning', plannerSessionId: null, needsInput: null, error: null });
         this.publish(runId);
         void this.plan(runId, null);
         return { ok: true, run: this.view(runId)! };

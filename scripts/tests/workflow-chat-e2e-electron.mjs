@@ -40,10 +40,14 @@ await writeFile(
 );
 
 const label = reviewer.charAt(0).toUpperCase() + reviewer.slice(1);
-const prompt =
+const planner = process.env.WORKFLOW_CHAT_PLANNER || 'codex';
+const plannerModel = process.env.WORKFLOW_CHAT_PLANNER_MODEL || 'gpt-6.2-astra';
+const plannerEffort = process.env.WORKFLOW_CHAT_PLANNER_EFFORT || 'high';
+const plannerRequest = `用 ${planner} 的 ${plannerModel}，reasoning effort ${plannerEffort}，规划这个 workflow。`;
+const prompt = plannerRequest + (
   mode === 'fix'
     ? `我刚在 src/math.js 里加了 multiply（还没提交）。让 ${label} review 一下你的改动，有阻塞问题你就修掉，再让它复审。`
-    : `我刚在 src/math.js 里加了 multiply（还没提交）。让 ${label} review 一下你的改动，只要审查结果，先别改代码。`;
+    : `我刚在 src/math.js 里加了 multiply（还没提交）。让 ${label} review 一下你的改动，只要审查结果，先别改代码。`);
 
 const appDir = path.join(tmp, 'app');
 await mkdir(path.join(appDir, 'dist-react'), { recursive: true });

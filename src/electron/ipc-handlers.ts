@@ -5171,7 +5171,7 @@ function setupWorkflows(mainWindow: BrowserWindow): void {
   service.recoverOnStartup();
 
   const claimed = new Set<string>();
-  setWorkflowChatEntry(async ({ callerSessionId, request, context, cwd }) => {
+  setWorkflowChatEntry(async ({ callerSessionId, ...input }) => {
     // HTTP MCP calls do not say who is calling: find the session whose
     // history holds this pending call (the tool_use may land a moment later).
     let parentSessionId: string | null = null;
@@ -5180,7 +5180,7 @@ function setupWorkflows(mainWindow: BrowserWindow): void {
     for (;;) {
       const candidates = callerSessionId ? [callerSessionId] : [...runnerHandles.keys()];
       for (const id of candidates) {
-        const found = findPendingStartWorkflowCall(sessions.getSessionHistory(id), request, claimed);
+        const found = findPendingStartWorkflowCall(sessions.getSessionHistory(id), input, claimed);
         if (found) {
           parentSessionId = id;
           toolUseId = found;
@@ -5198,7 +5198,7 @@ function setupWorkflows(mainWindow: BrowserWindow): void {
     }
     const session = sessions.getSession(parentSessionId);
     if (!session?.cwd) return { ok: false, error: 'This conversation has no project folder.' };
-    const target = await workflowTargetFolder(session.cwd, cwd);
+    const target = await workflowTargetFolder(session.cwd, input.cwd);
     if (!target.ok) return target;
     let available: string[] = [];
     try {
@@ -5219,9 +5219,8 @@ function setupWorkflows(mainWindow: BrowserWindow): void {
             : service.defaultPermissionMode(provider);
     const result = await service.startFromChat({
       parent: { sessionId: parentSessionId, toolUseId, provider, fullAccess: isFullAccessMode(provider, mode), cwd: session.cwd },
+      ...input,
       cwd: target.cwd,
-      request,
-      context,
       availableAgents: available,
     });
     if (!result.ok) return { ok: false, error: result.error };

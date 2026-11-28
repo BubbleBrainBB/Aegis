@@ -8,10 +8,9 @@ import { buildPlannedWorkflowSchema, type PlannedWorkflow } from '../../../workf
 import { convertPlannedWorkflow } from '../../../workflow-engine/convert/from-planned';
 import type { WorkflowSpec } from '../../../workflow-engine/spec/workflow-spec';
 import { validateSpec, type MemberConfig, type ValidationContext, type ValidationReport } from '../../../workflow-engine/validate/spec-validator';
-import type { SessionStartPayload } from '../../../shared/types';
 import { cancelTurnExpectation, expectTurn, setWorkflowSessionPolicy, type TurnOutcome } from './session-hooks';
-import { declarationFor, memberSessionPayload, withEffortLevels } from './member-configs';
-import { CURRENT_SESSION_AGENT } from '../../../shared/workflow';
+import { declarationFor, memberEffortPayload, memberSessionPayload, withEffortLevels } from './member-configs';
+import { CURRENT_SESSION_AGENT, type WorkflowPlanner } from '../../../shared/workflow';
 import { extractJson } from './task-brief';
 import type { SessionBridge } from './aegis-host';
 
@@ -30,6 +29,12 @@ export function listedModels(config: MemberConfig, goal: string): string[] {
   if (config.name === CURRENT_SESSION_AGENT || config.models.length === 0) return [];
   const named = new RegExp(`(?<![a-z0-9])${config.provider.replace(/[^a-z0-9]/gi, '')}(?![a-z0-9])`, 'i');
   return named.test(goal) ? config.models : [];
+}
+
+export function pickPlannerAgent(requested: string | null, available: string[]): string | null {
+  const capable = available.filter((agent) => declarationFor(agent)?.readOnly);
+  if (requested) return capable.includes(requested) ? requested : null;
+  return capable.find((agent) => agent === 'claude') ?? capable.find((agent) => agent === 'codex') ?? capable[0] ?? null;
 }
 
 function modelList(config: MemberConfig, goal: string): string {
@@ -113,6 +118,7 @@ export async function planWorkflow(input: {
   runId: string;
   goal: string;
   plannerAgent: string;
+  planner?: WorkflowPlanner;
   projectCwd: string;
   workDir: string;
   context: ValidationContext;
@@ -126,68 +132,77 @@ export async function planWorkflow(input: {
   if (!declaration?.readOnly) {
     return { ok: false, error: `${input.plannerAgent} cannot act as the planner (no read-only mode).`, raw: null, sessionId: null };
   }
-  await fs.mkdir(input.workDir, { recursive: true });
-  const schema = buildPlannedWorkflowSchema({
-    agentNames: input.context.memberConfigs.map((c) => c.name),
-    modelIds: [...new Set(input.context.memberConfigs.flatMap((c) => listedModels(c, input.goal)))],
-  });
-  const { payload } = memberSessionPayload(declaration, 'planner', {});
   let sessionId: string | null = null;
   let turnPromise: Promise<TurnOutcome> | null = null;
-  const started = await input.bridge.start(
-    {
-      ...(payload as Partial<SessionStartPayload>),
-      title: 'Workflow planner',
-      prompt: plannerPrompt(input.goal, input.context.memberConfigs, schema),
-      workflowPrompt: 'task',
-      // Session cwd follows projectCwd: keep both on the empty planner directory.
-      cwd: input.workDir,
-      projectCwd: input.workDir,
-      provider: declaration.provider,
-      hiddenFromThreads: true,
-      skipTitleGeneration: true,
-    },
-    (id) => {
-      sessionId = id;
-      setWorkflowSessionPolicy(id, { runId: input.runId, role: 'planner', readOnly: true });
-      turnPromise = expectTurn(id);
-      input.onSession(id);
-    },
-  );
-  if (!started || !turnPromise || !sessionId) {
-    if (sessionId) cancelTurnExpectation(sessionId);
-    return { ok: false, error: `${declaration.label} could not start.`, raw: null, sessionId };
-  }
-  const id: string = sessionId;
-  let turn: TurnOutcome = await turnPromise;
-  if (input.isCancelled()) return { ok: false, error: 'cancelled', raw: turn.text, sessionId: id };
-  if (turn.status !== 'completed') {
-    return { ok: false, error: turn.error ?? `The planner turn ended: ${turn.status}.`, raw: turn.text, sessionId: id };
-  }
-  let attempt = await attemptPlan(turn.text, input.context, input.effortLevels);
-  if ('errors' in attempt) {
-    const repair = expectTurn(id);
-    const ok = await input.bridge.continue({
-      ...(payload as object),
-      sessionId: id,
-      provider: declaration.provider,
-      workflowPrompt: 'task',
-      prompt: [
-        'The workflow could not be used:',
-        ...attempt.errors.slice(0, 30).map((e) => `- ${e}`),
-        'Reply again with the corrected workflow as a single ```json fenced block.',
-      ].join('\n'),
+  try {
+    await fs.mkdir(input.workDir, { recursive: true });
+    const schema = buildPlannedWorkflowSchema({
+      agentNames: input.context.memberConfigs.map((c) => c.name),
+      modelIds: [...new Set(input.context.memberConfigs.flatMap((c) => listedModels(c, input.goal)))],
     });
-    if (!ok) {
-      cancelTurnExpectation(id);
-      return { ok: false, error: attempt.errors.join('\n'), raw: turn.text, sessionId: id };
+    if (input.isCancelled()) return { ok: false, error: 'cancelled', raw: null, sessionId: null };
+    const payload = {
+      ...memberSessionPayload(declaration, 'planner', {}).payload,
+      ...(input.planner ? { model: input.planner.model, ...memberEffortPayload(declaration, input.planner.reasoningEffort) } : {}),
+    };
+    const started = await input.bridge.start(
+      {
+        ...payload,
+        title: 'Workflow planner',
+        prompt: plannerPrompt(input.goal, input.context.memberConfigs, schema),
+        workflowPrompt: 'task',
+        // Session cwd follows projectCwd: keep both on the empty planner directory.
+        cwd: input.workDir,
+        projectCwd: input.workDir,
+        provider: declaration.provider,
+        hiddenFromThreads: true,
+        skipTitleGeneration: true,
+      },
+      (id) => {
+        sessionId = id;
+        setWorkflowSessionPolicy(id, { runId: input.runId, role: 'planner', readOnly: true });
+        turnPromise = expectTurn(id);
+        input.onSession(id);
+      },
+    );
+    if (!started || !turnPromise || !sessionId) {
+      return { ok: false, error: `${declaration.label} could not start.`, raw: null, sessionId };
     }
-    turn = await repair;
-    if (turn.status !== 'completed') return { ok: false, error: turn.error ?? 'The planner did not finish.', raw: turn.text, sessionId: id };
-    attempt = await attemptPlan(turn.text, input.context, input.effortLevels);
-    if ('errors' in attempt) return { ok: false, error: attempt.errors.join('\n'), raw: turn.text, sessionId: id };
+    const id: string = sessionId;
+    let turn: TurnOutcome = await turnPromise;
+    if (input.isCancelled()) return { ok: false, error: 'cancelled', raw: turn.text, sessionId: id };
+    if (turn.status !== 'completed') {
+      return { ok: false, error: turn.error ?? `The planner turn ended: ${turn.status}.`, raw: turn.text, sessionId: id };
+    }
+    let attempt = await attemptPlan(turn.text, input.context, input.effortLevels);
+    if ('errors' in attempt) {
+      if (input.isCancelled()) return { ok: false, error: 'cancelled', raw: turn.text, sessionId: id };
+      const repair = expectTurn(id);
+      const ok = await input.bridge.continue({
+        ...payload,
+        sessionId: id,
+        provider: declaration.provider,
+        workflowPrompt: 'task',
+        prompt: [
+          'The workflow could not be used:',
+          ...attempt.errors.slice(0, 30).map((e) => `- ${e}`),
+          'Reply again with the corrected workflow as a single ```json fenced block.',
+        ].join('\n'),
+      });
+      if (!ok) {
+        return { ok: false, error: attempt.errors.join('\n'), raw: turn.text, sessionId: id };
+      }
+      turn = await repair;
+      if (turn.status !== 'completed') return { ok: false, error: turn.error ?? 'The planner did not finish.', raw: turn.text, sessionId: id };
+      attempt = await attemptPlan(turn.text, input.context, input.effortLevels);
+      if ('errors' in attempt) return { ok: false, error: attempt.errors.join('\n'), raw: turn.text, sessionId: id };
+    }
+    return { ok: true, spec: attempt.spec, report: attempt.report, raw: turn.text, warnings: attempt.warnings, sessionId: id };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error), raw: null, sessionId };
+  } finally {
+    if (sessionId) cancelTurnExpectation(sessionId);
   }
-  return { ok: true, spec: attempt.spec, report: attempt.report, raw: turn.text, warnings: attempt.warnings, sessionId: id };
 }
 
 /** Project scripts and package manager for automatic check authorization (plan §6.7). */

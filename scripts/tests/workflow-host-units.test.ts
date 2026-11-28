@@ -20,13 +20,13 @@ import {
   settleTurn,
 } from '../../src/electron/libs/workflow/session-hooks';
 import type { AgentInstance } from '../../src/workflow-engine/engine/engine';
-import { findPendingStartWorkflowCall, startWorkflowSchema, workflowTargetFolder } from '../../src/electron/libs/workflow/chat-entry';
+import { findPendingStartWorkflowCall, setWorkflowChatEntry, startWorkflowTool, startWorkflowSchema, workflowTargetFolder } from '../../src/electron/libs/workflow/chat-entry';
 import { AegisWorkflowHost, memberSessionCwd } from '../../src/electron/libs/workflow/aegis-host';
 import { getSessionProjectSources, grantSessionFolder } from '../../src/electron/libs/session-store';
 import { START_WORKFLOW_JSON_SCHEMA } from '../../src/electron/libs/session-native-tool';
 import { buildMemberConfigs, declarationFor, declarationForAgent, memberEffortPayload, PROVIDER_WORKFLOW_DECLARATIONS, withEffortLevels } from '../../src/electron/libs/workflow/member-configs';
 import { catalogEffortLevels, catalogOptions, loadModelCatalogs } from '../../src/electron/libs/workflow/model-catalogs';
-import { listedModels, planWorkflow } from '../../src/electron/libs/workflow/planner';
+import { listedModels, pickPlannerAgent, planWorkflow } from '../../src/electron/libs/workflow/planner';
 import type { SessionContinuePayload } from '../../src/shared/types';
 import { validateSpec } from '../../src/workflow-engine/validate/spec-validator';
 import type { WorkflowSpec } from '../../src/workflow-engine/spec/workflow-spec';
@@ -223,22 +223,51 @@ test('turn observation collects final assistant text and ignores streaming and s
   assert.equal(outcome.text, 'first, revised\n\nsecond');
 });
 
-test('start_workflow calls are attributed to the pending tool_use with the same request', () => {
-  const call = (id: string, name: string, request: string) => ({
+const codexPlanner = { agent: 'codex', model: 'gpt-6.2-astra', reasoningEffort: 'high' };
+
+test('start_workflow requires all three planner settings before entering the service', async () => {
+  const input = { request: 'Review CLAUDE.md', planner: codexPlanner };
+  let calls = 0;
+  setWorkflowChatEntry(async call => {
+    calls++;
+    assert.deepEqual(call, { ...input, callerSessionId: 'chat' });
+    return { ok: true, runId: 'r1', text: 'started' };
+  });
+  try {
+    assert.ok(START_WORKFLOW_JSON_SCHEMA.required?.includes('planner'));
+    assert.deepEqual(START_WORKFLOW_JSON_SCHEMA.properties?.planner.required, Object.keys(codexPlanner));
+    for (const planner of [undefined, ...Object.keys(codexPlanner).flatMap(key =>
+      [undefined, '', '  '].map(value => ({ ...codexPlanner, [key]: value })))]) {
+      const result = await startWorkflowTool('chat', { ...input, planner } as never);
+      assert.equal(result.isError, true);
+      assert.match(result.content[0].text, /Ask the user/);
+    }
+    assert.equal(calls, 0);
+    assert.equal((await startWorkflowTool('chat', input)).isError, undefined);
+    assert.equal(calls, 1);
+  } finally {
+    setWorkflowChatEntry(null);
+  }
+});
+
+test('start_workflow calls are attributed to the pending tool_use with the same planner and request', () => {
+  const input = { request: 'review it', planner: codexPlanner };
+  const call = (id: string, name: string, args = input) => ({
     type: 'assistant',
-    message: { content: [{ type: 'tool_use', id, name, input: { request } }] },
+    message: { content: [{ type: 'tool_use', id, name, input: args }] },
   });
   const result = (id: string) => ({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content: '{}' }] } });
   const history = [
-    call('t1', 'mcp__aegis-sessions__start_workflow', 'review it'),
+    call('t1', 'mcp__aegis-sessions__start_workflow'),
     result('t1'),
-    call('t2', 'mcp__aegis-sessions__start_workflow', 'review it'),
-    call('t3', 'mcp__aegis-sessions__read_session', 'review it'),
-    { ...call('t4', 'start_workflow', 'review it'), parentToolUseId: 'sub' },
+    call('t2', 'mcp__aegis-sessions__start_workflow'),
+    call('t3', 'mcp__aegis-sessions__read_session'),
+    { ...call('t4', 'start_workflow'), parentToolUseId: 'sub' },
+    call('t5', 'start_workflow', { ...input, planner: { ...codexPlanner, reasoningEffort: 'low' } }),
   ] as never;
-  assert.equal(findPendingStartWorkflowCall(history, 'review it', new Set()), 't2', 'latest unanswered top-level call');
-  assert.equal(findPendingStartWorkflowCall(history, 'review it', new Set(['t2'])), null, 'claimed calls are not reused');
-  assert.equal(findPendingStartWorkflowCall(history, 'something else', new Set()), null);
+  assert.equal(findPendingStartWorkflowCall(history, input, new Set()), 't2', 'latest matching unanswered top-level call');
+  assert.equal(findPendingStartWorkflowCall(history, input, new Set(['t2'])), null, 'claimed calls are not reused');
+  assert.equal(findPendingStartWorkflowCall(history, { ...input, request: 'something else' }, new Set()), null);
   for (const name of ['start_workflow', 'mcp__aegis-sessions__start_workflow', 'aegis-sessions.start_workflow', 'aegis-sessions/start_workflow']) {
     assert.equal(isStartWorkflowToolName(name), true, name);
   }
@@ -499,6 +528,15 @@ test('a failing or slow catalog leaves that provider without models', async () =
   assert.deepEqual(catalogs, { devin: [{ id: 'swe-2-high' }], codex: [], kimi: [] });
 });
 
+test('an explicit planner must be available and support read-only planning', () => {
+  const available = ['claude', 'devin', 'codex', 'pi'];
+  assert.equal(pickPlannerAgent('codex', available), 'codex');
+  assert.equal(pickPlannerAgent('pi', available), null);
+  assert.equal(pickPlannerAgent('codex', ['claude']), null);
+  assert.equal(pickPlannerAgent(null, ['pi']), null);
+  assert.equal(pickPlannerAgent(null, available), 'claude');
+});
+
 test('members may pin a model from their own catalog; the chat session keeps its own', () => {
   const configs = buildMemberConfigs(['devin', 'claude'] as never, 'claude', {
     devin: [{ id: 'swe-2-high' }, { id: 'claude-opus-5-5', label: 'Claude Opus 5.5' }, { id: 'gpt-6.1-sol', label: 'GPT 6.1 Sol' }],
@@ -649,19 +687,28 @@ test('the planner sets a requested effort, and a level the model lacks goes back
       settleTurn(id, 'completed');
     });
     const result = await planWorkflow({
-      runId: 'run-plan', goal: '让 Devin agent（模型 GPT 6.1 sol，reasoning effort high）review', plannerAgent: 'claude',
+      runId: 'run-plan', goal: '让 Devin agent（模型 GPT 6.1 sol，reasoning effort high）review', plannerAgent: 'codex', planner: codexPlanner,
       projectCwd: root, workDir: path.join(root, `planner-${Math.random()}`),
       context: { memberConfigs: configs, limits: DEFAULT_LIMITS },
       effortLevels: async () => ['low', 'medium', 'high'],
       bridge: {
         start: async (payload, onCreated) => {
+          assert.equal(payload.provider, 'codex');
+          assert.equal(payload.model, codexPlanner.model);
+          assert.equal(payload.codexReasoningEffort, codexPlanner.reasoningEffort);
           prompts.push(payload.prompt);
           sessionId = `planner-${Math.random()}`;
           onCreated?.(sessionId);
           reply(sessionId);
           return sessionId;
         },
-        continue: async (payload) => { prompts.push(payload.prompt); reply(payload.sessionId); return true; },
+        continue: async (payload) => {
+          assert.equal(payload.model, codexPlanner.model);
+          assert.equal(payload.codexReasoningEffort, codexPlanner.reasoningEffort);
+          prompts.push(payload.prompt);
+          reply(payload.sessionId);
+          return true;
+        },
         stop: () => {}, sessionCwd: () => null, isBusy: () => false, grantFolder: () => () => {},
       },
       isCancelled: () => false,

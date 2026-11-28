@@ -45,7 +45,7 @@
     "probe:multi-device-e2e": "npm run transpile:electron && node scripts/tests/multi-device-e2e-electron.mjs",
     "probe:task-first-e2e": "npm run transpile:electron && node scripts/tests/task-first-e2e-electron.mjs",
     "probe:main-bot-e2e": "npm run transpile:electron && node scripts/tests/main-bot-e2e-electron.mjs",
-    "verify:workflow-engine": "tsc -p src/workflow-engine/tsconfig.json && npx tsx scripts/tests/workflow-engine.test.ts && npx tsx scripts/tests/workflow-engine-run.test.ts && npx tsx scripts/tests/workflow-host-units.test.ts",
+    "verify:workflow-engine": "tsc -p src/workflow-engine/tsconfig.json && npx tsx scripts/tests/workflow-engine.test.ts && npx tsx scripts/tests/workflow-engine-run.test.ts && npx tsx scripts/tests/workflow-host-units.test.ts && node --require tsx/cjs --test scripts/tests/workflow-planner-start.test.cjs",
     "verify:theme-variables": "node scripts/verify-theme-variables.mjs",
     "verify:glass-fullscreen": "node scripts/tests/glass-fullscreen-electron.test.mjs",
     "verify:dot-field": "npx tsx scripts/tests/dot-field.test.ts && npm run transpile:electron && node scripts/tests/dot-field-electron.test.mjs",
