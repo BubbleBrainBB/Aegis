@@ -184,6 +184,8 @@ export type WorkflowRunView = {
   parent: WorkflowParent | null;
 };
 
+export type WorkflowPlanner = { agent: string; model: string; reasoningEffort: string };
+
 export type WorkflowStartRequest = {
   requestId: string;
   goal: string;
@@ -193,6 +195,7 @@ export type WorkflowStartRequest = {
   /** Providers the composer offers on this machine; the planner may only use these. */
   availableAgents: string[];
   plannerAgent?: string | null;
+  planner?: WorkflowPlanner;
   location?: WorkflowLocation | null;
   /** Skip the planner and use a built-in template with these members. */
   template?: WorkflowTemplateRequest | null;

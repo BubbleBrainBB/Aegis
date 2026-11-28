@@ -6,7 +6,7 @@ import { getDatabase } from '../session-store';
 import type { InstanceRecord, InstanceStore } from '../../../workflow-engine/engine/engine';
 import type { WorkflowSpec } from '../../../workflow-engine/spec/workflow-spec';
 import type { ValidationReport } from '../../../workflow-engine/validate/spec-validator';
-import { CURRENT_SESSION_AGENT, type WorkflowLocation, type WorkflowNeedsInput, type WorkflowParent, type WorkflowRunStatus } from '../../../shared/workflow';
+import { CURRENT_SESSION_AGENT, type WorkflowLocation, type WorkflowNeedsInput, type WorkflowParent, type WorkflowPlanner, type WorkflowRunStatus } from '../../../shared/workflow';
 
 let initialized = false;
 
@@ -118,6 +118,7 @@ export type RunOptions = {
   /** The final version passed G4 (as opposed to a run the user finished early). */
   verifiedFinal?: boolean;
   planOnly?: boolean;
+  planner?: WorkflowPlanner;
   /** The chat session that started the run (plan §8: in-chat entry). */
   parent?: WorkflowParent | null;
   /** Tree reviewers diff against when the change predates the run (HEAD for "review my changes"). */

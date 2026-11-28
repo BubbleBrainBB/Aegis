@@ -283,7 +283,7 @@ export async function withEffortLevels(
     const key = member.model ?? '';
     if (!(key in config.efforts)) {
       const readKey = `${config.provider}\u0000${key}`;
-      if (!reads.has(readKey)) reads.set(readKey, readLevels(load, config.provider, member.model ?? null, timeoutMs));
+      if (!reads.has(readKey)) reads.set(readKey, readEffortLevels(load, config.provider, member.model ?? null, timeoutMs));
       const levels = await reads.get(readKey)!;
       if (levels) config.efforts[key] = levels;
     }
@@ -294,11 +294,11 @@ export async function withEffortLevels(
   return { ...context, memberConfigs: context.memberConfigs.map((c) => configs.get(c.name)!) };
 }
 
-async function readLevels(
+export async function readEffortLevels(
   load: (provider: string, model: string | null) => Promise<string[] | null>,
   provider: string,
   model: string | null,
-  timeoutMs: number,
+  timeoutMs = 15_000,
 ): Promise<string[] | null> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {

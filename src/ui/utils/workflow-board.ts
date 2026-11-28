@@ -57,6 +57,7 @@ export const WORKFLOW_PROVIDER_LABEL: Record<string, string> = {
 
 export const NEEDS_INPUT_TITLE: Record<string, string> = {
   ask: 'A question for you',
+  'planning-paused': 'Workflow start is paused',
   'plan-invalid': 'The plan could not be used',
   'repeat-exhausted': 'The review rounds ran out',
   budget: 'Agent-step limit reached',

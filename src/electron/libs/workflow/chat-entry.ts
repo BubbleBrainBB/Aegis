@@ -8,6 +8,7 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import { z } from 'zod';
 import { isStartWorkflowToolName } from '../../../shared/workflow';
+import { findPendingToolUse } from '../tool-caller-attribution';
 import type { StreamMessage } from '../../types';
 import { repoInfo, sameRepository } from './workspace-snapshot';
 
@@ -15,18 +16,29 @@ export const START_WORKFLOW_DESCRIPTION = [
   'Hand a request that involves other coding agents to the Aegis workflow engine, for example',
   '"have DeepSeek review your changes" or "let Codex implement this and Claude review it".',
   'The app plans the workflow, runs the other agents and shows their progress in this conversation.',
+  'Use the planning agent, exact model and reasoning effort the user chose. If any choice is missing or ambiguous,',
+  'ask the user for the missing choices in chat and wait for their reply before calling. Never guess or substitute a default.',
+  'A reviewer or implementer can be a different agent from the planner. If the selection is unavailable,',
+  'tell the user why and wait for their decision before retrying.',
   'If the workflow needs fixes from you, they arrive as follow-up messages; do them and reply as asked.',
   'The call returns immediately. The result arrives as a follow-up message when the workflow ends,',
-  'so end your turn after calling it: do not wait, poll, or do the other agents\' work yourself.',
+  'so end your turn after a successful call: do not wait, poll, or do the other agents\' work yourself.',
   'Use it only when the user asks for other agents to take part.',
   'The agents work in this conversation\'s folder. If the changes are in another folder of the same Git repository',
   '(for example a separate worktree), pass that folder as `cwd`.',
 ].join(' ');
 
-export const START_WORKFLOW_CWD_DESCRIPTION =
+const START_WORKFLOW_CWD_DESCRIPTION =
   "Absolute path of the folder the agents work in, when the changes are not in this conversation's folder, for example another worktree of the same repository. Omit it otherwise.";
 
+const plannerField = (description: string) => z.string().min(1).regex(/\S/).describe(description);
+
 export const startWorkflowSchema = {
+  planner: z.object({
+    agent: plannerField('Provider ID of the agent the user chose to plan this workflow.'),
+    model: plannerField('Exact model ID or model name the user chose for the planner.'),
+    reasoningEffort: plannerField('Reasoning effort the user chose for this planning model.'),
+  }),
   request: z
     .string()
     .min(1)
@@ -38,7 +50,8 @@ export const startWorkflowSchema = {
   cwd: z.string().optional().describe(START_WORKFLOW_CWD_DESCRIPTION),
 };
 
-export type StartWorkflowArgs = { request: string; context?: string; cwd?: string };
+const workflowInput = z.object(startWorkflowSchema);
+export type StartWorkflowArgs = z.infer<typeof workflowInput>;
 
 type ToolText = { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
 
@@ -56,7 +69,12 @@ export function setWorkflowChatEntry(handler: WorkflowChatEntry | null): void {
 export async function startWorkflowTool(callerSessionId: string | null, args: StartWorkflowArgs): Promise<ToolText> {
   if (!entry) return { content: [{ type: 'text', text: 'Workflows are not available right now.' }], isError: true };
   try {
-    const result = await entry({ ...args, callerSessionId });
+    const parsed = workflowInput.safeParse(args);
+    if (!parsed.success) {
+      const fields = parsed.error.issues.map(issue => issue.path.join('.')).join(', ');
+      return { content: [{ type: 'text', text: `Invalid workflow input (${fields}). Ask the user for the missing or ambiguous choices of planning agent, model and reasoning effort before retrying.` }], isError: true };
+    }
+    const result = await entry({ ...parsed.data, callerSessionId });
     return result.ok
       ? { content: [{ type: 'text', text: result.text }] }
       : { content: [{ type: 'text', text: result.error }], isError: true };
@@ -88,43 +106,6 @@ export async function workflowTargetFolder(
   return { ok: true, cwd };
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
-}
-
-function contentBlocks(message: StreamMessage): Record<string, unknown>[] {
-  const content = asRecord((message as unknown as Record<string, unknown>).message)?.content;
-  return Array.isArray(content) ? content.filter((b): b is Record<string, unknown> => asRecord(b) !== null) : [];
-}
-
-/**
- * The tool_use block a start_workflow call belongs to: the latest unanswered
- * call in the session's top-level history with the same request. HTTP MCP
- * calls carry no caller identity, so this is also how they are attributed.
- */
-export function findPendingStartWorkflowCall(
-  history: StreamMessage[],
-  request: string,
-  claimed: ReadonlySet<string>,
-): string | null {
-  const resolved = new Set<string>();
-  const candidates: string[] = [];
-  for (const message of history) {
-    if ((message as { parentToolUseId?: string | null }).parentToolUseId) continue;
-    if (message.type === 'assistant') {
-      for (const block of contentBlocks(message)) {
-        if (block.type !== 'tool_use' || !isStartWorkflowToolName(block.name)) continue;
-        if (asRecord(block.input)?.request !== request) continue;
-        if (typeof block.id === 'string' && block.id) candidates.push(block.id);
-      }
-    } else if (message.type === 'user') {
-      for (const block of contentBlocks(message)) {
-        if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') resolved.add(block.tool_use_id);
-      }
-    }
-  }
-  for (let i = candidates.length - 1; i >= 0; i -= 1) {
-    if (!resolved.has(candidates[i]) && !claimed.has(candidates[i])) return candidates[i];
-  }
-  return null;
+export function findPendingStartWorkflowCall(history: StreamMessage[], input: StartWorkflowArgs, claimed: ReadonlySet<string>): string | null {
+  return findPendingToolUse(history, isStartWorkflowToolName, input, claimed);
 }
