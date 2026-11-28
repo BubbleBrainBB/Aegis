@@ -61,6 +61,24 @@ import Testing
         #expect(catalog.requestSettings(RemoteTaskSettings())["effort"] == nil)
     }
 
+    /// A Bubble model that only switches thinking: the sheet reads On and Off, the
+    /// chip "Thinking" or nothing, and the Mac is still sent "medium" for on.
+    @Test func bubbleThinkingSwitchReadsOnAndOff() async throws {
+        let options = raw(#"{"bubble":{"defaultModel":"zhipuai-coding-plan:glm-5.1","options":[],"availableModels":[{"name":"zhipuai-coding-plan:glm-5.1","label":"GLM-5.1","provider":"zhipuai-coding-plan","enabled":true,"isDefault":true,"reasoningLevels":["off","medium"],"defaultReasoningLevel":null},{"name":"openai:graded","label":"Graded","provider":"openai","enabled":true,"isDefault":false,"reasoningLevels":["low","medium","high"],"defaultReasoningLevel":"medium"}]}}"#)
+        let catalog = await CoreScript().catalog(provider: "bubble", options: options)
+        let on = catalog.resolve(RemoteTaskSettings(effort: "medium"))
+        #expect(on.efforts.map(\.label) == ["Off", "On"])
+        #expect(on.effortLabel == "On")
+        #expect(on.effortChip == "Thinking")
+        #expect(catalog.requestSettings(RemoteTaskSettings(effort: "medium"))["effort"] == "medium")
+        let off = catalog.resolve(RemoteTaskSettings(effort: "off"))
+        #expect(off.effortLabel == "Off")
+        #expect(off.effortChip == nil)
+        let graded = catalog.resolve(RemoteTaskSettings(model: "openai:graded"))
+        #expect(graded.effortLabel == "Medium")
+        #expect(graded.effortChip == "Medium")
+    }
+
     @Test func describesRequests() async {
         let description = await CoreScript().describeRequest(#"{"command":"npm test","cwd":"/repo/app"}"#)
         #expect(description.label == "Command")

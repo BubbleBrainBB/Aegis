@@ -7,6 +7,7 @@ import type { AgentProvider, SessionStartPayload } from '../../../shared/types';
 import type { MemberRole, WorkflowSpec } from '../../../workflow-engine/spec/workflow-spec';
 import type { MemberConfig, ValidationContext } from '../../../workflow-engine/validate/spec-validator';
 import { CURRENT_SESSION_AGENT } from '../../../shared/workflow';
+import { BUBBLE_THINKING_ON_LEVEL, bubbleThinkingWireLevel } from '../../../shared/bubble-reasoning';
 import type { ModelOption } from './model-catalogs';
 
 export type ReadOnlyMechanism = 'toolAllowlist' | 'readOnlySandbox' | 'permissionGatedWrites' | 'confinedSandbox';
@@ -255,19 +256,25 @@ export function memberSessionPayload(
   };
 }
 
-/** Payload field that runs a member at its planned reasoning effort. */
+/**
+ * Payload field that runs a member at its planned reasoning effort. A Bubble
+ * model that only switches thinking is planned as "on" or "off"; the SDK has
+ * no "on" level and takes "medium" for it.
+ */
 export function memberEffortPayload(declaration: ProviderWorkflowDeclaration, effort: string | null | undefined): Partial<SessionStartPayload> {
   if (!effort || !declaration.effortField) return {};
-  return { [declaration.effortField]: effort } as Partial<SessionStartPayload>;
+  const level = declaration.provider === 'bubble' ? bubbleThinkingWireLevel(effort) : effort;
+  return { [declaration.effortField]: level } as Partial<SessionStartPayload>;
 }
 
 /**
  * Fills in the effort levels of the models members were planned on, so the
  * validator can check each requested effort against them. Only the pairs a
  * plan uses are read: some agents probe one model at a time. A level that
- * differs only in case is rewritten to the model's own spelling. A read that
- * fails or times out leaves the model unchecked; its agent applies or
- * ignores the level as its composer would.
+ * differs only in case is rewritten to the model's own spelling, and so is
+ * the "medium" a Bubble on/off model used to be planned with, which is its
+ * "on". A read that fails or times out leaves the model unchecked; its agent
+ * applies or ignores the level as its composer would.
  */
 export async function withEffortLevels(
   spec: WorkflowSpec,
@@ -288,7 +295,12 @@ export async function withEffortLevels(
       if (levels) config.efforts[key] = levels;
     }
     const levels = config.efforts[key];
-    const match = levels?.find((level) => level.toLowerCase() === member.effort!.toLowerCase());
+    const asked = member.effort.toLowerCase();
+    const wanted =
+      config.provider === 'bubble' && asked === BUBBLE_THINKING_ON_LEVEL && levels?.includes('on') && !levels.includes(asked)
+        ? 'on'
+        : asked;
+    const match = levels?.find((level) => level.toLowerCase() === wanted);
     if (match) member.effort = match;
   }
   return { ...context, memberConfigs: context.memberConfigs.map((c) => configs.get(c.name)!) };

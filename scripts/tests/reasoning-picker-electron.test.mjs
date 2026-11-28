@@ -28,14 +28,15 @@ function Harness(){
  const [fast,setFast]=useState(false);
  const [side,setSide]=useState('bottom');
  const [unknown,setUnknown]=useState(false);
- window.qa={provider,models,efforts,fast,setSide,setUnknown,setEfforts,setTheme:useAppStore.getState().setTheme,setAccent:(variant,accent)=>useAppStore.getState().updateThemeVariant(variant,{accent})};
+ const [thinkingSwitch,setThinkingSwitch]=useState(false);
+ window.qa={provider,models,efforts,fast,setSide,setUnknown,setThinkingSwitch,setEfforts,setTheme:useAppStore.getState().setTheme,setAccent:(variant,accent)=>useAppStore.getState().updateThemeVariant(variant,{accent})};
  const change=(p,v)=>{setProvider(p);setEfforts(s=>({...s,[p]:v}));};
  return <div style={{padding:40,paddingTop:side==='top'?500:40}}>
  <div style={{display:"flex",justifyContent:"flex-end",alignItems:"center",gap:12}}><ComposerAgentModelPicker agentProvider={provider} modelLabel={models[provider]==='codex0'?'GPT-6 Astra':models[provider]} modelValue={models[provider]}
  modelValueByProvider={models} allAgentModelOptions={choices} menuSide={side}
  onAgentChange={setProvider} onModelChange={(o,p=provider)=>{setProvider(p);setModels(s=>({...s,[p]:o.value}));}}
  codexModels={codexModels} grokModels={[{name:'grok0',reasoningEfforts:['high','low']}]}
- bubbleModels={unknown?[]:[{name:'bubble0',reasoningLevels:['off','low','high']}]}
+ bubbleModels={unknown?[]:[{name:'bubble0',reasoningLevels:thinkingSwitch?['off','medium']:['off','low','high']}]}
  claudeReasoningEffort={efforts.claude} onClaudeReasoningEffortChange={v=>change('claude',v)}
  codexReasoningEffort={efforts.codex} onCodexReasoningEffortChange={v=>change('codex',v)}
  grokReasoningEffort={efforts.grok} onGrokReasoningEffortChange={v=>change('grok',v)}
@@ -197,6 +198,22 @@ app.whenReady().then(async()=>{
    if(id==='kimi'){await js('document.querySelector(\'[aria-label="Reset reasoning to default"]\').click()');await delay(150);await settle('qa.efforts.kimi',null);}
    await close();
   }
+  // A Bubble model that only switches thinking lists "off" and "medium", which is what a turn
+  // sends for on. It reads Off and On, and the trigger says "Thinking" or nothing, never "Medium".
+  await js('qa.setThinkingSwitch(true);qa.setEfforts(s=>({...s,bubble:"medium"}))');
+  await settle('document.querySelector(\'[aria-label="Select agent and model"]\').innerText.trim()','bubble0 Thinking','a switch that is on reads Thinking');
+  await open('Bubble');
+  await settle(sliderText,'On','the on state is not a grade');
+  assert.equal(await js('document.querySelector(".effort-picker-selected-effort").textContent'),'On');
+  assert.equal(await js('document.querySelector('+JSON.stringify(slider)+').getAttribute("aria-label")'),'Thinking');
+  await click(slider);await focusSlider();await press('Home','qa.efforts.bubble','off');
+  await settle(sliderText,'Off');
+  await press('End','qa.efforts.bubble','medium','on is still sent as medium');
+  await settle(sliderText,'On');
+  await press('Home','qa.efforts.bubble','off');await close();
+  await settle('document.querySelector(\'[aria-label="Select agent and model"]\').innerText.trim()','bubble0','a switch that is off adds nothing');
+  await js('qa.setThinkingSwitch(false);qa.setEfforts(s=>({...s,bubble:"high"}))');
+  await settle('document.querySelector(\'[aria-label="Select agent and model"]\').innerText.trim()','bubble0 High','a graded model still shows its grade');
   await js('qa.setUnknown(true)');await open('Bubble');
   assert.equal(await js('!!document.querySelector('+JSON.stringify(slider)+')'),false,'unknown Bubble model offers no invented tiers');await close();
   await js('qa.setSide("top");qa.setTheme("dark")');await delay(100);
@@ -232,7 +249,7 @@ app.whenReady().then(async()=>{
   await press('End','qa.efforts.codex','low');
   await key('Escape');
   assert.deepEqual(errors,[]);
-  console.log('Reasoning picker: stable trigger labels/geometry, pointer, keyboard, model view/search, six providers, unsupported tiers, popup directions and focus passed');app.exit(0);
+  console.log('Reasoning picker: stable trigger labels/geometry, pointer, keyboard, model view/search, six providers, a Bubble thinking switch, unsupported tiers, popup directions and focus passed');app.exit(0);
  }catch(e){console.error(e);console.error(await js('document.body.innerText'));app.exit(1);}
 });
 `;

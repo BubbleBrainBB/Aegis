@@ -24,14 +24,19 @@ const guard =
  */
 function catalog({ provider, options, extraModels = [] }: { provider: string; options?: RemoteAgentOptions; extraModels?: string[] }) {
   const c = catalogFor(provider, options);
-  const perModel: Record<string, { efforts: { value: string; label: string }[]; defaultEffort: string | null; fast: boolean }> = {};
+  // `chip` is set only where the composer chip does not show the label; "" shows nothing.
+  const perModel: Record<string, { efforts: { value: string; label: string; chip?: string }[]; defaultEffort: string | null; fast: boolean }> = {};
   const listed = new Set([c.defaultModel, ...c.models.map((m) => m.value)]);
   const labels: Record<string, string> = {};
   for (const model of extraModels) if (model && !listed.has(model)) labels[model] = c.labelFor?.(model) ?? model;
   const values = new Set([...listed, ...Object.keys(labels)]);
   for (const value of values) {
     perModel[value] = {
-      efforts: c.effortsFor(value).map((e) => ({ value: e, label: c.effortLabel(e) })),
+      efforts: c.effortsFor(value).map((e) => {
+        const label = c.effortLabel(e, value);
+        const chip = c.effortChip ? c.effortChip(e, value) ?? "" : label;
+        return chip === label ? { value: e, label } : { value: e, label, chip };
+      }),
       defaultEffort: c.defaultEffortFor(value),
       fast: c.fastFor(value),
     };

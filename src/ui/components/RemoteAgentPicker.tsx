@@ -21,6 +21,7 @@ import {
 import { chooseSettings, effectiveSettings, markSent, pruneChosen, type ChosenSettings } from '../../shared/remote/chosen-settings';
 import type { RemoteProvider, RemoteTaskSettings } from '../../shared/remote/protocol';
 import type { AgentProvider } from '../../shared/types';
+import { bubbleThinkingLevelName, isBubbleThinkingToggle } from '../../shared/bubble-reasoning';
 
 const PERMISSION_OPTIONS: Record<RemoteProvider, ReadonlyArray<PermissionModeOption<string>>> = {
   claude: CLAUDE_PERMISSION_MODE_OPTIONS,
@@ -123,6 +124,11 @@ export function RemoteModelControl({ selection, catalog, canChangeAgent, disable
   const model = entry?.models.find((item) => item.id === modelId);
   const effort = settings.effort ?? entry?.defaultEffort ?? null;
   const efforts = model?.efforts ?? [];
+  // A Bubble model that only switches thinking lists "medium" for on.
+  const bubbleToggle = provider === 'bubble' && isBubbleThinkingToggle(efforts);
+  const effortName = (id: string) => (bubbleToggle ? bubbleThinkingLevelName(id, efforts) : id);
+  // Beside the model name a switch reads "thinking" while on, nothing while off.
+  const effortChip = !effort || !efforts.includes(effort) ? null : !bubbleToggle ? effort : effort === 'off' ? null : 'thinking';
   const summary = !entry
     ? (catalog.length === 0 && !provider ? 'Checking agents…' : providerLabel(provider ?? ''))
     : [canChangeAgent ? providerLabel(entry.provider) : null, modelId ? label(modelId, model?.label) : 'Default'].filter(Boolean).join(' · ');
@@ -138,7 +144,7 @@ export function RemoteModelControl({ selection, catalog, canChangeAgent, disable
           className="flex h-8 max-w-[260px] items-center gap-1 rounded-lg px-2 text-[13px] text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-tertiary)] disabled:opacity-60"
         >
           <span className="truncate">{summary}</span>
-          {effort && efforts.includes(effort) ? <span className="flex-shrink-0 text-[var(--text-muted)]">{effort}</span> : null}
+          {effortChip ? <span className="flex-shrink-0 text-[var(--text-muted)]">{effortChip}</span> : null}
           <ChevronDown className="h-3.5 w-3.5 flex-shrink-0 text-[var(--text-muted)]" />
         </button>
       </DropdownMenu.Trigger>
@@ -166,7 +172,7 @@ export function RemoteModelControl({ selection, catalog, canChangeAgent, disable
             <div className={heading}>Effort</div>
             {efforts.map((item) => (
               <DropdownMenu.Item key={item} className={itemClass} onSelect={() => setEffort(item)}>
-                <span className="min-w-0 flex-1 truncate">{item}</span>
+                <span className="min-w-0 flex-1 truncate">{effortName(item)}</span>
                 {item === effort ? <Check className="h-3.5 w-3.5 flex-shrink-0" /> : null}
               </DropdownMenu.Item>
             ))}

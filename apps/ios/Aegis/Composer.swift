@@ -256,7 +256,7 @@ struct Composer: View {
                     Image(systemName: "bolt.fill").font(.app(11)).foregroundStyle(Color.accent)
                 }
                 Text(r.modelLabel).foregroundStyle(Color.ink).lineLimit(1)
-                if let effort = r.effortLabel {
+                if let effort = r.effortChip {
                     Text(effort).foregroundStyle(Color.text3).lineLimit(1).fixedSize()
                 }
                 Image(systemName: "chevron.down").font(.app(10, weight: .bold)).foregroundStyle(Color.text3)
@@ -267,7 +267,7 @@ struct Composer: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(choosesAgent ? providerLabel(catalog.provider) + ", " : "")Model and reasoning: \(r.modelLabel)\(r.effortLabel.map { ", \($0)" } ?? "")")
+        .accessibilityLabel("\(choosesAgent ? providerLabel(catalog.provider) + ", " : "")Model and reasoning: \(r.modelLabel)\(r.effortChip.map { ", \($0)" } ?? "")")
         .sheet(isPresented: $picker) {
             AgentModelSheet(catalog: catalog, settings: settings, onSettings: onSettings, choosesAgent: choosesAgent)
         }
