@@ -23,10 +23,11 @@ const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
     `${file}: non-full-access modes should use muted trigger text`
   );
   assert.ok(
-    src.includes('hover:bg-[var(--bg-tertiary)]'),
-    `${file}: permission trigger should show a subtle hover background`
+    src.includes('hover:bg-[var(--bg-tertiary)]') &&
+      src.includes('data-[popup-open]:bg-[var(--bg-tertiary)]'),
+    `${file}: permission trigger should show a subtle hover/open background`
   );
-  assert.ok(src.includes('rounded-lg'), `${file}: permission hover background should have rounded corners`);
+  assert.ok(src.includes('rounded-full'), `${file}: permission trigger should use a pill capsule shape`);
 }
 
 // 2. The merged agent/model picker uses the prop instead of a hardcoded side.

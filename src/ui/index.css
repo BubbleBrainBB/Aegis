@@ -38,6 +38,7 @@
   --success: #16a34a;
   --error: #dc2626;
   --warning: #d97706;
+  --permission-warning: #923b0f;
   --border: rgba(0, 0, 0, 0.06);
 
   /* Context ring categories: chart series hues (WIDGET_SERIES). Amber and
@@ -181,6 +182,7 @@
   --success: #4ade80;
   --error: #f87171;
   --warning: #fbbf24;
+  --permission-warning: #ff8549;
   --border: rgba(255, 255, 255, 0.06);
 
   --context-messages: #58a2f2;

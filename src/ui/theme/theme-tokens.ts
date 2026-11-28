@@ -35,6 +35,7 @@ const SHADOWS: Record<ThemeVariant, { ring: string; popover: string; popoverLarg
 };
 
 const WARNING: Record<ThemeVariant, string> = { light: '#b36b00', dark: '#f0b84a' };
+const PERMISSION_WARNING: Record<ThemeVariant, string> = { light: '#923b0f', dark: '#ff8549' };
 
 /** Shifts a color's lightness until it reads at `ratio` against `background` (or gives up after a few steps). */
 function readableAgainst(color: string, background: string, ratio = 4.5): string {
@@ -141,6 +142,7 @@ export function deriveThemeTokens(recipe: ThemeRecipe, variant: ThemeVariant, ov
     '--success': diffAdded,
     '--error': diffRemoved,
     '--warning': warning,
+    '--permission-warning': readableAgainst(PERMISSION_WARNING[variant], surface),
     '--tool-pending': warning,
     '--tool-running': accent,
     '--tool-success': diffAdded,

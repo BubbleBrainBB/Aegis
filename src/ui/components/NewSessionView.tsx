@@ -693,6 +693,7 @@ export function NewSessionView() {
                     {!remoteTarget && (<>
                     {agentSelection.provider === 'codex' && (
                       <PermissionModePicker
+                        provider={agentSelection.provider}
                         value={agentSelection.codexPermissionMode}
                         options={CODEX_PERMISSION_MODE_OPTIONS}
                         onChange={agentSelection.setCodexPermissionMode}
@@ -708,6 +709,7 @@ export function NewSessionView() {
                     )}
                     {agentSelection.provider === 'claude' && (
                       <PermissionModePicker
+                        provider={agentSelection.provider}
                         value={agentSelection.claudePermissionMode}
                         options={CLAUDE_PERMISSION_MODE_OPTIONS}
                         onChange={agentSelection.setClaudePermissionMode}
@@ -723,6 +725,7 @@ export function NewSessionView() {
                     )}
                     {agentSelection.provider === 'opencode' && (
                       <PermissionModePicker
+                        provider={agentSelection.provider}
                         value={agentSelection.opencodePermissionMode}
                         options={OPENCODE_PERMISSION_MODE_OPTIONS}
                         onChange={agentSelection.setOpencodePermissionMode}
@@ -732,6 +735,7 @@ export function NewSessionView() {
                     )}
                     {(agentSelection.provider === 'kimi' || agentSelection.provider === 'grok') && (
                       <PermissionModePicker
+                        provider={agentSelection.provider}
                         value={agentSelection.kimiPermissionMode}
                         options={KIMI_PERMISSION_MODE_OPTIONS}
                         onChange={agentSelection.setKimiPermissionMode}
@@ -741,6 +745,7 @@ export function NewSessionView() {
                     )}
                     {agentSelection.provider === 'qoder' && (
                       <PermissionModePicker
+                        provider={agentSelection.provider}
                         value={agentSelection.qoderPermissionMode}
                         options={QODER_PERMISSION_MODE_OPTIONS}
                         onChange={agentSelection.setQoderPermissionMode}
@@ -758,6 +763,7 @@ export function NewSessionView() {
                     )}
                     {agentSelection.provider === 'deepseek' && (
                       <PermissionModePicker
+                        provider={agentSelection.provider}
                         value={agentSelection.deepseekPermissionMode}
                         options={DEEPSEEK_PERMISSION_MODE_OPTIONS}
                         onChange={agentSelection.setDeepseekPermissionMode}
@@ -767,6 +773,7 @@ export function NewSessionView() {
                     )}
                     {agentSelection.provider === 'devin' && (
                       <PermissionModePicker
+                        provider={agentSelection.provider}
                         value={agentSelection.devinPermissionMode}
                         options={DEVIN_PERMISSION_MODE_OPTIONS}
                         onChange={agentSelection.setDevinPermissionMode}
@@ -776,6 +783,7 @@ export function NewSessionView() {
                     )}
                     {agentSelection.provider === 'mimo' && (
                       <PermissionModePicker
+                        provider={agentSelection.provider}
                         value={agentSelection.mimoPermissionMode}
                         options={MIMO_PERMISSION_MODE_OPTIONS}
                         onChange={agentSelection.setMimoPermissionMode}
@@ -785,6 +793,7 @@ export function NewSessionView() {
                     )}
                     {agentSelection.provider === 'minimax' && (
                       <PermissionModePicker
+                        provider={agentSelection.provider}
                         value={agentSelection.minimaxPermissionMode}
                         options={MINIMAX_PERMISSION_MODE_OPTIONS}
                         onChange={agentSelection.setMinimaxPermissionMode}
@@ -794,6 +803,7 @@ export function NewSessionView() {
                     )}
                     {agentSelection.provider === 'antigravity' && (
                       <PermissionModePicker
+                        provider={agentSelection.provider}
                         value={agentSelection.antigravityPermissionMode}
                         options={agentSelection.antigravityPermissionModeOptions}
                         onChange={agentSelection.setAntigravityPermissionMode}
@@ -803,6 +813,7 @@ export function NewSessionView() {
                     )}
                     {agentSelection.provider === 'bubble' && (
                       <PermissionModePicker
+                        provider={agentSelection.provider}
                         value={agentSelection.bubblePermissionMode}
                         options={BUBBLE_PERMISSION_MODE_OPTIONS}
                         onChange={agentSelection.setBubblePermissionMode}
