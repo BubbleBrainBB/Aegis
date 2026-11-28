@@ -17,7 +17,10 @@ let worker: Worker | undefined;
 let nextId = 0;
 
 function syncWorker(): void {
-  worker?.postMessage(Array.from(watches.values(), ({ cwd, id }) => ({ cwd, id })));
+  if (!worker) return;
+  if (watches.size) worker.ref();
+  else worker.unref();
+  worker.postMessage(Array.from(watches.values(), ({ cwd, id }) => ({ cwd, id })));
 }
 
 function scheduleRefresh(entry: TreeWatch): void {
@@ -70,7 +73,6 @@ function ensureWorker(): void {
   thread.on('exit', () => {
     if (worker === thread) clearWatches();
   });
-  thread.unref();
 }
 
 export async function watchProjectTree(cwd: string, publish: PublishTree): Promise<boolean> {
