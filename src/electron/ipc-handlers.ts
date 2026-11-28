@@ -10310,6 +10310,23 @@ function handleSessionList(mainWindow: BrowserWindow, replyOnly = false): void {
   });
 }
 
+/**
+ * A message is shown, the task is set running, and its agent turns out not to
+ * be ready: the task failed. The window is told so here; the `runner.error`
+ * that follows gives the reason and does not change the status it shows, so
+ * that alone left the task shown as running while it was stored as failed.
+ */
+function failSendNotReady(
+  mainWindow: BrowserWindow,
+  session: { id: string; hidden_from_threads?: number | null }
+): void {
+  sessions.updateSessionStatus(session.id, 'error');
+  broadcast(mainWindow, {
+    type: 'session.status',
+    payload: { sessionId: session.id, status: 'error', hiddenFromThreads: session.hidden_from_threads === 1 },
+  });
+}
+
 // 新建会话
 async function handleSessionStart(
   mainWindow: BrowserWindow,
@@ -10718,7 +10735,7 @@ async function startSession(
   if (chosenProvider === 'claude') {
     const runtimeStatus = await getClaudeRuntimeStatusCached(selectedModel || null);
     if (!runtimeStatus.ready) {
-      sessions.updateSessionStatus(session.id, 'error');
+      failSendNotReady(mainWindow, session);
       if (automationRunId) {
         sessions.finishAutomationRun(automationRunId, 'failed', formatClaudeRuntimeBlockingMessage(runtimeStatus));
         broadcastAutomationChanged(mainWindow);
@@ -10734,7 +10751,7 @@ async function startSession(
   } else if (chosenProvider === 'opencode') {
     const runtimeStatus = await getOpencodeRuntimeStatus();
     if (!runtimeStatus.ready) {
-      sessions.updateSessionStatus(session.id, 'error');
+      failSendNotReady(mainWindow, session);
       if (automationRunId) {
         sessions.finishAutomationRun(automationRunId, 'failed', 'OpenCode SDK is not ready. Check Settings > Providers.');
         broadcastAutomationChanged(mainWindow);
@@ -10750,7 +10767,7 @@ async function startSession(
   } else if (chosenProvider === 'kimi') {
     const runtimeStatus = await getKimiRuntimeStatus();
     if (!runtimeStatus.ready) {
-      sessions.updateSessionStatus(session.id, 'error');
+      failSendNotReady(mainWindow, session);
       if (automationRunId) {
         sessions.finishAutomationRun(automationRunId, 'failed', formatKimiRuntimeBlockingMessage(runtimeStatus));
         broadcastAutomationChanged(mainWindow);
@@ -10766,7 +10783,7 @@ async function startSession(
   } else if (chosenProvider === 'grok') {
     const runtimeStatus = await getGrokRuntimeStatus();
     if (!runtimeStatus.ready) {
-      sessions.updateSessionStatus(session.id, 'error');
+      failSendNotReady(mainWindow, session);
       if (automationRunId) {
         sessions.finishAutomationRun(automationRunId, 'failed', formatGrokRuntimeBlockingMessage(runtimeStatus));
         broadcastAutomationChanged(mainWindow);
@@ -10782,7 +10799,7 @@ async function startSession(
   } else if (chosenProvider === 'deepseek') {
     const runtimeStatus = getDeepseekRuntimeStatus();
     if (!runtimeStatus.ready) {
-      sessions.updateSessionStatus(session.id, 'error');
+      failSendNotReady(mainWindow, session);
       if (automationRunId) {
         sessions.finishAutomationRun(automationRunId, 'failed', formatDeepseekRuntimeBlockingMessage(runtimeStatus));
         broadcastAutomationChanged(mainWindow);
@@ -10798,7 +10815,7 @@ async function startSession(
   } else if (chosenProvider === 'devin') {
     const runtimeStatus = await getDevinRuntimeStatus();
     if (!runtimeStatus.ready) {
-      sessions.updateSessionStatus(session.id, 'error');
+      failSendNotReady(mainWindow, session);
       if (automationRunId) {
         sessions.finishAutomationRun(automationRunId, 'failed', formatDevinRuntimeBlockingMessage(runtimeStatus));
         broadcastAutomationChanged(mainWindow);
@@ -10814,7 +10831,7 @@ async function startSession(
   } else if (chosenProvider === 'mimo') {
     const runtimeStatus = await getMimoRuntimeStatus();
     if (!runtimeStatus.ready) {
-      sessions.updateSessionStatus(session.id, 'error');
+      failSendNotReady(mainWindow, session);
       if (automationRunId) {
         sessions.finishAutomationRun(automationRunId, 'failed', formatMimoRuntimeBlockingMessage(runtimeStatus));
         broadcastAutomationChanged(mainWindow);
@@ -10830,7 +10847,7 @@ async function startSession(
   } else if (chosenProvider === 'minimax') {
     const runtimeStatus = await getMinimaxRuntimeStatus();
     if (!runtimeStatus.ready) {
-      sessions.updateSessionStatus(session.id, 'error');
+      failSendNotReady(mainWindow, session);
       if (automationRunId) {
         sessions.finishAutomationRun(automationRunId, 'failed', formatMinimaxRuntimeBlockingMessage(runtimeStatus));
         broadcastAutomationChanged(mainWindow);
@@ -10846,7 +10863,7 @@ async function startSession(
   } else if (chosenProvider === 'antigravity') {
     const runtimeStatus = await getAntigravityRuntimeStatus();
     if (!runtimeStatus.ready) {
-      sessions.updateSessionStatus(session.id, 'error');
+      failSendNotReady(mainWindow, session);
       broadcast(mainWindow, {
         type: 'runner.error',
         payload: {
@@ -11540,7 +11557,7 @@ async function handleSessionContinueImpl(
   if (nextProvider === 'opencode') {
     const runtimeStatus = await getOpencodeRuntimeStatus();
     if (!runtimeStatus.ready && !stoppedDispatches.has(sessionId)) {
-      sessions.updateSessionStatus(sessionId, 'error');
+      failSendNotReady(mainWindow, session);
       broadcast(mainWindow, {
         type: 'runner.error',
         payload: {
@@ -11553,7 +11570,7 @@ async function handleSessionContinueImpl(
   } else if (nextProvider === 'kimi') {
     const runtimeStatus = await getKimiRuntimeStatus();
     if (!runtimeStatus.ready && !stoppedDispatches.has(sessionId)) {
-      sessions.updateSessionStatus(sessionId, 'error');
+      failSendNotReady(mainWindow, session);
       broadcast(mainWindow, {
         type: 'runner.error',
         payload: {
@@ -11566,7 +11583,7 @@ async function handleSessionContinueImpl(
   } else if (nextProvider === 'grok') {
     const runtimeStatus = await getGrokRuntimeStatus();
     if (!runtimeStatus.ready && !stoppedDispatches.has(sessionId)) {
-      sessions.updateSessionStatus(sessionId, 'error');
+      failSendNotReady(mainWindow, session);
       broadcast(mainWindow, {
         type: 'runner.error',
         payload: {
@@ -11579,7 +11596,7 @@ async function handleSessionContinueImpl(
   } else if (nextProvider === 'deepseek') {
     const runtimeStatus = getDeepseekRuntimeStatus();
     if (!runtimeStatus.ready && !stoppedDispatches.has(sessionId)) {
-      sessions.updateSessionStatus(sessionId, 'error');
+      failSendNotReady(mainWindow, session);
       broadcast(mainWindow, {
         type: 'runner.error',
         payload: {
@@ -11592,7 +11609,7 @@ async function handleSessionContinueImpl(
   } else if (nextProvider === 'devin') {
     const runtimeStatus = await getDevinRuntimeStatus();
     if (!runtimeStatus.ready && !stoppedDispatches.has(sessionId)) {
-      sessions.updateSessionStatus(sessionId, 'error');
+      failSendNotReady(mainWindow, session);
       broadcast(mainWindow, {
         type: 'runner.error',
         payload: {
@@ -11605,7 +11622,7 @@ async function handleSessionContinueImpl(
   } else if (nextProvider === 'mimo') {
     const runtimeStatus = await getMimoRuntimeStatus();
     if (!runtimeStatus.ready && !stoppedDispatches.has(sessionId)) {
-      sessions.updateSessionStatus(sessionId, 'error');
+      failSendNotReady(mainWindow, session);
       broadcast(mainWindow, {
         type: 'runner.error',
         payload: {
@@ -11618,7 +11635,7 @@ async function handleSessionContinueImpl(
   } else if (nextProvider === 'minimax') {
     const runtimeStatus = await getMinimaxRuntimeStatus();
     if (!runtimeStatus.ready && !stoppedDispatches.has(sessionId)) {
-      sessions.updateSessionStatus(sessionId, 'error');
+      failSendNotReady(mainWindow, session);
       broadcast(mainWindow, {
         type: 'runner.error',
         payload: {
@@ -11637,11 +11654,7 @@ async function handleSessionContinueImpl(
       // window telling different things. Otherwise the task failed, and the
       // window is told so; the error alone leaves it showing as running.
       if (!getProviderService().promptWithdrawn(sessionId)) {
-        sessions.updateSessionStatus(sessionId, 'error');
-        broadcast(mainWindow, {
-          type: 'session.status',
-          payload: { sessionId, status: 'error', hiddenFromThreads: session.hidden_from_threads === 1 },
-        });
+        failSendNotReady(mainWindow, session);
       }
       broadcast(mainWindow, {
         type: 'runner.error',
@@ -11864,7 +11877,7 @@ async function handleSessionContinueImpl(
     // of the conversation below either, and a failed check stays the Stop's idle.
     if (stoppedDispatches.has(sessionId)) return false;
     if (!runtimeStatus.ready) {
-      sessions.updateSessionStatus(sessionId, 'error');
+      failSendNotReady(mainWindow, session);
       broadcast(mainWindow, {
         type: 'runner.error',
         payload: {
