@@ -60,6 +60,7 @@ import { SubSessionCard } from './follow-up/SubSessionCard';
 import { MainBotTaskLine } from './main-bot/MainBotTaskLine';
 import { MainBotTaskChip } from './main-bot/MainBotTaskChip';
 import { MainBotWorkflowCards } from './main-bot/MainBotWorkflowCards';
+import { MainBotWaitsRefresh, foldMainBotWaitCards } from './main-bot/MainBotWaits';
 import { DayDivider } from './main-bot/DayDivider';
 import { dayStarts } from '../utils/conversation-days';
 import { mainBotToolKind } from '../../shared/main-bot';
@@ -2200,6 +2201,7 @@ export function ChatPane({
               }
             />
           ) : null}
+          {isMainBotChat ? <MainBotWaitsRefresh messageCount={session.messages.length} busy={session.status === 'running'} /> : null}
           <div
             ref={scrollContainerRef}
             data-chat-scroll-container
@@ -2328,8 +2330,9 @@ export function ChatPane({
                   const day = dayByTimelineIndex.get(idx);
                   const dayDivider = day === undefined ? null : <DayDivider day={day} first={idx === firstDayIndex} />;
                   const taskCalls = taskCardsByTimelineIndex.get(idx);
+                  // (Three or more waits the main bot set in a row fold into one line.)
                   const taskCards = taskCalls
-                    ? taskCalls.map((call) =>
+                    ? foldMainBotWaitCards(taskCalls, (call) =>
                         isStartSessionToolName(call.toolName) ? (
                           <SubSessionCard key={call.toolUseId} toolUseId={call.toolUseId} input={call.input} resultText={call.resultText} failed={call.failed} />
                         ) : (

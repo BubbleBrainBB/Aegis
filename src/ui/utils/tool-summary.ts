@@ -1,7 +1,7 @@
 import { isStartWorkflowToolName } from '../../shared/workflow';
 import { isShowWidgetToolName, isWidgetGuideToolName, widgetFromToolInput } from '../../shared/widget';
 import { isProposeFollowUpToolName, isStartSessionToolName, isWithdrawFollowUpToolName } from '../../shared/follow-up';
-import { GET_TASK_TOOL, isMainBotLookupToolName, isMainBotNoteWriteToolName, isMainBotTaskActionToolName, LIST_HANDED_OUT_TOOL, LIST_PROJECTS_TOOL, mainBotToolKind, mainBotWorkflowCalledOff, READ_CONVERSATION_TOOL, READ_MEMORY_TOOL } from '../../shared/main-bot';
+import { GET_TASK_TOOL, isMainBotLookupToolName, isMainBotNoteWriteToolName, isMainBotTaskActionToolName, LIST_HANDED_OUT_TOOL, LIST_PROJECTS_TOOL, LIST_WAITS_TOOL, mainBotToolKind, mainBotWorkflowCalledOff, READ_CONVERSATION_TOOL, READ_MEMORY_TOOL } from '../../shared/main-bot';
 import { isReportStatusToolName, TURN_REPORT_OUTCOMES, turnReportLabel, type TurnReportOutcome } from '../../shared/turn-report';
 
 /** The task a main bot call names: the new task's title, or the one it was pointed at. */
@@ -9,6 +9,12 @@ const mainBotTaskOf = (input: unknown) => {
   const value = input && typeof input === 'object' ? (input as { title?: unknown; task?: unknown }) : {};
   const name = typeof value.title === 'string' && value.title.trim() ? value.title : value.task;
   return typeof name === 'string' && name.trim() ? name.trim() : 'a task';
+};
+
+/** What a wait_for or cancel_wait call names: the wait's own name, or its id. */
+const mainBotWaitOf = (input: unknown) => {
+  const value = input as { label?: unknown; wait?: unknown } | null;
+  return (typeof value?.label === 'string' && value.label.trim()) || (typeof value?.wait === 'string' && value.wait.trim()) || 'something';
 };
 
 /** What a main bot lookup read. */
@@ -25,6 +31,7 @@ const mainBotLookupOf = (name: string, input: unknown) => {
   if (bare === LIST_HANDED_OUT_TOOL) return 'handed-out work';
   if (bare === READ_MEMORY_TOOL) return `note ${mainBotNoteOf(input)}`;
   if (bare === READ_CONVERSATION_TOOL) return 'the conversation';
+  if (bare === LIST_WAITS_TOOL) return 'waits';
   return 'tasks';
 };
 
@@ -96,6 +103,8 @@ export function getToolSummary(name: string, input: unknown): string {
   if (isMainBotTaskActionToolName(name)) {
     const kind = mainBotToolKind(name);
     if (kind === 'workflow') return `${mainBotWorkflowCalledOff(input) ? 'Called off' : 'Started'} the workflow of ${mainBotTaskOf(input)}`;
+    if (kind === 'wait') return `Waiting for ${mainBotWaitOf(input)}`;
+    if (kind === 'unwait') return `Called off the wait for ${mainBotWaitOf(input)}`;
     return `${kind === 'start' ? 'Started' : kind === 'stop' ? 'Stopped' : 'Sent to'} ${mainBotTaskOf(input)}`;
   }
   if (isMainBotLookupToolName(name)) return `Checked ${mainBotLookupOf(name, input)}`;
@@ -424,6 +433,8 @@ export function deriveReadableToolDisplay(
       const off = mainBotWorkflowCalledOff(input);
       return { verb: status === 'pending' ? (off ? 'Calling off the workflow of' : 'Starting the workflow of') : off ? 'Called off the workflow of' : 'Started the workflow of', target: mainBotTaskOf(input) };
     }
+    if (kind === 'wait') return { verb: status === 'pending' ? 'Setting a wait for' : 'Waiting for', target: mainBotWaitOf(input) };
+    if (kind === 'unwait') return { verb: status === 'pending' ? 'Calling off the wait for' : 'Called off the wait for', target: mainBotWaitOf(input) };
     const verb = kind === 'start'
       ? (status === 'pending' ? 'Starting' : 'Started')
       : kind === 'stop'

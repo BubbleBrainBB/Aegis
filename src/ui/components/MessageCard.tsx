@@ -4,6 +4,8 @@ import { stripLeakedContextTags } from '../utils/leaked-context-tags';
 import { DesignCommentPromptRow } from './design/DesignCommentPromptRow';
 import { SubSessionBriefCard } from './follow-up/SubSessionPromptRows';
 import { isDeliveredResultLabel } from '../../shared/follow-up';
+import { mainBotWaitTitles } from '../../shared/main-bot';
+import { WaitOverRow } from './main-bot/MainBotWaits';
 import { DesignSelectionTag } from './design/DesignSelectionChip';
 import { useDesignStore } from '../store/useDesignStore';
 import { ChevronRight, Copy, Check, History, Lightbulb, Pencil, RotateCcw, TargetArrow, Workflow } from './icons';
@@ -94,7 +96,10 @@ export function MessageCard({
       if (message.workflowPrompt === 'follow-up') {
         // A result coming back adds no row: the card that sent the work out
         // already shows how it stands, and the answer says what came back.
-        return isDeliveredResultLabel(message.prompt) ? null : <FollowUpPromptChip text={message.prompt} />;
+        if (isDeliveredResultLabel(message.prompt)) return null;
+        // A wait of the main bot that ended: Aegis woke it, and says for what.
+        const waited = mainBotWaitTitles(message.prompt);
+        return waited ? <WaitOverRow titles={waited} /> : <FollowUpPromptChip text={message.prompt} />;
       }
       if (message.workflowPrompt === 'sub-session') return <SubSessionBriefCard text={message.prompt} sessionId={sessionId ?? undefined} createdAt={message.createdAt} />;
       // A comment sent from a design thread links back to it on the canvas.

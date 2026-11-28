@@ -4,6 +4,7 @@ import { useAppStore } from '../../store/useAppStore';
 import type { SessionView } from '../../types';
 import { FileTypeIcon } from '../FileTypeIcon';
 import { ChevronRight } from '../icons';
+import { EnvironmentWaitingSection } from '../main-bot/MainBotWaits';
 
 function outputFiles(node: ProjectTreeNode | null): ProjectTreeNode[] {
   if (!node?.children) return [];
@@ -28,7 +29,8 @@ function useChatOutputs(cwd: string | null, open: boolean, status: SessionView['
 
 /**
  * What a chat without a project has instead of Git: the files the agent saved
- * to outputs/, and the Sources you attached.
+ * to outputs/, and the Sources you attached. The main bot saves no files, so
+ * its conversation has what it waits for in that place.
  */
 export function EnvironmentChatSection({ session, open, onOpenSources, onNavigate }: {
   session: SessionView;
@@ -37,7 +39,8 @@ export function EnvironmentChatSection({ session, open, onOpenSources, onNavigat
   onNavigate: () => void;
 }) {
   const cwd = session.cwd?.trim() || null;
-  const files = useChatOutputs(cwd, open, session.status);
+  const isMainBot = useAppStore((state) => state.mainBotSessionId === session.id);
+  const files = useChatOutputs(cwd, open && !isMainBot, session.status);
   const openFile = (file: ProjectTreeNode) => {
     if (!cwd) return;
     void window.electron.getProjectTree(cwd)
@@ -51,6 +54,7 @@ export function EnvironmentChatSection({ session, open, onOpenSources, onNavigat
 
   return (
     <>
+      {isMainBot ? <EnvironmentWaitingSection /> : (
       <section className="environment-summary-section" aria-label="Outputs">
         <div className="px-2 pb-0.5 text-[12px] font-medium text-[var(--text-secondary)]">Outputs</div>
         {files === null ? (
@@ -64,6 +68,7 @@ export function EnvironmentChatSection({ session, open, onOpenSources, onNavigat
           </button>
         ))}
       </section>
+      )}
       {onOpenSources ? (
         <section className="environment-summary-section" aria-label="Sources">
           <button type="button" className="environment-summary-row text-[var(--text-secondary)]" onClick={() => { onOpenSources(null); onNavigate(); }}>

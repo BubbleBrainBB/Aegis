@@ -260,6 +260,8 @@ contextBridge.exposeInMainWorld('electron', {
   refreshMainBotContext: () => ipcRenderer.invoke('main-bot-refresh-context'),
   mainBotWorkflowCards: () => ipcRenderer.invoke('main-bot-workflow-cards'),
   decideMainBotWorkflow: (taskId: string, run: { id: string; revision: number }, start: boolean) => ipcRenderer.invoke('main-bot-decide-workflow', taskId, run, start),
+  mainBotWaits: () => ipcRenderer.invoke('main-bot-waits'),
+  cancelMainBotWait: (id: string) => ipcRenderer.invoke('main-bot-cancel-wait', id),
 
   sessionHandoff: (payload: { sessionId: string; targetProvider: string }) => {
     return ipcRenderer.invoke('session-handoff', payload);

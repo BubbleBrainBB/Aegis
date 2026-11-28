@@ -36,7 +36,7 @@
     "probe:workflow-planner-eval": "npm run transpile:electron && node scripts/tests/workflow-planner-eval-electron.mjs",
     "verify:workflow-board": "node scripts/tests/workflow-board-electron.test.mjs",
     "verify:follow-up": "npx tsx scripts/tests/follow-up.test.ts",
-    "verify:main-bot": "npx tsx scripts/tests/main-bot.test.ts && npx tsx scripts/tests/conversation-days.test.ts && npm run transpile:electron && node scripts/tests/main-bot-turn-tools.test.mjs",
+    "verify:main-bot": "npx tsx scripts/tests/main-bot.test.ts && npx tsx scripts/tests/main-bot-waits.test.ts && npx tsx scripts/tests/conversation-days.test.ts && npm run transpile:electron && node scripts/tests/main-bot-turn-tools.test.mjs",
     "verify:main-bot-ui": "node scripts/tests/main-bot-ui-electron.test.mjs",
     "verify:task-cards": "node scripts/tests/task-cards-placement-electron.test.mjs",
     "verify:claude-model-alias": "npx tsx scripts/tests/claude-model-alias.test.ts",

@@ -3,7 +3,8 @@
 // here a start draws only when it failed. A message to a task, or stopping
 // one, is a single line that opens that task beside the conversation. Lines
 // show the task's state as it is now, so nothing more is drawn when its
-// result comes back.
+// result comes back. What it did to a wait (set one, called one off) is a
+// line of the same kind, drawn by MainBotWaitLine.
 
 import { mainBotToolKind, mainBotWorkflowCalledOff, parseMainBotTaskResult } from '../../../shared/main-bot';
 import { turnReportNeedsUser } from '../../../shared/turn-report';
@@ -14,6 +15,7 @@ import { NEEDS_YOU_LABEL } from '../../utils/sidebar-view';
 import { openTaskBeside } from '../../utils/task-state';
 import { AlertTriangle, CornerDownRight, LoaderCircle, Play, Square } from '../icons';
 import { TraceLine } from '../TraceLine';
+import { MainBotWaitLine } from './MainBotWaits';
 
 type Tone = 'none' | 'working' | 'warning' | 'danger';
 
@@ -28,13 +30,20 @@ function field(input: unknown, name: string): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-export function MainBotTaskLine({ toolName, input, resultText, failed, pending }: {
+interface MainBotLineProps {
   toolName: string;
   input: unknown;
   resultText: string | null;
   failed: boolean;
   pending: boolean;
-}) {
+}
+
+export function MainBotTaskLine(props: MainBotLineProps) {
+  const kind = mainBotToolKind(props.toolName);
+  return kind === 'wait' || kind === 'unwait' ? <MainBotWaitLine {...props} /> : <TaskLine {...props} />;
+}
+
+function TaskLine({ toolName, input, resultText, failed, pending }: MainBotLineProps) {
   const kind = mainBotToolKind(toolName);
   const result = failed ? {} : parseMainBotTaskResult(resultText);
   const sessionId = result.sessionId ?? '';
