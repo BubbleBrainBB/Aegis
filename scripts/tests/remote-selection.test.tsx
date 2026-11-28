@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import { createElement, useState } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { RemotePermissionControl, useRemoteSelection, type RemoteSelection } from '../../src/ui/components/RemoteAgentPicker';
+import { RemoteModelControl, RemotePermissionControl, useRemoteSelection, type RemoteSelection } from '../../src/ui/components/RemoteAgentPicker';
 import type { RemoteAgentEntry } from '../../src/shared/remote/agent-catalog';
 import type { RemoteTaskSettings } from '../../src/shared/remote/protocol';
 
@@ -86,5 +86,31 @@ const control = renderToStaticMarkup(createElement(function Control() {
   return createElement(RemotePermissionControl, { selection });
 }));
 assert.match(control, /Permission mode: Full access/i);
+
+// Beside the model name the picker shows the effort as that Mac lists it. A
+// Bubble model that only switches thinking lists "off" and "medium" (what is
+// sent for on): it reads "thinking" while on and nothing while off, never
+// "medium". The setting itself is untouched.
+const switches: RemoteAgentEntry[] = [
+  { provider: 'bubble', defaultModel: 'glm', models: [
+    { id: 'glm', label: 'GLM-5.1', efforts: ['off', 'medium'] },
+    { id: 'graded', label: 'Graded', efforts: ['low', 'medium', 'high'] },
+  ] },
+  { provider: 'codex', defaultModel: 'gpt', models: [{ id: 'gpt', label: 'GPT', efforts: ['off', 'medium'] }] },
+];
+const chip = (provider: string, settings: RemoteTaskSettings) => {
+  let sent: RemoteTaskSettings | undefined;
+  const html = renderToStaticMarkup(createElement(function Control() {
+    const selection = useRemoteSelection(`${SESSION}-${provider}-${JSON.stringify(settings)}`, switches, provider, settings);
+    sent = selection.settings;
+    return createElement(RemoteModelControl, { selection, catalog: switches });
+  }));
+  assert.equal(sent?.effort, settings.effort, 'what is sent stays as chosen');
+  return html.replace(/<svg[\s\S]*?<\/svg>/g, '').replace(/<[^>]+>/g, '|').split('|').filter(Boolean);
+};
+assert.deepEqual(chip('bubble', { model: 'glm', effort: 'medium' }), ['GLM-5.1', 'thinking']);
+assert.deepEqual(chip('bubble', { model: 'glm', effort: 'off' }), ['GLM-5.1']);
+assert.deepEqual(chip('bubble', { model: 'graded', effort: 'medium' }), ['Graded', 'medium']);
+assert.deepEqual(chip('codex', { model: 'gpt', effort: 'medium' }), ['GPT', 'medium'], 'only Bubble switches are renamed');
 
 console.log('remote-selection: ok');

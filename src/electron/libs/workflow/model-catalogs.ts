@@ -2,6 +2,8 @@
 // pin a model the agent itself offers, so each catalog comes from the same
 // source as that agent's composer picker — never a list kept in app code.
 
+import { bubbleThinkingLevelNames } from '../../../shared/bubble-reasoning';
+
 export type ModelOption = { id: string; label?: string };
 
 type CatalogEntry = {
@@ -122,7 +124,8 @@ export function catalogEffortLevels(provider: string, config: unknown, model: st
     case 'mimo':
       return strings(entry.reasoningEfforts);
     case 'bubble':
-      return strings(entry.reasoningLevels) ?? [];
+      // A model that only switches thinking is planned as "on" or "off".
+      return bubbleThinkingLevelNames(strings(entry.reasoningLevels) ?? []);
     default:
       return null;
   }

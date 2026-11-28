@@ -1,5 +1,8 @@
 import { rendererStateStorage } from './renderer-state-storage';
 import type { BubbleModelConfig } from '../types';
+import { BUBBLE_THINKING_ON_LEVEL, isBubbleThinkingToggle } from '../../shared/bubble-reasoning';
+
+export { isBubbleThinkingToggle };
 
 const STORAGE_KEY = 'cowork.preferredBubbleThinkingLevels';
 
@@ -68,14 +71,39 @@ export function carriedBubbleThinkingLevel(
   return matched && (matched.reasoningLevels ?? []).length === 0 ? null : level;
 }
 
-/** Label for a thinking level (known tiers get hand labels, unknown pass through capitalized). */
-export function formatBubbleThinkingLevelLabel(level: string): string {
+/**
+ * Label for a thinking level (known tiers get hand labels, unknown pass
+ * through capitalized). Pass the model's levels: on a model that only
+ * switches thinking on and off, "medium" is the on state and reads "On".
+ */
+export function formatBubbleThinkingLevelLabel(
+  level: string,
+  levels?: readonly string[] | null
+): string {
   const trimmed = level.trim().toLowerCase();
+  if (trimmed === BUBBLE_THINKING_ON_LEVEL && isBubbleThinkingToggle(levels)) {
+    return 'On';
+  }
   if (BUBBLE_THINKING_LEVEL_LABELS[trimmed]) {
     return BUBBLE_THINKING_LEVEL_LABELS[trimmed];
   }
   const raw = level.trim();
   return raw.charAt(0).toUpperCase() + raw.slice(1);
+}
+
+/**
+ * What follows the model name on a composer chip: the level's label, or on a
+ * model that only switches thinking, "Thinking" while it is on and nothing
+ * while it is off (as the Kimi agent's chip reads).
+ */
+export function bubbleThinkingChipLabel(
+  level: string,
+  levels?: readonly string[] | null
+): string | null {
+  if (!isBubbleThinkingToggle(levels)) {
+    return formatBubbleThinkingLevelLabel(level, levels);
+  }
+  return level.trim().toLowerCase() === 'off' ? null : 'Thinking';
 }
 
 function loadStoredPreferences(): Record<string, string> {

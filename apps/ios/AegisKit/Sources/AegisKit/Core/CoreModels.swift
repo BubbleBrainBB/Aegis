@@ -304,6 +304,8 @@ public struct AgentCatalog: Decodable, Equatable, Sendable {
     public struct Effort: Decodable, Equatable, Hashable, Sendable {
         public let value: String
         public let label: String
+        /// What the composer chip shows instead of `label`; empty shows nothing.
+        public var chip: String? = nil
     }
     public struct ModelOptions: Decodable, Equatable, Sendable {
         public let efforts: [Effort]
@@ -345,6 +347,8 @@ public struct ResolvedSettings: Equatable, Sendable {
     public let efforts: [AgentCatalog.Effort]
     public let effort: String?
     public let effortLabel: String?
+    /// The effort as the composer chip names it; nil when the chip shows none.
+    public let effortChip: String?
     /// The effort the slider shows: the chosen one or the model's default.
     public let shownEffort: String?
     public let fastAvailable: Bool
@@ -362,13 +366,18 @@ extension AgentCatalog {
         let choice = models.first { $0.value == model }
         let options = options(for: model)
         let effort = settings.effort.flatMap { e in options.efforts.contains { $0.value == e } ? e : nil } ?? options.defaultEffort
+        let chosen = effort.flatMap { e in options.efforts.first { $0.value == e } }
         let permissionMode = permissionModes.contains { $0.mode == settings.permissionMode } ? settings.permissionMode! : defaultPermission
         return ResolvedSettings(
             model: model,
             modelLabel: choice?.label ?? labels?[model] ?? (model.isEmpty ? "Default" : model),
             efforts: options.efforts,
             effort: effort,
-            effortLabel: effort.map { e in options.efforts.first { $0.value == e }?.label ?? e },
+            effortLabel: effort.map { e in chosen?.label ?? e },
+            effortChip: effort.flatMap { e in
+                let text = chosen?.chip ?? chosen?.label ?? e
+                return text.isEmpty ? nil : text
+            },
             shownEffort: effort ?? options.defaultEffort,
             fastAvailable: options.fast,
             fast: options.fast && settings.fast == true,

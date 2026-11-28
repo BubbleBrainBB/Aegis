@@ -200,6 +200,36 @@ test("MiniMax Code catalog: models and thinking efforts from the Mac, plan as a 
   assert.equal(minimax.supportsPlan, false);
 });
 
+test("Bubble catalog: a model that only switches thinking reads On and Off", () => {
+  const model = (name, reasoningLevels, defaultReasoningLevel = null) => ({ name, label: name, provider: null, enabled: true, isDefault: false, reasoningLevels, defaultReasoningLevel });
+  const bubble = call("catalog", {
+    provider: "bubble",
+    options: {
+      bubble: {
+        defaultModel: "zhipuai-coding-plan:glm-5.1",
+        options: [],
+        availableModels: [
+          model("zhipuai-coding-plan:glm-5.1", ["off", "medium"]),
+          model("openai:graded", ["high", "medium", "low"], "high"),
+          model("moss:nex-n2.6", []),
+        ],
+      },
+    },
+  });
+  // "medium" is what the Mac is sent for on; only its name changes.
+  assert.deepEqual(bubble.perModel["zhipuai-coding-plan:glm-5.1"].efforts, [
+    { value: "off", label: "Off", chip: "" },
+    { value: "medium", label: "On", chip: "Thinking" },
+  ]);
+  // A graded model keeps its grades, and its chip shows the grade.
+  assert.deepEqual(bubble.perModel["openai:graded"].efforts, [
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High" },
+  ]);
+  assert.deepEqual(bubble.perModel["moss:nex-n2.6"].efforts, []);
+});
+
 test("MiMo catalog: models and variant levels from the Mac, plan as a mode", () => {
   const mimo = call("catalog", {
     provider: "mimo",

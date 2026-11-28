@@ -27,8 +27,10 @@ import {
   GROK_REASONING_EFFORT_OPTIONS,
 } from '../utils/grok-reasoning';
 import {
+  bubbleThinkingChipLabel,
   bubbleThinkingLevelsForModel,
   formatBubbleThinkingLevelLabel,
+  isBubbleThinkingToggle,
 } from '../utils/bubble-reasoning';
 import {
   DEEPSEEK_REASONING_EFFORT_LABELS,
@@ -912,7 +914,8 @@ const MimoAgentSubContent: FC<{
 // deliberately no fallback list: a model without metadata (e.g. a
 // "Configured default" entry the catalog doesn't know) shows no Reasoning
 // section and runs on the SDK's own default, rather than offering tiers we
-// made up.
+// made up. A model that only switches thinking on and off lists "off" and
+// "medium" (what is sent for on): its two stops read Off and On.
 const BubbleAgentSubContent: FC<{
   modelOptions: ComposerModelOption[];
   selectedModel: string | null;
@@ -933,7 +936,9 @@ const BubbleAgentSubContent: FC<{
   const levels = bubbleThinkingLevelsForModel(bubbleModels, selectedModel);
   return <EffortModelPanel modelOptions={modelOptions} selectedModel={selectedModel} onSelectModel={onSelectModel}
     efforts={levels} effort={thinkingLevel} onEffortChange={onThinkingLevelChange}
-    formatEffort={formatBubbleThinkingLevelLabel} loadingText={modelsLoading ? 'Loading models…' : null} />;
+    formatEffort={(level) => formatBubbleThinkingLevelLabel(level, levels)}
+    effortLabel={isBubbleThinkingToggle(levels) ? 'Thinking' : undefined}
+    loadingText={modelsLoading ? 'Loading models…' : null} />;
 };
 
 const CodexAgentSubContent: FC<{
@@ -1086,9 +1091,10 @@ export function ComposerAgentModelPicker({
   const grokEffortSuffix = agentProvider === 'grok' && grokReasoningEffort
     ? ` ${grokEffortLabels[grokReasoningEffort]}`
     : '';
-  const bubbleEffortSuffix = agentProvider === 'bubble' && bubbleThinkingLevel
-    ? ` ${formatBubbleThinkingLevelLabel(bubbleThinkingLevel)}`
-    : '';
+  const bubbleChipLabel = agentProvider === 'bubble' && bubbleThinkingLevel
+    ? bubbleThinkingChipLabel(bubbleThinkingLevel, bubbleThinkingLevelsForModel(bubbleModels, modelValue))
+    : null;
+  const bubbleEffortSuffix = bubbleChipLabel ? ` ${bubbleChipLabel}` : '';
   const deepseekEffortSuffix = agentProvider === 'deepseek' && deepseekReasoningEffort
     ? ` ${DEEPSEEK_REASONING_EFFORT_LABELS[deepseekReasoningEffort]}`
     : '';

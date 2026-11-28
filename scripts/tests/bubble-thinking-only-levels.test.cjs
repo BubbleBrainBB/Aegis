@@ -70,13 +70,42 @@ Module._load = function (name, ...args) {
   assert.equal(glm.maxContextSize, 1000000);
   assert.deepEqual(model('zhipuai-coding-plan:glm-5.1').reasoningLevels, ['off', 'medium'], 'an on/off GLM keeps its switch');
 
+  // A model that only switches thinking keeps both states, "off" and the
+  // "medium" a turn sends for on, and Aegis shows them as Off and On. Its
+  // rule for telling such a model from a graded one is the SDK's.
+  const { isBubbleThinkingToggle } = require('../../dist-electron/shared/bubble-reasoning.js');
+  const { isThinkingToggleModel } = await import('@bubblebrain-ai/bubble/dist/variant/variant-resolver.js');
+  const sdkVersion = require('@bubblebrain-ai/bubble/package.json').version.split('.').map(Number);
+  // Before 0.0.73 the SDK told switches apart by a list of names that left GLM out.
+  const sdkKnowsGlmSwitches = sdkVersion[0] > 0 || sdkVersion[1] > 0 || sdkVersion[2] >= 73;
+  const sameAsSdk = (entry) => {
+    const [providerId, ...rest] = entry.name.split(':');
+    assert.equal(isBubbleThinkingToggle(entry.reasoningLevels), isThinkingToggleModel(providerId, rest.join(':')),
+      `same rule as the SDK for ${entry.name} ${JSON.stringify(entry.reasoningLevels)}`);
+  };
+  const kimiSwitch = model('alibaba:kimi-k2.6');
+  assert.deepEqual(kimiSwitch.reasoningLevels, ['off', 'medium']);
+  assert.equal(isBubbleThinkingToggle(kimiSwitch.reasoningLevels), true);
+  sameAsSdk(kimiSwitch);
+  const glmSwitch = model('zhipuai-coding-plan:glm-5.1');
+  assert.deepEqual(glmSwitch.reasoningLevels, ['off', 'medium']);
+  assert.equal(isBubbleThinkingToggle(glmSwitch.reasoningLevels), true);
+  if (sdkKnowsGlmSwitches) sameAsSdk(glmSwitch);
+  // Every listed model with levels to choose from: a switch here is a switch there.
+  for (const entry of config.availableModels) {
+    const glm = /^(zhipuai|zai)/.test(entry.name);
+    if (entry.reasoningLevels.length > 0 && (sdkKnowsGlmSwitches || !glm)) sameAsSdk(entry);
+  }
+  assert.equal(isBubbleThinkingToggle(fixed.reasoningLevels), false, 'a fixed grade is not a switch');
+  assert.equal(isBubbleThinkingToggle(nex.reasoningLevels), false, 'a model that always thinks has no switch');
+
   const graded = config.availableModels.filter((entry) => entry.reasoningLevels.length > 1);
   assert(graded.length > 0, 'models with grades keep them');
   for (const entry of config.availableModels) {
     assert.notDeepEqual(entry.reasoningLevels, ['medium'], `${entry.name} does not offer the placeholder`);
   }
 
-  console.log('Bubble thinking-only models: no placeholder level, fixed grades and graded models unchanged passed');
+  console.log('Bubble thinking-only models: no placeholder level, switches told apart as the SDK does, fixed grades and graded models unchanged passed');
 })().catch((error) => {
   console.error(error);
   process.exitCode = 1;

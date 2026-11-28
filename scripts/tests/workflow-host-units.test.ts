@@ -602,6 +602,12 @@ test('effort levels come from each catalog the way its composer reads them', () 
   assert.deepEqual(catalogEffortLevels('deepseek', { defaultModel: 'd', availableModels: [{ id: 'd', name: 'D', reasoningEfforts: ['off', 'high'] }] }, null), ['off', 'high']);
   assert.deepEqual(catalogEffortLevels('mimo', { availableModels: [{ id: 'm', reasoningEfforts: ['low', 'max'] }] }, 'm'), ['low', 'max']);
   assert.deepEqual(catalogEffortLevels('bubble', { availableModels: [{ name: 'b' }] }, 'b'), [], 'no levels listed: none');
+  // Bubble lists a model that only switches thinking as off and "medium"
+  // (what it sends for on): a plan names the switch on and off.
+  const bubble = { availableModels: [{ name: 'glm', reasoningLevels: ['off', 'medium'] }, { name: 'graded', reasoningLevels: ['off', 'low', 'medium'] }, { name: 'fixed', reasoningLevels: ['max'] }] };
+  assert.deepEqual(catalogEffortLevels('bubble', bubble, 'glm'), ['off', 'on']);
+  assert.deepEqual(catalogEffortLevels('bubble', bubble, 'graded'), ['off', 'low', 'medium'], 'a real medium grade keeps its name');
+  assert.deepEqual(catalogEffortLevels('bubble', bubble, 'fixed'), ['max']);
   assert.equal(catalogEffortLevels('opencode', { availableModels: [{ name: 'o' }] }, 'o'), null);
 });
 
@@ -615,6 +621,11 @@ test('every provider with an effort setting names its payload field; the chat se
   assert.deepEqual(memberEffortPayload(declarationFor('devin')!, 'high'), { devinThoughtLevel: 'high' });
   assert.deepEqual(memberEffortPayload(declarationFor('devin')!, null), {});
   assert.deepEqual(memberEffortPayload(declarationFor('opencode')!, 'high'), {});
+  // Bubble has no "on" level: a switch that is on is sent as "medium".
+  assert.deepEqual(memberEffortPayload(declarationFor('bubble')!, 'on'), { bubbleThinkingLevel: 'medium' });
+  assert.deepEqual(memberEffortPayload(declarationFor('bubble')!, 'off'), { bubbleThinkingLevel: 'off' });
+  assert.deepEqual(memberEffortPayload(declarationFor('bubble')!, 'high'), { bubbleThinkingLevel: 'high' });
+  assert.deepEqual(memberEffortPayload(declarationFor('kimi')!, 'on'), { kimiThinking: 'on' }, 'only Bubble renames it');
   const configs = buildMemberConfigs(['devin', 'opencode'] as never, 'claude');
   assert.deepEqual(configs.map((c) => [c.name, c.supportsEffort]), [['current', undefined], ['opencode', false], ['devin', true]]);
 });
@@ -661,6 +672,27 @@ test('a member\'s effort is checked against the levels its model offers', async 
   assert.deepEqual(bad.errors.map((e) => e.path), ['members[0].effort', 'members[1].effort', 'members[2].effort', 'members[3].effort']);
   assert.match(bad.errors[0].message, /offers no effort "ultra" \(it offers: low, medium, high\)/);
   assert.match(bad.errors[1].message, /has no reasoning effort levels/);
+
+  // A Bubble model that only switches thinking is planned as on or off. The
+  // "medium" it used to be planned with is its "on"; a real grade is refused.
+  const bubble = buildMemberConfigs(['bubble'] as never, null, { bubble: [{ id: 'glm' }, { id: 'graded' }] });
+  const bubbleLoad = async (_provider: string, model: string | null) => (model === 'glm' ? ['off', 'on'] : ['low', 'medium', 'high']);
+  const bubbleCheck = async (members: WorkflowSpec['members']) => {
+    const planned = spec(members);
+    const report = validateSpec(planned, await withEffortLevels(planned, { memberConfigs: bubble, limits: DEFAULT_LIMITS }, bubbleLoad));
+    return { members: planned.members.map((m) => m.effort), errors: report.errors.map((e) => e.message) };
+  };
+  const switched = await bubbleCheck([
+    member('on', 'bubble', { model: 'glm', effort: 'On' }),
+    member('off', 'bubble', { model: 'glm', effort: 'off' }),
+    member('old', 'bubble', { model: 'glm', effort: 'medium' }),
+    member('graded', 'bubble', { model: 'graded', effort: 'medium' }),
+  ]);
+  assert.deepEqual(switched.errors, []);
+  assert.deepEqual(switched.members, ['on', 'off', 'on', 'medium']);
+  const graded = await bubbleCheck([member('high', 'bubble', { model: 'glm', effort: 'high' }), member('on', 'bubble', { model: 'graded', effort: 'on' })]);
+  assert.match(graded.errors[0], /offers no effort "high" \(it offers: off, on\)/);
+  assert.match(graded.errors[1], /offers no effort "on" \(it offers: low, medium, high\)/);
 
   // A level that cannot be read is left to the agent rather than refused.
   const unread = buildMemberConfigs(['codex'] as never);

@@ -14,7 +14,7 @@ import {
 } from "../../../src/ui/utils/claude-model";
 import { buildCodexModelOptions, formatCodexModelLabel } from "../../../src/ui/utils/codex-model";
 import { formatCodexReasoningEffortLabel } from "../../../src/ui/utils/codex-reasoning";
-import { formatBubbleThinkingLevelLabel } from "../../../src/ui/utils/bubble-reasoning";
+import { bubbleThinkingChipLabel, formatBubbleThinkingLevelLabel } from "../../../src/ui/utils/bubble-reasoning";
 import { formatMimoReasoningEffortLabel } from "../../../src/ui/utils/mimo-reasoning";
 import {
   CLAUDE_REASONING_EFFORT_LABELS,
@@ -46,7 +46,10 @@ export interface AgentCatalog {
   defaultModel: string;
   effortsFor(model: string): string[];
   defaultEffortFor(model: string): string | null;
-  effortLabel(effort: string): string;
+  /** `model` matters where a level's name depends on the model (Bubble's on/off models). */
+  effortLabel(effort: string, model: string): string;
+  /** What the composer chip shows after the model name when it is not the label; null shows nothing. */
+  effortChip?(effort: string, model: string): string | null;
   fastFor(model: string): boolean;
   /** Display name for a model that isn't in `models` (a session's own model). */
   labelFor?(model: string): string;
@@ -168,7 +171,9 @@ export function catalogFor(provider: string, options?: RemoteAgentOptions): Agen
       // Thinking levels come only from the catalog; no invented fallback.
       effortsFor: (model) => orderedEfforts(meta(model)?.reasoningLevels ?? []),
       defaultEffortFor: (model) => meta(model)?.defaultReasoningLevel ?? null,
-      effortLabel: formatBubbleThinkingLevelLabel,
+      // On a model that only switches thinking, "medium" is the on state.
+      effortLabel: (e, model) => formatBubbleThinkingLevelLabel(e, meta(model)?.reasoningLevels),
+      effortChip: (e, model) => bubbleThinkingChipLabel(e, meta(model)?.reasoningLevels),
       fastFor: () => false,
       permissionModes: visible(BUBBLE_PERMISSION_MODE_OPTIONS),
       defaultPermission: "default",
@@ -219,7 +224,8 @@ export function resolveSettings(catalog: AgentCatalog, settings: RemoteTaskSetti
     modelLabel: modelChoice?.label ?? (model || "Default"),
     efforts,
     effort,
-    effortLabel: effort ? catalog.effortLabel(effort) : null,
+    effortLabel: effort ? catalog.effortLabel(effort, model) : null,
+    effortChip: effort ? (catalog.effortChip ?? catalog.effortLabel)(effort, model) : null,
     fastAvailable: catalog.fastFor(model),
     fast: catalog.fastFor(model) && settings.fast === true,
     permissionMode,
